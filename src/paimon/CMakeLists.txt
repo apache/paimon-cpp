@@ -259,10 +259,14 @@ set(PAIMON_CORE_SRCS
     core/casting/string_to_date_cast_executor.cpp
     core/casting/string_to_decimal_cast_executor.cpp
     core/casting/string_to_numeric_primitive_cast_executor.cpp
+    core/casting/string_to_time_cast_executor.cpp
     core/casting/string_to_timestamp_cast_executor.cpp
+    core/casting/time_to_string_cast_executor.cpp
+    core/casting/time_to_timestamp_cast_executor.cpp
     core/casting/timestamp_to_date_cast_executor.cpp
     core/casting/timestamp_to_numeric_primitive_cast_executor.cpp
     core/casting/timestamp_to_string_cast_executor.cpp
+    core/casting/timestamp_to_time_cast_executor.cpp
     core/casting/timestamp_to_timestamp_cast_executor.cpp
     core/casting/casting_utils.cpp
     core/catalog/catalog.cpp

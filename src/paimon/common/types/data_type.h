@@ -24,6 +24,8 @@
 #include <string>
 
 #include "paimon/common/utils/jsonizable.h"
+#include "paimon/result.h"
+#include "paimon/visibility.h"
 #include "rapidjson/allocators.h"
 #include "rapidjson/document.h"
 #include "rapidjson/rapidjson.h"
@@ -43,7 +45,7 @@ class DataType : public Jsonizable<DataType> {
 
     // Arrow carries milliseconds, while metadata preserves the declared TIME precision.
     // Arrow-only schemas use Paimon's default precision of zero.
-    static Result<int32_t> GetTimePrecision(const arrow::Field& field);
+    PAIMON_EXPORT static Result<int32_t> GetTimePrecision(const arrow::Field& field);
 
     static std::unique_ptr<DataType> Create(
         const std::shared_ptr<arrow::DataType>& type, bool nullable,

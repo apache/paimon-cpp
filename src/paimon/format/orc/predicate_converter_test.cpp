@@ -72,6 +72,13 @@ TEST(PredicateConverterTest, TestSimple) {
         ASSERT_EQ("leaf-0 = (column(id=4) = 10), expr = leaf-0", search_arg->toString());
     }
     {
+        auto predicate =
+            PredicateBuilder::LessThan(/*field_index=*/3, /*field_name=*/"f3", FieldType::TIME,
+                                       Literal(FieldType::TIME, 45296123));
+        ASSERT_OK_AND_ASSIGN(auto search_arg, PredicateConverter::Convert(*orc_type, predicate));
+        ASSERT_EQ("leaf-0 = (column(id=4) < 45296123), expr = leaf-0", search_arg->toString());
+    }
+    {
         // Noted: equal null convert to is null in orc, which is different from java paimon,
         // where any field value equal/not equal null return false
         // therefore, we disable literal in predicate to be null (see PredicateValidator)

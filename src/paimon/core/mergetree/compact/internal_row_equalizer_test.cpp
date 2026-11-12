@@ -88,6 +88,7 @@ TEST(InternalRowEqualizerTest, PrimitiveTypesAndIgnoreFields) {
          arrow::field("string", arrow::utf8()), arrow::field("binary", arrow::binary()),
          arrow::field("timestamp", arrow::timestamp(arrow::TimeUnit::MICRO)),
          arrow::field("decimal", arrow::decimal128(10, 2)),
+         arrow::field("time", arrow::time32(arrow::TimeUnit::MILLI)),
          arrow::field("ignored", arrow::int32())});
 
     const float float_nan = std::numeric_limits<float>::quiet_NaN();
@@ -106,6 +107,7 @@ TEST(InternalRowEqualizerTest, PrimitiveTypesAndIgnoreFields) {
                                             binary,
                                             Timestamp(1234, 567000),
                                             decimal,
+                                            int32_t{45296123},
                                             int32_t{10}};
     std::vector<VariantType> right_values = left_values;
     right_values.back() = int32_t{20};
@@ -116,6 +118,10 @@ TEST(InternalRowEqualizerTest, PrimitiveTypesAndIgnoreFields) {
                          InternalRowEqualizer::Create(schema, {"ignored"}));
     ASSERT_EQ(0, equalizer(*left, *right));
 
+    right->SetField(/*pos=*/12, int32_t{86399999});
+    ASSERT_NE(0, equalizer(*left, *right));
+
+    right->SetField(/*pos=*/12, int32_t{45296123});
     right->SetField(/*pos=*/3, int32_t{30});
     ASSERT_NE(0, equalizer(*left, *right));
 }

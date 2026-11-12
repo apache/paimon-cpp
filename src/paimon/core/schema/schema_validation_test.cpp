@@ -1255,20 +1255,22 @@ TEST(SchemaValidationTest, TestSpecificPartitionKey) {
     }
 }
 
-TEST(SchemaValidationTest, TestTimePartitionKey) {
+TEST(SchemaValidationTest, TestTimeKeys) {
     auto schema = arrow::schema({arrow::field("id", arrow::int32()),
                                  arrow::field("time", arrow::time32(arrow::TimeUnit::MILLI))});
-    for (const std::vector<std::string>& partition_keys :
-         {std::vector<std::string>{}, std::vector<std::string>{"time"}}) {
+    {
         ASSERT_OK_AND_ASSIGN(auto table_schema,
-                             TableSchema::Create(0, schema, partition_keys, {},
+                             TableSchema::Create(0, schema, /*partition_keys=*/{"time"}, {},
                                                  {{"file.format", "parquet"}, {"bucket", "-1"}}));
-        if (partition_keys.empty()) {
-            ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
-        } else {
-            ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
-                                "partition field time cannot be TIME");
-        }
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(
+            auto table_schema,
+            TableSchema::Create(
+                0, schema, /*partition_keys=*/{}, /*primary_keys=*/{"id", "time"},
+                {{"file.format", "parquet"}, {"bucket", "2"}, {"bucket-key", "time"}}));
+        ASSERT_OK(SchemaValidation::ValidateTableSchema(*table_schema));
     }
 }
 

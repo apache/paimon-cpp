@@ -193,6 +193,15 @@ TEST_F(SortBufferTest, TestInMemorySortBufferEstimateMemoryUse) {
         ASSERT_EQ(memory_use, expected_memory_use);
     }
     {
+        arrow::FieldVector fields = {arrow::field("f0", arrow::time32(arrow::TimeUnit::MILLI))};
+        std::shared_ptr<arrow::Array> array =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields),
+                                                      R"([[0], [null], [86399999]])")
+                .ValueOrDie();
+        ASSERT_OK_AND_ASSIGN(int64_t memory_use, InMemorySortBuffer::EstimateMemoryUse(array));
+        ASSERT_EQ(memory_use, 1 + (3 * 4 + 1));
+    }
+    {
         arrow::FieldVector fields = {arrow::field("v0", arrow::boolean()),
                                      arrow::field("v1", arrow::int8()),
                                      arrow::field("v2", arrow::int16()),

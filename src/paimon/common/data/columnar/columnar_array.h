@@ -86,7 +86,7 @@ class ColumnarArray : public InternalArray {
     }
 
     int32_t GetInt(int32_t pos) const override {
-        return ColumnarUtils::GetGenericValue<arrow::Int32Type, int32_t>(array_, offset_ + pos);
+        return ColumnarUtils::GetInt32Value(array_, offset_ + pos);
     }
 
     int32_t GetDate(int32_t pos) const override {

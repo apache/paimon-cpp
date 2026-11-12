@@ -897,6 +897,13 @@ Result<std::shared_ptr<arrow::ArrayBuilder>> MakeArrowBuilder(
             return MakeOrcBackedPrimitiveBuilder<UnPooledPrimitiveBuilder<arrow::Int32Type>,
                                                  ::orc::IntVectorBatch, int32_t>(
                 type, column_vector_batch, pool);
+        case arrow::Type::type::TIME32:
+            if (checked_cast<const arrow::Time32Type&>(*type).unit() != arrow::TimeUnit::MILLI) {
+                return Status::TypeError("Only millisecond TIME is supported: ", type->ToString());
+            }
+            return MakeOrcBackedPrimitiveBuilder<UnPooledPrimitiveBuilder<arrow::Time32Type>,
+                                                 ::orc::IntVectorBatch, int32_t>(
+                type, column_vector_batch, pool);
 
         case arrow::Type::type::INT64:
             return MakeOrcBackedPrimitiveBuilder<UnPooledPrimitiveBuilder<arrow::Int64Type>,
@@ -1328,6 +1335,14 @@ arrow::Status WriteBatch(const arrow::Array& array, ::orc::ColumnVectorBatch* co
         case arrow::Type::type::INT32:
             return ShallowCopyGenericBatch<arrow::Int32Type, ::orc::IntVectorBatch>(
                 array, column_vector_batch);
+        case arrow::Type::type::TIME32:
+            if (checked_cast<const arrow::Time32Type&>(*array.type()).unit() !=
+                arrow::TimeUnit::MILLI) {
+                return arrow::Status::TypeError("Only millisecond TIME is supported: ",
+                                                array.type()->ToString());
+            }
+            return ShallowCopyGenericBatch<arrow::Time32Type, ::orc::IntVectorBatch>(
+                array, column_vector_batch);
         case arrow::Type::type::INT64:
             return ShallowCopyGenericBatch<arrow::Int64Type, ::orc::LongVectorBatch>(
                 array, column_vector_batch);
@@ -1394,6 +1409,13 @@ arrow::Result<std::unique_ptr<::orc::Type>> GetOrcType(const arrow::DataType& ty
         case arrow::Type::type::INT16:
             return ::orc::createPrimitiveType(::orc::TypeKind::SHORT);
         case arrow::Type::type::INT32:
+            return ::orc::createPrimitiveType(::orc::TypeKind::INT);
+        case arrow::Type::type::TIME32:
+            // Java `OrcTypeUtil` maps TIME to an ORC int of milliseconds of the day.
+            if (checked_cast<const arrow::Time32Type&>(type).unit() != arrow::TimeUnit::MILLI) {
+                return arrow::Status::TypeError("Only millisecond TIME is supported: ",
+                                                type.ToString());
+            }
             return ::orc::createPrimitiveType(::orc::TypeKind::INT);
         case arrow::Type::type::INT64:
             return ::orc::createPrimitiveType(::orc::TypeKind::LONG);

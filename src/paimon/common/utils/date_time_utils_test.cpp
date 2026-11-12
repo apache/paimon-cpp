@@ -181,6 +181,20 @@ TEST(DateTimeUtilsTest, TestTimestampToInteger) {
     }
 }
 
+TEST(DateTimeUtilsTest, TestFormatTimeMillis) {
+    ASSERT_EQ(DateTimeUtils::FormatTimeMillis(0, 0), "00:00:00");
+    ASSERT_EQ(DateTimeUtils::FormatTimeMillis(0, 3), "00:00:00.0");
+    ASSERT_EQ(DateTimeUtils::FormatTimeMillis(123, 0), "00:00:00");
+    ASSERT_EQ(DateTimeUtils::FormatTimeMillis(123, 3), "00:00:00.123");
+    ASSERT_EQ(DateTimeUtils::FormatTimeMillis(123, 6), "00:00:00.123");
+    ASSERT_EQ(DateTimeUtils::FormatTimeMillis(123, 9), "00:00:00.123");
+    ASSERT_EQ(DateTimeUtils::FormatTimeMillis(123, 1), "00:00:00.1");
+    ASSERT_EQ(DateTimeUtils::FormatTimeMillis(120, 3), "00:00:00.12");
+    ASSERT_EQ(DateTimeUtils::FormatTimeMillis(86399999, 3), "23:59:59.999");
+    ASSERT_EQ(DateTimeUtils::FormatTimeMillis(3723000, 3), "01:02:03.0");
+    ASSERT_EQ(DateTimeUtils::FormatTimeMillis(-1, 3), "23:59:59.999");
+}
+
 TEST(DateTimeUtilsTest, TestGetPrecisionFromType) {
     auto ts_sec_type = arrow::timestamp(arrow::TimeUnit::type::SECOND);
     auto ts_type = checked_pointer_cast<arrow::TimestampType>(ts_sec_type);

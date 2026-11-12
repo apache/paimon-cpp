@@ -607,6 +607,41 @@ TEST(TableQueryAuthResultTest, ParsesTemporalLiteralsAsJava) {
             {}));
     ASSERT_OK_AND_ASSIGN(selected, Evaluate(in_rule->RowFilter(), nanos_batch));
     ASSERT_EQ(std::vector<char>({1, 0}), selected);
+
+    const std::string time_ref = FieldRefJson(0, "t", "TIME(3)");
+    auto time_of_day = [&](const std::string& literal) -> Result<int32_t> {
+        PAIMON_ASSIGN_OR_RAISE(Literal parsed,
+                               FilterLiteral(time_ref, "EQUAL", fmt::format("[{}]", literal)));
+        return parsed.GetValue<int32_t>();
+    };
+    for (const auto& [text, millis] :
+         std::vector<std::pair<std::string, int32_t>>{{"00:00", 0},
+                                                      {"12:34", 45240000},
+                                                      {"12:34:56", 45296000},
+                                                      {"12:34:56.1", 45296100},
+                                                      {"12:34:56.123999999", 45296123},
+                                                      {"23:59:59.999", 86399999}}) {
+        ASSERT_OK_AND_ASSIGN(int32_t parsed, time_of_day(fmt::format(R"("{}")", text)));
+        ASSERT_EQ(millis, parsed) << text;
+    }
+    for (const std::string text : {"24:00", "12:34:56Z", "12:34:56.", "12:34.5", "1:02:03"}) {
+        ASSERT_NOK_WITH_MSG(time_of_day(fmt::format(R"("{}")", text)),
+                            fmt::format("Cannot parse '{}' as a time literal", text));
+    }
+    ASSERT_NOK_WITH_MSG(time_of_day("45296000"), "does not fit column 't' of type time32[ms]");
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableQueryAuthResult> time_rule,
+        TableQueryAuthResult::Create(
+            {CompoundJson("OR", LeafJson(time_ref, "IS_NULL", "[]"),
+                          LeafJson(time_ref, "GREATER_THAN", R"(["00:00:00.5"])"))},
+            {}));
+    auto time_batch = checked_pointer_cast<arrow::StructArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_({arrow::field("t", arrow::time32(arrow::TimeUnit::MILLI))}),
+            "[[500], [501], [null]]")
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(selected, Evaluate(time_rule->RowFilter(), time_batch));
+    ASSERT_EQ(std::vector<char>({0, 1, 1}), selected);
 }
 
 TEST(TableQueryAuthResultTest, RefusesWhatItCannotApply) {
@@ -763,7 +798,7 @@ TEST(TableQueryAuthResultTest, SubstringReadsPositionsAsJava) {
     ASSERT_EQ(std::string::npos, status.message().find("9223372036854775807"));
 }
 
-TEST(TableQueryAuthResultTest, CopiesATimeColumnThatNoFilterCanCompare) {
+TEST(TableQueryAuthResultTest, CopiesATimeColumn) {
     const std::string src_ref = FieldRefJson(0, "src", "TIME(3)");
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<TableQueryAuthResult> result,
@@ -786,10 +821,6 @@ TEST(TableQueryAuthResultTest, CopiesATimeColumnThatNoFilterCanCompare) {
     ASSERT_TRUE(masked->Equals(
         *arrow::ipc::internal::json::ArrayFromJSON(time_type, "[1000, null]").ValueOrDie()))
         << masked->ToString();
-
-    Status filter = TableQueryAuthResult::Create({LeafJson(src_ref, "IS_NULL", "[]")}, {}).status();
-    ASSERT_TRUE(filter.IsNotImplemented()) << filter.ToString();
-    ASSERT_NOK_WITH_MSG(filter, "Query auth row filter IS_NULL on column 'src' of type time32[ms]");
 }
 
 TEST(TableQueryAuthResultTest, ValidatesTheRulesAgainstTheSchema) {

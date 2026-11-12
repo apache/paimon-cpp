@@ -99,6 +99,9 @@ TEST_F(BucketSelectConverterTest, PrimitiveKeyTypes) {
                         {static_cast<int16_t>(1234)});
     AssertDefaultBucket(FieldType::INT, Literal(static_cast<int32_t>(42)), arrow::int32(),
                         {static_cast<int32_t>(42)}, 10);
+    AssertDefaultBucket(FieldType::TIME, Literal(FieldType::TIME, 45296123),
+                        arrow::time32(arrow::TimeUnit::MILLI), {static_cast<int32_t>(45296123)},
+                        10);
     AssertDefaultBucket(FieldType::BIGINT, Literal(static_cast<int64_t>(123456789L)),
                         arrow::int64(), {static_cast<int64_t>(123456789L)}, 16);
     AssertDefaultBucket(FieldType::FLOAT, Literal(1.25F), arrow::float32(), {1.25F});

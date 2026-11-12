@@ -242,6 +242,14 @@ TEST_F(FieldsComparatorTest, TestSimple) {
             pool.get());
         CheckResult(row1, row2, {arrow::decimal128(38, 10), arrow::date32()});
     }
+    {
+        BinaryRow row1 = BinaryRowGenerator::GenerateRow(
+            {static_cast<int32_t>(45296123), static_cast<int32_t>(123)}, pool.get());
+        BinaryRow row2 = BinaryRowGenerator::GenerateRow(
+            {static_cast<int32_t>(45296123), static_cast<int32_t>(86399999)}, pool.get());
+        CheckResult(row1, row2,
+                    {arrow::time32(arrow::TimeUnit::MILLI), arrow::time32(arrow::TimeUnit::MILLI)});
+    }
 }
 
 TEST_F(FieldsComparatorTest, TestFloatingPointOrder) {

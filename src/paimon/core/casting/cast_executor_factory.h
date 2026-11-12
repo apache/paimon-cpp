@@ -23,8 +23,10 @@
 
 #include "paimon/core/casting/cast_executor.h"
 #include "paimon/defs.h"
+#include "paimon/result.h"
 
 namespace paimon {
+class DataField;
 enum class FieldType;
 
 class CastExecutorFactory {
@@ -33,6 +35,13 @@ class CastExecutorFactory {
 
     std::shared_ptr<CastExecutor> GetCastExecutor(const FieldType& src,
                                                   const FieldType& target) const;
+
+    /// Returns the executor casting `src_field` to `target`, or nullptr if there is none. Like
+    /// Java `TimeToStringCastRule`, a TIME field is cast to STRING with the precision it declares.
+    /// Like Java `TimestampToTimeCastRule`, a TIMESTAMP_LTZ field is cast to TIME in the local
+    /// time zone, also for a literal.
+    Result<std::shared_ptr<CastExecutor>> GetCastExecutor(const DataField& src_field,
+                                                          const FieldType& target) const;
 
  private:
     CastExecutorFactory();

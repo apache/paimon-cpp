@@ -37,15 +37,19 @@ Result<std::unique_ptr<CastedRow>> CastedRow::Create(
     field_getters.reserve(src_fields.size());
     std::vector<arrow::Type::type> src_types;
     src_types.reserve(src_fields.size());
+    std::vector<std::shared_ptr<arrow::DataType>> target_types;
+    target_types.reserve(target_fields.size());
     for (size_t i = 0; i < src_fields.size(); ++i) {
         const auto& type = src_fields[i].Type();
         PAIMON_ASSIGN_OR_RAISE(InternalRow::FieldGetterFunc getter,
                                InternalRow::CreateFieldGetter(i, type, /*use_view=*/false));
         field_getters.push_back(std::move(getter));
         src_types.push_back(type->id());
+        target_types.push_back(target_fields[i].Type());
     }
-    return std::unique_ptr<CastedRow>(
-        new CastedRow(cast_executors, std::move(field_getters), std::move(src_types), row));
+    return std::unique_ptr<CastedRow>(new CastedRow(cast_executors, std::move(field_getters),
+                                                    std::move(src_types), std::move(target_types),
+                                                    row));
 }
 
 }  // namespace paimon

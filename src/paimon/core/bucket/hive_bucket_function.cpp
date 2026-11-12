@@ -60,6 +60,7 @@ Result<std::unique_ptr<HiveBucketFunction>> HiveBucketFunction::Create(
             case FieldType::BINARY:
             case FieldType::DECIMAL:
             case FieldType::DATE:
+            case FieldType::TIME:
                 break;
             default:
                 return Status::Invalid(fmt::format("Unsupported type as Hive bucket key type: {}",
@@ -96,6 +97,7 @@ uint32_t HiveBucketFunction::ComputeHash(const BinaryRow& row, int32_t field_ind
             return HiveHasher::HashInt(static_cast<uint32_t>(row.GetShort(field_index)));
         case FieldType::INT:
         case FieldType::DATE:
+        case FieldType::TIME:
             return HiveHasher::HashInt(static_cast<uint32_t>(row.GetInt(field_index)));
         case FieldType::BIGINT:
             return HiveHasher::HashLong(static_cast<uint64_t>(row.GetLong(field_index)));

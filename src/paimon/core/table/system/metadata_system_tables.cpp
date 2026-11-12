@@ -42,7 +42,6 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
 #include "paimon/common/utils/date_time_utils.h"
-#include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/internal_row_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/rapidjson_util.h"
@@ -330,11 +329,9 @@ Result<std::string> FilePath(const std::shared_ptr<FileStorePathFactory>& path_f
 }
 
 Result<std::string> FieldValueString(const DataField& field, const VariantType& value) {
-    PAIMON_ASSIGN_OR_RAISE(FieldType field_type,
-                           FieldTypeUtils::ConvertToFieldType(field.Type()->id()));
-    std::shared_ptr<CastExecutor> cast_executor =
-        CastExecutorFactory::GetCastExecutorFactory()->GetCastExecutor(field_type,
-                                                                       FieldType::STRING);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<CastExecutor> cast_executor,
+        CastExecutorFactory::GetCastExecutorFactory()->GetCastExecutor(field, FieldType::STRING));
     if (!cast_executor) {
         return DataDefine::VariantValueToString(value);
     }

@@ -117,6 +117,7 @@ Result<std::shared_ptr<RealtimeIndex>> HashRealtimeIndex::Create(
         case FieldType::STRING:
         case FieldType::BINARY:
         case FieldType::DATE:
+        case FieldType::TIME:
             break;
         default:
             return Status::NotImplemented("unsupported real-time hash index field type: ",

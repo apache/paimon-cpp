@@ -424,6 +424,38 @@ TEST_F(LiteralConverterTest, TestDateLiteral) {
                          Literal(FieldType::DATE, -5l), Literal(FieldType::DATE)});
 }
 
+TEST_F(LiteralConverterTest, TestTimeLiteral) {
+    auto time_type = arrow::time32(arrow::TimeUnit::MILLI);
+    auto field_array =
+        arrow::ipc::internal::json::ArrayFromJSON(time_type, R"([0, 123, 86399999, null])")
+            .ValueOrDie();
+    CheckResult(field_array, std::vector<Literal>(
+                                 {Literal(FieldType::TIME, 0), Literal(FieldType::TIME, 123),
+                                  Literal(FieldType::TIME, 86399999), Literal(FieldType::TIME)}));
+    CheckLiteralsFromString(
+        FieldType::TIME, {"0", "00:00:00", "00:00:00.123", "23:59:59.999", "01:02:03"},
+        std::vector<Literal>({Literal(FieldType::TIME, 0), Literal(FieldType::TIME, 0),
+                              Literal(FieldType::TIME, 123), Literal(FieldType::TIME, 86399999),
+                              Literal(FieldType::TIME, 3723000)}));
+    ASSERT_NOK(LiteralConverter::ConvertLiteralsFromString(FieldType::TIME, "24:00:00"));
+
+    CheckLiteralFromRow(time_type, {0, 123, 86399999, NullType()}, FieldType::TIME,
+                        {Literal(FieldType::TIME, 0), Literal(FieldType::TIME, 123),
+                         Literal(FieldType::TIME, 86399999), Literal(FieldType::TIME)});
+
+    CheckLiteralsToArray(
+        FieldType::TIME,
+        {Literal(FieldType::TIME, 0), Literal(FieldType::TIME), Literal(FieldType::TIME, 123)},
+        arrow::ipc::internal::json::ArrayFromJSON(time_type, R"([0, null, 123])").ValueOrDie());
+
+    auto seconds_array = arrow::ipc::internal::json::ArrayFromJSON(
+                             arrow::time32(arrow::TimeUnit::SECOND), R"([1, null])")
+                             .ValueOrDie();
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsFromArray(*seconds_array, /*own_data=*/true),
+        "TIME literals require time32[ms]");
+}
+
 TEST_F(LiteralConverterTest, TestInvalidType) {
     auto field_array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::large_utf8(), R"(["apple", "苹果", null])")

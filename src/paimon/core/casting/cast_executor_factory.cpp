@@ -19,8 +19,14 @@
 
 #include "paimon/core/casting/cast_executor_factory.h"
 
+#include <cstdint>
 #include <utility>
 
+#include "arrow/type.h"
+#include "paimon/common/types/data_field.h"
+#include "paimon/common/types/data_type.h"
+#include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/field_type_utils.h"
 #include "paimon/core/casting/binary_to_blob_cast_executor.h"
 #include "paimon/core/casting/binary_to_string_cast_executor.h"
 #include "paimon/core/casting/boolean_to_decimal_cast_executor.h"
@@ -40,10 +46,14 @@
 #include "paimon/core/casting/string_to_date_cast_executor.h"
 #include "paimon/core/casting/string_to_decimal_cast_executor.h"
 #include "paimon/core/casting/string_to_numeric_primitive_cast_executor.h"
+#include "paimon/core/casting/string_to_time_cast_executor.h"
 #include "paimon/core/casting/string_to_timestamp_cast_executor.h"
+#include "paimon/core/casting/time_to_string_cast_executor.h"
+#include "paimon/core/casting/time_to_timestamp_cast_executor.h"
 #include "paimon/core/casting/timestamp_to_date_cast_executor.h"
 #include "paimon/core/casting/timestamp_to_numeric_primitive_cast_executor.h"
 #include "paimon/core/casting/timestamp_to_string_cast_executor.h"
+#include "paimon/core/casting/timestamp_to_time_cast_executor.h"
 #include "paimon/core/casting/timestamp_to_timestamp_cast_executor.h"
 #include "paimon/defs.h"
 
@@ -68,6 +78,23 @@ std::shared_ptr<CastExecutor> CastExecutorFactory::GetCastExecutor(const FieldTy
         return nullptr;
     }
     return src_iter->second;
+}
+
+Result<std::shared_ptr<CastExecutor>> CastExecutorFactory::GetCastExecutor(
+    const DataField& src_field, const FieldType& target) const {
+    PAIMON_ASSIGN_OR_RAISE(FieldType src,
+                           FieldTypeUtils::ConvertToFieldType(src_field.Type()->id()));
+    if (src == FieldType::TIME && target == FieldType::STRING) {
+        PAIMON_ASSIGN_OR_RAISE(int32_t precision,
+                               DataType::GetTimePrecision(*src_field.ArrowField()));
+        return std::shared_ptr<CastExecutor>(std::make_shared<TimeToStringCastExecutor>(precision));
+    }
+    if (src == FieldType::TIMESTAMP && target == FieldType::TIME) {
+        const auto& src_ts_type = checked_cast<const arrow::TimestampType&>(*src_field.Type());
+        return std::shared_ptr<CastExecutor>(std::make_shared<TimestampToTimeCastExecutor>(
+            /*src_with_timezone=*/!src_ts_type.timezone().empty()));
+    }
+    return GetCastExecutor(src, target);
 }
 
 CastExecutorFactory::CastExecutorFactory() {
@@ -169,6 +196,10 @@ CastExecutorFactory::CastExecutorFactory() {
     REGISTER_CAST_EXECUTOR(BIGINT, TIMESTAMP, TimestampToNumericPrimitiveCastExecutor);
 
     REGISTER_CAST_EXECUTOR(TIMESTAMP, STRING, StringToTimestampCastExecutor);
+    REGISTER_CAST_EXECUTOR(TIME, STRING, StringToTimeCastExecutor);
+    REGISTER_CAST_EXECUTOR(STRING, TIME, TimeToStringCastExecutor);
+    REGISTER_CAST_EXECUTOR(TIME, TIMESTAMP, TimestampToTimeCastExecutor);
+    REGISTER_CAST_EXECUTOR(TIMESTAMP, TIME, TimeToTimestampCastExecutor);
 
     REGISTER_CAST_EXECUTOR(TINYINT, DECIMAL, DecimalToNumericPrimitiveCastExecutor);
     REGISTER_CAST_EXECUTOR(SMALLINT, DECIMAL, DecimalToNumericPrimitiveCastExecutor);

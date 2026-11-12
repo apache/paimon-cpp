@@ -29,6 +29,7 @@
 #include "paimon/common/data/variant/variant_json_utils.h"
 #include "paimon/common/data/variant/variant_path_segment.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -40,6 +41,22 @@
 namespace paimon {
 
 namespace {
+
+/// Rejects a TIME target, also nested, whose unit is not milliseconds: the cast results are
+/// milliseconds of the day, which a builder of another unit would misread.
+Status ValidateTargetType(const arrow::DataType& target_type) {
+    if (target_type.id() == arrow::Type::type::TIME32) {
+        if (checked_cast<const arrow::Time32Type&>(target_type).unit() != arrow::TimeUnit::MILLI) {
+            return Status::Invalid(
+                fmt::format("Only millisecond TIME is supported: {}", target_type.ToString()));
+        }
+        return Status::OK();
+    }
+    for (const std::shared_ptr<arrow::Field>& child : target_type.fields()) {
+        PAIMON_RETURN_NOT_OK(ValidateTargetType(*child->type()));
+    }
+    return Status::OK();
+}
 
 Result<std::optional<Literal>> InvalidCast(const std::shared_ptr<GenericVariant>& variant,
                                            const std::shared_ptr<arrow::DataType>& target_type,
@@ -184,13 +201,14 @@ Result<std::optional<Literal>> CastVariant(const std::shared_ptr<GenericVariant>
         return input;
     }
 
-    PAIMON_ASSIGN_OR_RAISE(FieldType input_field_type,
-                           FieldTypeUtils::ConvertToFieldType(input_type->id()));
     PAIMON_ASSIGN_OR_RAISE(FieldType target_field_type,
                            FieldTypeUtils::ConvertToFieldType(target_type->id()));
-    std::shared_ptr<CastExecutor> executor =
-        CastExecutorFactory::GetCastExecutorFactory()->GetCastExecutor(input_field_type,
-                                                                       target_field_type);
+    // The executor depends on the whole input type, e.g. a TIMESTAMP_LTZ casts to TIME in the
+    // local time zone.
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<CastExecutor> executor,
+        CastExecutorFactory::GetCastExecutorFactory()->GetCastExecutor(
+            DataField(/*id=*/0, arrow::field("input", input_type)), target_field_type));
     if (executor == nullptr) {
         return InvalidCast(variant, target_type, cast_args);
     }
@@ -235,6 +253,9 @@ Status AppendLiteralToBuilder(const Literal& literal,
         case arrow::Type::type::DATE32:
             return ToPaimonStatus(
                 checked_cast<arrow::Date32Builder*>(builder)->Append(literal.GetValue<int32_t>()));
+        case arrow::Type::type::TIME32:
+            return ToPaimonStatus(
+                checked_cast<arrow::Time32Builder*>(builder)->Append(literal.GetValue<int32_t>()));
         case arrow::Type::type::TIMESTAMP: {
             auto timestamp = literal.GetValue<Timestamp>();
             const auto& timestamp_type = static_cast<const arrow::TimestampType&>(*target_type);
@@ -268,13 +289,10 @@ Status AppendLiteralToBuilder(const Literal& literal,
     }
 }
 
-}  // namespace
-
-Status VariantGetExecutor::CastToBuilder(const std::shared_ptr<GenericVariant>& variant,
-                                         const std::shared_ptr<arrow::Field>& target_field,
-                                         const VariantCastArgs& cast_args,
-                                         const std::shared_ptr<MemoryPool>& pool,
-                                         arrow::ArrayBuilder* builder) {
+Status CastToBuilderImpl(const std::shared_ptr<GenericVariant>& variant,
+                         const std::shared_ptr<arrow::Field>& target_field,
+                         const VariantCastArgs& cast_args, const std::shared_ptr<MemoryPool>& pool,
+                         arrow::ArrayBuilder* builder) {
     if (variant == nullptr) {
         return ToPaimonStatus(builder->AppendNull());
     }
@@ -318,8 +336,8 @@ Status VariantGetExecutor::CastToBuilder(const std::shared_ptr<GenericVariant>& 
                 const std::shared_ptr<arrow::Field>& child_field = struct_type.field(i);
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GenericVariant> child,
                                        variant->GetFieldByKey(child_field->name()));
-                PAIMON_RETURN_NOT_OK(CastToBuilder(child, child_field, cast_args, pool,
-                                                   struct_builder->field_builder(i)));
+                PAIMON_RETURN_NOT_OK(CastToBuilderImpl(child, child_field, cast_args, pool,
+                                                       struct_builder->field_builder(i)));
             }
             return Status::OK();
         }
@@ -341,8 +359,9 @@ Status VariantGetExecutor::CastToBuilder(const std::shared_ptr<GenericVariant>& 
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(
                     checked_cast<arrow::StringBuilder*>(map_builder->key_builder())
                         ->Append(field->key));
-                PAIMON_RETURN_NOT_OK(CastToBuilder(field->value, map_type.item_field(), cast_args,
-                                                   pool, map_builder->item_builder()));
+                PAIMON_RETURN_NOT_OK(CastToBuilderImpl(field->value, map_type.item_field(),
+                                                       cast_args, pool,
+                                                       map_builder->item_builder()));
             }
             return Status::OK();
         }
@@ -357,8 +376,8 @@ Status VariantGetExecutor::CastToBuilder(const std::shared_ptr<GenericVariant>& 
             for (int32_t i = 0; i < array_size; ++i) {
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GenericVariant> element,
                                        variant->GetElementAtIndex(i));
-                PAIMON_RETURN_NOT_OK(CastToBuilder(element, list_type.value_field(), cast_args,
-                                                   pool, list_builder->value_builder()));
+                PAIMON_RETURN_NOT_OK(CastToBuilderImpl(element, list_type.value_field(), cast_args,
+                                                       pool, list_builder->value_builder()));
             }
             return Status::OK();
         }
@@ -371,6 +390,17 @@ Status VariantGetExecutor::CastToBuilder(const std::shared_ptr<GenericVariant>& 
             return AppendLiteralToBuilder(*literal, target_field->type(), builder);
         }
     }
+}
+
+}  // namespace
+
+Status VariantGetExecutor::CastToBuilder(const std::shared_ptr<GenericVariant>& variant,
+                                         const std::shared_ptr<arrow::Field>& target_field,
+                                         const VariantCastArgs& cast_args,
+                                         const std::shared_ptr<MemoryPool>& pool,
+                                         arrow::ArrayBuilder* builder) {
+    PAIMON_RETURN_NOT_OK(ValidateTargetType(*target_field->type()));
+    return CastToBuilderImpl(variant, target_field, cast_args, pool, builder);
 }
 
 Result<std::shared_ptr<arrow::Array>> VariantGetExecutor::GetAsArrow(
@@ -413,6 +443,7 @@ Result<std::shared_ptr<GenericVariant>> VariantGetExecutor::ExtractByPath(
 Result<std::optional<Literal>> VariantGetExecutor::Get(
     const std::shared_ptr<GenericVariant>& variant, const std::string& path,
     const std::shared_ptr<arrow::DataType>& target_type, const VariantCastArgs& cast_args) {
+    PAIMON_RETURN_NOT_OK(ValidateTargetType(*target_type));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GenericVariant> extracted, ExtractByPath(variant, path));
     if (extracted == nullptr) {
         return std::optional<Literal>(std::nullopt);

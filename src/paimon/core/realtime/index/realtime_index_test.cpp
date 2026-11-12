@@ -344,6 +344,39 @@ TEST_F(RealtimeIndexTest, FactoryAcceptsOnlyOneIndexedFieldAndReaderNeedsNoField
     ASSERT_EQ(RoaringBitmap64::From({30}), *candidates);
 }
 
+TEST_F(RealtimeIndexTest, IndexesTimeField) {
+    const std::shared_ptr<arrow::Schema> schema = arrow::schema(
+        {schema_->field(0), arrow::field("t", arrow::time32(arrow::TimeUnit::MILLI))});
+    ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+    ScopeGuard schema_guard([&c_schema]() { ArrowSchemaRelease(&c_schema); });
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeIndex> index,
+                         RealtimeIndexFactory::Get("hash", &c_schema, {}, GetDefaultPool()));
+
+    const std::shared_ptr<arrow::Array> data =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_(schema->fields()),
+            R"([[10, 0], [20, 45296123], [30, 86399999], [40, 45296123]])")
+            .ValueOrDie();
+    ArrowArray batch;
+    ASSERT_TRUE(arrow::ExportArray(*data, &batch).ok());
+    ScopeGuard batch_guard([&batch]() { ArrowArrayRelease(&batch); });
+    ASSERT_OK(index->AddBatch(&batch));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeIndexReader> reader,
+                         index->CreateReader(OffsetRange(0, 41)));
+    ASSERT_OK_AND_ASSIGN(std::optional<RoaringBitmap64> candidates,
+                         reader->VisitEqual(Literal(FieldType::TIME, 45296123)));
+    ASSERT_TRUE(candidates.has_value());
+    ASSERT_EQ(RoaringBitmap64::From({20, 40}), *candidates);
+    ASSERT_OK_AND_ASSIGN(candidates, reader->VisitIn({Literal(FieldType::TIME, 0),
+                                                      Literal(FieldType::TIME, 86399999)}));
+    ASSERT_TRUE(candidates.has_value());
+    ASSERT_EQ(RoaringBitmap64::From({10, 30}), *candidates);
+    ASSERT_NOK_WITH_MSG(reader->VisitEqual(Literal(int32_t{45296123})),
+                        "literal type mismatch: expected TIME, actual INT");
+}
+
 TEST_F(RealtimeIndexTest, RejectsDecimalAndTimestampFields) {
     const std::vector<std::shared_ptr<arrow::DataType>> types = {
         arrow::decimal128(10, 2),

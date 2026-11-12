@@ -468,4 +468,24 @@ TEST_F(BucketIdCalculatorTest, TestCreateWithHiveBucketFunction) {
     }
 }
 
+TEST_F(BucketIdCalculatorTest, TestTimeBucketKey) {
+    auto int_schema = arrow::schema(arrow::FieldVector({arrow::field("b0", arrow::int32())}));
+    auto time_schema = arrow::schema(
+        arrow::FieldVector({arrow::field("b0", arrow::time32(arrow::TimeUnit::MILLI))}));
+    std::string data_str = "[[0], [123], [45296123], [86399999], [null]]";
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<int32_t> int_buckets,
+        CalculateBucketIds(/*is_pk_table=*/true, /*num_buckets=*/7, int_schema, data_str));
+    ASSERT_OK_AND_ASSIGN(
+        std::vector<int32_t> time_buckets,
+        CalculateBucketIds(/*is_pk_table=*/true, /*num_buckets=*/7, time_schema, data_str));
+    ASSERT_EQ(time_buckets, int_buckets);
+
+    auto second_schema = arrow::schema(
+        arrow::FieldVector({arrow::field("b0", arrow::time32(arrow::TimeUnit::SECOND))}));
+    ASSERT_NOK_WITH_MSG(
+        CalculateBucketIds(/*is_pk_table=*/true, /*num_buckets=*/7, second_schema, "[[1]]"),
+        "Only millisecond TIME is supported as a bucket key");
+}
+
 }  // namespace paimon::test

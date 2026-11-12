@@ -21,6 +21,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -30,11 +31,14 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "arrow/type.h"
+#include "arrow/util/key_value_metadata.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "paimon/bucket/bucket_id_calculator.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/reader/reader_utils.h"
+#include "paimon/common/types/data_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
@@ -42,6 +46,7 @@
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/snapshot.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/data/shredding/map_shared_shredding_schema_utils.h"
 #include "paimon/defs.h"
@@ -49,6 +54,7 @@
 #include "paimon/file_store_write.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/predicate/vector_search.h"
@@ -155,6 +161,15 @@ class WriteAndReadInteTest
     Status CompactAndCommit(const std::string& table_path,
                             const std::map<std::string, std::string>& options,
                             int64_t commit_identifier) const {
+        return CompactBucketsAndCommit(table_path, options, /*partition=*/{}, /*buckets=*/{0},
+                                       /*full_compaction=*/true, commit_identifier);
+    }
+
+    Status CompactBucketsAndCommit(const std::string& table_path,
+                                   const std::map<std::string, std::string>& options,
+                                   const std::map<std::string, std::string>& partition,
+                                   const std::set<int32_t>& buckets, bool full_compaction,
+                                   int64_t commit_identifier) const {
         WriteContextBuilder write_context_builder(table_path, "commit_user");
         write_context_builder.WithTempDirectory(LookupTempDirectory());
         PAIMON_ASSIGN_OR_RAISE(
@@ -162,8 +177,9 @@ class WriteAndReadInteTest
             write_context_builder.SetOptions(options).WithStreamingMode(true).Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreWrite> file_store_write,
                                FileStoreWrite::Create(std::move(write_context)));
-        PAIMON_RETURN_NOT_OK(file_store_write->Compact(/*partition=*/{}, /*bucket=*/0,
-                                                       /*full_compaction=*/true));
+        for (int32_t bucket : buckets) {
+            PAIMON_RETURN_NOT_OK(file_store_write->Compact(partition, bucket, full_compaction));
+        }
         PAIMON_ASSIGN_OR_RAISE(
             std::vector<std::shared_ptr<CommitMessage>> compact_messages,
             file_store_write->PrepareCommit(/*wait_compaction=*/true, commit_identifier));
@@ -5985,53 +6001,6 @@ TEST(VortexPrimaryKeyWriteInteTest, TestPKWriteFinalize) {
 }
 #endif
 
-#if defined(PAIMON_ENABLE_LANCE) || defined(PAIMON_ENABLE_VORTEX)
-// Regression: append-table finalization always extracts statistics, and TIME has no statistics
-// factory of its own, so the extractor must still yield one entry for a TIME column.
-TEST(TimeColumnWriteInteTest, TestAppendTimeColumnFinalize) {
-    std::vector<std::string> file_formats;
-#ifdef PAIMON_ENABLE_LANCE
-    file_formats.push_back("lance");
-#endif
-#ifdef PAIMON_ENABLE_VORTEX
-    file_formats.push_back("vortex");
-#endif
-    for (const auto& file_format : file_formats) {
-        SCOPED_TRACE(file_format);
-        auto dir = UniqueTestDirectory::Create("local");
-        ASSERT_NE(dir, nullptr);
-        arrow::FieldVector fields = {arrow::field("f_time", arrow::time32(arrow::TimeUnit::MILLI)),
-                                     arrow::field("f1", arrow::int32())};
-        auto schema = arrow::schema(fields);
-        std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
-                                                      {Options::BUCKET, "-1"},
-                                                      {Options::FILE_SYSTEM, "local"}};
-        ASSERT_OK_AND_ASSIGN(auto helper,
-                             TestHelper::Create(dir->Str(), schema, /*partition_keys=*/{},
-                                                /*primary_keys=*/{}, options,
-                                                /*is_streaming_mode=*/false));
-        int64_t commit_identifier = 0;
-        ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<RecordBatch> batch,
-            TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([[3723123, 1],[null, 2]])",
-                                        /*partition_map=*/{}, /*bucket=*/0, {}));
-        ASSERT_OK_AND_ASSIGN(auto commit_msgs,
-                             helper->WriteAndCommit(std::move(batch), commit_identifier++,
-                                                    /*expected_commit_messages=*/std::nullopt));
-        arrow::FieldVector fields_with_row_kind = fields;
-        fields_with_row_kind.insert(fields_with_row_kind.begin(),
-                                    arrow::field("_VALUE_KIND", arrow::int8()));
-        ASSERT_OK_AND_ASSIGN(
-            std::vector<std::shared_ptr<Split>> splits,
-            helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
-        ASSERT_OK_AND_ASSIGN(
-            bool success, helper->ReadAndCheckResult(arrow::struct_(fields_with_row_kind), splits,
-                                                     R"([[0, 3723123, 1],[0, null, 2]])"));
-        ASSERT_TRUE(success);
-    }
-}
-#endif
-
 #ifdef PAIMON_ENABLE_LANCE
 class LanceTimestampLtzInteTest
     : public ::testing::Test,
@@ -6165,7 +6134,585 @@ INSTANTIATE_TEST_SUITE_P(TimezoneAndPrimaryKey, LanceTimestampLtzInteTest,
                                             ::testing::Bool()));
 #endif
 
+class TimeWriteAndReadInteTest : public WriteAndReadInteTest {};
+
+std::vector<std::pair<std::string, std::string>> GetTestValuesForTimeWriteAndReadInteTest() {
+    std::vector<std::pair<std::string, std::string>> values =
+        GetTestValuesForWriteAndReadInteTest();
+#ifdef PAIMON_ENABLE_VORTEX
+    values.emplace_back("vortex", "local");
+#endif
+    return values;
+}
+
+arrow::FieldVector ReadFieldsWithRowKind(const arrow::FieldVector& fields) {
+    arrow::FieldVector result = {arrow::field("_VALUE_KIND", arrow::int8())};
+    for (const auto& field : fields) {
+        result.push_back(field->WithNullable(true));
+    }
+    return result;
+}
+
+TEST_P(TimeWriteAndReadInteTest, TestPKTableWithTimeColumns) {
+    auto [file_format, file_system] = GetParam();
+    auto time_field = [](const std::string& name, const std::string& precision, bool nullable) {
+        return arrow::field(name, arrow::time32(arrow::TimeUnit::MILLI), nullable,
+                            arrow::key_value_metadata({DataType::kTimePrecision}, {precision}));
+    };
+    arrow::FieldVector fields = {
+        time_field("part", "3", /*nullable=*/false),
+        time_field("pk", "0", /*nullable=*/false),
+        time_field("v_time", file_format == "avro" ? "3" : "9", /*nullable=*/true),
+        arrow::field("v", arrow::int32()),
+    };
+    constexpr int32_t kNumBuckets = 4;
+    const bool has_key_stats = file_format == "parquet" || file_format == "orc";
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::BUCKET, std::to_string(kNumBuckets)},
+        {Options::FILE_SYSTEM, file_system},
+    };
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(test_dir_, arrow::schema(fields), /*partition_keys=*/{"part"},
+                           /*primary_keys=*/{"part", "pk"}, options,
+                           /*is_streaming_mode=*/true, /*ignore_if_exists=*/false,
+                           LookupTempDirectory()));
+    const std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+
+    const std::vector<int32_t> keys = {0, 1000, 3600000, 7200000, 45296000, 86399000};
+    std::shared_ptr<arrow::Array> key_array =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[1]}),
+                                                  fmt::format("[[{}]]", fmt::join(keys, "],[")))
+            .ValueOrDie();
+    ::ArrowArray c_keys;
+    ::ArrowSchema c_key_schema;
+    ASSERT_TRUE(arrow::ExportArray(*key_array, &c_keys, &c_key_schema).ok());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<BucketIdCalculator> calculator,
+        BucketIdCalculator::Create(/*is_pk_table=*/true, kNumBuckets, GetDefaultPool()));
+    std::vector<int32_t> bucket_ids(keys.size());
+    ASSERT_OK(calculator->CalculateBucketIds(&c_keys, &c_key_schema, bucket_ids.data()));
+    std::map<int32_t, int32_t> bucket_of_key;
+    std::set<int32_t> buckets;
+    for (size_t i = 0; i < keys.size(); ++i) {
+        bucket_of_key[keys[i]] = bucket_ids[i];
+        buckets.insert(bucket_ids[i]);
+    }
+    ASSERT_GT(buckets.size(), 1);
+
+    const std::map<std::string, std::string> partition = {{"part", "12:34:56.123"}};
+    int64_t commit_identifier = 0;
+    struct Row {
+        int32_t pk;
+        std::string v_time;
+        int32_t v;
+        RecordBatch::RowKind kind;
+    };
+    auto write_and_commit = [&](const std::vector<Row>& rows) -> Status {
+        std::map<int32_t, std::pair<std::vector<std::string>, std::vector<RecordBatch::RowKind>>>
+            rows_of_bucket;
+        for (const Row& row : rows) {
+            auto& [values, kinds] = rows_of_bucket[bucket_of_key.at(row.pk)];
+            values.push_back(fmt::format("[45296123, {}, {}, {}]", row.pk, row.v_time, row.v));
+            kinds.push_back(row.kind);
+        }
+        std::vector<std::unique_ptr<RecordBatch>> batches;
+        for (const auto& [bucket, values_and_kinds] : rows_of_bucket) {
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RecordBatch> batch,
+                                   TestHelper::MakeRecordBatch(
+                                       arrow::struct_(fields),
+                                       fmt::format("[{}]", fmt::join(values_and_kinds.first, ",")),
+                                       partition, bucket, values_and_kinds.second));
+            batches.push_back(std::move(batch));
+        }
+        return helper
+            ->WriteAndCommit(std::move(batches), commit_identifier++,
+                             /*expected_commit_messages=*/std::nullopt)
+            .status();
+    };
+
+    auto create_plan =
+        [&](const std::shared_ptr<Predicate>& predicate) -> Result<std::shared_ptr<Plan>> {
+        ScanContextBuilder scan_context_builder(table_path);
+        scan_context_builder.SetOptions(options).AddOption(Options::SCAN_MODE,
+                                                           StartupMode::LatestFull().ToString());
+        if (predicate) {
+            scan_context_builder.SetPredicate(predicate);
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
+                               scan_context_builder.Finish());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
+                               TableScan::Create(std::move(scan_context)));
+        return table_scan->CreatePlan();
+    };
+    auto planned_buckets = [](const Plan& plan) -> Result<std::set<int32_t>> {
+        std::set<int32_t> result;
+        for (const auto& split : plan.Splits()) {
+            auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+            if (!data_split) {
+                return Status::Invalid("split cannot be cast to DataSplitImpl");
+            }
+            result.insert(data_split->Bucket());
+        }
+        return result;
+    };
+    arrow::FieldVector fields_with_row_kind = ReadFieldsWithRowKind(fields);
+    const std::shared_ptr<arrow::Schema> result_schema = arrow::schema(fields_with_row_kind);
+    auto read = [&](const Plan& plan, const std::shared_ptr<Predicate>& predicate)
+        -> Result<std::shared_ptr<arrow::ChunkedArray>> {
+        ReadContextBuilder read_context_builder(table_path);
+        read_context_builder.SetOptions(options);
+        if (predicate) {
+            read_context_builder.SetPredicate(predicate).EnablePredicateFilter(true);
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
+                               read_context_builder.Finish());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
+                               TableRead::Create(std::move(read_context)));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
+                               table_read->CreateReader(plan.Splits()));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> actual,
+                               ReadResultCollector::CollectResult(std::move(batch_reader)));
+        return ReadResultCollector::SortArray(actual, result_schema);
+    };
+    std::set<int32_t> live_buckets;
+    for (const auto& [key, bucket] : bucket_of_key) {
+        if (key != 1000) {
+            live_buckets.insert(bucket);
+        }
+    }
+    auto check_rows = [&](const std::shared_ptr<Predicate>& predicate,
+                          const std::string& expected_rows, std::set<int32_t>* filtered_buckets) {
+        auto expected = std::make_shared<arrow::ChunkedArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_with_row_kind),
+                                                      expected_rows)
+                .ValueOrDie());
+        for (bool enable_scan_predicate : {false, true}) {
+            if (enable_scan_predicate && !predicate) {
+                break;
+            }
+            SCOPED_TRACE(enable_scan_predicate ? "with scan predicate" : "without scan predicate");
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                                 create_plan(enable_scan_predicate ? predicate : nullptr));
+            ASSERT_OK_AND_ASSIGN(std::set<int32_t> scanned_buckets, planned_buckets(*plan));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                                 read(*plan, predicate));
+            ASSERT_TRUE(expected->Equals(actual))
+                << "actual: " << actual->ToString() << "\nexpected: " << expected->ToString();
+            if (enable_scan_predicate) {
+                *filtered_buckets = std::move(scanned_buckets);
+            } else {
+                ASSERT_TRUE(std::includes(scanned_buckets.begin(), scanned_buckets.end(),
+                                          live_buckets.begin(), live_buckets.end()));
+            }
+        }
+    };
+    auto pk_equal = [](int32_t pk) {
+        return PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"pk", FieldType::TIME,
+                                       Literal(FieldType::TIME, pk));
+    };
+    auto check_table = [&](const std::string& all_rows, const std::string& point_rows,
+                           const std::string& in_rows) {
+        std::set<int32_t> filtered_buckets;
+        {
+            SCOPED_TRACE("all rows");
+            check_rows(/*predicate=*/nullptr, all_rows, /*filtered_buckets=*/nullptr);
+        }
+        {
+            SCOPED_TRACE("pk = 12:34:56");
+            check_rows(pk_equal(45296000), point_rows, &filtered_buckets);
+            ASSERT_EQ(std::set<int32_t>({bucket_of_key.at(45296000)}), filtered_buckets);
+        }
+        {
+            SCOPED_TRACE("pk IN (02:00:00, 23:59:59)");
+            check_rows(PredicateBuilder::In(
+                           /*field_index=*/1, /*field_name=*/"pk", FieldType::TIME,
+                           {Literal(FieldType::TIME, 7200000), Literal(FieldType::TIME, 86399000)}),
+                       in_rows, &filtered_buckets);
+            ASSERT_EQ(1, filtered_buckets.count(bucket_of_key.at(7200000)));
+            ASSERT_EQ(1, filtered_buckets.count(bucket_of_key.at(86399000)));
+        }
+        if (has_key_stats) {
+            SCOPED_TRACE("pk > 23:59:59");
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
+                                 create_plan(PredicateBuilder::GreaterThan(
+                                     /*field_index=*/1, /*field_name=*/"pk", FieldType::TIME,
+                                     Literal(FieldType::TIME, 86399000))));
+            ASSERT_TRUE(plan->Splits().empty());
+        }
+    };
+
+    const RecordBatch::RowKind insert_kind = RecordBatch::RowKind::INSERT;
+    const RecordBatch::RowKind update_kind = RecordBatch::RowKind::UPDATE_AFTER;
+    const RecordBatch::RowKind delete_kind = RecordBatch::RowKind::DELETE;
+    ASSERT_OK(write_and_commit({{0, "0", 1, insert_kind},
+                                {1000, "null", 6, insert_kind},
+                                {3600000, "123", 2, insert_kind},
+                                {7200000, "null", 4, insert_kind},
+                                {45296000, "45296123", 5, insert_kind},
+                                {86399000, "86399999", 3, insert_kind}}));
+    ASSERT_OK(write_and_commit({{3600000, "45296123", 20, update_kind},
+                                {7200000, "null", 40, update_kind},
+                                {1000, "null", 6, delete_kind}}));
+    const std::string point_rows = R"([[0, 45296123, 45296000, 45296123, 5]])";
+    const std::string in_rows = R"([
+        [0, 45296123, 7200000, null, 40],
+        [0, 45296123, 86399000, 86399999, 3]
+    ])";
+    const std::string upserted_rows = R"([
+        [0, 45296123, 0, 0, 1],
+        [0, 45296123, 3600000, 45296123, 20],
+        [0, 45296123, 7200000, null, 40],
+        [0, 45296123, 45296000, 45296123, 5],
+        [0, 45296123, 86399000, 86399999, 3]
+    ])";
+    {
+        SCOPED_TRACE("after upsert and delete");
+        check_table(upserted_rows, point_rows, in_rows);
+    }
+
+    helper.reset();
+    ASSERT_OK(CompactBucketsAndCommit(table_path, options, partition, buckets,
+                                      /*full_compaction=*/true, commit_identifier++));
+    ASSERT_OK_AND_ASSIGN(helper,
+                         TestHelper::Create(table_path, options,
+                                            /*is_streaming_mode=*/true, LookupTempDirectory()));
+    ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> compacted_snapshot, helper->LatestSnapshot());
+    ASSERT_TRUE(compacted_snapshot);
+    ASSERT_EQ(Snapshot::CommitKind::Compact(), compacted_snapshot->GetCommitKind());
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    ASSERT_OK_AND_ASSIGN(auto compacted_files, CurrentDataFiles(options));
+    ASSERT_FALSE(compacted_files.empty());
+    for (const auto& [bucket_path, file] : compacted_files) {
+        ASSERT_EQ(core_options.GetNumLevels() - 1, file->level) << file->file_name;
+    }
+    {
+        SCOPED_TRACE("after full compaction");
+        check_table(upserted_rows, point_rows, in_rows);
+    }
+
+    ASSERT_OK(write_and_commit({{0, "0", 100, update_kind}}));
+    ASSERT_OK(write_and_commit({{0, "null", 101, update_kind}}));
+    const std::string final_rows = R"([
+        [0, 45296123, 0, null, 101],
+        [0, 45296123, 3600000, 45296123, 20],
+        [0, 45296123, 7200000, null, 40],
+        [0, 45296123, 45296000, 45296123, 5],
+        [0, 45296123, 86399000, 86399999, 3]
+    ])";
+    {
+        SCOPED_TRACE("after updates over the compacted files");
+        check_table(final_rows, point_rows, in_rows);
+        SCOPED_TRACE("pk = 00:00:00");
+        std::set<int32_t> filtered_buckets;
+        check_rows(pk_equal(0), R"([[0, 45296123, 0, null, 101]])", &filtered_buckets);
+        ASSERT_EQ(std::set<int32_t>({bucket_of_key.at(0)}), filtered_buckets);
+    }
+}
+
+TEST_P(TimeWriteAndReadInteTest, TestAppendTableWithTimePartitionAndValuePredicates) {
+    auto [file_format, file_system] = GetParam();
+    arrow::FieldVector fields = {
+        arrow::field("part", arrow::time32(arrow::TimeUnit::MILLI), /*nullable=*/false,
+                     arrow::key_value_metadata({DataType::kTimePrecision}, {"3"})),
+        arrow::field("v_time", arrow::time32(arrow::TimeUnit::MILLI)),
+        arrow::field("v", arrow::int32()),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::BUCKET, "-1"},
+        {Options::FILE_SYSTEM, file_system},
+    };
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(test_dir_, arrow::schema(fields), /*partition_keys=*/{"part"},
+                           /*primary_keys=*/{}, options, /*is_streaming_mode=*/false));
+    const std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+
+    constexpr int32_t kEarlyPart = 3723000;
+    constexpr int32_t kLatePart = 45296123;
+    std::vector<std::unique_ptr<RecordBatch>> batches;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> early_batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([
+        [3723000, 0, 1],
+        [3723000, null, 2],
+        [3723000, 45296123, 3]
+    ])",
+                                                     {{"part", "01:02:03.0"}}, /*bucket=*/0, {}));
+    batches.push_back(std::move(early_batch));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> late_batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([
+        [45296123, null, 4],
+        [45296123, 3723000, 5],
+        [45296123, 86399999, 6]
+    ])",
+                                                     {{"part", "12:34:56.123"}}, /*bucket=*/0, {}));
+    batches.push_back(std::move(late_batch));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batches), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    arrow::FieldVector fields_with_row_kind = ReadFieldsWithRowKind(fields);
+    const std::shared_ptr<arrow::Schema> result_schema = arrow::schema(fields_with_row_kind);
+    auto check_rows = [&](const std::shared_ptr<Predicate>& predicate,
+                          const std::string& expected_rows,
+                          const std::set<int32_t>& expected_partitions) {
+        auto expected = std::make_shared<arrow::ChunkedArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_with_row_kind),
+                                                      expected_rows)
+                .ValueOrDie());
+        for (bool enable_scan_predicate : {false, true}) {
+            SCOPED_TRACE(enable_scan_predicate ? "with scan predicate" : "without scan predicate");
+            ScanContextBuilder scan_context_builder(table_path);
+            scan_context_builder.SetOptions(options).AddOption(
+                Options::SCAN_MODE, StartupMode::LatestFull().ToString());
+            if (enable_scan_predicate) {
+                scan_context_builder.SetPredicate(predicate);
+            }
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                                 scan_context_builder.Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
+                                 TableScan::Create(std::move(scan_context)));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
+            std::set<int32_t> planned_partitions;
+            for (const auto& split : plan->Splits()) {
+                auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+                ASSERT_TRUE(data_split);
+                planned_partitions.insert(data_split->Partition().GetInt(0));
+            }
+            ASSERT_EQ(enable_scan_predicate ? expected_partitions
+                                            : std::set<int32_t>({kEarlyPart, kLatePart}),
+                      planned_partitions);
+
+            ReadContextBuilder read_context_builder(table_path);
+            read_context_builder.SetOptions(options).SetPredicate(predicate).EnablePredicateFilter(
+                true);
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                                 read_context_builder.Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                                 TableRead::Create(std::move(read_context)));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
+                                 table_read->CreateReader(plan->Splits()));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                                 ReadResultCollector::CollectResult(std::move(batch_reader)));
+            ASSERT_OK_AND_ASSIGN(actual, ReadResultCollector::SortArray(actual, result_schema));
+            ASSERT_TRUE(expected->Equals(actual))
+                << "actual: " << actual->ToString() << "\nexpected: " << expected->ToString();
+        }
+    };
+    auto time_literal = [](int32_t millis) { return Literal(FieldType::TIME, millis); };
+    auto part_equal = [&](int32_t millis) {
+        return PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"part", FieldType::TIME,
+                                       time_literal(millis));
+    };
+    auto v_time_is_null =
+        PredicateBuilder::IsNull(/*field_index=*/1, /*field_name=*/"v_time", FieldType::TIME);
+    auto v_time_is_not_null = PredicateBuilder::IsNotNull(/*field_index=*/1,
+                                                          /*field_name=*/"v_time", FieldType::TIME);
+    {
+        SCOPED_TRACE("part = 01:02:03 AND v_time IS NULL");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                             PredicateBuilder::And({part_equal(kEarlyPart), v_time_is_null}));
+        check_rows(predicate, R"([[0, 3723000, null, 2]])", {kEarlyPart});
+    }
+    {
+        SCOPED_TRACE("part > 01:02:03 AND v_time IS NULL");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                             PredicateBuilder::And({PredicateBuilder::GreaterThan(
+                                                        /*field_index=*/0, /*field_name=*/"part",
+                                                        FieldType::TIME, time_literal(kEarlyPart)),
+                                                    v_time_is_null}));
+        check_rows(predicate, R"([[0, 45296123, null, 4]])", {kLatePart});
+    }
+    {
+        SCOPED_TRACE("part = 12:34:56.123 AND v_time >= 12:00:00");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                             PredicateBuilder::And({part_equal(kLatePart),
+                                                    PredicateBuilder::GreaterOrEqual(
+                                                        /*field_index=*/1, /*field_name=*/"v_time",
+                                                        FieldType::TIME, time_literal(43200000))}));
+        check_rows(predicate, R"([[0, 45296123, 86399999, 6]])", {kLatePart});
+    }
+    {
+        SCOPED_TRACE("v_time IS NOT NULL AND v_time < 12:00:00");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                             PredicateBuilder::And({v_time_is_not_null,
+                                                    PredicateBuilder::LessThan(
+                                                        /*field_index=*/1, /*field_name=*/"v_time",
+                                                        FieldType::TIME, time_literal(43200000))}));
+        check_rows(predicate, R"([
+            [0, 3723000, 0, 1],
+            [0, 45296123, 3723000, 5]
+        ])",
+                   {kEarlyPart, kLatePart});
+    }
+    {
+        SCOPED_TRACE("part = 01:02:03 OR v_time IS NULL");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                             PredicateBuilder::Or({part_equal(kEarlyPart), v_time_is_null}));
+        check_rows(predicate, R"([
+            [0, 3723000, 0, 1],
+            [0, 3723000, 45296123, 3],
+            [0, 3723000, null, 2],
+            [0, 45296123, null, 4]
+        ])",
+                   {kEarlyPart, kLatePart});
+    }
+}
+
+TEST_P(TimeWriteAndReadInteTest, TestAppendTableWithTimeSchemaEvolution) {
+    auto [file_format, file_system] = GetParam();
+    auto time_field = [](const std::string& name) {
+        return arrow::field(name, arrow::time32(arrow::TimeUnit::MILLI), /*nullable=*/true,
+                            arrow::key_value_metadata({DataType::kTimePrecision}, {"3"}));
+    };
+    arrow::FieldVector fields_v0 = {
+        arrow::field("string_to_time", arrow::utf8()),
+        time_field("time_to_string"),
+        arrow::field("timestamp_to_time", arrow::timestamp(arrow::TimeUnit::MILLI)),
+        time_field("time_to_timestamp"),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::BUCKET, "-1"},
+        {Options::FILE_SYSTEM, file_system},
+    };
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(test_dir_, arrow::schema(fields_v0), /*partition_keys=*/{},
+                           /*primary_keys=*/{}, options, /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields_v0), R"([
+        ["12:34:56.123", 3723000, 1686227696123, 45296123],
+        [null, null, null, null]
+    ])",
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    arrow::FieldVector fields_v1 = {
+        time_field("string_to_time"),
+        arrow::field("time_to_string", arrow::utf8()),
+        time_field("timestamp_to_time"),
+        arrow::field("time_to_timestamp", arrow::timestamp(arrow::TimeUnit::MILLI)),
+    };
+    ASSERT_OK(WriteNextSchema({DataField(0, fields_v1[0]), DataField(1, fields_v1[1]),
+                               DataField(2, fields_v1[2]), DataField(3, fields_v1[3])},
+                              /*highest_field_id=*/3, options));
+
+    arrow::FieldVector fields_with_row_kind = fields_v1;
+    fields_with_row_kind.insert(fields_with_row_kind.begin(),
+                                arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(bool success,
+                         helper->ReadAndCheckResult(arrow::struct_(fields_with_row_kind), splits,
+                                                    R"([
+        [0, 45296123, "01:02:03.0", 45296123, 45296123],
+        [0, null, null, null, null]
+    ])"));
+    ASSERT_TRUE(success);
+}
+
+TEST_P(WriteAndReadInteTest, TestPKTableWithTimeKeyAndDeletionVectors) {
+    auto [file_format, file_system] = GetParam();
+    arrow::FieldVector fields = {
+        arrow::field("pk", arrow::time32(arrow::TimeUnit::MILLI), /*nullable=*/false,
+                     arrow::key_value_metadata({DataType::kTimePrecision}, {"3"})),
+        arrow::field("v", arrow::int32()),
+    };
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::BUCKET, "1"},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::DELETION_VECTORS_ENABLED, "true"},
+    };
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    const std::string table_path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         CreateLookupTestHelper(arrow::schema(fields), options));
+
+    constexpr int32_t kNumRows = 10000;
+    auto value_of = [](int32_t i) {
+        return static_cast<int32_t>(static_cast<uint32_t>(i) * 2654435761U & 0x7fffffffU);
+    };
+    std::vector<std::string> rows;
+    rows.reserve(kNumRows);
+    for (int32_t i = 0; i < kNumRows; ++i) {
+        rows.push_back(fmt::format("[{}, {}]", i * 1000, value_of(i)));
+    }
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> insert_batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields),
+                                                     fmt::format("[{}]", fmt::join(rows, ",")),
+                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(insert_batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+    helper.reset();
+    ASSERT_OK(CompactBucketsAndCommit(table_path, options, /*partition=*/{}, /*buckets=*/{0},
+                                      /*full_compaction=*/true, /*commit_identifier=*/1));
+    ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
+    ASSERT_OK_AND_ASSIGN(auto compacted_files, CurrentDataFiles(options));
+    ASSERT_EQ(1, compacted_files.size());
+    ASSERT_EQ(core_options.GetNumLevels() - 1, compacted_files[0].second->level);
+
+    ASSERT_OK_AND_ASSIGN(helper, CreateLookupTestHelper(table_path, options));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> update_batch,
+                         TestHelper::MakeRecordBatch(
+                             arrow::struct_(fields), R"([[5000000, -1], [1000, null]])",
+                             /*partition_map=*/{}, /*bucket=*/0,
+                             {RecordBatch::RowKind::UPDATE_AFTER, RecordBatch::RowKind::DELETE}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(update_batch), /*commit_identifier=*/2,
+                                     /*expected_commit_messages=*/std::nullopt));
+    helper.reset();
+    ASSERT_OK(CompactBucketsAndCommit(table_path, options, /*partition=*/{}, /*buckets=*/{0},
+                                      /*full_compaction=*/false, /*commit_identifier=*/3));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, InnerScan(options));
+    bool has_deletion_vector = false;
+    for (const auto& split : plan->Splits()) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_TRUE(data_split);
+        for (const std::optional<DeletionFile>& deletion_file : data_split->DeletionFiles()) {
+            has_deletion_vector = has_deletion_vector || deletion_file.has_value();
+        }
+    }
+    ASSERT_TRUE(has_deletion_vector);
+
+    rows.clear();
+    for (int32_t i = 0; i < kNumRows; ++i) {
+        if (i == 1) {
+            continue;
+        }
+        rows.push_back(fmt::format("[0, {}, {}]", i * 1000, i == 5000 ? -1 : value_of(i)));
+    }
+    arrow::FieldVector fields_with_row_kind = ReadFieldsWithRowKind(fields);
+    auto expected = std::make_shared<arrow::ChunkedArray>(
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_with_row_kind),
+                                                  fmt::format("[{}]", fmt::join(rows, ",")))
+            .ValueOrDie());
+    ASSERT_OK_AND_ASSIGN(helper, CreateLookupTestHelper(table_path, options));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         helper->ReadResult(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(
+        actual, ReadResultCollector::SortArray(actual, arrow::schema(fields_with_row_kind)));
+    ASSERT_TRUE(expected->Equals(actual));
+}
+
 INSTANTIATE_TEST_SUITE_P(FileFormatAndFileSystem, WriteAndReadInteTest,
                          ::testing::ValuesIn(GetTestValuesForWriteAndReadInteTest()));
+
+INSTANTIATE_TEST_SUITE_P(FileFormatAndFileSystem, TimeWriteAndReadInteTest,
+                         ::testing::ValuesIn(GetTestValuesForTimeWriteAndReadInteTest()));
 
 }  // namespace paimon::test

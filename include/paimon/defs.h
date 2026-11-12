@@ -52,6 +52,9 @@ enum class FieldType {
     VARIANT = 17,
     /// Fixed-length dense vector represented by Arrow FixedSizeList.
     VECTOR = 18,
+    /// TIME(p) without time zone, stored as milliseconds of the day in an int32 (Arrow
+    /// `time32[ms]`) whatever p is, matching Paimon Java.
+    TIME = 19,
     UNKNOWN = 128,
 };
 

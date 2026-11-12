@@ -19,6 +19,7 @@
 #include "paimon/common/predicate/literal_converter.h"
 
 #include <optional>
+#include <utility>
 
 #include "arrow/array/array_base.h"
 #include "arrow/array/array_binary.h"
@@ -84,6 +85,10 @@ Result<Literal> LiteralConverter::ConvertLiteralsFromString(const FieldType& typ
         case FieldType::DATE: {
             PAIMON_ASSIGN_OR_RAISE(int32_t value, StringUtils::StringToDate(value_str));
             return Literal(FieldType::DATE, value);
+        }
+        case FieldType::TIME: {
+            PAIMON_ASSIGN_OR_RAISE(int32_t value, StringUtils::StringToTime(value_str));
+            return Literal(FieldType::TIME, value);
         }
         case FieldType::BIGINT: {
             auto value = StringUtils::StringToValue<int64_t>(value_str);
@@ -172,6 +177,8 @@ Result<Literal> LiteralConverter::ConvertLiteralsFromRow(
         }
         case FieldType::DATE:
             return Literal(FieldType::DATE, row.GetInt(field_idx));
+        case FieldType::TIME:
+            return Literal(FieldType::TIME, row.GetInt(field_idx));
         case FieldType::ARRAY:
         case FieldType::VECTOR:
         case FieldType::MAP:
@@ -210,6 +217,8 @@ Result<std::vector<Literal>> LiteralConverter::ConvertLiteralsFromArray(const ar
             return GetLiteralFromDecimalArray(array);
         case arrow::Type::type::DATE32:
             return GetLiteralFromDateArray(array);
+        case arrow::Type::type::TIME32:
+            return GetLiteralFromTimeArray(array);
         case arrow::Type::type::DICTIONARY: {
             const auto& dict_array = checked_cast<const arrow::DictionaryArray&>(array);
             auto* dict_type = checked_cast<arrow::DictionaryType*>(dict_array.type().get());
@@ -280,6 +289,29 @@ std::vector<Literal> LiteralConverter::GetLiteralFromDateArray(const arrow::Arra
     return literals;
 }
 
+Result<std::vector<Literal>> LiteralConverter::GetLiteralFromTimeArray(const arrow::Array& array) {
+    using ArrayType = typename arrow::TypeTraits<arrow::Time32Type>::ArrayType;
+    const auto& array_(checked_cast<const ArrayType&>(array));
+    // A TIME literal holds milliseconds of the day, so a value of another unit would be silently
+    // reinterpreted, e.g. 1 of time32[s] would become 1 millisecond.
+    const auto& time_type = checked_cast<const arrow::Time32Type&>(*array_.type());
+    if (time_type.unit() != arrow::TimeUnit::MILLI) {
+        return Status::Invalid(
+            fmt::format("Not support literal on arrow {} type, TIME literals require time32[ms]",
+                        array_.type()->ToString()));
+    }
+    std::vector<Literal> literals;
+    literals.reserve(array_.length());
+    for (int64_t i = 0; i < array_.length(); i++) {
+        if (array_.IsNull(i)) {
+            literals.emplace_back(FieldType::TIME);
+        } else {
+            literals.emplace_back(FieldType::TIME, array_.Value(i));
+        }
+    }
+    return literals;
+}
+
 std::vector<Literal> LiteralConverter::GetLiteralFromTimestampArray(const arrow::Array& array) {
     using ArrayType = typename arrow::TypeTraits<arrow::TimestampType>::ArrayType;
     const auto& array_(checked_cast<const ArrayType&>(array));
@@ -317,11 +349,12 @@ arrow::TimeUnit::type LiteralConverter::MinRequiredTimeUnit(const std::vector<Li
 }
 
 namespace {
-// Appends every literal, read by `extract`, to a `BuilderType`, keeping a null literal a null.
-template <typename BuilderType, typename Extract>
+// Appends every literal, read by `extract`, to a `BuilderType` made from `builder_args`, keeping a
+// null literal a null.
+template <typename BuilderType, typename Extract, typename... BuilderArgs>
 Result<std::shared_ptr<arrow::Array>> BuildArray(const std::vector<Literal>& literals,
-                                                 Extract extract, arrow::MemoryPool* pool) {
-    BuilderType builder(pool);
+                                                 Extract extract, BuilderArgs&&... builder_args) {
+    BuilderType builder(std::forward<BuilderArgs>(builder_args)...);
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(static_cast<int64_t>(literals.size())));
     for (const auto& literal : literals) {
         if (literal.IsNull()) {
@@ -484,6 +517,10 @@ Result<std::shared_ptr<arrow::Array>> LiteralConverter::ConvertLiteralsToArray(
         case FieldType::DATE:
             return BuildArray<arrow::Date32Builder>(
                 literals, [](const Literal& literal) { return literal.GetValue<int32_t>(); }, pool);
+        case FieldType::TIME:
+            return BuildArray<arrow::Time32Builder>(
+                literals, [](const Literal& literal) { return literal.GetValue<int32_t>(); },
+                arrow::time32(arrow::TimeUnit::MILLI), pool);
         case FieldType::STRING:
             return BuildArray<arrow::StringBuilder>(
                 literals, [](const Literal& literal) { return literal.GetValue<std::string>(); },
