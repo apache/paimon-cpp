@@ -36,7 +36,7 @@ class GlobalIndexUtils {
     GlobalIndexUtils() = delete;
     ~GlobalIndexUtils() = delete;
 
-    /// Unions non-null results, returning nullptr for an empty input.
+    /// Unions non-null results, returning nullptr for an empty vector.
     /// Bitmap results are merged in one batch; other results use their virtual Or methods.
     static Result<std::shared_ptr<GlobalIndexResult>> UnionResults(
         const std::vector<std::shared_ptr<GlobalIndexResult>>& results) {

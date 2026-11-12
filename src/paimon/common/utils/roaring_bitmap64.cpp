@@ -345,9 +345,9 @@ std::string RoaringBitmap64::ToString() const {
 }
 
 RoaringBitmap64 RoaringBitmap64::And(const RoaringBitmap64& lhs, const RoaringBitmap64& rhs) {
-    const bool copy_lhs = lhs.GetSizeInBytes() <= rhs.GetSizeInBytes();
-    RoaringBitmap64 res(copy_lhs ? lhs : rhs);
-    res &= (copy_lhs ? rhs : lhs);
+    RoaringBitmap64 res;
+    GetRoaringBitmap(res.roaring_bitmap_) =
+        (GetRoaringBitmap(lhs.roaring_bitmap_) & GetRoaringBitmap(rhs.roaring_bitmap_));
     return res;
 }
 
