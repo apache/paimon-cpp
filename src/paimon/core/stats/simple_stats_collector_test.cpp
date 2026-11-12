@@ -39,10 +39,14 @@ namespace paimon::test {
 
 TEST(SimpleStatsCollectorTest, TestSimple) {
     arrow::FieldVector fields = {
-        arrow::field("f0", arrow::boolean()), arrow::field("f1", arrow::int8()),
-        arrow::field("f2", arrow::int16()),   arrow::field("f3", arrow::int32()),
-        arrow::field("f4", arrow::int64()),   arrow::field("f5", arrow::utf8()),
+        arrow::field("f0", arrow::boolean()),
+        arrow::field("f1", arrow::int8()),
+        arrow::field("f2", arrow::int16()),
+        arrow::field("f3", arrow::int32()),
+        arrow::field("f4", arrow::int64()),
+        arrow::field("f5", arrow::utf8()),
         arrow::field("f6", arrow::date32()),
+        arrow::field("f7", arrow::time32(arrow::TimeUnit::MILLI)),
     };
 
     auto schema = arrow::schema(fields);
@@ -50,21 +54,22 @@ TEST(SimpleStatsCollectorTest, TestSimple) {
     auto pool = GetDefaultPool();
     ASSERT_OK(collector.Collect(BinaryRowGenerator::GenerateRow(
         {true, static_cast<int8_t>(1), static_cast<int16_t>(1), static_cast<int32_t>(1),
-         static_cast<int64_t>(1), std::string("abc"), 2025},
+         static_cast<int64_t>(1), std::string("abc"), 2025, static_cast<int32_t>(86399999)},
         pool.get())));
     ASSERT_OK(collector.Collect(BinaryRowGenerator::GenerateRow(
         {false, static_cast<int8_t>(2), static_cast<int16_t>(2), static_cast<int32_t>(2),
-         static_cast<int64_t>(2), std::string("bcd"), 2026},
+         static_cast<int64_t>(2), std::string("bcd"), 2026, static_cast<int32_t>(123)},
         pool.get())));
     ASSERT_OK_AND_ASSIGN(auto col_stats, collector.GetResult());
+    ASSERT_EQ(col_stats[7]->GetFieldType(), FieldType::INT);
     ASSERT_OK_AND_ASSIGN(SimpleStats stats, SimpleStatsConverter::ToBinary(col_stats, pool.get()));
 
     auto expected_stats = BinaryRowGenerator::GenerateStats(
         {false, static_cast<int8_t>(1), static_cast<int16_t>(1), static_cast<int32_t>(1),
-         static_cast<int64_t>(1), std::string("abc"), 2025},
+         static_cast<int64_t>(1), std::string("abc"), 2025, static_cast<int32_t>(123)},
         {true, static_cast<int8_t>(2), static_cast<int16_t>(2), static_cast<int32_t>(2),
-         static_cast<int64_t>(2), std::string("bcd"), 2026},
-        std::vector<int64_t>({0, 0, 0, 0, 0, 0, 0}), GetDefaultPool().get());
+         static_cast<int64_t>(2), std::string("bcd"), 2026, static_cast<int32_t>(86399999)},
+        std::vector<int64_t>({0, 0, 0, 0, 0, 0, 0, 0}), GetDefaultPool().get());
 
     ASSERT_EQ(stats, expected_stats);
 }

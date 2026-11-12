@@ -128,24 +128,20 @@ class FlushFailingFileWriter : public GlobalIndexFileWriter {
                            int32_t fail_from)
         : delegate_(delegate), fail_from_(fail_from) {}
 
-    Result<std::string> NewFileName(const std::string& prefix) const override {
-        return delegate_->NewFileName(prefix);
+    Result<std::string> NewPath(const std::string& prefix) const override {
+        return delegate_->NewPath(prefix);
     }
 
     Result<std::unique_ptr<OutputStream>> NewOutputStream(
-        const std::string& file_name) const override {
+        const std::string& file_path) const override {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<OutputStream> stream,
-                               delegate_->NewOutputStream(file_name));
+                               delegate_->NewOutputStream(file_path));
         return std::make_unique<FlushFailingOutputStream>(std::move(stream), fail_from_,
                                                           close_count_);
     }
 
-    Result<int64_t> GetFileSize(const std::string& file_name) const override {
-        return delegate_->GetFileSize(file_name);
-    }
-
-    std::string ToPath(const std::string& file_name) const override {
-        return delegate_->ToPath(file_name);
+    Result<int64_t> GetFileSize(const std::string& file_path) const override {
+        return delegate_->GetFileSize(file_path);
     }
 
     int32_t CloseCount() const {

@@ -237,7 +237,7 @@ TEST_F(AppendBucketPruningTest, ReadsSingleBucketManifestOnce) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStorePathFactory> paths,
         FileStorePathFactory::Create(dir->Str(), initial->schema_, {}, "", "avro", "data-", true,
-                                     {}, std::nullopt, false, pool_));
+                                     {}, {}, false, /*external_path_weights=*/{}, pool_));
     ASSERT_OK(fs->Mkdirs(FileStorePathFactory::ManifestPath(dir->Str())));
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ManifestFile> manifest,
@@ -304,13 +304,14 @@ TEST_F(AppendBucketPruningTest, SelectivelyDecodesInferredBucketCandidates) {
     ASSERT_TRUE(inferred_scan->bucket_selector_);
     const int32_t bucket = inferred_scan->bucket_selector_->Bucket(kNumBuckets);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> format, FileFormatFactory::Get("avro", {}));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStorePathFactory> paths,
-                         FileStorePathFactory::Create(
-                             dir->Str(), initial_scan->schema_, /*partition_keys=*/{},
-                             /*default_part_value=*/"", "avro", /*data_file_prefix=*/"data-",
-                             /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                             /*global_index_external_path=*/std::nullopt,
-                             /*index_file_in_data_file_dir=*/false, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStorePathFactory> paths,
+        FileStorePathFactory::Create(
+            dir->Str(), initial_scan->schema_, /*partition_keys=*/{},
+            /*default_part_value=*/"", "avro", /*data_file_prefix=*/"data-",
+            /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
+            /*global_index_external_paths=*/{},
+            /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool_));
     ASSERT_OK(fs->Mkdirs(FileStorePathFactory::ManifestPath(dir->Str())));
     SimpleStats stats = BinaryRowGenerator::GenerateStats(
         {std::string("a"), 0}, {std::string("z"), 100}, {0, 0}, pool_.get());
@@ -426,7 +427,7 @@ TEST_F(AppendBucketPruningTest, SelectivelyDecodesWithoutReadingHistoricalSchema
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStorePathFactory> paths,
         FileStorePathFactory::Create(dir->Str(), initial->schema_, {}, "", "avro", "data-", true,
-                                     {}, std::nullopt, false, pool_));
+                                     {}, {}, false, /*external_path_weights=*/{}, pool_));
     ASSERT_OK(fs->Mkdirs(FileStorePathFactory::ManifestPath(dir->Str())));
     for (bool cache_enabled : {false, true}) {
         SCOPED_TRACE(cache_enabled);
@@ -1051,8 +1052,9 @@ TEST(AppendOnlyFileStoreScanTest, SnapshotCacheRebuildsCorruptValues) {
                                                                 16 * 1024 * 1024);
             auto scan = BuildScan(table_path, cache, /*bucket=*/0, predicate, lazy_decode);
             scan->WithSnapshot(snapshot);
-            ASSERT_OK(cache->Put(scan->CreateSnapshotLiveManifestEntriesCacheKey(0),
-                                 std::make_shared<CacheValue>(segment, CacheCallback())));
+            ASSERT_OK(
+                cache->Put(scan->CreateSnapshotLiveManifestEntriesCacheKey(0),
+                           std::make_shared<MemorySegmentCacheValue>(segment, CacheCallback())));
             for (int32_t attempt = 0; attempt < 2; ++attempt) {
                 ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
                 ASSERT_EQ(SortedFileNames(plan->Files()), expected_names);

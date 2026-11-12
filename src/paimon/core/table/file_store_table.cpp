@@ -34,6 +34,7 @@
 #include "paimon/common/fs/resolving_file_system.h"
 #include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/path_util.h"
@@ -73,6 +74,8 @@
 #include "paimon/core/table/source/fallback_table_read.h"
 #include "paimon/core/table/source/key_value_table_read.h"
 #include "paimon/core/table/source/primary_key_index_batch_scan.h"
+#include "paimon/core/table/source/query_auth_table_read.h"
+#include "paimon/core/table/source/query_auth_table_scan.h"
 #include "paimon/core/table/source/read_optimized_scan_options.h"
 #include "paimon/core/table/source/realtime_table_scan.h"
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
@@ -434,12 +437,36 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
 
 Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
     std::unique_ptr<ScanContext> context) const {
+    return NewScan(std::shared_ptr<ScanContext>(std::move(context)), false);
+}
+
+Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
+    const std::shared_ptr<ScanContext>& context, bool query_auth_applied) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
     if (context->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(CurrentBranch()));
     }
     std::shared_ptr<TableSchema> table_schema = std::static_pointer_cast<TableSchema>(schema_);
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, ResolveOptions(context->GetOptions()));
+    std::map<std::string, std::string> read_options;
+    PAIMON_ASSIGN_OR_RAISE(
+        read_options, CatalogUtils::ResolveQueryAuthReadOptions(
+                          context->GetCatalog(), context->GetIdentifier(), context->GetOptions(),
+                          CurrentBranch(), file_system_, root_path_, true, "scan"));
+    PAIMON_ASSIGN_OR_RAISE(bool query_auth, SchemaValidation::QueryAuthReadEnabled(
+                                                table_schema->Options(), read_options));
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, ResolveOptions(read_options));
+    if (query_auth && !query_auth_applied) {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<FileStoreTable> table,
+            FileStoreTable::Create(std::make_unique<FileStore>(root_path_, core_options),
+                                   table_schema, identifier_, CatalogUuid().value_or(""),
+                                   fs_scheme_map_));
+        return QueryAuthTableScan::Create(
+            context, table_schema, file_system_, CurrentBranch(),
+            [table](const std::shared_ptr<ScanContext>& inner_context) {
+                return table->NewScan(inner_context, true);
+            });
+    }
     PAIMON_ASSIGN_OR_RAISE(
         bool read_optimized,
         OptionsUtils::GetValueFromMap<bool>(core_options.ToMap(), kReadOptimizedScanOption, false));
@@ -555,17 +582,40 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::CreateTableRead(
 
 Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
     std::unique_ptr<ReadContext> context) const {
-    std::shared_ptr<ReadContext> read_context = std::move(context);
+    return NewRead(std::shared_ptr<ReadContext>(std::move(context)), false);
+}
+
+Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
+    const std::shared_ptr<ReadContext>& read_context, bool query_auth_applied) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(read_context, "read"));
     if (read_context->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(CurrentBranch()));
     }
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions options, ResolveOptions(read_context->GetOptions()));
+    std::shared_ptr<TableSchema> loaded_schema = std::static_pointer_cast<TableSchema>(schema_);
+    std::map<std::string, std::string> read_options;
+    PAIMON_ASSIGN_OR_RAISE(
+        read_options,
+        CatalogUtils::ResolveQueryAuthReadOptions(
+            read_context->GetCatalog(), read_context->GetIdentifier(), read_context->GetOptions(),
+            CurrentBranch(), file_system_, root_path_, true, "read"));
+    PAIMON_ASSIGN_OR_RAISE(bool query_auth, SchemaValidation::QueryAuthReadEnabled(
+                                                loaded_schema->Options(), read_options));
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions options, ResolveOptions(read_options));
+    if (query_auth && !query_auth_applied) {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<FileStoreTable> table,
+            FileStoreTable::Create(std::make_unique<FileStore>(root_path_, options), loaded_schema,
+                                   identifier_, CatalogUuid().value_or(""), fs_scheme_map_));
+        return QueryAuthTableRead::Create(
+            read_context, loaded_schema, GetArrowPool(read_context->GetMemoryPool()),
+            [table](std::unique_ptr<ReadContext> inner_context) {
+                return table->NewRead(std::shared_ptr<ReadContext>(std::move(inner_context)), true);
+            });
+    }
     auto fs_scheme_map = fs_scheme_map_;
     for (const auto& [scheme, identifier] : read_context->GetFileSystemSchemeToIdentifierMap()) {
         fs_scheme_map[scheme] = identifier;
     }
-    std::shared_ptr<TableSchema> loaded_schema = std::static_pointer_cast<TableSchema>(schema_);
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<InternalReadContext> internal_context,
         InternalReadContext::CreateForTable(read_context, loaded_schema, std::move(options),
@@ -582,10 +632,31 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
         return std::move(table_read);
     }
 
+    if (query_auth_applied) {
+        return Status::NotImplemented(
+            "Fallback reads are not supported on a query-auth table: each branch requires its "
+            "own authorized splits and schema validation.");
+    }
+    std::map<std::string, std::string> fallback_read_options;
+    PAIMON_ASSIGN_OR_RAISE(
+        fallback_read_options,
+        CatalogUtils::ResolveQueryAuthReadOptions(
+            read_context->GetCatalog(), read_context->GetIdentifier(), read_context->GetOptions(),
+            scan_fallback_branch.value(), file_system_, root_path_, true, "read"));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> fallback_context,
                            InternalReadContext::CreateForFallbackBranch(
                                read_context, /*branch=*/scan_fallback_branch.value(), file_system_,
                                root_path_, fs_scheme_map));
+
+    PAIMON_ASSIGN_OR_RAISE(
+        bool fallback_query_auth,
+        SchemaValidation::QueryAuthReadEnabled(fallback_context->GetTableSchema()->Options(),
+                                               fallback_read_options));
+    if (fallback_query_auth) {
+        return Status::NotImplemented(fmt::format(
+            "Cannot read fallback branch '{}', which enables '{}', of a table that does not.",
+            scan_fallback_branch.value(), Options::QUERY_AUTH_ENABLED));
+    }
 
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> fallback_table_read,
                            CreateTableRead(fallback_context, read_context->GetMemoryPool(),

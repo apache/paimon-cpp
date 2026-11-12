@@ -21,32 +21,29 @@
 
 #include <cstdint>
 #include <memory>
-#include <string>
 
-#include "paimon/fs/file_system.h"
+#include "paimon/realtime/offset_range.h"
 #include "paimon/result.h"
-#include "paimon/status.h"
 #include "paimon/visibility.h"
 
+struct ArrowArray;
+
 namespace paimon {
-/// A borrowed output view reporting positions relative to the wrapped stream's position at
-/// creation. Flush forwards to the wrapped stream; Close leaves it open. The wrapped stream must
-/// outlive this view.
-class PAIMON_EXPORT OffsetOutputStream : public OutputStream {
+class RealtimeIndexReader;
+
+/// Append-only in-memory index for one field, supporting one writer and concurrent readers.
+class PAIMON_EXPORT RealtimeIndex {
  public:
-    static Result<std::unique_ptr<OffsetOutputStream>> Create(OutputStream* output);
-    ~OffsetOutputStream() override = default;
+    virtual ~RealtimeIndex() = default;
 
-    Result<int64_t> Write(const char* buffer, int64_t size) override;
-    Result<int64_t> GetPos() const override;
-    Result<std::string> GetUri() const override;
-    Status Flush() override;
-    Status Close() override;
+    /// Consumes [_REALTIME_OFFSET, field] with increasing offsets.
+    virtual Status AddBatch(::ArrowArray* batch) = 0;
 
- private:
-    OffsetOutputStream(OutputStream* output, int64_t start);
+    /// Creates a reader for [begin, end), sharing postings without copying.
+    virtual Result<std::shared_ptr<RealtimeIndexReader>> CreateReader(
+        const OffsetRange& offset_range) const = 0;
 
-    OutputStream* output_;
-    const int64_t start_;
+    virtual uint64_t GetMemoryUsage() const = 0;
 };
+
 }  // namespace paimon

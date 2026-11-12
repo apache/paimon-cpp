@@ -426,6 +426,15 @@ License: https://www.apache.org/licenses/LICENSE-2.0
 
 --------------------------------------------------------------------------------
 
+This product includes code from Alibaba Cloud OSS SDK for C++ V2 0.1.2.
+
+* Upstream source patch in cmake_modules/oss_sdk_v2.diff
+
+Home page: https://github.com/aliyun/alibabacloud-oss-cpp-sdk-v2
+License: https://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+
 This product includes code from xxHash.
 
 * MMH_rotl32 utility in src/paimon/common/utils/murmurhash_utils.h

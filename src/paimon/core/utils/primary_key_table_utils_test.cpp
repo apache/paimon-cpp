@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "arrow/type.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/types/row_kind.h"
@@ -58,16 +59,22 @@ std::shared_ptr<TableSchema> PkSchema(
 }  // namespace
 
 TEST(PrimaryKeyTableUtilsTest, TestSupportedRealtimeOptions) {
-    ASSERT_OK_AND_ASSIGN(CoreOptions options,
-                         CoreOptions::FromMap({{Options::BUCKET, "1"},
-                                               {Options::DELETION_VECTORS_ENABLED, "true"}}));
-    ASSERT_OK(PrimaryKeyTableUtils::ValidateRealtimeOptions(options, *PkSchema()));
+    const std::vector<std::map<std::string, std::string>> supported_options = {
+        {{Options::BUCKET, "1"}, {Options::DELETION_VECTORS_ENABLED, "true"}},
+        {{Options::BUCKET, "1"},
+         {Options::MERGE_ENGINE, "partial-update"},
+         {Options::DELETION_VECTORS_ENABLED, "false"}},
+    };
+    for (const std::map<std::string, std::string>& option_map : supported_options) {
+        ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(option_map));
+        ASSERT_OK(PrimaryKeyTableUtils::ValidateRealtimeOptions(options, *PkSchema()));
+    }
 }
 
 TEST(PrimaryKeyTableUtilsTest, TestUnsupportedRealtimeOptions) {
     const std::vector<std::map<std::string, std::string>> unsupported_options = {
         {{Options::BUCKET, "0"}},
-        {{Options::BUCKET, "1"}, {Options::MERGE_ENGINE, "partial-update"}},
+        {{Options::BUCKET, "1"}, {Options::MERGE_ENGINE, "aggregation"}},
         {{Options::BUCKET, "1"}, {Options::DATA_EVOLUTION_ENABLED, "true"}},
         {{Options::BUCKET, "1"}, {Options::SEQUENCE_FIELD, "seq"}},
     };
@@ -112,7 +119,7 @@ TEST(PrimaryKeyTableUtilsTest, TestRealtimeRejectsDeleteAndSequenceOrderingOptio
                         "supports only ascending sequence.field.sort-order");
 }
 
-TEST(PrimaryKeyTableUtilsTest, TestRealtimeReportsSpecificLookupErrors) {
+TEST(PrimaryKeyTableUtilsTest, TestRealtimeReportsSpecificUnsupportedOptions) {
     const std::vector<std::pair<std::map<std::string, std::string>, std::string>> cases = {
         {{{Options::BUCKET, "1"}, {Options::FORCE_LOOKUP, "true"}},
          "PK realtime does not support lookup"},
@@ -123,9 +130,8 @@ TEST(PrimaryKeyTableUtilsTest, TestRealtimeReportsSpecificLookupErrors) {
     };
     for (const auto& [option_map, expected_message] : cases) {
         ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(option_map));
-        Status status = PrimaryKeyTableUtils::ValidateRealtimeOptions(options, *PkSchema());
-        ASSERT_TRUE(status.IsNotImplemented());
-        ASSERT_EQ(status.message(), expected_message);
+        ASSERT_NOK_WITH_MSG(PrimaryKeyTableUtils::ValidateRealtimeOptions(options, *PkSchema()),
+                            fmt::format("NotImplemented: {}", expected_message));
     }
 }
 

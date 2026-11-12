@@ -513,13 +513,14 @@ TEST(RowCompactedSerializerTest, TestListType) {
     auto pool = GetDefaultPool();
     // prepare data
     auto inner_child1 = arrow::field("inner1", arrow::list(arrow::int32()));
-    auto arrow_type = arrow::struct_({inner_child1});
+    auto inner_child2 = arrow::field("inner2", arrow::list(arrow::time32(arrow::TimeUnit::MILLI)));
+    auto arrow_type = arrow::struct_({inner_child1, inner_child2});
     // each inner child per row
     std::shared_ptr<arrow::Array> array = arrow::ipc::internal::json::ArrayFromJSON(arrow_type,
                                                                                     R"([
-[[5, 6, 7]],
-[[1, 2, 3]],
-[[4]]
+[[5, 6, 7], [0, null, 86399999]],
+[[1, 2, 3], [123]],
+[[4], []]
     ])")
                                               .ValueOrDie();
     auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(array);
@@ -535,10 +536,17 @@ TEST(RowCompactedSerializerTest, TestListType) {
     ASSERT_OK_AND_ASSIGN(auto row, serializer->Deserialize(bytes));
 
     // check result
-    ASSERT_EQ(row->GetFieldCount(), 1);
+    ASSERT_EQ(row->GetFieldCount(), 2);
 
     // for inner_child1
     ASSERT_EQ(row->GetArray(0)->ToIntArray().value(), std::vector<int32_t>({5, 6, 7}));
+
+    // for inner_child2
+    auto times = row->GetArray(1);
+    ASSERT_EQ(times->Size(), 3);
+    ASSERT_EQ(times->GetInt(0), 0);
+    ASSERT_TRUE(times->IsNullAt(1));
+    ASSERT_EQ(times->GetInt(2), 86399999);
 }
 
 TEST(RowCompactedSerializerTest, TestSliceComparator) {
@@ -815,6 +823,21 @@ TEST(RowCompactedSerializerTest, TestSliceComparator) {
     ])")
                                                   .ValueOrDie();
         check_result(type, array);
+    }
+    {
+        auto type = arrow::struct_({arrow::field("f15", arrow::time32(arrow::TimeUnit::MILLI))});
+        std::shared_ptr<arrow::Array> array =
+            arrow::ipc::internal::json::ArrayFromJSON(type, R"([[123], [86399999]])").ValueOrDie();
+        check_result(type, array);
+
+        auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(array);
+        ASSERT_OK_AND_ASSIGN(auto serializer,
+                             RowCompactedSerializer::Create(arrow::schema(type->fields()), pool));
+        ColumnarRow columnar_row(/*struct_array=*/nullptr, struct_array->fields(), pool,
+                                 /*row_id=*/1);
+        ASSERT_OK_AND_ASSIGN(auto bytes, serializer->SerializeToBytes(columnar_row));
+        ASSERT_OK_AND_ASSIGN(auto row, serializer->Deserialize(bytes));
+        ASSERT_EQ(row->GetInt(0), 86399999);
     }
 }
 

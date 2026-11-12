@@ -145,6 +145,7 @@ class PAIMON_EXPORT CoreOptions {
     bool CommitDiscardDuplicateFiles() const;
     bool RestCommitLockEnabled() const;
     bool RestCommitAcquireLock() const;
+    bool QueryAuthEnabled() const;
     bool DynamicPartitionOverwrite() const;
     bool OverwriteUpgrade() const;
     int32_t GetCompactionMinFileNum() const;
@@ -243,6 +244,7 @@ class PAIMON_EXPORT CoreOptions {
 
     ExternalPathStrategy GetExternalPathStrategy() const;
     Result<std::vector<std::string>> CreateExternalPaths() const;
+    Result<std::vector<int32_t>> GetExternalPathWeights() const;
     bool EnableAdaptivePrefetchStrategy() const;
 
     std::string DataFilePrefix() const;
@@ -275,7 +277,7 @@ class PAIMON_EXPORT CoreOptions {
     std::string FormatTableFileCompression() const;
 
     bool GlobalIndexEnabled() const;
-    Result<std::optional<std::string>> CreateGlobalIndexExternalPath() const;
+    Result<std::vector<std::string>> CreateGlobalIndexExternalPaths() const;
 
     std::optional<std::string> GetScanTagName() const;
 
@@ -307,6 +309,10 @@ class PAIMON_EXPORT CoreOptions {
     /// Returns `full-text-index.search-mode`, or else `global-index.search-mode`, or else
     /// `GlobalIndexSearchMode::FAST`, as Java `CoreOptions#fullTextIndexSearchMode` does.
     GlobalIndexSearchMode GetFullTextIndexSearchMode() const;
+    /// Returns `scalar-index.search-mode`, or else `global-index.search-mode`, or else
+    /// `GlobalIndexSearchMode::FAST`, as Java `CoreOptions#scalarIndexSearchMode` does.
+    GlobalIndexSearchMode GetScalarIndexSearchMode() const;
+    bool GlobalIndexFilterRefineFromData() const;
 
     const std::vector<std::string>& GetBlobFields() const;
     const std::vector<std::string>& GetBlobDescriptorFields() const;
@@ -318,7 +324,7 @@ class PAIMON_EXPORT CoreOptions {
 
  private:
     std::optional<std::string> GetDataFileExternalPaths() const;
-    std::optional<std::string> GetGlobalIndexExternalPath() const;
+    std::optional<std::string> GetGlobalIndexExternalPaths() const;
 
  private:
     struct Impl;

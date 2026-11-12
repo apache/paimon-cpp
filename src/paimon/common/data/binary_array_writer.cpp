@@ -71,6 +71,7 @@ void BinaryArrayWriter::SetNullAt(int32_t ordinal, const arrow::Type::type& arro
             SetNullValue<int16_t>(ordinal);
             return;
         case arrow::Type::type::DATE32:
+        case arrow::Type::type::TIME32:
         case arrow::Type::type::INT32:
             SetNullValue<int32_t>(ordinal);
             return;
@@ -124,6 +125,7 @@ int32_t BinaryArrayWriter::GetElementSize(const arrow::Type::type& arrow_type) {
         case arrow::Type::type::INT16:
             return sizeof(int16_t);
         case arrow::Type::type::DATE32:
+        case arrow::Type::type::TIME32:
         case arrow::Type::type::INT32:
             return sizeof(int32_t);
         case arrow::Type::type::INT64:

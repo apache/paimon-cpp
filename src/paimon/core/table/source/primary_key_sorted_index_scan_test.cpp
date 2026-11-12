@@ -61,23 +61,18 @@ class TestGlobalIndexFileWriter : public GlobalIndexFileWriter {
     TestGlobalIndexFileWriter(const std::shared_ptr<FileSystem>& fs, const std::string& base_path)
         : fs_(fs), base_path_(base_path) {}
 
-    Result<std::string> NewFileName(const std::string& prefix) const override {
-        return fmt::format("{}-index-{}", prefix, file_counter_++);
+    Result<std::string> NewPath(const std::string& prefix) const override {
+        return base_path_ + "/" + fmt::format("{}-index-{}", prefix, file_counter_++);
     }
 
     Result<std::unique_ptr<OutputStream>> NewOutputStream(
-        const std::string& file_name) const override {
-        return fs_->Create(base_path_ + "/" + file_name, true);
+        const std::string& file_path) const override {
+        return fs_->Create(file_path, true);
     }
 
-    Result<int64_t> GetFileSize(const std::string& file_name) const override {
-        PAIMON_ASSIGN_OR_RAISE(FileStatus file_status,
-                               fs_->GetFileStatus(base_path_ + "/" + file_name));
+    Result<int64_t> GetFileSize(const std::string& file_path) const override {
+        PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(file_path));
         return file_status.GetLen();
-    }
-
-    std::string ToPath(const std::string& file_name) const override {
-        return base_path_ + "/" + file_name;
     }
 
  private:
@@ -122,9 +117,7 @@ class StubGlobalIndexReader : public MockGlobalIndexReader {
         if (equal_call_count_ != nullptr) {
             (*equal_call_count_)++;
         }
-        RoaringBitmap64 copy = equal_result_;
-        return std::make_shared<BitmapGlobalIndexResult>(
-            [bitmap = std::move(copy)]() -> Result<RoaringBitmap64> { return bitmap; });
+        return std::make_shared<BitmapGlobalIndexResult>(equal_result_);
     }
     Result<std::shared_ptr<GlobalIndexResult>> VisitNotEqual(const Literal& literal) override {
         return NotEvaluable();

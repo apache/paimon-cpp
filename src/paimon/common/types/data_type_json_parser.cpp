@@ -29,12 +29,14 @@
 #include <utility>
 #include <vector>
 
+#include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/types/data_type.h"
 #include "paimon/common/types/vector_type.h"
+#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/data/decimal.h"
@@ -575,7 +577,15 @@ Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseDecimalType() {
         }
         PAIMON_RETURN_NOT_OK(NextToken(TokenType::END_PARAMETER));
     }
-    return arrow::decimal128(precision, scale);
+    // `arrow::decimal128` aborts the process on a precision out of range, `Make` reports it.
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::DataType> type,
+                                      arrow::Decimal128Type::Make(precision, scale));
+    if (scale < 0 || scale > precision) {
+        return Status::Invalid(fmt::format(
+            "Decimal scale must be between 0 and the precision {} (both inclusive), but was {}",
+            precision, scale));
+    }
+    return type;
 }
 
 Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseDoubleType() {
@@ -757,8 +767,9 @@ Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseAtomicTypeField(
     const std::string& name, const rapidjson::Value& type_json_value) {
     bool nullable = true;
     AtomicTypeAttributes attributes;
+    const std::string type_str(type_json_value.GetString(), type_json_value.GetStringLength());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::DataType> type,
-                           ParseAtomicType(type_json_value.GetString(), &nullable, &attributes));
+                           ParseAtomicType(type_str, &nullable, &attributes));
     if (attributes.is_blob) {
         return BlobUtils::ToArrowField(name, nullable);
     } else if (attributes.is_variant) {
@@ -776,11 +787,15 @@ Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseAtomicTypeField(
 Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseComplexTypeField(
     const std::string& name, const rapidjson::Value& type_json_value,
     FieldIdAssigner* field_id_assigner) {
-    if (!type_json_value.HasMember("type")) {
-        return Status::Invalid("complex data type must have type");
+    if (!type_json_value.HasMember("type") || !type_json_value["type"].IsString()) {
+        return Status::Invalid("complex data type must have a string type");
     }
 
-    std::string type_str = type_json_value["type"].GetString();
+    const auto& type_value = type_json_value["type"];
+    const std::string type_str(type_value.GetString(), type_value.GetStringLength());
+    if (type_str.find('\0') != std::string::npos) {
+        return Status::Invalid("complex data type cannot contain a NUL byte");
+    }
     bool nullable = true;
     if (type_str.find("NOT NULL") != std::string::npos) {
         nullable = false;

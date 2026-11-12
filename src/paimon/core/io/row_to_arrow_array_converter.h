@@ -129,6 +129,7 @@ Status RowToArrowArrayConverter<T, R>::Reserve(arrow::ArrayBuilder* array_builde
         case arrow::Type::type::INT16:
         case arrow::Type::type::INT32:
         case arrow::Type::type::DATE32:
+        case arrow::Type::type::TIME32:
         case arrow::Type::type::INT64:
         case arrow::Type::type::FLOAT:
         case arrow::Type::type::DOUBLE:
@@ -207,6 +208,7 @@ Status RowToArrowArrayConverter<T, R>::Accumulate(const arrow::Array* array, int
         case arrow::Type::type::INT16:
         case arrow::Type::type::INT32:
         case arrow::Type::type::DATE32:
+        case arrow::Type::type::TIME32:
         case arrow::Type::type::INT64:
         case arrow::Type::type::FLOAT:
         case arrow::Type::type::DOUBLE:
@@ -321,6 +323,16 @@ RowToArrowArrayConverter<T, R>::AppendField(bool use_view, arrow::ArrayBuilder* 
                 [field_builder](const DataGetters& data_getter, int32_t pos) -> arrow::Status {
                     CHECK_AND_APPEND_NULL(data_getter, field_builder, pos);
                     int32_t value = data_getter.GetDate(pos);
+                    return field_builder->Append(value);
+                });
+        }
+        case arrow::Type::type::TIME32: {
+            PAIMON_ASSIGN_OR_RAISE(arrow::Time32Builder * field_builder,
+                                   CastToTypedBuilder<arrow::Time32Builder>(array_builder));
+            return RowToArrowArrayConverter<T, R>::AppendValueFunc(
+                [field_builder](const DataGetters& data_getter, int32_t pos) -> arrow::Status {
+                    CHECK_AND_APPEND_NULL(data_getter, field_builder, pos);
+                    int32_t value = data_getter.GetInt(pos);
                     return field_builder->Append(value);
                 });
         }

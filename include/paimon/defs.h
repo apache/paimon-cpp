@@ -52,6 +52,9 @@ enum class FieldType {
     VARIANT = 17,
     /// Fixed-length dense vector represented by Arrow FixedSizeList.
     VECTOR = 18,
+    /// TIME(p) without time zone, stored as milliseconds of the day in an int32 (Arrow
+    /// `time32[ms]`) whatever p is, matching Paimon Java.
+    TIME = 19,
     UNKNOWN = 128,
 };
 
@@ -324,6 +327,12 @@ struct PAIMON_EXPORT Options {
     /// "rest.commit.lock-enabled" on the table. Default value is "false".
     static const char REST_COMMIT_ACQUIRE_LOCK[];
 
+    /// "query-auth.enabled" - Whether the catalog enforces row filters and column masks on reads
+    /// of the table. A scan of such a table asks the catalog built into its context for the rules
+    /// and attaches them to its splits, and a read applies them; a read path that would not apply
+    /// them is refused. The options of a read cannot disable it. Default value is "false".
+    static const char QUERY_AUTH_ENABLED[];
+
     /// "compaction.max-size-amplification-percent" - The size amplification is defined as the
     /// amount (in percentage) of additional storage needed to store a single byte of data in the
     /// merge tree for changelog mode table. Default value is 200.
@@ -495,8 +504,16 @@ struct PAIMON_EXPORT Options {
     /// written, multiple elements separated by commas.
     static const char DATA_FILE_EXTERNAL_PATHS[];
     /// "data-file.external-paths.strategy" - The strategy of selecting an external path when
-    /// writing data. Values can be: "none", "specific-fs", "round-robin". Default value is "none".
+    /// writing data. Values: "none", "specific-fs", "round-robin", "weight-robin". Default is
+    /// "none".
     static const char DATA_FILE_EXTERNAL_PATHS_STRATEGY[];
+    /// "data-file.external-paths.weights" - The weights for external paths when
+    /// data-file.external-paths.strategy is set to weight-robin.
+    /// Format: 'weight1,weight2,...' with weights corresponding to paths in
+    /// data-file.external-paths by order.
+    /// Example: '10,5,15' means first path has weight 10, second 5, third 15.
+    /// Weights must be positive integers.
+    static const char DATA_FILE_EXTERNAL_PATHS_WEIGHTS[];
     /// "data-file.prefix" - Specify the file name prefix of data files. Default value is "data-".
     static const char DATA_FILE_PREFIX[];
     /// "index-file-in-data-file-dir" - Whether index file in data file directory. Default value is
@@ -611,7 +628,8 @@ struct PAIMON_EXPORT Options {
     /// "global-index.thread-num" - The maximum number of concurrent scanner for global index. No
     /// default value. By default is the number of processors available to the machine.
     static const char GLOBAL_INDEX_THREAD_NUM[];
-    /// "global-index.external-path" - Global index root directory, if not set, the global index
+    /// "global-index.external-path" - Comma-separated global index root directories. New files
+    /// and checkpoints use independent round robin. If not set, the global index
     /// files will be stored under the index directory.
     static const char GLOBAL_INDEX_EXTERNAL_PATH[];
     /// "global-index.search-mode" - Fallback search mode for global index queries, used when the
@@ -623,6 +641,19 @@ struct PAIMON_EXPORT Options {
     /// index covers. Default value is "global-index.search-mode", or else "fast". Paimon C++
     /// supports only "fast" so far, and a full-text search in another mode fails.
     static const char FULL_TEXT_INDEX_SEARCH_MODE[];
+    /// "scalar-index.search-mode" - Search mode for scalar index queries: "fast" evaluates only the
+    /// rows that an index covers, while "full" and "detail" also evaluate the rows that no index
+    /// covers. Default value is "global-index.search-mode", or else "fast". Paimon C++ supports
+    /// only "fast" so far, and a full-text search with a row filter in another mode fails.
+    static const char SCALAR_INDEX_SEARCH_MODE[];
+    /// "global-index.filter.refine-from-data" - Whether a vector, hybrid or full-text search may
+    /// read the filter columns of candidate rows to verify a row filter that the scalar global
+    /// index can only answer with a superset, such as contains, ends-with or like on a BTree index
+    /// or a conjunction with a member no index can evaluate. When false, such candidates are
+    /// excluded from the search, which never returns a non-matching row but may return fewer than
+    /// the requested top-k. When true, the read runs on the caller and may cover every candidate
+    /// row. Default value is "false". Paimon C++ reads it only in full-text search so far.
+    static const char GLOBAL_INDEX_FILTER_REFINE_FROM_DATA[];
     /// "pk-btree.index.columns" - Comma-separated columns indexed by primary-key BTree indexes.
     /// No default value.
     static const char PK_BTREE_INDEX_COLUMNS[];

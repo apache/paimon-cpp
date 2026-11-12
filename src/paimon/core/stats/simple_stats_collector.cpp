@@ -99,7 +99,8 @@ Status SimpleStatsCollector::Collect(const BinaryRow& row) {
                 }
                 break;
             }
-            case arrow::Type::INT32: {
+            case arrow::Type::INT32:
+            case arrow::Type::TIME32: {
                 if (column_stats_[i] == nullptr) {
                     column_stats_[i] =
                         ColumnStats::CreateIntColumnStats(std::nullopt, std::nullopt, std::nullopt);

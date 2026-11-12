@@ -67,14 +67,14 @@ BTreeGlobalIndexReader::BTreeGlobalIndexReader(
       comparator_(key_serializer_->CreateComparator()) {}
 
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitIsNotNull() {
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this()]() -> Result<RoaringBitmap64> {
             return reader->AllNonNullRows();
         });
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitIsNull() {
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this()]() -> Result<RoaringBitmap64> {
             if (!reader->row_id_filter_) {
                 return reader->null_bitmap_;
@@ -92,7 +92,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitStartsWi
     if (prefix.GetType() == FieldType::STRING) {
         auto prefix_str = prefix.GetValue<std::string>();
         if (prefix_str.empty()) {
-            return std::make_shared<BitmapGlobalIndexResult>(
+            return BitmapGlobalIndexResult::Create(
                 [reader = shared_from_this()]() -> Result<RoaringBitmap64> {
                     return reader->AllNonNullRows();
                 });
@@ -114,7 +114,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitStartsWi
 
         if (!overflow) {
             Literal upper_bound(FieldType::STRING, upper_str.data(), upper_str.size());
-            return std::make_shared<BitmapGlobalIndexResult>(
+            return BitmapGlobalIndexResult::Create(
                 [reader = shared_from_this(), prefix = prefix,
                  upper_bound = std::move(upper_bound)]() -> Result<RoaringBitmap64> {
                     return reader->RangeQuery(prefix, upper_bound, /*from_inclusive=*/true,
@@ -123,14 +123,14 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitStartsWi
         }
 
         // All bytes were 0xFF, use max_key_ as upper bound
-        return std::make_shared<BitmapGlobalIndexResult>(
+        return BitmapGlobalIndexResult::Create(
             [reader = shared_from_this(), prefix = prefix]() -> Result<RoaringBitmap64> {
                 return reader->RangeQuery(prefix, reader->max_key_, /*from_inclusive=*/true,
                                           /*to_inclusive=*/true);
             });
     }
 
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this()]() -> Result<RoaringBitmap64> {
             return reader->AllNonNullRows();
         });
@@ -138,7 +138,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitStartsWi
 
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitEndsWith(
     const Literal& suffix) {
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this()]() -> Result<RoaringBitmap64> {
             return reader->AllNonNullRows();
         });
@@ -146,7 +146,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitEndsWith
 
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitContains(
     const Literal& literal) {
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this()]() -> Result<RoaringBitmap64> {
             return reader->AllNonNullRows();
         });
@@ -176,7 +176,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitLike(
             return VisitStartsWith(prefix_literal);
         }
     }
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this()]() -> Result<RoaringBitmap64> {
             return reader->AllNonNullRows();
         });
@@ -184,7 +184,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitLike(
 
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitLessThan(
     const Literal& literal) {
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this(), literal = literal]() -> Result<RoaringBitmap64> {
             return reader->RangeQuery(reader->min_key_, literal, /*from_inclusive=*/true,
                                       /*to_inclusive=*/false);
@@ -193,7 +193,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitLessThan
 
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitGreaterOrEqual(
     const Literal& literal) {
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this(), literal = literal]() -> Result<RoaringBitmap64> {
             return reader->RangeQuery(literal, reader->max_key_, /*from_inclusive=*/true,
                                       /*to_inclusive=*/true);
@@ -202,7 +202,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitGreaterO
 
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitNotEqual(
     const Literal& literal) {
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this(), literal = literal]() -> Result<RoaringBitmap64> {
             PAIMON_ASSIGN_OR_RAISE(RoaringBitmap64 result, reader->AllNonNullRows());
             PAIMON_ASSIGN_OR_RAISE(RoaringBitmap64 equal_result,
@@ -215,7 +215,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitNotEqual
 
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitLessOrEqual(
     const Literal& literal) {
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this(), literal = literal]() -> Result<RoaringBitmap64> {
             return reader->RangeQuery(reader->min_key_, literal, /*from_inclusive=*/true,
                                       /*to_inclusive=*/true);
@@ -224,7 +224,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitLessOrEq
 
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitEqual(
     const Literal& literal) {
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this(), literal = literal]() -> Result<RoaringBitmap64> {
             return reader->PointQuery(literal);
         });
@@ -232,7 +232,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitEqual(
 
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitGreaterThan(
     const Literal& literal) {
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this(), literal = literal]() -> Result<RoaringBitmap64> {
             return reader->RangeQuery(literal, reader->max_key_, /*from_inclusive=*/false,
                                       /*to_inclusive=*/true);
@@ -241,7 +241,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitGreaterT
 
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitIn(
     const std::vector<Literal>& literals) {
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this(), literals = literals]() -> Result<RoaringBitmap64> {
             RoaringBitmap64 result;
             for (const auto& literal : literals) {
@@ -274,7 +274,7 @@ Result<RoaringBitmap64> BTreeGlobalIndexReader::PointQuery(const Literal& litera
 
 Result<std::shared_ptr<GlobalIndexResult>> BTreeGlobalIndexReader::VisitNotIn(
     const std::vector<Literal>& literals) {
-    return std::make_shared<BitmapGlobalIndexResult>(
+    return BitmapGlobalIndexResult::Create(
         [reader = shared_from_this(), literals = literals]() -> Result<RoaringBitmap64> {
             PAIMON_ASSIGN_OR_RAISE(RoaringBitmap64 result, reader->AllNonNullRows());
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> in_result,

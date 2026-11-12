@@ -32,7 +32,9 @@
 #include <vector>
 
 #include "arrow/api.h"
+#include "arrow/array/concatenate.h"
 #include "arrow/c/bridge.h"
+#include "arrow/ipc/json_simple.h"
 #include "fmt/format.h"
 #include "fmt/ranges.h"
 #include "gtest/gtest.h"
@@ -41,30 +43,41 @@
 #include "paimon/catalog_options.h"
 #include "paimon/commit_context.h"
 #include "paimon/commit_message.h"
+#include "paimon/common/data/generic_row.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/commit_lock.h"
 #include "paimon/core/catalog/commit_table_request.h"
+#include "paimon/core/catalog/query_auth_catalog.h"
+#include "paimon/core/catalog/table_query_auth_result.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/partition/partition_statistics.h"
+#include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/file_store_table.h"
+#include "paimon/core/table/system/global_system_tables.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
+#include "paimon/record_batch.h"
 #include "paimon/rest/mock_rest_server.h"
 #include "paimon/rest/rest_api.h"
 #include "paimon/scan_context.h"
 #include "paimon/schema/schema.h"
 #include "paimon/table/format/format_table.h"
+#include "paimon/table/source/plan.h"
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
+#include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/snapshot_test_helper.h"
+#include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -86,8 +99,11 @@ struct MockCatalogState {
         std::string path;
         std::string id = "1";
         std::map<std::string, std::string> token = {{"fs.oss.accessKeyId", "ak-1"}};
+        bool is_external = false;
     };
     std::map<std::string, std::map<std::string, TableData>> databases;
+    // Rebinds the table after its next GET response to exercise concurrent drop and recreate.
+    std::optional<TableData> recreate_table_after_get;
     // headers of the last request, with lower-cased names
     std::map<std::string, std::string> last_headers;
     // paths the data token endpoint was called at, in order
@@ -120,6 +136,13 @@ struct MockCatalogState {
     std::optional<std::string> current_snapshot;
     bool null_snapshot_response = false;
     std::string last_snapshot_table;
+    std::vector<std::string> auth_filter;
+    std::map<std::string, std::string> auth_column_masking;
+    std::map<std::string, std::pair<std::vector<std::string>, std::map<std::string, std::string>>>
+        auth_rules_by_table;
+    std::vector<std::string> auth_requests;
+    std::vector<std::string> auth_request_bodies;
+    std::vector<int32_t> auth_error_codes;
     // guards all fields above: the handler runs on the server's accept thread while
     // tests seed and inspect the state
     std::mutex mutex;
@@ -148,10 +171,10 @@ std::string SnapshotJson(int64_t id) {
 
 std::string TableResponseJson(const std::string& name, const MockCatalogState::TableData& table) {
     std::string id_member = table.id.empty() ? "" : fmt::format(R"("id":"{}",)", table.id);
-    return fmt::format(
-        R"({{{}"name":"{}","path":"{}","isExternal":false,"schemaId":{},"schema":{},)"
-        R"("owner":"owner1","updatedAt":123}})",
-        id_member, name, table.path, table.schema_id, table.schema_json);
+    return fmt::format(R"({{{}"name":"{}","path":"{}","isExternal":{},"schemaId":{},"schema":{},)"
+                       R"("owner":"owner1","updatedAt":123}})",
+                       id_member, name, table.path, table.is_external, table.schema_id,
+                       table.schema_json);
 }
 
 // Serves `names` one item per page to exercise the pagination loop of the client.
@@ -262,6 +285,45 @@ MockRestServer::Response HandleCatalogRequest(MockCatalogState* state,
     }
     std::string remainder = rest.substr(databases_prefix.size());
     size_t tables_pos = remainder.find("/tables");
+
+    const std::string auth_suffix = "/auth";
+    if (tables_pos != std::string::npos && request.method == "POST" &&
+        remainder.size() > auth_suffix.size() &&
+        remainder.compare(remainder.size() - auth_suffix.size(), auth_suffix.size(), auth_suffix) ==
+            0) {
+        state->auth_requests.push_back(request.path);
+        state->auth_request_bodies.push_back(request.body);
+        if (!state->auth_error_codes.empty()) {
+            const int32_t code = state->auth_error_codes.front();
+            state->auth_error_codes.erase(state->auth_error_codes.begin());
+            return MockError(code, "", "", "auth failed");
+        }
+        Result<AuthTableQueryRequest> auth_request =
+            AuthTableQueryRequest::FromJsonString(request.body);
+        if (!auth_request.ok()) {
+            return MockError(400, "", "", auth_request.status().ToString());
+        }
+        const std::optional<std::vector<std::string>>& select = auth_request.value().GetSelect();
+        const std::string tables_infix = "/tables/";
+        const size_t table_start = tables_pos + tables_infix.size();
+        const std::string table =
+            remainder.substr(table_start, remainder.size() - auth_suffix.size() - table_start);
+        auto table_rules = state->auth_rules_by_table.find(table);
+        const std::vector<std::string>& filter = table_rules != state->auth_rules_by_table.end()
+                                                     ? table_rules->second.first
+                                                     : state->auth_filter;
+        const std::map<std::string, std::string>& masking =
+            table_rules != state->auth_rules_by_table.end() ? table_rules->second.second
+                                                            : state->auth_column_masking;
+        std::map<std::string, std::string> column_masking;
+        for (const auto& [column, transform] : masking) {
+            if (!select || std::find(select->begin(), select->end(), column) != select->end()) {
+                column_masking.emplace(column, transform);
+            }
+        }
+        AuthTableQueryResponse response(filter, column_masking);
+        return JsonResponse(200, response.ToJsonString().value());
+    }
 
     const std::string token_suffix = "/token";
     if (tables_pos != std::string::npos && remainder.size() > token_suffix.size() &&
@@ -506,7 +568,12 @@ MockRestServer::Response HandleCatalogRequest(MockCatalogState* state,
         if (state->get_table_delay_millis > 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(state->get_table_delay_millis));
         }
-        return JsonResponse(200, TableResponseJson(table_name, table_iter->second));
+        std::string body = TableResponseJson(table_name, table_iter->second);
+        if (state->recreate_table_after_get) {
+            table_iter->second = std::move(state->recreate_table_after_get.value());
+            state->recreate_table_after_get.reset();
+        }
+        return JsonResponse(200, body);
     }
     if (request.method == "DELETE") {
         tables.erase(table_iter);
@@ -1445,6 +1512,12 @@ TEST_F(RestCatalogTest, FormatTableWithAnUnusableSchemaIsRejectedOnLoad) {
     ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "only_partitions")),
                         "every one of its columns");
 
+    seed("query_auth",
+         R"({"type": "format-table", "file.format": "parquet", "query-auth.enabled": "true"})",
+         R"(["dt"])", default_fields);
+    ASSERT_NOK_WITH_MSG(catalog->GetFormatTable(Identifier("db1", "query_auth")),
+                        "query-auth.enabled is not supported on a format table");
+
     // An option this library does not honour keeps its own status code, so a caller can still
     // tell "not supported yet" from "bad table".
     seed("catalog_partitions",
@@ -1758,6 +1831,504 @@ TEST_F(RestCatalogTest, FileStoreCommitIsBuiltFromTheCatalog) {
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
         ASSERT_GT(state_->get_table_requests, requests_before);
+    }
+}
+
+TEST_F(RestCatalogTest, ReadThroughTheCatalogAppliesItsQueryAuth) {
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::map<std::string, std::string> table_options = {
+        {Options::FILE_FORMAT, "orc"}, {Options::BUCKET, "1"}, {Options::BUCKET_KEY, "f0"}};
+    auto schema = arrow::schema({arrow::field("f0", arrow::int32(), /*nullable=*/false),
+                                 arrow::field("f1", arrow::utf8())});
+    ASSERT_OK(SchemaManager(dir->GetFileSystem(), dir->Str())
+                  .CreateTable(schema, /*partition_keys=*/{}, /*primary_keys=*/{}, table_options)
+                  .status());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir->Str(), table_options, /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(schema->fields()), R"([[1, "a"], [2, "b"]])",
+                                    /*partition_map=*/{}, /*bucket=*/0,
+                                    /*row_kinds=*/{}));
+    ASSERT_OK(
+        helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0, std::nullopt).status());
+
+    MockCatalogState::TableData table_data;
+    table_data.schema_json =
+        R"({"fields": [{"id": 0, "name": "f0", "type": "INT NOT NULL"},)"
+        R"( {"id": 1, "name": "f1", "type": "STRING"}],)"
+        R"( "partitionKeys": [], "primaryKeys": [], "options": {"query-auth.enabled": "true"}})";
+    table_data.path = dir->Str();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> rest_catalog, CreateRestCatalog());
+    ASSERT_OK(rest_catalog->CreateDatabase("db1", {}, false));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1"] = table_data;
+        state_->auth_filter = {
+            R"({"kind": "LEAF", "transform": {"name": "FIELD_REF", "fieldRef": {"index": 0,)"
+            R"( "name": "f0", "type": "INT NOT NULL"}}, "function": "GREATER_THAN",)"
+            R"( "literals": [1]})"};
+        state_->auth_column_masking = {{"f1", R"({"name": "CONCAT", "inputs": ["***"]})"}};
+    }
+    std::shared_ptr<Catalog> catalog(std::move(rest_catalog));
+    const Identifier identifier("db1", "t1");
+
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->get_table_requests = 0;
+    }
+    const QueryAuthCatalog* auth_catalog = AsQueryAuthCatalog(catalog);
+    ASSERT_NE(nullptr, auth_catalog);
+    std::string location;
+    ASSERT_OK(auth_catalog->LoadTableSchemaAndLocation(identifier, &location).status());
+    ASSERT_EQ(dir->Str(), location);
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(1, state_->get_table_requests);
+    }
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ScanContext> scan_context,
+        ScanContextBuilder(dir->Str())
+            .WithCatalog(catalog, identifier)
+            .SetReadFieldNames({"f1"})
+            .SetPredicate(PredicateBuilder::GreaterThan(/*field_index=*/0, "f0", FieldType::INT,
+                                                        Literal(static_cast<int32_t>(0))))
+            .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                         TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(
+            std::vector<std::string>({fmt::format("/v1/{}/databases/db1/tables/t1/auth", kPrefix)}),
+            state_->auth_requests);
+        ASSERT_EQ(1u, state_->auth_request_bodies.size());
+        ASSERT_OK_AND_ASSIGN(AuthTableQueryRequest sent,
+                             AuthTableQueryRequest::FromJsonString(state_->auth_request_bodies[0]));
+        ASSERT_EQ(std::optional<std::vector<std::string>>(std::vector<std::string>{"f1", "f0"}),
+                  sent.GetSelect());
+    }
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ReadContext> read_context,
+        ReadContextBuilder(dir->Str()).AddOption(Options::QUERY_AUTH_ENABLED, "true").Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> chunks,
+                         ReadResultCollector::CollectResult(std::move(reader)));
+    ASSERT_EQ(1, chunks->length());
+    auto rows = checked_pointer_cast<arrow::StructArray>(
+        arrow::Concatenate(chunks->chunks(), arrow::default_memory_pool()).ValueOrDie());
+    ASSERT_EQ(2, checked_pointer_cast<arrow::Int32Array>(rows->GetFieldByName("f0"))->Value(0));
+    ASSERT_EQ("***",
+              checked_pointer_cast<arrow::StringArray>(rows->GetFieldByName("f1"))->GetString(0));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> disabling_read_context,
+                         ReadContextBuilder(dir->Str())
+                             .WithCatalog(catalog, identifier)
+                             .AddOption(Options::QUERY_AUTH_ENABLED, "false")
+                             .Finish());
+    ASSERT_NOK_WITH_MSG(
+        TableRead::Create(std::move(disabling_read_context)),
+        "Invalid: Option 'query-auth.enabled' is not allowed to be disabled dynamically");
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> files_scan_context,
+                         ScanContextBuilder(dir->Str() + "$files")
+                             .WithCatalog(catalog, Identifier("db1", "t1$files"))
+                             .Finish());
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(files_scan_context)),
+                        "NotImplemented: System table 'files' is not supported on a table with "
+                        "'query-auth.enabled=true'");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> options_scan_context,
+                         ScanContextBuilder(dir->Str() + "$options")
+                             .WithCatalog(catalog, Identifier("db1", "t1$options"))
+                             .Finish());
+    ASSERT_OK(TableScan::Create(std::move(options_scan_context)).status());
+
+    // A global system table identifier must not skip the catalog policy of a data table,
+    // including a table whose published schema does not enable query auth.
+    const Identifier system_identifier("sys", "tables");
+    for (const std::string& suffix : {std::string(), std::string("$files")}) {
+        SCOPED_TRACE(suffix);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> mismatched_scan_context,
+                             ScanContextBuilder(dir->Str() + suffix)
+                                 .WithCatalog(catalog, system_identifier)
+                                 .Finish());
+        Status scan_status = TableScan::Create(std::move(mismatched_scan_context)).status();
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> mismatched_read_context,
+                             ReadContextBuilder(dir->Str() + suffix)
+                                 .WithCatalog(catalog, system_identifier)
+                                 .Finish());
+        Status read_status = TableRead::Create(std::move(mismatched_read_context)).status();
+        ASSERT_NOK_WITH_MSG(scan_status, "names a global system table, but the scan targets");
+        ASSERT_NOK_WITH_MSG(read_status, "names a global system table, but the read targets");
+    }
+
+    const std::string global_path = PathUtil::JoinPath(dir->Str(), "sys/catalog_options");
+    const Identifier global_identifier("sys", "catalog_options");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> global_scan_context,
+                         ScanContextBuilder(global_path)
+                             .WithCatalog(catalog, global_identifier)
+                             .AddOption(CatalogOptionsSystemTable::kEnabledOption, "true")
+                             .Finish());
+    ASSERT_OK(TableScan::Create(std::move(global_scan_context)).status());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> global_read_context,
+                         ReadContextBuilder(global_path)
+                             .WithCatalog(catalog, global_identifier)
+                             .AddOption(CatalogOptionsSystemTable::kEnabledOption, "true")
+                             .Finish());
+    ASSERT_OK(TableRead::Create(std::move(global_read_context)).status());
+}
+
+TEST_F(RestCatalogTest, GlobalPartitionsProtectsQueryAuthPartitionValues) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    std::map<std::string, std::string> table_options = {
+        {Options::FILE_FORMAT, "orc"}, {Options::BUCKET, "1"}, {Options::BUCKET_KEY, "v"}};
+    auto schema =
+        arrow::schema({arrow::field("tenant", arrow::utf8()), arrow::field("v", arrow::int32())});
+    SchemaManager schema_manager(dir->GetFileSystem(), dir->Str());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> initial_schema,
+                         schema_manager.CreateTable(schema, /*partition_keys=*/{"tenant"},
+                                                    /*primary_keys=*/{}, table_options));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir->Str(), table_options, /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(schema->fields()), R"([["secret", 1]])",
+                                    /*partition_map=*/{{"tenant", "secret"}}, /*bucket=*/0,
+                                    /*row_kinds=*/{}));
+    ASSERT_OK(
+        helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0, std::nullopt).status());
+
+    MockCatalogState::TableData table_data;
+    ASSERT_OK_AND_ASSIGN(table_data.schema_json, initial_schema->ToJsonString());
+    table_data.path = dir->Str();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1"] = table_data;
+    }
+    GlobalSystemTableContext context;
+    context.catalog = catalog.get();
+    context.fs = dir->GetFileSystem();
+    PartitionsSystemTable partitions(context);
+    ASSERT_OK_AND_ASSIGN(std::vector<GenericRow> rows, partitions.BuildRows());
+    ASSERT_EQ(1u, rows.size());
+    ASSERT_EQ("tenant=secret", rows[0].GetString(2).ToString());
+
+    table_options[Options::QUERY_AUTH_ENABLED] = "true";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> enabled_schema,
+                         TableSchema::Create(/*schema_id=*/1, schema, /*partition_keys=*/{"tenant"},
+                                             /*primary_keys=*/{}, table_options));
+    ASSERT_OK_AND_ASSIGN(std::string enabled_json, enabled_schema->ToJsonString());
+
+    // A disabled policy for the old location must not authorize the recreated table's location.
+    auto old_dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(old_dir);
+    MockCatalogState::TableData recreated = table_data;
+    recreated.schema_json = enabled_json;
+    recreated.id = "2";
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1"].path = old_dir->Str();
+        state_->recreate_table_after_get = recreated;
+    }
+    ASSERT_OK_AND_ASSIGN(rows, partitions.BuildRows());
+    ASSERT_TRUE(rows.empty());
+    ASSERT_OK_AND_ASSIGN(rows, partitions.BuildRows());
+    ASSERT_TRUE(rows.empty());
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1"] = table_data;
+    }
+
+    // The published schema enables query auth before the catalog's schema catches up.
+    ASSERT_OK(dir->GetFileSystem()->WriteFile(
+        PathUtil::JoinPath(schema_manager.SchemaDirectory(), "schema-1"), enabled_json,
+        /*overwrite=*/false));
+    ASSERT_OK_AND_ASSIGN(rows, partitions.BuildRows());
+    ASSERT_TRUE(rows.empty());
+}
+
+TEST_F(RestCatalogTest, QueryAuthRejectsColumnsReplacedOnlyInTheCatalog) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto schema =
+        arrow::schema({arrow::field("f0", arrow::int32()), arrow::field("f1", arrow::utf8())});
+    ASSERT_OK(SchemaManager(dir->GetFileSystem(), dir->Str())
+                  .CreateTable(schema, /*partition_keys=*/{}, /*primary_keys=*/{}, /*options=*/{})
+                  .status());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> rest_catalog, CreateRestCatalog());
+    ASSERT_OK(rest_catalog->CreateDatabase("db1", {}, false));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        MockCatalogState::TableData data;
+        data.path = dir->Str();
+        data.schema_json = R"({"fields": [{"id": 0, "name": "f0", "type": "INT"},)"
+                           R"({"id": 1, "name": "f1", "type": "STRING"}], "partitionKeys": [],)"
+                           R"("primaryKeys": [], "options": {"query-auth.enabled": "true"}})";
+        state_->databases["db1"]["t1"] = data;
+    }
+    std::shared_ptr<Catalog> catalog(std::move(rest_catalog));
+    auto new_scan =
+        [&](const std::vector<std::string>& fields) -> Result<std::unique_ptr<TableScan>> {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context,
+                               ScanContextBuilder(dir->Str())
+                                   .WithCatalog(catalog, Identifier("db1", "t1"))
+                                   .SetReadFieldNames(fields)
+                                   .Finish());
+        return TableScan::Create(std::move(context));
+    };
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, new_scan({"f1"}));
+    ASSERT_OK(scan->CreatePlan().status());
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1"].schema_json =
+            R"({"fields": [{"id": 0, "name": "f0", "type": "INT"},)"
+            R"({"id": 9, "name": "f1", "type": "STRING"}], "partitionKeys": [],)"
+            R"("primaryKeys": [], "options": {"query-auth.enabled": "true"}})";
+    }
+    const std::string replaced =
+        "Column 'f1' is field 1 in schema 0 the scan plans with, but "
+        "field 9 in catalog schema 0";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> stale_scan, new_scan({"f1"}));
+    ASSERT_NOK_WITH_MSG(stale_scan->CreatePlan(), replaced);
+    ASSERT_NOK_WITH_MSG(scan->CreatePlan(), replaced);
+
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->auth_filter = {
+            R"({"kind": "LEAF", "transform": {"name": "FIELD_REF", "fieldRef": {"index": 1,)"
+            R"("name": "f1", "type": "STRING"}}, "function": "IS_NOT_NULL", "literals": []})"};
+    }
+    ASSERT_OK_AND_ASSIGN(scan, new_scan({"f0"}));
+    ASSERT_NOK_WITH_MSG(scan->CreatePlan(), "rules were bound to field 9");
+}
+
+TEST_F(RestCatalogTest, ScanOfABranchFollowsTheQueryAuthOfThatBranch) {
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::map<std::string, std::string> table_options = {
+        {Options::FILE_FORMAT, "orc"}, {Options::BUCKET, "1"}, {Options::BUCKET_KEY, "f0"}};
+    auto schema = arrow::schema({arrow::field("f0", arrow::int32(), /*nullable=*/false),
+                                 arrow::field("f1", arrow::utf8())});
+    for (const std::string& branch : {std::string("main"), std::string("dev")}) {
+        ASSERT_OK(
+            SchemaManager(dir->GetFileSystem(), dir->Str(), branch)
+                .CreateTable(schema, /*partition_keys=*/{}, /*primary_keys=*/{}, table_options)
+                .status());
+    }
+    for (const auto& [branch, rows] : std::vector<std::pair<std::string, std::string>>{
+             {"main", R"([[1, "main-a"], [2, "main-b"]])"},
+             {"dev", R"([[11, "dev-a"], [12, "dev-b"], [13, "dev-c"]])"}}) {
+        std::map<std::string, std::string> options = table_options;
+        if (branch != "main") {
+            options[Options::BRANCH] = branch;
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                             TestHelper::Create(dir->Str(), options, /*is_streaming_mode=*/false));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                             TestHelper::MakeRecordBatch(arrow::struct_(schema->fields()), rows,
+                                                         /*partition_map=*/{}, /*bucket=*/0,
+                                                         /*row_kinds=*/{}));
+        ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0, std::nullopt)
+                      .status());
+    }
+
+    MockCatalogState::TableData dev_data;
+    dev_data.schema_json =
+        R"({"fields": [{"id": 0, "name": "f0", "type": "INT NOT NULL"},)"
+        R"( {"id": 1, "name": "f1", "type": "STRING"}],)"
+        R"( "partitionKeys": [], "primaryKeys": [], "options": {"query-auth.enabled": "true"}})";
+    dev_data.path = dir->Str();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> rest_catalog, CreateRestCatalog());
+    ASSERT_OK(rest_catalog->CreateDatabase("db1", {}, false));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1$branch_dev"] = dev_data;
+        state_->auth_column_masking = {{"f1", R"({"name": "NULL"})"}};
+        state_->auth_rules_by_table["t1$branch_dev"] = {
+            {R"({"kind": "LEAF", "transform": {"name": "FIELD_REF", "fieldRef": {"index": 0,)"
+             R"( "name": "f0", "type": "INT NOT NULL"}}, "function": "GREATER_THAN",)"
+             R"( "literals": [11]})"},
+            {{"f1", R"({"name": "SUBSTRING", "inputs": [{"index": 1, "name": "f1",)"
+                    R"( "type": "STRING"}, 1, 3]})"}}};
+    }
+    std::shared_ptr<Catalog> catalog(std::move(rest_catalog));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                         ScanContextBuilder(dir->Str())
+                             .WithCatalog(catalog, Identifier("db1", "t1"))
+                             .AddOption(Options::BRANCH, "dev")
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                         TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(std::vector<std::string>(
+                      {fmt::format("/v1/{}/databases/db1/tables/t1$branch_dev/auth", kPrefix)}),
+                  state_->auth_requests);
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                         ReadContextBuilder(dir->Str())
+                             .WithCatalog(catalog, Identifier("db1", "t1"))
+                             .AddOption(Options::BRANCH, "dev")
+                             .Finish());
+    ASSERT_EQ(Identifier("db1", "t1$branch_dev"), read_context->GetIdentifier().value());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> chunks,
+                         ReadResultCollector::CollectResult(std::move(reader)));
+    auto rows = checked_pointer_cast<arrow::StructArray>(
+        arrow::Concatenate(chunks->chunks(), arrow::default_memory_pool()).ValueOrDie());
+    ASSERT_TRUE(rows->GetFieldByName("f0")->Equals(
+        *arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), "[12, 13]").ValueOrDie()))
+        << rows->ToString();
+    ASSERT_TRUE(rows->GetFieldByName("f1")->Equals(
+        *arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["dev", "dev"])")
+             .ValueOrDie()))
+        << rows->ToString();
+}
+
+TEST_F(RestCatalogTest, ReadRejectsAFallbackBranchProtectedOnlyByTheCatalog) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto schema = arrow::schema({arrow::field("f0", arrow::int32(), /*nullable=*/false)});
+    for (const std::string branch : {"main", "dev"}) {
+        ASSERT_OK(SchemaManager(dir->GetFileSystem(), dir->Str(), branch)
+                      .CreateTable(schema, /*partition_keys=*/{}, /*primary_keys=*/{},
+                                   {{Options::FILE_FORMAT, "orc"},
+                                    {Options::BUCKET, "1"},
+                                    {Options::BUCKET_KEY, "f0"}})
+                      .status());
+    }
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> rest_catalog, CreateRestCatalog());
+    ASSERT_OK(rest_catalog->CreateDatabase("db1", {}, false));
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        for (const auto& [table, enabled] : std::vector<std::pair<std::string, std::string>>{
+                 {"t1", "true"}, {"t1$branch_dev", "false"}}) {
+            MockCatalogState::TableData data;
+            data.path = dir->Str();
+            data.schema_json =
+                R"({"fields": [{"id": 0, "name": "f0", "type": "INT NOT NULL"}],)"
+                R"("partitionKeys": [], "primaryKeys": [], "options": {"query-auth.enabled": ")" +
+                enabled + R"("}})";
+            state_->databases["db1"][table] = data;
+        }
+    }
+    std::shared_ptr<Catalog> catalog(std::move(rest_catalog));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                         ReadContextBuilder(dir->Str())
+                             .WithCatalog(catalog, Identifier("db1", "t1"))
+                             .WithBranch("dev")
+                             .AddOption(Options::SCAN_FALLBACK_BRANCH, "main")
+                             .Finish());
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
+                        "Cannot read fallback branch 'main', which enables 'query-auth.enabled'");
+    for (const auto& [branch, message] : std::vector<std::pair<std::string, std::string>>{
+             {"MAIN", "a catalog names branch 'MAIN' as it names the main branch"},
+             {"dev$options", "a branch a catalog addresses cannot contain '$'"}}) {
+        ASSERT_OK_AND_ASSIGN(read_context, ReadContextBuilder(dir->Str())
+                                               .WithCatalog(catalog, Identifier("db1", "t1"))
+                                               .WithBranch("dev")
+                                               .AddOption(Options::SCAN_FALLBACK_BRANCH, branch)
+                                               .Finish());
+        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)), message);
+    }
+}
+
+TEST_F(RestCatalogTest, AuthTableQueryParsesTheRules) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    MockCatalogState::TableData table_data;
+    table_data.schema_json =
+        R"({"fields": [{"id": 0, "name": "f1", "type": "STRING"}], "partitionKeys": [],)"
+        R"( "primaryKeys": [], "options": {"query-auth.enabled": "true"}})";
+    table_data.path = "wh1/db1.db/t1";
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1"] = table_data;
+        state_->databases["db1"]["t1$branch_b1"] = table_data;
+        state_->auth_column_masking = {{"f1", R"({"name": "NULL"})"}};
+    }
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableQueryAuthResult> result,
+        catalog->AuthTableQuery(Identifier("db1", "t1$branch_b1"), std::vector<std::string>{"f1"}));
+    ASSERT_EQ(std::set<std::string>({"f1"}), result->MaskedFields());
+    ASSERT_EQ(nullptr, result->RowFilter());
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(fmt::format("/v1/{}/databases/db1/tables/t1$branch_b1/auth", kPrefix),
+                  state_->auth_requests.back());
+        state_->auth_column_masking = {{"f1", R"({"name": "UPPER", "inputs": []})"}};
+    }
+    Status unknown = catalog->AuthTableQuery(Identifier("db1", "t1"), std::nullopt).status();
+    ASSERT_TRUE(unknown.IsNotImplemented()) << unknown.ToString();
+    ASSERT_NOK_WITH_MSG(catalog->AuthTableQuery(Identifier("db1", "t1$files"), std::nullopt),
+                        "authTable");
+
+    table_data.is_external = true;
+    size_t auth_requests = 0;
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["external"] = table_data;
+        auth_requests = state_->auth_requests.size();
+    }
+    ASSERT_OK_AND_ASSIGN(result,
+                         catalog->AuthTableQuery(Identifier("db1", "external"), std::nullopt));
+    ASSERT_FALSE(result->HasRules());
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(auth_requests, state_->auth_requests.size());
+    }
+    ASSERT_NOK(catalog->AuthTableQuery(Identifier("db1", "missing"), std::nullopt));
+}
+
+TEST_F(RestCatalogTest, AuthTableQueryRetriesAnUnavailableServerButNotARefusal) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog,
+                         CreateRestCatalog(FastRetryConfig()));
+    MockCatalogState::TableData table_data;
+    table_data.schema_json =
+        R"({"fields": [{"id": 0, "name": "f1", "type": "STRING"}], "partitionKeys": [],)"
+        R"( "primaryKeys": [], "options": {"query-auth.enabled": "true"}})";
+    table_data.path = "wh1/db1.db/t1";
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["t1$branch_b1"] = table_data;
+        state_->auth_column_masking = {{"f1", R"({"name": "NULL"})"}};
+        state_->auth_error_codes = {503};
+    }
+    const Identifier identifier("db1", "t1$branch_b1");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableQueryAuthResult> result,
+                         catalog->AuthTableQuery(identifier, std::vector<std::string>{"f1"}));
+    ASSERT_EQ(std::set<std::string>({"f1"}), result->MaskedFields());
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        const std::string path =
+            fmt::format("/v1/{}/databases/db1/tables/t1$branch_b1/auth", kPrefix);
+        ASSERT_EQ(std::vector<std::string>({path, path}), state_->auth_requests);
+        ASSERT_EQ(state_->auth_request_bodies[0], state_->auth_request_bodies[1]);
+        ASSERT_OK_AND_ASSIGN(AuthTableQueryRequest sent,
+                             AuthTableQueryRequest::FromJsonString(state_->auth_request_bodies[1]));
+        ASSERT_TRUE(sent.GetSelect());
+        ASSERT_EQ(std::vector<std::string>({"f1"}), sent.GetSelect().value());
+        state_->auth_error_codes = {403};
+    }
+    ASSERT_NOK_WITH_MSG(catalog->AuthTableQuery(identifier, std::vector<std::string>{"f1"}),
+                        "forbidden");
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        ASSERT_EQ(3u, state_->auth_requests.size());
     }
 }
 
@@ -2528,6 +3099,72 @@ TEST(RestApiErrorTest, PagedListingStopsOnEmptyPageWithToken) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> databases, api->ListDatabases());
     ASSERT_TRUE(databases.empty());
     ASSERT_EQ(1, request_count.load());
+}
+
+TEST(RestApiTest, AuthTableQuery) {
+    std::mutex mutex;
+    std::vector<MockRestServer::Request> requests;
+    std::atomic<int32_t> response_code{200};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<MockRestServer> server,
+                         MockRestServer::Start([&](const MockRestServer::Request& request) {
+                             {
+                                 std::lock_guard<std::mutex> guard(mutex);
+                                 requests.push_back(request);
+                             }
+                             MockRestServer::Response response;
+                             response.code = response_code.load();
+                             if (response.code == 200) {
+                                 response.body =
+                                     R"({"filter": ["f1", "f2"], "columnMasking": {"name": "m1"}})";
+                             } else {
+                                 response.body = fmt::format(
+                                     R"({{"message": "refused", "code": {}}})", response.code);
+                             }
+                             return response;
+                         }));
+    std::map<std::string, std::string> options = {
+        {CatalogOptions::URI, server->GetBaseUri()},
+        {CatalogOptions::TOKEN_PROVIDER, "bear"},
+        {CatalogOptions::TOKEN, kToken},
+        {RestApi::kOptionUrlPrefix, "p1"},
+    };
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestApi> api,
+                         RestApi::Create(options, "", /*config_required=*/false));
+
+    ASSERT_OK_AND_ASSIGN(
+        AuthTableQueryResponse response,
+        api->AuthTableQuery(Identifier("db1", "t1$branch_b1"), std::vector<std::string>{"id"}));
+    ASSERT_EQ(std::vector<std::string>({"f1", "f2"}), response.GetFilter());
+    ASSERT_EQ((std::map<std::string, std::string>{{"name", "m1"}}), response.GetColumnMasking());
+    ASSERT_OK_AND_ASSIGN(AuthTableQueryResponse all_columns,
+                         api->AuthTableQuery(Identifier("db1", "t1"), std::nullopt));
+    ASSERT_EQ(response.GetFilter(), all_columns.GetFilter());
+    {
+        std::lock_guard<std::mutex> guard(mutex);
+        ASSERT_EQ(2u, requests.size());
+        ASSERT_EQ("POST", requests[0].method);
+        ASSERT_EQ("/v1/p1/databases/db1/tables/t1$branch_b1/auth", requests[0].path);
+        ASSERT_OK_AND_ASSIGN(AuthTableQueryRequest sent,
+                             AuthTableQueryRequest::FromJsonString(requests[0].body));
+        ASSERT_EQ(std::optional<std::vector<std::string>>(std::vector<std::string>{"id"}),
+                  sent.GetSelect());
+        ASSERT_EQ("/v1/p1/databases/db1/tables/t1/auth", requests[1].path);
+        ASSERT_OK_AND_ASSIGN(AuthTableQueryRequest sent_all_columns,
+                             AuthTableQueryRequest::FromJsonString(requests[1].body));
+        ASSERT_FALSE(sent_all_columns.GetSelect());
+    }
+
+    response_code = 404;
+    Status not_exist = api->AuthTableQuery(Identifier("db1", "t1"), std::nullopt).status();
+    ASSERT_TRUE(not_exist.IsNotExist()) << not_exist.ToString();
+    response_code = 403;
+    Status forbidden = api->AuthTableQuery(Identifier("db1", "t1"), std::nullopt).status();
+    ASSERT_TRUE(forbidden.IsIOError()) << forbidden.ToString();
+    ASSERT_NE(nullptr, forbidden.detail());
+    ASSERT_EQ(403, static_cast<const RestErrorDetail*>(forbidden.detail().get())->GetCode());
+    response_code = 501;
+    Status not_implemented = api->AuthTableQuery(Identifier("db1", "t1"), std::nullopt).status();
+    ASSERT_TRUE(not_implemented.IsNotImplemented()) << not_implemented.ToString();
 }
 
 }  // namespace paimon::test

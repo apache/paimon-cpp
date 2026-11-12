@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <variant>
 
 #include "arrow/api.h"
@@ -423,6 +424,38 @@ TEST_F(LiteralConverterTest, TestDateLiteral) {
                          Literal(FieldType::DATE, -5l), Literal(FieldType::DATE)});
 }
 
+TEST_F(LiteralConverterTest, TestTimeLiteral) {
+    auto time_type = arrow::time32(arrow::TimeUnit::MILLI);
+    auto field_array =
+        arrow::ipc::internal::json::ArrayFromJSON(time_type, R"([0, 123, 86399999, null])")
+            .ValueOrDie();
+    CheckResult(field_array, std::vector<Literal>(
+                                 {Literal(FieldType::TIME, 0), Literal(FieldType::TIME, 123),
+                                  Literal(FieldType::TIME, 86399999), Literal(FieldType::TIME)}));
+    CheckLiteralsFromString(
+        FieldType::TIME, {"0", "00:00:00", "00:00:00.123", "23:59:59.999", "01:02:03"},
+        std::vector<Literal>({Literal(FieldType::TIME, 0), Literal(FieldType::TIME, 0),
+                              Literal(FieldType::TIME, 123), Literal(FieldType::TIME, 86399999),
+                              Literal(FieldType::TIME, 3723000)}));
+    ASSERT_NOK(LiteralConverter::ConvertLiteralsFromString(FieldType::TIME, "24:00:00"));
+
+    CheckLiteralFromRow(time_type, {0, 123, 86399999, NullType()}, FieldType::TIME,
+                        {Literal(FieldType::TIME, 0), Literal(FieldType::TIME, 123),
+                         Literal(FieldType::TIME, 86399999), Literal(FieldType::TIME)});
+
+    CheckLiteralsToArray(
+        FieldType::TIME,
+        {Literal(FieldType::TIME, 0), Literal(FieldType::TIME), Literal(FieldType::TIME, 123)},
+        arrow::ipc::internal::json::ArrayFromJSON(time_type, R"([0, null, 123])").ValueOrDie());
+
+    auto seconds_array = arrow::ipc::internal::json::ArrayFromJSON(
+                             arrow::time32(arrow::TimeUnit::SECOND), R"([1, null])")
+                             .ValueOrDie();
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsFromArray(*seconds_array, /*own_data=*/true),
+        "TIME literals require time32[ms]");
+}
+
 TEST_F(LiteralConverterTest, TestInvalidType) {
     auto field_array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::large_utf8(), R"(["apple", "苹果", null])")
@@ -595,6 +628,38 @@ TEST_F(LiteralConverterTest, TestLiteralsToArrayWithoutValue) {
     CheckLiteralsToArray(
         FieldType::STRING, {Literal(FieldType::STRING), Literal(FieldType::STRING)},
         arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"([null, null])").ValueOrDie());
+}
+
+TEST_F(LiteralConverterTest, TestLiteralsToArrayRejectsTimestampsOutOfRange) {
+    // INT64_MAX and INT64_MIN epoch nanoseconds
+    CheckLiteralsToArray(
+        FieldType::TIMESTAMP,
+        {Literal(Timestamp(9223372036854l, 775807)), Literal(Timestamp(-9223372036855l, 224192))},
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::timestamp(arrow::TimeUnit::NANO),
+                                                  R"([9223372036854775807, -9223372036854775808])")
+            .ValueOrDie());
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(
+                            FieldType::TIMESTAMP, {Literal(Timestamp(9223372036854l, 775808))},
+                            arrow::default_memory_pool()),
+                        "does not fit int64");
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(
+                            FieldType::TIMESTAMP, {Literal(Timestamp(-9223372036855l, 224191))},
+                            arrow::default_memory_pool()),
+                        "does not fit int64");
+    // 2500-01-01T00:00:00.000000001, beyond epoch nanoseconds
+    ASSERT_NOK_WITH_MSG(LiteralConverter::ConvertLiteralsToArray(
+                            FieldType::TIMESTAMP, {Literal(Timestamp(16725225600000l, 1))},
+                            arrow::default_memory_pool()),
+                        "does not fit int64");
+    CheckLiteralsToArray(FieldType::TIMESTAMP, {Literal(Timestamp(16725225600000l, 1000))},
+                         arrow::ipc::internal::json::ArrayFromJSON(
+                             arrow::timestamp(arrow::TimeUnit::MICRO), R"([16725225600000001])")
+                             .ValueOrDie());
+    ASSERT_NOK_WITH_MSG(
+        LiteralConverter::ConvertLiteralsToArray(
+            FieldType::TIMESTAMP, {Literal(Timestamp(std::numeric_limits<int64_t>::max(), 1000))},
+            arrow::default_memory_pool()),
+        "does not fit int64");
 }
 
 TEST_F(LiteralConverterTest, TestLiteralsToArrayUnsupportedType) {

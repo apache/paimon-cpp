@@ -18,6 +18,8 @@
 
 #include "paimon/core/realtime/realtime_deduplicate_writer.h"
 
+#include <algorithm>
+#include <iterator>
 #include <optional>
 #include <utility>
 
@@ -311,6 +313,23 @@ Status RealtimeDeduplicateWriter::Close() {
 bool RealtimeDeduplicateWriter::HasUnpreparedRealtimeData() const {
     std::lock_guard<std::mutex> lock(realtime_store_mutex_);
     return has_building_data_ || !sealed_segments_.empty();
+}
+
+void RealtimeDeduplicateWriter::ReleaseCommittedRealtimeSegments(int64_t committed_end_offset) {
+    std::vector<std::shared_ptr<RealtimeSegmentHandle>> retired_segments;
+    {
+        std::lock_guard<std::mutex> prepare_lock(prepare_mutex_);
+        std::lock_guard<std::mutex> store_lock(realtime_store_mutex_);
+        auto retained_end = std::stable_partition(
+            sealed_segments_.begin(), sealed_segments_.end(),
+            [committed_end_offset](const std::shared_ptr<RealtimeSegmentHandle>& segment) {
+                return segment->GetOffsetRange().end > committed_end_offset;
+            });
+        retired_segments.assign(std::make_move_iterator(retained_end),
+                                std::make_move_iterator(sealed_segments_.end()));
+        sealed_segments_.erase(retained_end, sealed_segments_.end());
+    }
+    // Release Arrow buffers and spill files without holding the writer locks.
 }
 
 std::shared_ptr<Metrics> RealtimeDeduplicateWriter::GetMetrics() const {

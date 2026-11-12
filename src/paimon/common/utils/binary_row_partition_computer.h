@@ -97,6 +97,9 @@ class BinaryRowPartitionComputer {
     static Result<arrow::Type::type> GetTypeFromArrowSchema(
         const std::shared_ptr<arrow::Schema>& schema, const std::string& field_name);
 
+    /// Returns the declared precision of a TIME field, and 0 for any other field.
+    static Result<int32_t> GetTimePrecision(const arrow::Field& field);
+
     std::shared_ptr<MemoryPool> memory_pool_;
     std::vector<std::string> partition_keys_;
     std::shared_ptr<arrow::Schema> schema_;

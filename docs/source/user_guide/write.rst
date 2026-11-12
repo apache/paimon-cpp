@@ -38,6 +38,21 @@ Parquet, and Avro, thereby improving write throughput.
   the files it ignored. See :doc:`compaction` for the ``full-compaction`` and
   ``lookup`` producers.
 
+External Data Paths
+-------------------
+
+Set ``data-file.external-paths`` to comma-separated roots and
+``data-file.external-paths.strategy`` to ``round-robin`` to distribute new files
+across them. For weighted random selection, set the strategy to ``weight-robin`` and
+``data-file.external-paths.weights`` to positive integers in the same order as
+the paths. For example, ``10,5,15`` selects three roots with probabilities
+``1/3``, ``1/6``, and ``1/2``. These are probabilities per file, not byte quotas.
+
+Without weights, ``weight-robin`` falls back to round robin. A single external path
+always uses that path. With multiple paths and configured weights, the number
+of weights must equal the number of paths. The default strategy is ``none``,
+which writes to the table directory.
+
 Bucketing Modes
 ---------------
 

@@ -19,7 +19,9 @@
 
 #include "paimon/core/realtime/realtime_append_only_writer.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -120,7 +122,7 @@ Status RealtimeAppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
 
 // TODO(xinyu.lxy): Refactor the shared seal logic with RealtimePrimaryKeyWriter.
 Status RealtimeAppendOnlyWriter::SealCurrentSegment(bool allow_spill) {
-    auto* two_phase = dynamic_cast<RealtimeStoreTwoPhaseSeal*>(realtime_store_.get());
+    auto* two_phase = dynamic_cast<TwoPhaseSealableRealtimeStore*>(realtime_store_.get());
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
                            !allow_spill && two_phase ? two_phase->FreezeBuildingSegment()
                                                      : realtime_store_->SealForCommit());
@@ -239,6 +241,23 @@ Status RealtimeAppendOnlyWriter::Close() {
 bool RealtimeAppendOnlyWriter::HasUnpreparedRealtimeData() const {
     std::lock_guard<std::mutex> lock(realtime_store_mutex_);
     return has_building_data_ || !sealed_segments_.empty();
+}
+
+void RealtimeAppendOnlyWriter::ReleaseCommittedRealtimeSegments(int64_t committed_end_offset) {
+    std::vector<std::shared_ptr<RealtimeSegmentHandle>> retired_segments;
+    {
+        std::lock_guard<std::mutex> prepare_lock(prepare_mutex_);
+        std::lock_guard<std::mutex> store_lock(realtime_store_mutex_);
+        auto retained_end = std::stable_partition(
+            sealed_segments_.begin(), sealed_segments_.end(),
+            [committed_end_offset](const std::shared_ptr<RealtimeSegmentHandle>& segment) {
+                return segment->GetOffsetRange().end > committed_end_offset;
+            });
+        retired_segments.assign(std::make_move_iterator(retained_end),
+                                std::make_move_iterator(sealed_segments_.end()));
+        sealed_segments_.erase(retained_end, sealed_segments_.end());
+    }
+    // Release Arrow buffers and spill files without holding the writer locks.
 }
 
 std::shared_ptr<Metrics> RealtimeAppendOnlyWriter::GetMetrics() const {

@@ -72,14 +72,15 @@ std::shared_ptr<arrow::Schema> NestedStoreWriteSchema() {
                      1)});
 }
 
-std::shared_ptr<ArrowRealtimeStore> CreateStore(
+Result<std::shared_ptr<ArrowRealtimeStore>> CreateStore(
     const std::shared_ptr<arrow::Schema>& schema, const std::shared_ptr<MemoryPool>& pool,
     StatisticsMode statistics_mode = StatisticsMode::NONE, const std::string& temp_directory = "",
     const std::shared_ptr<FileSystem>& spill_file_system = nullptr) {
-    return std::make_shared<ArrowRealtimeStore>(
-        schema, RealtimeStoreMode::PRIMARY_KEY, statistics_mode, temp_directory, spill_file_system,
-        /*spill_compression=*/"zstd",
-        /*spill_compression_level=*/1, pool, GetArrowPool(pool));
+    return ArrowRealtimeStore::Create(schema, RealtimeStoreMode::PRIMARY_KEY, statistics_mode,
+                                      temp_directory, spill_file_system,
+                                      /*spill_compression=*/"zstd",
+                                      /*spill_compression_level=*/1,
+                                      /*index_options=*/{}, pool, GetArrowPool(pool));
 }
 
 std::unique_ptr<RecordBatch> MakeBatch(const std::string& json) {
@@ -138,7 +139,8 @@ Result<std::shared_ptr<arrow::Array>> ArrayFromJson(const std::shared_ptr<arrow:
 }
 
 TEST(PrimaryKeyRealtimeStoreTest, TestWriteAndSealValidation) {
-    std::shared_ptr<ArrowRealtimeStore> store = CreateStore(StoreWriteSchema(), GetDefaultPool());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ArrowRealtimeStore> store,
+                         CreateStore(StoreWriteSchema(), GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
                          store->SealForCommit());
     ASSERT_FALSE(segment.has_value());
@@ -166,7 +168,8 @@ TEST(PrimaryKeyRealtimeStoreTest, TestWriteAndSealValidation) {
 }
 
 TEST(PrimaryKeyRealtimeStoreTest, TestCommitReaderPerStoredBatch) {
-    std::shared_ptr<ArrowRealtimeStore> store = CreateStore(StoreWriteSchema(), GetDefaultPool());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ArrowRealtimeStore> store,
+                         CreateStore(StoreWriteSchema(), GetDefaultPool()));
     ASSERT_OK(store->Write(RealtimeWriteBatch{
         MakeBatch(R"([[6, 1, 1, 1, "before"], [5, 0, 0, 3, "three"]])"), OffsetRange(0, 2)}));
     ASSERT_OK(store->Write(
@@ -188,9 +191,9 @@ TEST(PrimaryKeyRealtimeStoreTest, TestCommitReaderPerStoredBatch) {
 TEST(PrimaryKeyRealtimeStoreTest, TestSpilledFileReturnsOneIndependentReaderPerStoredBatch) {
     std::unique_ptr<UniqueTestDirectory> temp_directory = UniqueTestDirectory::Create();
     ASSERT_NE(nullptr, temp_directory);
-    std::shared_ptr<ArrowRealtimeStore> store =
-        CreateStore(StoreWriteSchema(), GetDefaultPool(), StatisticsMode::NONE,
-                    temp_directory->Str(), temp_directory->GetFileSystem());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ArrowRealtimeStore> store,
+                         CreateStore(StoreWriteSchema(), GetDefaultPool(), StatisticsMode::NONE,
+                                     temp_directory->Str(), temp_directory->GetFileSystem()));
     ASSERT_OK(store->Write(RealtimeWriteBatch{
         MakeBatch(R"([[6, 1, 1, 1, "before"], [5, 0, 0, 3, "three"]])"), OffsetRange(0, 2)}));
     ASSERT_OK(store->Write(
@@ -215,7 +218,9 @@ TEST(PrimaryKeyRealtimeStoreTest, TestSpilledFileReturnsOneIndependentReaderPerS
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store->AcquireReadView());
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*StoreWriteSchema(), c_schema.get()).ok());
-    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr,
+    RealtimeQueryContext context{c_schema.get(),
+                                 /*predicate=*/nullptr,
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0)),
                                  /*read_batch_size=*/1};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> query_readers,
                          store->CreateQueryReaders(view, context));
@@ -277,7 +282,8 @@ void AssertSlicedBatch(BatchReader* reader) {
 
 TEST(PrimaryKeyRealtimeStoreTest, TestSlicedReadersExportZeroOffsets) {
     std::shared_ptr<arrow::Schema> schema = NestedStoreWriteSchema();
-    std::shared_ptr<ArrowRealtimeStore> store = CreateStore(schema, GetDefaultPool());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ArrowRealtimeStore> store,
+                         CreateStore(schema, GetDefaultPool()));
     ASSERT_OK(store->Write(RealtimeWriteBatch{
         MakeSlicedBatch(
             schema,
@@ -295,14 +301,17 @@ TEST(PrimaryKeyRealtimeStoreTest, TestSlicedReadersExportZeroOffsets) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store->AcquireReadView());
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*schema, c_schema.get()).ok());
-    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
+    RealtimeQueryContext context{c_schema.get(),
+                                 /*predicate=*/nullptr,
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
     ASSERT_OK_AND_ASSIGN(readers, store->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
     AssertSlicedBatch(readers[0].get());
 }
 
 TEST(PrimaryKeyRealtimeStoreTest, TestReclaimKeepsReadView) {
-    std::shared_ptr<ArrowRealtimeStore> store = CreateStore(StoreWriteSchema(), GetDefaultPool());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ArrowRealtimeStore> store,
+                         CreateStore(StoreWriteSchema(), GetDefaultPool()));
     ASSERT_OK(
         store->Write(RealtimeWriteBatch{MakeBatch(R"([[0, 0, 4, 1, "one"]])"), OffsetRange(4, 5)}));
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
@@ -339,7 +348,9 @@ TEST(PrimaryKeyRealtimeStoreTest, TestReclaimKeepsReadView) {
 
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*StoreWriteSchema(), c_schema.get()).ok());
-    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
+    RealtimeQueryContext context{c_schema.get(),
+                                 /*predicate=*/nullptr,
+                                 retained_view->GetOffsetRange().value_or(OffsetRange(0, 0))};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(retained_view, context));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> actual, ReadArray(std::move(readers)));
@@ -351,7 +362,8 @@ TEST(PrimaryKeyRealtimeStoreTest, TestReclaimKeepsReadView) {
 }
 
 TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderPerStoredBatch) {
-    std::shared_ptr<ArrowRealtimeStore> store = CreateStore(StoreWriteSchema(), GetDefaultPool());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ArrowRealtimeStore> store,
+                         CreateStore(StoreWriteSchema(), GetDefaultPool()));
     ASSERT_OK(
         store->Write(RealtimeWriteBatch{MakeBatch(R"([[1, 0, 0, 2, "two"]])"), OffsetRange(0, 1)}));
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
@@ -362,7 +374,9 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderPerStoredBatch) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> view, store->AcquireReadView());
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*StoreWriteSchema(), c_schema.get()).ok());
-    RealtimeQueryContext context{/*read_schema=*/c_schema.get(), /*predicate=*/nullptr};
+    RealtimeQueryContext context{/*read_schema=*/c_schema.get(),
+                                 /*predicate=*/nullptr,
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(view, context));
     ASSERT_EQ(2, readers.size());
@@ -374,8 +388,8 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderPerStoredBatch) {
 }
 
 TEST(PrimaryKeyRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingStoredBatch) {
-    std::shared_ptr<ArrowRealtimeStore> store =
-        CreateStore(StoreWriteSchema(), GetDefaultPool(), StatisticsMode::FULL);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ArrowRealtimeStore> store,
+                         CreateStore(StoreWriteSchema(), GetDefaultPool(), StatisticsMode::FULL));
     ASSERT_OK(store->Write(RealtimeWriteBatch{
         MakeBatch(R"([[1, 0, 0, 1, "one"], [2, 0, 1, 2, "two"]])"), OffsetRange(0, 2)}));
     ASSERT_OK(store->Write(RealtimeWriteBatch{
@@ -386,7 +400,8 @@ TEST(PrimaryKeyRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingStoredBatch
     ASSERT_TRUE(arrow::ExportSchema(*StoreWriteSchema(), c_schema.get()).ok());
     std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
         /*field_index=*/3, /*field_name=*/"id", FieldType::BIGINT, Literal(int64_t{10}));
-    RealtimeQueryContext context{c_schema.get(), predicate};
+    RealtimeQueryContext context{c_schema.get(), predicate,
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
@@ -414,7 +429,9 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryBatchOutlivesStoreAndReader) {
 
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*stored_schema, c_schema.get()).ok());
-    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
+    RealtimeQueryContext context{c_schema.get(),
+                                 /*predicate=*/nullptr,
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
@@ -450,7 +467,8 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderProjectsNestedFields) {
         FieldWithId("items", arrow::list(arrow::struct_({stored_a, stored_b})), 2),
         FieldWithId("attrs", arrow::map(arrow::utf8(), arrow::struct_({stored_x, stored_y})), 3)};
     std::shared_ptr<arrow::Schema> stored_schema = CreateStoreWriteSchema(stored_value_fields);
-    std::shared_ptr<ArrowRealtimeStore> store = CreateStore(stored_schema, GetDefaultPool());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ArrowRealtimeStore> store,
+                         CreateStore(stored_schema, GetDefaultPool()));
     ASSERT_OK(store->Write(RealtimeWriteBatch{
         MakeSlicedBatch(
             stored_schema,
@@ -469,7 +487,9 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderProjectsNestedFields) {
         CreateStoreWriteSchema(requested_value_fields);
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*requested_schema, c_schema.get()).ok());
-    RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
+    RealtimeQueryContext context{c_schema.get(),
+                                 /*predicate=*/nullptr,
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(view, context));
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, readers[0]->NextBatch());

@@ -97,6 +97,12 @@ class FileStoreTable : public Table {
         std::unique_ptr<CommitContext> context) const override;
 
  private:
+    Result<std::unique_ptr<TableScan>> NewScan(const std::shared_ptr<ScanContext>& context,
+                                               bool query_auth_applied) const;
+
+    Result<std::unique_ptr<TableRead>> NewRead(const std::shared_ptr<ReadContext>& context,
+                                               bool query_auth_applied) const;
+
     static Result<std::shared_ptr<FileStoreTable>> CreateWithOptions(
         const std::shared_ptr<FileSystem>& specified_file_system, const std::string& root_path,
         const std::shared_ptr<TableSchema>& schema, const Identifier& identifier,

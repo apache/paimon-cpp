@@ -237,6 +237,13 @@ TEST(DataDefineTest, VariantValueToLiteral) {
         ASSERT_EQ(literal.GetValue<int32_t>(), 100000);
     }
     {
+        // TIME32
+        VariantType value = static_cast<int32_t>(45296123);
+        ASSERT_OK_AND_ASSIGN(auto literal,
+                             DataDefine::VariantValueToLiteral(value, arrow::Type::type::TIME32));
+        ASSERT_EQ(literal, Literal(FieldType::TIME, 45296123));
+    }
+    {
         // INT64
         VariantType value = static_cast<int64_t>(123456789L);
         ASSERT_OK_AND_ASSIGN(auto literal,

@@ -246,13 +246,19 @@ Result<std::shared_ptr<Table>> TableFactory::Create(const ScanContext* context) 
     if (context->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(tmp_options.GetBranch()));
     }
+    std::map<std::string, std::string> read_options;
+    PAIMON_ASSIGN_OR_RAISE(
+        read_options,
+        CatalogUtils::ResolveQueryAuthReadOptions(
+            context->GetCatalog(), context->GetIdentifier(), context->GetOptions(),
+            BranchManager::NormalizeBranch(tmp_options.GetBranch()), tmp_options.GetFileSystem(),
+            context->GetPath(), context->GetSpecificTableSchema().has_value(), "scan"));
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(context->GetPath()));
     if (system_table_path) {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<SystemTable> system_table,
-            SystemTableLoader::LoadFromPath(tmp_options.GetFileSystem(), context->GetPath(),
-                                            context->GetOptions()));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
+                               SystemTableLoader::LoadFromPath(tmp_options.GetFileSystem(),
+                                                               context->GetPath(), read_options));
         return std::shared_ptr<Table>(system_table);
     }
     // A format table is planned by listing directories, so it never reaches the manifest path
@@ -263,7 +269,7 @@ Result<std::shared_ptr<Table>> TableFactory::Create(const ScanContext* context) 
         std::shared_ptr<FormatTable> format_table,
         FormatTableLoader::TryLoad(tmp_options.GetFileSystem(), context->GetPath(),
                                    BranchManager::NormalizeBranch(tmp_options.GetBranch()),
-                                   context->GetOptions(), context->GetSpecificTableSchema(),
+                                   read_options, context->GetSpecificTableSchema(),
                                    /*schema_manager=*/nullptr, &latest_schema));
     if (format_table != nullptr) {
         return std::shared_ptr<Table>(format_table);
@@ -272,7 +278,7 @@ Result<std::shared_ptr<Table>> TableFactory::Create(const ScanContext* context) 
         return Status::Invalid("not found latest schema");
     }
     auto options_map = latest_schema->Options();
-    for (const auto& [key, value] : context->GetOptions()) {
+    for (const auto& [key, value] : read_options) {
         options_map[key] = value;
     }
     PAIMON_ASSIGN_OR_RAISE(
@@ -300,6 +306,13 @@ Result<std::shared_ptr<Table>> TableFactory::Create(const ReadContext* context) 
         CoreOptions tmp_core_options,
         CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(),
                              context->GetFileSystemSchemeToIdentifierMap()));
+    std::map<std::string, std::string> read_options;
+    PAIMON_ASSIGN_OR_RAISE(
+        read_options,
+        CatalogUtils::ResolveQueryAuthReadOptions(
+            context->GetCatalog(), context->GetIdentifier(), context->GetOptions(),
+            context->GetBranch(), tmp_core_options.GetFileSystem(), context->GetPath(),
+            context->GetSpecificTableSchema().has_value(), "read"));
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(context->GetPath()));
     if (system_table_path) {
@@ -307,11 +320,10 @@ Result<std::shared_ptr<Table>> TableFactory::Create(const ReadContext* context) 
             return Status::NotImplemented(
                 "Precise file-index evaluation is not supported for system tables");
         }
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<SystemTable> system_table,
-            SystemTableLoader::LoadFromPath(tmp_core_options.GetFileSystem(), context->GetPath(),
-                                            context->GetOptions(),
-                                            context->GetFileSystemSchemeToIdentifierMap()));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
+                               SystemTableLoader::LoadFromPath(
+                                   tmp_core_options.GetFileSystem(), context->GetPath(),
+                                   read_options, context->GetFileSystemSchemeToIdentifierMap()));
         return std::shared_ptr<Table>(system_table);
     }
 
@@ -322,7 +334,7 @@ Result<std::shared_ptr<Table>> TableFactory::Create(const ReadContext* context) 
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FormatTable> format_table,
         FormatTableLoader::TryLoad(tmp_core_options.GetFileSystem(), context->GetPath(),
-                                   context->GetBranch(), context->GetOptions(),
+                                   context->GetBranch(), read_options,
                                    context->GetSpecificTableSchema(),
                                    /*schema_manager=*/nullptr, &latest_schema));
     if (format_table != nullptr) {
@@ -333,7 +345,7 @@ Result<std::shared_ptr<Table>> TableFactory::Create(const ReadContext* context) 
         return Status::Invalid("not found latest schema");
     }
     auto options_map = latest_schema->Options();
-    for (const auto& [key, value] : context->GetOptions()) {
+    for (const auto& [key, value] : read_options) {
         options_map[key] = value;
     }
     PAIMON_ASSIGN_OR_RAISE(

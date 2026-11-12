@@ -228,8 +228,21 @@ TEST(DataTypeJsonParserTest, ParseTypeRowTypeGeneratesMissingFieldIds) {
     }
 }
 
+TEST(DataTypeJsonParserTest, ParseTypeRejectsEmbeddedNul) {
+    for (const char* json :
+         {R"("INT\u0000suffix")", R"({"type": "ARRAY\u0000suffix", "element": "INT"})",
+          R"({"type": "ARRAY", "element": "STRING\u0000suffix"})"}) {
+        rapidjson::Document doc;
+        doc.Parse(json);
+        ASSERT_FALSE(doc.HasParseError());
+        ASSERT_NOK(DataTypeJsonParser::ParseType("field", doc));
+    }
+}
+
 TEST(DataTypeJsonParserTest, ParseTypeComplexTypeFailure) {
     const std::vector<std::pair<const char*, const char*>> test_cases = {
+        {R"({"type":123})", "complex data type must have a string type"},
+        {R"({"element":"INT"})", "complex data type must have a string type"},
         {R"({"type":"ROW"})", "row data type must have fields"},
         {R"({"type":"ROW","fields":{}})", "row data type must have fields"},
         {R"({"type":"ROW","fields":[null]})", "data field must be an object"},
@@ -287,6 +300,8 @@ TEST(DataTypeJsonParserTest, ParseTypeAtomicTypeSuccess) {
         {"NUMERIC", arrow::decimal128(10, 0)},
         {"NUMERIC(10)", arrow::decimal128(10, 0)},
         {"NUMERIC(10, 3)", arrow::decimal128(10, 3)},
+        {"DECIMAL(1, 0)", arrow::decimal128(1, 0)},
+        {"DECIMAL(38, 38)", arrow::decimal128(38, 38)},
         {"TIMESTAMP(0)", arrow::timestamp(arrow::TimeUnit::SECOND)},
         {"TIMESTAMP(3)", arrow::timestamp(arrow::TimeUnit::MILLI)},
         {"TIMESTAMP(6)", arrow::timestamp(arrow::TimeUnit::MICRO)},
@@ -343,6 +358,18 @@ TEST(DataTypeJsonParserTest, ParseTypeAtomicTypeSuccess) {
         rapidjson::Value value(invalid_type, invalid_doc.GetAllocator());
         ASSERT_NOK_WITH_MSG(DataTypeJsonParser::ParseType("field_name", value),
                             "length must be between 1 and 2147483647");
+    }
+    for (const char* invalid_type : {"DECIMAL(0)", "DECIMAL(39)", "NUMERIC(100, 2)"}) {
+        rapidjson::Document invalid_doc;
+        rapidjson::Value value(invalid_type, invalid_doc.GetAllocator());
+        ASSERT_NOK_WITH_MSG(DataTypeJsonParser::ParseType("field_name", value),
+                            "Decimal precision out of range");
+    }
+    for (const char* invalid_type : {"DECIMAL(10, 11)", "DECIMAL(38, 39)"}) {
+        rapidjson::Document invalid_doc;
+        rapidjson::Value value(invalid_type, invalid_doc.GetAllocator());
+        ASSERT_NOK_WITH_MSG(DataTypeJsonParser::ParseType("field_name", value),
+                            "Decimal scale must be between 0 and the precision");
     }
     {
         rapidjson::Document invalid_doc;

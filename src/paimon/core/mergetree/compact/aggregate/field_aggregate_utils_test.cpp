@@ -60,11 +60,13 @@ TEST(FieldAggregateUtilsTest, PrimitiveExtractionEqualityAndHashing) {
         VariantType value;
         VariantType other;
     };
-    std::vector<TestCase> cases = {{arrow::boolean(), true, false},
-                                   {arrow::int8(), char{7}, char{8}},
-                                   {arrow::int16(), int16_t{-1234}, int16_t{1234}},
-                                   {arrow::date32(), int32_t{20000}, int32_t{20001}},
-                                   {arrow::int64(), int64_t{1} << 40, -(int64_t{1} << 40)}};
+    std::vector<TestCase> cases = {
+        {arrow::boolean(), true, false},
+        {arrow::int8(), char{7}, char{8}},
+        {arrow::int16(), int16_t{-1234}, int16_t{1234}},
+        {arrow::date32(), int32_t{20000}, int32_t{20001}},
+        {arrow::time32(arrow::TimeUnit::MILLI), int32_t{0}, int32_t{86399999}},
+        {arrow::int64(), int64_t{1} << 40, -(int64_t{1} << 40)}};
     for (const auto& test_case : cases) {
         SCOPED_TRACE(test_case.type->ToString());
         GenericRow row(2);

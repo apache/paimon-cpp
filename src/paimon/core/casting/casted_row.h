@@ -38,7 +38,6 @@
 #include "paimon/common/data/internal_row.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/types/row_kind.h"
-#include "paimon/common/utils/date_time_utils.h"
 #include "paimon/core/casting/cast_executor.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
@@ -137,7 +136,8 @@ class CastedRow : public InternalRow {
     }
 
     int32_t GetInt(int32_t pos) const override {
-        return GetValue<int32_t>(pos, arrow::int32());
+        // A cast to TIME checks the unit of the target type.
+        return GetValue<int32_t>(pos, target_types_[pos]);
     }
 
     int32_t GetDate(int32_t pos) const override {
@@ -176,13 +176,8 @@ class CastedRow : public InternalRow {
     }
 
     Timestamp GetTimestamp(int32_t pos, int32_t precision) const override {
-        // timestamp does not support casting
-        Result<std::shared_ptr<arrow::DataType>> ts_type =
-            DateTimeUtils::GetTypeFromPrecision(precision, /*with_timezone=*/false);
-        if (!ts_type.ok()) {
-            throw std::invalid_argument(ts_type.status().ToString());
-        }
-        return GetValue<Timestamp>(pos, ts_type.value());
+        // The target type tells TIMESTAMP_LTZ apart from TIMESTAMP, which the precision does not.
+        return GetValue<Timestamp>(pos, target_types_[pos]);
     }
 
     std::shared_ptr<Bytes> GetBinary(int32_t pos) const override {
@@ -214,10 +209,13 @@ class CastedRow : public InternalRow {
  private:
     CastedRow(const std::vector<std::shared_ptr<CastExecutor>>& cast_executors,
               std::vector<InternalRow::FieldGetterFunc>&& field_getters,
-              std::vector<arrow::Type::type>&& src_types, const std::shared_ptr<InternalRow>& row)
+              std::vector<arrow::Type::type>&& src_types,
+              std::vector<std::shared_ptr<arrow::DataType>>&& target_types,
+              const std::shared_ptr<InternalRow>& row)
         : cast_executors_(cast_executors),
           field_getters_(std::move(field_getters)),
           src_types_(std::move(src_types)),
+          target_types_(std::move(target_types)),
           row_(row) {
         assert(row_);
     }
@@ -226,6 +224,7 @@ class CastedRow : public InternalRow {
     std::vector<std::shared_ptr<CastExecutor>> cast_executors_;
     std::vector<InternalRow::FieldGetterFunc> field_getters_;
     std::vector<arrow::Type::type> src_types_;
+    std::vector<std::shared_ptr<arrow::DataType>> target_types_;
     std::shared_ptr<InternalRow> row_;
 };
 }  // namespace paimon

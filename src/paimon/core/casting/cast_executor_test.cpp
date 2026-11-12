@@ -57,12 +57,17 @@
 #include "paimon/core/casting/string_to_date_cast_executor.h"
 #include "paimon/core/casting/string_to_decimal_cast_executor.h"
 #include "paimon/core/casting/string_to_numeric_primitive_cast_executor.h"
+#include "paimon/core/casting/string_to_time_cast_executor.h"
 #include "paimon/core/casting/string_to_timestamp_cast_executor.h"
+#include "paimon/core/casting/time_to_string_cast_executor.h"
+#include "paimon/core/casting/time_to_timestamp_cast_executor.h"
 #include "paimon/core/casting/timestamp_to_date_cast_executor.h"
 #include "paimon/core/casting/timestamp_to_numeric_primitive_cast_executor.h"
 #include "paimon/core/casting/timestamp_to_string_cast_executor.h"
+#include "paimon/core/casting/timestamp_to_time_cast_executor.h"
 #include "paimon/core/casting/timestamp_to_timestamp_cast_executor.h"
 #include "paimon/data/decimal.h"
+#include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
@@ -147,7 +152,7 @@ class CastExecutorTest : public ::testing::Test {
         if constexpr (std::is_same_v<Type, std::string>) {
             return Literal(type, data.data(), data.size());
         } else if constexpr (std::is_same_v<Type, int32_t>) {
-            if (type == FieldType::DATE) {
+            if (type == FieldType::DATE || type == FieldType::TIME) {
                 return Literal(type, data);
             } else {
                 return Literal(data);
@@ -1630,6 +1635,136 @@ TEST_F(CastExecutorTest, TestStringToDateCastExecutorCastArray) {
                          "2023-06-08", "9999-12-31", "0000-01-01", null])",
                      R"([1, 2147483647, -2147483648, 1, 0, -1, 19516, 2932896, -719528, null])");
     // invalid string refer to TestStringToDateCastExecutorCastLiteral
+}
+
+TEST_F(CastExecutorTest, TestStringToTimeCastExecutorCastLiteral) {
+    auto cast_executor = std::make_shared<StringToTimeCastExecutor>();
+    auto time_type = arrow::time32(arrow::TimeUnit::MILLI);
+    std::vector<std::string> src_data = {"00:00:00", "00:00:00.123", "23:59:59.999", "1:2:3",
+                                         "45296123"};
+    std::vector<int32_t> target_data = {0, 123, 86399999, 3723000, 45296123};
+    CheckLiteralResult<std::string, int32_t>(cast_executor, FieldType::STRING, src_data, time_type,
+                                             target_data);
+    auto msg = CheckLiteralInvalidResult<std::string>(cast_executor, FieldType::STRING, "24:00:00",
+                                                      time_type);
+    ASSERT_TRUE(msg.find("failed to convert string '24:00:00' to time") != std::string::npos)
+        << msg;
+    msg = CheckLiteralInvalidResult<std::string>(cast_executor, FieldType::STRING, "00:00:01",
+                                                 arrow::time32(arrow::TimeUnit::SECOND));
+    ASSERT_TRUE(msg.find("Only millisecond TIME is supported") != std::string::npos) << msg;
+}
+
+TEST_F(CastExecutorTest, TestStringToTimeCastExecutorCastArray) {
+    auto cast_executor = std::make_shared<StringToTimeCastExecutor>();
+    auto time_type = arrow::time32(arrow::TimeUnit::MILLI);
+    CheckArrayResult(cast_executor, arrow::utf8(), time_type,
+                     R"(["00:00:00", "00:00:00.123", "23:59:59.999", "1:2:3", null])",
+                     R"([0, 123, 86399999, 3723000, null])");
+    auto msg = CheckArrayInvalidResult(cast_executor, arrow::utf8(), time_type, R"(["24:00:00"])");
+    ASSERT_TRUE(msg.find("failed to convert string '24:00:00' to time") != std::string::npos)
+        << msg;
+    msg = CheckArrayInvalidResult(cast_executor, arrow::utf8(),
+                                  arrow::time32(arrow::TimeUnit::SECOND), R"(["00:00:01"])");
+    ASSERT_TRUE(msg.find("Only millisecond TIME is supported") != std::string::npos) << msg;
+}
+
+TEST_F(CastExecutorTest, TestTimeToStringCastExecutorCastLiteral) {
+    std::vector<int32_t> src_data = {0, 3723000, 45296120, 86399999};
+    CheckLiteralResult<int32_t, std::string>(
+        std::make_shared<TimeToStringCastExecutor>(), FieldType::TIME, src_data, arrow::utf8(),
+        std::vector<std::string>({"00:00:00", "01:02:03", "12:34:56", "23:59:59"}));
+    CheckLiteralResult<int32_t, std::string>(
+        std::make_shared<TimeToStringCastExecutor>(/*precision=*/3), FieldType::TIME, src_data,
+        arrow::utf8(),
+        std::vector<std::string>({"00:00:00.0", "01:02:03.0", "12:34:56.12", "23:59:59.999"}));
+}
+
+TEST_F(CastExecutorTest, TestTimeToStringCastExecutorCastArray) {
+    auto time_type = arrow::time32(arrow::TimeUnit::MILLI);
+    CheckArrayResult(std::make_shared<TimeToStringCastExecutor>(), time_type, arrow::utf8(),
+                     R"([0, 45296123, null])", R"(["00:00:00", "12:34:56", null])");
+    CheckArrayResult(std::make_shared<TimeToStringCastExecutor>(/*precision=*/9), time_type,
+                     arrow::utf8(), R"([0, 45296123, 86399999, null])",
+                     R"(["00:00:00.0", "12:34:56.123", "23:59:59.999", null])");
+    auto msg =
+        CheckArrayInvalidResult(std::make_shared<TimeToStringCastExecutor>(),
+                                arrow::time32(arrow::TimeUnit::SECOND), arrow::utf8(), R"([1])");
+    ASSERT_TRUE(msg.find("Only millisecond TIME is supported") != std::string::npos) << msg;
+}
+
+TEST_F(CastExecutorTest, TestTimestampToTimeCastExecutorCastArray) {
+    auto cast_executor = std::make_shared<TimestampToTimeCastExecutor>();
+    auto time_type = arrow::time32(arrow::TimeUnit::MILLI);
+    CheckArrayResult(cast_executor, arrow::timestamp(arrow::TimeUnit::SECOND), time_type,
+                     R"([1686227696, 0, -1, null])", R"([45296000, 0, 86399000, null])");
+    CheckArrayResult(cast_executor, arrow::timestamp(arrow::TimeUnit::MILLI), time_type,
+                     R"([1686227696123, 0, -1, null])", R"([45296123, 0, 86399999, null])");
+    CheckArrayResult(cast_executor, arrow::timestamp(arrow::TimeUnit::MICRO), time_type,
+                     R"([1686227696123456, -1, null])", R"([45296123, 86399999, null])");
+    CheckArrayResult(cast_executor, arrow::timestamp(arrow::TimeUnit::NANO), time_type,
+                     R"([1686227696123456789, -1, null])", R"([45296123, 86399999, null])");
+    CheckArrayResult(cast_executor, arrow::timestamp(arrow::TimeUnit::MILLI, "Asia/Shanghai"),
+                     time_type, R"([0, 1686227696123, null])", R"([28800000, 74096123, null])");
+}
+
+TEST_F(CastExecutorTest, TestTimestampToTimeCastExecutorCastLiteral) {
+    auto time_type = arrow::time32(arrow::TimeUnit::MILLI);
+    CheckLiteralResult<Timestamp, int32_t>(
+        std::make_shared<TimestampToTimeCastExecutor>(), FieldType::TIMESTAMP,
+        {Timestamp(1686227696123, 456789), Timestamp(0, 0), Timestamp(-1, 999999)}, time_type,
+        {45296123, 0, 86399999});
+    {
+        TimezoneGuard tz_guard("Asia/Shanghai");
+        CheckLiteralResult<Timestamp, int32_t>(
+            std::make_shared<TimestampToTimeCastExecutor>(/*src_with_timezone=*/true),
+            FieldType::TIMESTAMP, {Timestamp(0, 0), Timestamp(1686227696123, 0)}, time_type,
+            {28800000, 74096123});
+    }
+    auto msg = CheckLiteralInvalidResult<Timestamp>(std::make_shared<TimestampToTimeCastExecutor>(),
+                                                    FieldType::TIMESTAMP, Timestamp(0, 0),
+                                                    arrow::time32(arrow::TimeUnit::SECOND));
+    ASSERT_TRUE(msg.find("Only millisecond TIME is supported") != std::string::npos) << msg;
+}
+
+TEST_F(CastExecutorTest, TestTimeToTimestampCastExecutorCastArray) {
+    auto cast_executor = std::make_shared<TimeToTimestampCastExecutor>();
+    auto time_type = arrow::time32(arrow::TimeUnit::MILLI);
+    CheckArrayResult(cast_executor, time_type, arrow::timestamp(arrow::TimeUnit::SECOND),
+                     R"([0, 45296123, null])", R"([0, 45296, null])");
+    CheckArrayResult(cast_executor, time_type, arrow::timestamp(arrow::TimeUnit::MILLI),
+                     R"([0, 45296123, 86399999, null])", R"([0, 45296123, 86399999, null])");
+    CheckArrayResult(cast_executor, time_type, arrow::timestamp(arrow::TimeUnit::MICRO),
+                     R"([45296123, null])", R"([45296123000, null])");
+    CheckArrayResult(cast_executor, time_type, arrow::timestamp(arrow::TimeUnit::NANO),
+                     R"([45296123, null])", R"([45296123000000, null])");
+    CheckArrayResult(cast_executor, time_type,
+                     arrow::timestamp(arrow::TimeUnit::MILLI, "Asia/Shanghai"),
+                     R"([28800000, 0, null])", R"([0, -28800000, null])");
+    auto msg = CheckArrayInvalidResult(cast_executor, arrow::time32(arrow::TimeUnit::SECOND),
+                                       arrow::timestamp(arrow::TimeUnit::MILLI), R"([1])");
+    ASSERT_TRUE(msg.find("Only millisecond TIME is supported") != std::string::npos) << msg;
+}
+
+TEST_F(CastExecutorTest, TestTimeToTimestampCastExecutorCastLiteral) {
+    auto cast_executor = std::make_shared<TimeToTimestampCastExecutor>();
+    std::vector<int32_t> src_data = {0, 45296123, 86399999};
+    std::vector<Timestamp> expected = {Timestamp(0, 0), Timestamp(45296123, 0),
+                                       Timestamp(86399999, 0)};
+    CheckLiteralResult<int32_t, Timestamp>(cast_executor, FieldType::TIME, src_data,
+                                           arrow::timestamp(arrow::TimeUnit::MILLI), expected);
+    CheckLiteralResult<int32_t, Timestamp>(cast_executor, FieldType::TIME, src_data,
+                                           arrow::timestamp(arrow::TimeUnit::NANO), expected);
+    CheckLiteralResult<int32_t, Timestamp>(
+        cast_executor, FieldType::TIME, src_data, arrow::timestamp(arrow::TimeUnit::SECOND),
+        {Timestamp(0, 0), Timestamp(45296000, 0), Timestamp(86399000, 0)});
+    {
+        TimezoneGuard tz_guard("Asia/Shanghai");
+        CheckLiteralResult<int32_t, Timestamp>(
+            cast_executor, FieldType::TIME, {28800000, 0},
+            arrow::timestamp(arrow::TimeUnit::MILLI, "Asia/Shanghai"),
+            {Timestamp(0, 0), Timestamp(-28800000, 0)});
+    }
+    ASSERT_NOK(cast_executor->Cast(Literal(FieldType::TIME, 0), arrow::utf8()));
 }
 
 TEST_F(CastExecutorTest, TestTimestampToStringCastExecutorCastArray) {

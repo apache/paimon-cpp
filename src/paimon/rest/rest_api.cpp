@@ -373,4 +373,18 @@ Result<GetTableTokenResponse> RestApi::LoadTableToken(const Identifier& identifi
         resource_paths_.TableToken(identifier.GetDatabaseName(), identifier.GetObjectName()), {});
 }
 
+Result<AuthTableQueryResponse> RestApi::AuthTableQuery(
+    const Identifier& identifier, const std::optional<std::vector<std::string>>& select) const {
+    AuthTableQueryRequest request(select);
+    PAIMON_ASSIGN_OR_RAISE(std::string body, request.ToJsonString());
+    std::string path =
+        resource_paths_.AuthTable(identifier.GetDatabaseName(), identifier.GetObjectName());
+    // Only reads the rules, so replaying it is safe.
+    PAIMON_ASSIGN_OR_RAISE(RestHttpClient::Response response,
+                           Execute("POST", path, {}, body, /*retry_safe=*/true));
+    AuthTableQueryResponse entity;
+    PAIMON_RETURN_NOT_OK(ParseResponseBody(response.body, path, &entity));
+    return entity;
+}
+
 }  // namespace paimon

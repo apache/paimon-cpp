@@ -584,16 +584,16 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
     static Result<std::shared_ptr<arrow::Array>> MakeArrayBlobArray(
         const std::shared_ptr<arrow::DataType>& list_type,
         const std::vector<std::optional<BlobElements>>& rows) {
-        auto list_builder = std::make_shared<arrow::ListBuilder>(
-            arrow::default_memory_pool(), std::make_shared<arrow::LargeBinaryBuilder>(), list_type);
-        auto element_builder =
-            checked_cast<arrow::LargeBinaryBuilder*>(list_builder->value_builder());
+        arrow::ListBuilder list_builder(arrow::default_memory_pool(),
+                                        std::make_shared<arrow::LargeBinaryBuilder>(), list_type);
+        auto* element_builder =
+            checked_cast<arrow::LargeBinaryBuilder*>(list_builder.value_builder());
         for (const std::optional<BlobElements>& row : rows) {
             if (!row) {
-                PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->AppendNull());
+                PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder.AppendNull());
                 continue;
             }
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->Append());
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder.Append());
             for (const std::optional<std::string>& element : *row) {
                 if (element) {
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(element_builder->Append(*element));
@@ -603,7 +603,7 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
             }
         }
         std::shared_ptr<arrow::Array> array;
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder->Finish(&array));
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(list_builder.Finish(&array));
         return array;
     }
 
@@ -612,10 +612,11 @@ class BlobTableInteTest : public testing::Test, public ::testing::WithParamInter
     static Result<std::shared_ptr<arrow::Array>> MakeMapBlobArray(
         const std::shared_ptr<arrow::DataType>& map_type,
         const std::vector<std::optional<MapBlobEntries>>& rows) {
-        auto key_builder = std::make_shared<arrow::StringBuilder>();
-        auto item_builder = std::make_shared<arrow::LargeBinaryBuilder>();
-        arrow::MapBuilder map_builder(arrow::default_memory_pool(), key_builder, item_builder,
-                                      map_type);
+        arrow::MapBuilder map_builder(arrow::default_memory_pool(),
+                                      std::make_shared<arrow::StringBuilder>(),
+                                      std::make_shared<arrow::LargeBinaryBuilder>(), map_type);
+        auto* key_builder = checked_cast<arrow::StringBuilder*>(map_builder.key_builder());
+        auto* item_builder = checked_cast<arrow::LargeBinaryBuilder*>(map_builder.item_builder());
         for (const std::optional<MapBlobEntries>& row : rows) {
             if (!row) {
                 PAIMON_RETURN_NOT_OK_FROM_ARROW(map_builder.AppendNull());
@@ -4718,8 +4719,10 @@ TEST_P(BlobTableInteTest, TestBlobViewFailsWhenUpstreamTableAbsent) {
 
     // reading fails because the upstream table does not exist at the catalog-issued location
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
-    ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
-                        "not found latest schema");
+    Status missing_upstream =
+        ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr).status();
+    ASSERT_TRUE(missing_upstream.IsNotExist()) << missing_upstream.ToString();
+    ASSERT_NOK_WITH_MSG(missing_upstream, "nonexistent_table");
 }
 
 TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceOfDeletedRow) {
@@ -4737,8 +4740,10 @@ TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceOfDeletedRow) {
 
     // without the deletion vector the dangling reference fails the read
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
-    ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
-                        "not found latest schema");
+    Status missing_upstream =
+        ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr).status();
+    ASSERT_TRUE(missing_upstream.IsNotExist()) << missing_upstream.ToString();
+    ASSERT_NOK_WITH_MSG(missing_upstream, "nonexistent_table");
 
     ASSERT_OK_AND_ASSIGN(std::string anchor_file_name,
                          DeletionVectorTestHelper::RetrieveAnchorFileName(commit_msgs));
@@ -4781,8 +4786,10 @@ TEST_P(BlobTableInteTest, TestBlobViewSkipsDanglingReferenceInEveryRowRangeGroup
 
     // without deletion vectors both groups' dangling references fail the read
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
-    ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
-                        "not found latest schema");
+    Status missing_upstream =
+        ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr).status();
+    ASSERT_TRUE(missing_upstream.IsNotExist()) << missing_upstream.ToString();
+    ASSERT_NOK_WITH_MSG(missing_upstream, "nonexistent_table");
 
     // each group's anchor gets a deletion vector dropping its row 0, the dangling one
     ASSERT_OK_AND_ASSIGN(std::string anchor_file_name0,
@@ -4818,16 +4825,20 @@ TEST_P(BlobTableInteTest, TestBlobViewPreReadHonorsRowRangesNotPredicate) {
 
     // reading the whole split fails on the dangling reference of row 0
     ASSERT_OK_AND_ASSIGN(auto plan, ScanTable(table_path));
-    ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr),
-                        "not found latest schema");
+    Status missing_upstream =
+        ReadTable(table_path, schema->field_names(), plan, /*predicate=*/nullptr).status();
+    ASSERT_TRUE(missing_upstream.IsNotExist()) << missing_upstream.ToString();
+    ASSERT_NOK_WITH_MSG(missing_upstream, "nonexistent_table");
 
     // a predicate keeping only row 1 does not rescue the query: it is evaluated above the split
     // read, while the pre-read takes none, so row 0's reference is still collected and resolved
     auto keep_row_1 = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0",
                                               FieldType::INT, Literal(101));
     ASSERT_OK_AND_ASSIGN(auto filtered_plan, ScanTable(table_path, keep_row_1));
-    ASSERT_NOK_WITH_MSG(ReadTable(table_path, schema->field_names(), filtered_plan, keep_row_1),
-                        "not found latest schema");
+    missing_upstream =
+        ReadTable(table_path, schema->field_names(), filtered_plan, keep_row_1).status();
+    ASSERT_TRUE(missing_upstream.IsNotExist()) << missing_upstream.ToString();
+    ASSERT_NOK_WITH_MSG(missing_upstream, "nonexistent_table");
 
     // dropping the same row through the row ranges does: the pre-read honors them the same way
     // the main read does, so row 0 is never resolved

@@ -791,6 +791,31 @@ TEST_F(AvroFileBatchReaderTest, TestSetReadSchemaResetsReaderToFirstRow) {
     ASSERT_TRUE(projected_array->Equals(expected_projected_array)) << projected_array->ToString();
 }
 
+TEST_F(AvroFileBatchReaderTest, TestSetReadSchemaRejectsTimeOfOtherUnit) {
+    std::string file_path = PathUtil::JoinPath(dir_->Str(), "file.avro");
+
+    auto file_data_type =
+        arrow::struct_({arrow::field("f0", arrow::time32(arrow::TimeUnit::MILLI))});
+    auto src_array = arrow::ipc::internal::json::ArrayFromJSON(file_data_type, R"([
+            [1000],
+            [null]
+        ])")
+                         .ValueOrDie();
+    WriteData(src_array, file_path, /*compression=*/"null");
+
+    ASSERT_OK_AND_ASSIGN(auto reader_builder, file_format_->CreateReaderBuilder(/*batch_size=*/2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_path));
+    ASSERT_OK_AND_ASSIGN(auto reader, reader_builder->Build(in));
+
+    auto read_schema = arrow::schema({arrow::field("f0", arrow::time32(arrow::TimeUnit::SECOND))});
+    std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
+    ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_schema.get()).ok());
+    ASSERT_OK(reader->SetReadSchema(c_schema.get(), /*predicate=*/nullptr,
+                                    /*selection_bitmap=*/std::nullopt));
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(),
+                        "Unexpected avro type [int] with arrow type [time32[s]]");
+}
+
 TEST_F(AvroFileBatchReaderTest, TestGetNumberOfRows) {
     std::string file_path = PathUtil::JoinPath(dir_->Str(), "file.avro");
 

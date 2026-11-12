@@ -19,6 +19,7 @@
 #include "paimon/common/predicate/literal_converter.h"
 
 #include <optional>
+#include <utility>
 
 #include "arrow/array/array_base.h"
 #include "arrow/array/array_binary.h"
@@ -33,6 +34,7 @@
 #include "arrow/type.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/decimal.h"
+#include "arrow/util/int_util_overflow.h"
 #include "fmt/format.h"
 #include "paimon/common/data/binary_string.h"
 #include "paimon/common/data/internal_row.h"
@@ -83,6 +85,10 @@ Result<Literal> LiteralConverter::ConvertLiteralsFromString(const FieldType& typ
         case FieldType::DATE: {
             PAIMON_ASSIGN_OR_RAISE(int32_t value, StringUtils::StringToDate(value_str));
             return Literal(FieldType::DATE, value);
+        }
+        case FieldType::TIME: {
+            PAIMON_ASSIGN_OR_RAISE(int32_t value, StringUtils::StringToTime(value_str));
+            return Literal(FieldType::TIME, value);
         }
         case FieldType::BIGINT: {
             auto value = StringUtils::StringToValue<int64_t>(value_str);
@@ -171,6 +177,8 @@ Result<Literal> LiteralConverter::ConvertLiteralsFromRow(
         }
         case FieldType::DATE:
             return Literal(FieldType::DATE, row.GetInt(field_idx));
+        case FieldType::TIME:
+            return Literal(FieldType::TIME, row.GetInt(field_idx));
         case FieldType::ARRAY:
         case FieldType::VECTOR:
         case FieldType::MAP:
@@ -209,6 +217,8 @@ Result<std::vector<Literal>> LiteralConverter::ConvertLiteralsFromArray(const ar
             return GetLiteralFromDecimalArray(array);
         case arrow::Type::type::DATE32:
             return GetLiteralFromDateArray(array);
+        case arrow::Type::type::TIME32:
+            return GetLiteralFromTimeArray(array);
         case arrow::Type::type::DICTIONARY: {
             const auto& dict_array = checked_cast<const arrow::DictionaryArray&>(array);
             auto* dict_type = checked_cast<arrow::DictionaryType*>(dict_array.type().get());
@@ -279,6 +289,29 @@ std::vector<Literal> LiteralConverter::GetLiteralFromDateArray(const arrow::Arra
     return literals;
 }
 
+Result<std::vector<Literal>> LiteralConverter::GetLiteralFromTimeArray(const arrow::Array& array) {
+    using ArrayType = typename arrow::TypeTraits<arrow::Time32Type>::ArrayType;
+    const auto& array_(checked_cast<const ArrayType&>(array));
+    // A TIME literal holds milliseconds of the day, so a value of another unit would be silently
+    // reinterpreted, e.g. 1 of time32[s] would become 1 millisecond.
+    const auto& time_type = checked_cast<const arrow::Time32Type&>(*array_.type());
+    if (time_type.unit() != arrow::TimeUnit::MILLI) {
+        return Status::Invalid(
+            fmt::format("Not support literal on arrow {} type, TIME literals require time32[ms]",
+                        array_.type()->ToString()));
+    }
+    std::vector<Literal> literals;
+    literals.reserve(array_.length());
+    for (int64_t i = 0; i < array_.length(); i++) {
+        if (array_.IsNull(i)) {
+            literals.emplace_back(FieldType::TIME);
+        } else {
+            literals.emplace_back(FieldType::TIME, array_.Value(i));
+        }
+    }
+    return literals;
+}
+
 std::vector<Literal> LiteralConverter::GetLiteralFromTimestampArray(const arrow::Array& array) {
     using ArrayType = typename arrow::TypeTraits<arrow::TimestampType>::ArrayType;
     const auto& array_(checked_cast<const ArrayType&>(array));
@@ -316,11 +349,12 @@ arrow::TimeUnit::type LiteralConverter::MinRequiredTimeUnit(const std::vector<Li
 }
 
 namespace {
-// Appends every literal, read by `extract`, to a `BuilderType`, keeping a null literal a null.
-template <typename BuilderType, typename Extract>
+// Appends every literal, read by `extract`, to a `BuilderType` made from `builder_args`, keeping a
+// null literal a null.
+template <typename BuilderType, typename Extract, typename... BuilderArgs>
 Result<std::shared_ptr<arrow::Array>> BuildArray(const std::vector<Literal>& literals,
-                                                 Extract extract, arrow::MemoryPool* pool) {
-    BuilderType builder(pool);
+                                                 Extract extract, BuilderArgs&&... builder_args) {
+    BuilderType builder(std::forward<BuilderArgs>(builder_args)...);
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(static_cast<int64_t>(literals.size())));
     for (const auto& literal : literals) {
         if (literal.IsNull()) {
@@ -379,6 +413,48 @@ Result<std::shared_ptr<arrow::Array>> BuildDecimalArray(const std::vector<Litera
     return array;
 }
 
+// The number of `unit`s since the epoch `timestamp` names, or an error when that number does not
+// fit int64. Epoch nanoseconds only reach the years 1677 to 2262, so a timestamp outside them
+// still has milliseconds but no nanoseconds to write.
+Result<int64_t> TimestampToCheckedInteger(const Timestamp& timestamp, arrow::TimeUnit::type unit) {
+    int64_t millis = timestamp.GetMillisecond();
+    const int64_t nanos = timestamp.GetNanoOfMillisecond();
+    int64_t factor = 1;
+    int64_t remainder = 0;
+    switch (unit) {
+        case arrow::TimeUnit::MILLI:
+            return millis;
+        case arrow::TimeUnit::MICRO:
+            factor = 1000;
+            remainder = nanos / 1000;
+            break;
+        case arrow::TimeUnit::NANO:
+            factor = 1000000;
+            remainder = nanos;
+            break;
+        default:
+            return Status::Invalid(fmt::format("Not support writing a timestamp literal in {}",
+                                               arrow::timestamp(unit)->ToString()));
+    }
+    // The earliest values that fit have a negative millisecond whose product alone does not, so a
+    // negative millisecond lends one `factor` to the remainder first.
+    if (millis < 0 && remainder > 0) {
+        ++millis;
+        remainder -= factor;
+    }
+    int64_t scaled = 0;
+    int64_t value = 0;
+    if (arrow::internal::MultiplyWithOverflow(millis, factor, &scaled) ||
+        arrow::internal::AddWithOverflow(scaled, remainder, &value)) {
+        // `Timestamp::ToString` cannot format an instant this far from the epoch.
+        return Status::Invalid(fmt::format(
+            "Timestamp literal of {} milliseconds and {} nanoseconds since the epoch does not fit "
+            "int64 in {}",
+            timestamp.GetMillisecond(), nanos, arrow::timestamp(unit)->ToString()));
+    }
+    return value;
+}
+
 // Writes the literals to a timestamp array of the finest time unit that keeps every value, one
 // `is_in` can only compare against a column of that very unit. One array holds one arrow type, so
 // a non null literal is needed to settle the unit.
@@ -396,18 +472,17 @@ Result<std::shared_ptr<arrow::Array>> BuildTimestampArray(const std::vector<Lite
             "Not support converting literals of TIMESTAMP type to an arrow array without a non "
             "null literal to take the time unit from");
     }
-    arrow::TimestampBuilder builder(
-        arrow::timestamp(LiteralConverter::MinRequiredTimeUnit(literals)), pool);
-    const DateTimeUtils::TimeType time_type = DateTimeUtils::GetTimeTypeFromArrowType(
-        checked_pointer_cast<arrow::TimestampType>(builder.type()));
+    const arrow::TimeUnit::type unit = LiteralConverter::MinRequiredTimeUnit(literals);
+    arrow::TimestampBuilder builder(arrow::timestamp(unit), pool);
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(static_cast<int64_t>(literals.size())));
     for (const auto& literal : literals) {
         if (literal.IsNull()) {
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.AppendNull());
             continue;
         }
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(
-            DateTimeUtils::TimestampToInteger(literal.GetValue<Timestamp>(), time_type)));
+        PAIMON_ASSIGN_OR_RAISE(int64_t value,
+                               TimestampToCheckedInteger(literal.GetValue<Timestamp>(), unit));
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(value));
     }
     std::shared_ptr<arrow::Array> array;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&array));
@@ -442,6 +517,10 @@ Result<std::shared_ptr<arrow::Array>> LiteralConverter::ConvertLiteralsToArray(
         case FieldType::DATE:
             return BuildArray<arrow::Date32Builder>(
                 literals, [](const Literal& literal) { return literal.GetValue<int32_t>(); }, pool);
+        case FieldType::TIME:
+            return BuildArray<arrow::Time32Builder>(
+                literals, [](const Literal& literal) { return literal.GetValue<int32_t>(); },
+                arrow::time32(arrow::TimeUnit::MILLI), pool);
         case FieldType::STRING:
             return BuildArray<arrow::StringBuilder>(
                 literals, [](const Literal& literal) { return literal.GetValue<std::string>(); },

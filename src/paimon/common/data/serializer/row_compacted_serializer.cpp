@@ -66,7 +66,8 @@ Result<int32_t> RowCompactedSerializer::CompareField(const FieldInfo& field_info
             return val1 == val2 ? 0 : (val1 < val2 ? -1 : 1);
         }
         case arrow::Type::type::INT32:
-        case arrow::Type::type::DATE32: {
+        case arrow::Type::type::DATE32:
+        case arrow::Type::type::TIME32: {
             auto val1 = reader1->ReadValue<int32_t>();
             auto val2 = reader2->ReadValue<int32_t>();
             return val1 == val2 ? 0 : (val1 < val2 ? -1 : 1);
@@ -227,7 +228,8 @@ Result<RowCompactedSerializer::FieldReader> RowCompactedSerializer::CreateFieldR
             break;
         }
         case arrow::Type::type::INT32:
-        case arrow::Type::type::DATE32: {
+        case arrow::Type::type::DATE32:
+        case arrow::Type::type::TIME32: {
             field_reader = [](int32_t pos, RowReader* reader) -> Result<VariantType> {
                 return VariantType(reader->ReadValue<int32_t>());
             };
@@ -351,7 +353,8 @@ Result<RowCompactedSerializer::FieldWriter> RowCompactedSerializer::CreateFieldW
             break;
         }
         case arrow::Type::type::INT32:
-        case arrow::Type::type::DATE32: {
+        case arrow::Type::type::DATE32:
+        case arrow::Type::type::TIME32: {
             field_writer = [](int32_t pos, const VariantType& field, RowWriter* writer) -> Status {
                 return writer->WriteValue<int32_t>(DataDefine::GetVariantValue<int32_t>(field));
             };

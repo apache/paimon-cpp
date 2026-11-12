@@ -25,6 +25,7 @@
 #include "arrow/api.h"
 #include "paimon/common/data/variant/generic_variant.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
 
@@ -50,10 +51,11 @@ inline Result<std::shared_ptr<arrow::StructArray>> VariantTestData::BuildVariant
     const std::shared_ptr<arrow::Field>& variant_field, const std::vector<const char*>& jsons,
     const std::shared_ptr<MemoryPool>& pool, int32_t id_offset) {
     arrow::Int32Builder id_builder;
-    auto value_builder = std::make_shared<arrow::BinaryBuilder>();
-    auto metadata_builder = std::make_shared<arrow::BinaryBuilder>();
-    arrow::StructBuilder variant_builder(variant_field->type(), arrow::default_memory_pool(),
-                                         {value_builder, metadata_builder});
+    arrow::StructBuilder variant_builder(
+        variant_field->type(), arrow::default_memory_pool(),
+        {std::make_shared<arrow::BinaryBuilder>(), std::make_shared<arrow::BinaryBuilder>()});
+    auto* value_builder = checked_cast<arrow::BinaryBuilder*>(variant_builder.field_builder(0));
+    auto* metadata_builder = checked_cast<arrow::BinaryBuilder*>(variant_builder.field_builder(1));
     for (size_t i = 0; i < jsons.size(); ++i) {
         PAIMON_RETURN_NOT_OK_FROM_ARROW(id_builder.Append(id_offset + static_cast<int32_t>(i)));
         if (jsons[i] == nullptr) {

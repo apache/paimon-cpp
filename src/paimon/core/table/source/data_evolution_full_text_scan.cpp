@@ -34,6 +34,7 @@
 
 #include "fmt/format.h"
 #include "fmt/ranges.h"
+#include "paimon/core/global_index/global_index_evaluator_impl.h"
 #include "paimon/core/index/index_file_handler.h"
 #include "paimon/core/manifest/index_manifest_entry.h"
 #include "paimon/core/manifest/index_manifest_file.h"
@@ -137,13 +138,15 @@ struct CandidateRanksBefore {
 DataEvolutionFullTextScan::DataEvolutionFullTextScan(
     const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
     const CoreOptions& options, const std::shared_ptr<FileStorePathFactory>& path_factory,
-    const std::shared_ptr<PredicateFilter>& partition_filter, const DataField& text_field,
+    const std::shared_ptr<PredicateFilter>& partition_filter,
+    const std::shared_ptr<Predicate>& filter, const DataField& text_field,
     const std::shared_ptr<MemoryPool>& pool)
     : root_path_(root_path),
       table_schema_(table_schema),
       options_(options),
       path_factory_(path_factory),
       partition_filter_(partition_filter),
+      filter_(filter),
       text_field_(text_field),
       pool_(pool) {}
 
@@ -154,6 +157,28 @@ bool DataEvolutionFullTextScan::IndexesField(const GlobalIndexMeta& meta, int32_
     return meta.extra_field_ids &&
            std::find(meta.extra_field_ids->begin(), meta.extra_field_ids->end(), field_id) !=
                meta.extra_field_ids->end();
+}
+
+bool DataEvolutionFullTextScan::IsScalarPreFilterFile(const GlobalIndexMeta& meta,
+                                                      const std::set<int32_t>& filter_field_ids,
+                                                      bool supports_full_text) {
+    bool has_extra_fields = meta.extra_field_ids && !meta.extra_field_ids->empty();
+    return !supports_full_text && !has_extra_fields &&
+           filter_field_ids.count(meta.index_field_id) > 0;
+}
+
+Result<std::vector<std::shared_ptr<IndexFileMeta>>> DataEvolutionFullTextScan::IntersectingFiles(
+    const std::vector<std::shared_ptr<IndexFileMeta>>& index_files, const Range& row_range) {
+    std::vector<std::shared_ptr<IndexFileMeta>> files;
+    for (const auto& file : index_files) {
+        // Checked before a `Range` is built from it, as a reversed range breaks its invariant.
+        PAIMON_RETURN_NOT_OK(IndexFullTextSearchSplitImpl::CheckScalarIndexFile(file));
+        const GlobalIndexMeta& meta = file->GetGlobalIndexMeta().value();
+        if (Range::HasIntersection(Range(meta.row_range_start, meta.row_range_end), row_range)) {
+            files.push_back(file);
+        }
+    }
+    return files;
 }
 
 std::string DataEvolutionFullTextScan::IndexIdentity(const IndexFileMeta& file) {
@@ -281,6 +306,8 @@ Result<std::shared_ptr<FullTextScan::Plan>> DataEvolutionFullTextScan::CreatePla
                            table_schema_->GetFields(table_schema_->PartitionKeys()));
     auto partition_schema = DataField::ConvertDataFieldsToArrowSchema(partition_fields);
     int32_t field_id = text_field_.Id();
+    PAIMON_ASSIGN_OR_RAISE(std::set<int32_t> filter_field_ids,
+                           GlobalIndexEvaluatorImpl::CollectFieldIds(*table_schema_, filter_));
     std::function<Result<bool>(const IndexManifestEntry&)> filter =
         [&](const IndexManifestEntry& entry) -> Result<bool> {
         if (partition_filter_) {
@@ -291,35 +318,48 @@ Result<std::shared_ptr<FullTextScan::Plan>> DataEvolutionFullTextScan::CreatePla
             }
         }
         const std::optional<GlobalIndexMeta>& meta = entry.index_file->GetGlobalIndexMeta();
-        return meta && IndexesField(meta.value(), field_id);
+        return meta && (IndexesField(meta.value(), field_id) ||
+                        filter_field_ids.count(meta->index_field_id) > 0);
     };
     PAIMON_ASSIGN_OR_RAISE(std::vector<IndexManifestEntry> entries,
                            index_file_handler.Scan(snapshot.value(), filter));
 
-    std::map<std::string, bool> serves_full_text_search;
+    std::map<std::string, std::unique_ptr<GlobalIndexer>> indexers;
     std::vector<std::shared_ptr<IndexFileMeta>> full_text_index_files;
+    std::vector<std::shared_ptr<IndexFileMeta>> scalar_index_files;
     for (const auto& entry : entries) {
         const std::string& index_type = entry.index_file->IndexType();
-        auto iter = serves_full_text_search.find(index_type);
-        if (iter == serves_full_text_search.end()) {
+        const GlobalIndexMeta& meta = entry.index_file->GetGlobalIndexMeta().value();
+        auto iter = indexers.find(index_type);
+        if (iter == indexers.end()) {
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<GlobalIndexer> indexer,
                                    GlobalIndexerFactory::Get(index_type, options_.ToMap()));
-            PAIMON_ASSIGN_OR_RAISE(bool served, ServesFullTextSearch(index_type, indexer.get(),
-                                                                     root_path_, snapshot->Id()));
-            iter = serves_full_text_search.emplace(index_type, served).first;
+            iter = indexers.emplace(index_type, std::move(indexer)).first;
         }
-        if (iter->second) {
-            full_text_index_files.push_back(entry.index_file);
+        const GlobalIndexer* indexer = iter->second.get();
+        if (IndexesField(meta, field_id)) {
+            PAIMON_ASSIGN_OR_RAISE(
+                bool served, ServesFullTextSearch(index_type, indexer, root_path_, snapshot->Id()));
+            if (served) {
+                full_text_index_files.push_back(entry.index_file);
+            }
+        }
+        bool supports_full_text = indexer != nullptr && indexer->SupportsFullTextSearch();
+        if (IsScalarPreFilterFile(meta, filter_field_ids, supports_full_text)) {
+            scalar_index_files.push_back(entry.index_file);
         }
     }
 
     std::vector<std::shared_ptr<FullTextSearchSplit>> splits;
     for (auto& selection : ChooseIndexRanges(full_text_index_files, field_id)) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<IndexFullTextSearchSplitImpl> split,
-                               IndexFullTextSearchSplitImpl::Create(
-                                   snapshot->Id(), text_field_.Name(), selection.file_range.from,
-                                   selection.file_range.to, std::move(selection.files),
-                                   std::move(selection.search_ranges)));
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<IndexFileMeta>> split_scalar_files,
+                               IntersectingFiles(scalar_index_files, selection.file_range));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<IndexFullTextSearchSplitImpl> split,
+            IndexFullTextSearchSplitImpl::Create(
+                snapshot->Id(), text_field_.Name(), selection.file_range.from,
+                selection.file_range.to, std::move(selection.files),
+                std::move(selection.search_ranges), std::move(split_scalar_files)));
         splits.push_back(std::move(split));
     }
     return std::make_shared<Plan>(snapshot->Id(), std::move(splits));

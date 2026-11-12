@@ -126,7 +126,7 @@ Result<bool> FileStoreScan::TestFileIndex(const std::shared_ptr<Predicate>& pred
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<FileIndexEvaluator> evaluator,
         FileIndexEvaluator::Create(data_arrow_schema, file_index_options, /*path_factory=*/nullptr,
-                                   meta, /*file_system=*/nullptr, pool_));
+                                   meta, /*file_system=*/nullptr, /*cache=*/nullptr, pool_));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> index_result,
                            evaluator->Evaluate(data_predicate));
     return index_result->IsRemain();
@@ -430,10 +430,11 @@ Result<uint64_t> FileStoreScan::ReadManifestEntriesWithCache(
         [](const std::shared_ptr<CacheKey>&) -> Result<std::shared_ptr<CacheValue>> {
             return std::shared_ptr<CacheValue>();
         });
-    if (value.ok() && value.value()) {
+    auto segment = value.ok() ? CacheValue::Get<const MemorySegment>(value.value()) : nullptr;
+    if (segment) {
         Result<std::optional<SnapshotLiveManifestEntries::Selection>> selected =
-            SnapshotLiveManifestEntries::ReadSnapshot(value.value()->GetSegment(), snapshot.Id(),
-                                                      max_snapshots, row_filter, pool_);
+            SnapshotLiveManifestEntries::ReadSnapshot(*segment, snapshot.Id(), max_snapshots,
+                                                      row_filter, pool_);
         if (predicate_failed) {
             return selected.status();
         }
@@ -447,8 +448,7 @@ Result<uint64_t> FileStoreScan::ReadManifestEntriesWithCache(
             // Reuse the same cache value to retain complete historical snapshots on a miss.
             // Query-filtered entries must never be written back into the cache.
             Result<SnapshotLiveManifestEntries> deserialized =
-                SnapshotLiveManifestEntries::Deserialize(value.value()->GetSegment(), max_snapshots,
-                                                         pool_);
+                SnapshotLiveManifestEntries::Deserialize(*segment, max_snapshots, pool_);
             if (deserialized.ok()) {
                 cached_entries = std::move(deserialized.value());
             }
@@ -517,8 +517,8 @@ Status FileStoreScan::StoreSnapshotLiveManifestEntries(
     if (!bytes_result.ok()) {
         return Status::OK();
     }
-    auto cache_value =
-        std::make_shared<CacheValue>(MemorySegment::Wrap(bytes_result.value()), CacheCallback());
+    auto cache_value = std::make_shared<MemorySegmentCacheValue>(
+        MemorySegment::Wrap(bytes_result.value()), CacheCallback());
     Status status = core_options_.GetCache()->Put(CreateSnapshotLiveManifestEntriesCacheKey(bucket),
                                                   cache_value);
     return status.ok() ? status : Status::OK();

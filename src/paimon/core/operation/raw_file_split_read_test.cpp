@@ -34,11 +34,14 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/io/data_file_path_factory.h"
+#include "paimon/core/io/file_index_evaluator.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/schema/schema_manager.h"
@@ -51,6 +54,7 @@
 #include "paimon/factories/factory_creator.h"
 #include "paimon/format/file_format.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/predicate_builder.h"
@@ -60,10 +64,60 @@
 #include "paimon/table/source/data_split.h"
 #include "paimon/testing/mock/mock_search_file_index.h"
 #include "paimon/testing/utils/binary_row_generator.h"
+#include "paimon/testing/utils/counting_cache_test_utils.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+namespace {
+
+class CacheTrackingFileIndexer : public FileIndexer {
+ public:
+    explicit CacheTrackingFileIndexer(std::shared_ptr<int32_t> open_count)
+        : open_count_(std::move(open_count)), delegate_(SearchIndexType::VECTOR, nullptr) {}
+
+    std::shared_ptr<FileIndexReader> CreateEmptyReader() const override {
+        return delegate_.CreateEmptyReader();
+    }
+
+    Result<std::shared_ptr<FileIndexReader>> CreateReader(
+        ::ArrowSchema* schema, int64_t start, int64_t length,
+        const std::shared_ptr<InputStream>& input,
+        const std::shared_ptr<MemoryPool>& pool) const override {
+        ++*open_count_;
+        return delegate_.CreateReader(schema, start, length, input, pool);
+    }
+
+    Result<std::shared_ptr<FileIndexWriter>> CreateWriter(
+        ::ArrowSchema* schema, const std::shared_ptr<MemoryPool>& pool) const override {
+        return delegate_.CreateWriter(schema, pool);
+    }
+
+ private:
+    std::shared_ptr<int32_t> open_count_;
+    MockSearchFileIndexer delegate_;
+};
+
+class CacheTrackingFileIndexFactory : public FileIndexerFactory {
+ public:
+    explicit CacheTrackingFileIndexFactory(std::shared_ptr<int32_t> open_count)
+        : open_count_(std::move(open_count)) {}
+
+    const char* Identifier() const override {
+        return "mock-cache-tracking-vector";
+    }
+
+    Result<std::unique_ptr<FileIndexer>> Create(
+        const std::map<std::string, std::string>&) const override {
+        return std::make_unique<CacheTrackingFileIndexer>(open_count_);
+    }
+
+ private:
+    std::shared_ptr<int32_t> open_count_;
+};
+
+}  // namespace
+
 class RawFileSplitReadTest : public ::testing::Test {
  protected:
     std::vector<std::shared_ptr<DataSplit>> PrepareDataSplits() const {
@@ -166,15 +220,16 @@ class RawFileSplitReadTest : public ::testing::Test {
             DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                                options.CreateExternalPaths());
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_path,
-                               options.CreateGlobalIndexExternalPath());
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                               options.CreateGlobalIndexExternalPaths());
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FileStorePathFactory> path_factory,
             FileStorePathFactory::Create(
                 read_context->GetPath(), schema, table_schema->PartitionKeys(),
                 options.GetPartitionDefaultName(), options.GetFileFormat()->Identifier(),
                 options.DataFilePrefix(), options.LegacyPartitionNameEnabled(), external_paths,
-                global_index_path, options.IndexFileInDataFileDir(), pool_));
+                global_index_external_paths, options.IndexFileInDataFileDir(),
+                /*external_path_weights=*/{}, pool_));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Executor> executor,
                                CreateDefaultExecutor(/*thread_count=*/2));
         std::shared_ptr<InternalReadContext> shared_context(std::move(internal_context));
@@ -215,8 +270,8 @@ class RawFileSplitReadTest : public ::testing::Test {
         auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
         ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
                              core_options.CreateExternalPaths());
-        ASSERT_OK_AND_ASSIGN(std::optional<std::string> global_index_external_path,
-                             core_options.CreateGlobalIndexExternalPath());
+        ASSERT_OK_AND_ASSIGN(std::vector<std::string> global_index_external_paths,
+                             core_options.CreateGlobalIndexExternalPaths());
 
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<FileStorePathFactory> path_factory,
@@ -224,8 +279,8 @@ class RawFileSplitReadTest : public ::testing::Test {
                 internal_context->GetPath(), arrow_schema, table_schema->PartitionKeys(),
                 core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
                 core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
-                external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-                pool_));
+                external_paths, global_index_external_paths, core_options.IndexFileInDataFileDir(),
+                /*external_path_weights=*/{}, pool_));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor,
                              CreateDefaultExecutor(/*thread_count=*/2));
         auto split_read = std::make_unique<RawFileSplitRead>(
@@ -302,15 +357,15 @@ TEST_F(RawFileSplitReadTest, TestCreateReaderUsesExplicitPredicate) {
     const CoreOptions& options = context->GetCoreOptions();
     const auto schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths, options.CreateExternalPaths());
-    ASSERT_OK_AND_ASSIGN(std::optional<std::string> global_index_path,
-                         options.CreateGlobalIndexExternalPath());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> global_index_external_paths,
+                         options.CreateGlobalIndexExternalPaths());
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStorePathFactory> paths,
         FileStorePathFactory::Create(
             path, schema, table_schema->PartitionKeys(), options.GetPartitionDefaultName(),
             options.GetFileFormat()->Identifier(), options.DataFilePrefix(),
-            options.LegacyPartitionNameEnabled(), external_paths, global_index_path,
-            options.IndexFileInDataFileDir(), pool_));
+            options.LegacyPartitionNameEnabled(), external_paths, global_index_external_paths,
+            options.IndexFileInDataFileDir(), /*external_path_weights=*/{}, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(2));
     RawFileSplitRead read(paths, context, pool_, executor);
     auto split = std::dynamic_pointer_cast<DataSplitImpl>(PrepareDataSplits().front());
@@ -539,6 +594,13 @@ TEST_F(RawFileSplitReadTest, TestCreateReaderWithNonPartitionWithReserveSequence
 }
 
 TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
+    auto open_count = std::make_shared<int32_t>(0);
+    auto factory = std::make_unique<CacheTrackingFileIndexFactory>(open_count);
+    const std::string index_type = factory->Identifier();
+    auto* factories = FactoryCreator::GetInstance();
+    factories->Register(index_type, factory.release());
+    ScopeGuard unregister_factory([&]() { factories->TEST_Unregister(index_type); });
+    auto cache = std::make_shared<CountingRoutingCache>(CacheKind::INDEX_READER, 1024 * 1024);
     std::string path = paimon::test::GetDataDir() +
                        "/orc/multi_partition_append_table.db/multi_partition_append_table";
     std::shared_ptr<VectorSearch> vector_search = std::make_shared<VectorSearch>(
@@ -546,7 +608,9 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
         VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
     ReadContextBuilder context_builder(path);
     context_builder.EnablePreciseFileIndexEvaluate(true);
-    context_builder.SetReadFieldNames({"_f3_INDEX_SCORE", "f0"}).SetVectorSearch(vector_search);
+    context_builder.SetReadFieldNames({"_f3_INDEX_SCORE", "f0"})
+        .SetVectorSearch(vector_search)
+        .WithCache(cache);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
@@ -558,25 +622,53 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
     auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(data_splits.front());
     ASSERT_TRUE(data_split);
     ASSERT_OK_AND_ASSIGN(
-        data_split->DataFiles().front()->embedded_index,
-        MockSearchFileIndex::MakeIndex("f3", MockSearchFileIndex::VECTOR_IDENTIFIER,
-                                       {{0, 0.25f}, {2, 0.75f}}, pool_));
+        std::shared_ptr<Bytes> index_bytes,
+        MockSearchFileIndex::MakeIndex("f3", index_type, {{0, 0.25f}, {2, 0.75f}}, pool_));
 
     const CoreOptions& core_options = internal_context->GetCoreOptions();
     std::shared_ptr<arrow::Schema> data_schema =
         DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
                          core_options.CreateExternalPaths());
-    ASSERT_OK_AND_ASSIGN(std::optional<std::string> global_index_external_path,
-                         core_options.CreateGlobalIndexExternalPath());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> global_index_external_paths,
+                         core_options.CreateGlobalIndexExternalPaths());
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStorePathFactory> path_factory,
         FileStorePathFactory::Create(
             path, data_schema, table_schema->PartitionKeys(),
             core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
             core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
-            external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-            pool_));
+            external_paths, global_index_external_paths, core_options.IndexFileInDataFileDir(),
+            /*external_path_weights=*/{}, pool_));
+    auto index_dir = UniqueTestDirectory::Create();
+    auto file_meta = data_split->DataFiles().front();
+    auto fs = std::make_shared<LocalFileSystem>();
+    ASSERT_OK_AND_ASSIGN(
+        auto data_path_factory,
+        path_factory->CreateDataFilePathFactory(data_split->Partition(), data_split->Bucket()));
+    std::string data_bytes;
+    ASSERT_OK(fs->ReadFile(data_path_factory->ToPath(file_meta), &data_bytes));
+    file_meta->external_path = index_dir->Str() + "/" + file_meta->file_name;
+    ASSERT_OK(fs->WriteFile(file_meta->external_path.value(), data_bytes, /*overwrite=*/true));
+    const std::string index_name = file_meta->file_name + ".index";
+    ASSERT_OK(fs->WriteFile(data_path_factory->ToAlignedPath(index_name, file_meta),
+                            std::string(index_bytes->data(), index_bytes->size()),
+                            /*overwrite=*/true));
+    file_meta->extra_files = {index_name};
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileIndexEvaluator> evaluator,
+        FileIndexEvaluator::Create(data_schema, core_options.ToMap(), data_path_factory, file_meta,
+                                   fs, /*cache=*/nullptr, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileIndexReader> cached_reader,
+        evaluator->GetSearchReader("f3", FileIndexReader::SearchType::VECTOR_SEARCH));
+    ASSERT_OK_AND_ASSIGN(auto input,
+                         fs->Open(data_path_factory->ToAlignedPath(index_name, file_meta)));
+    ASSERT_OK_AND_ASSIGN(std::string uri, input->GetUri());
+    ASSERT_OK(cache->Put(
+        CacheKey::ForIndexReader(uri, "f3", index_type),
+        std::make_shared<ObjectCacheValue<FileIndexReader>>(std::move(cached_reader), nullptr, 1)));
+    evaluator.reset();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor,
                          CreateDefaultExecutor(/*thread_count=*/2));
     auto split_read = std::make_unique<RawFileSplitRead>(path_factory, std::move(internal_context),
@@ -593,6 +685,15 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
                     {R"([[0, 0.25, "Bob"], [0, 0.75, "Tony"]])"}, &expected)
                     .ok());
     ASSERT_TRUE(result->Equals(expected));
+    ASSERT_EQ(*open_count, 1);
+    ASSERT_EQ(cache->SupplierCallCount(CacheKind::INDEX_READER), 0);
+    ASSERT_EQ(cache->Size(), 1);
+    ASSERT_OK_AND_ASSIGN(reader, split_read->CreateReader(data_split));
+    ASSERT_OK_AND_ASSIGN(result, ReadResultCollector::CollectResult(std::move(reader)));
+    ASSERT_TRUE(result->Equals(expected));
+    ASSERT_EQ(*open_count, 1);
+    ASSERT_EQ(cache->GetCount(CacheKind::INDEX_READER), 4);
+    ASSERT_EQ(cache->SupplierCallCount(CacheKind::INDEX_READER), 0);
 
     ReadContextBuilder without_score_builder(path);
     without_score_builder.EnablePreciseFileIndexEvaluate(true);
@@ -615,6 +716,8 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
                     {R"([[0, "Bob"], [0, "Tony"]])"}, &without_score_expected)
                     .ok());
     ASSERT_TRUE(without_score_result->Equals(without_score_expected));
+    ASSERT_EQ(*open_count, 2);
+    ASSERT_EQ(cache->GetCount(CacheKind::INDEX_READER), 4);
 }
 
 TEST_F(RawFileSplitReadTest, TestVectorSearchFiltersDeletionVectorBeforeTopK) {
@@ -823,8 +926,8 @@ TEST_F(RawFileSplitReadTest, TestEmptyPlan) {
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
                          core_options.CreateExternalPaths());
-    ASSERT_OK_AND_ASSIGN(std::optional<std::string> global_index_external_path,
-                         core_options.CreateGlobalIndexExternalPath());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> global_index_external_paths,
+                         core_options.CreateGlobalIndexExternalPaths());
 
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStorePathFactory> path_factory,
@@ -832,8 +935,8 @@ TEST_F(RawFileSplitReadTest, TestEmptyPlan) {
             internal_context->GetPath(), arrow_schema, table_schema->PartitionKeys(),
             core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
             core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
-            external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-            pool_));
+            external_paths, global_index_external_paths, core_options.IndexFileInDataFileDir(),
+            /*external_path_weights=*/{}, pool_));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor,
                          CreateDefaultExecutor(/*thread_count=*/2));

@@ -105,14 +105,15 @@ class ManifestListTest : public testing::Test {
         EXPECT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> file_format,
                              FileFormatFactory::Get(file_format_str, {}));
         auto unused_schema = arrow::schema(arrow::FieldVector({arrow::field("f0", arrow::utf8())}));
-        EXPECT_OK_AND_ASSIGN(std::shared_ptr<FileStorePathFactory> path_factory,
-                             FileStorePathFactory::Create(
-                                 root_path, unused_schema, /*partition_keys=*/{},
-                                 /*default_part_value=*/"", file_format->Identifier(),
-                                 /*data_file_prefix=*/"data-",
-                                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                 /*global_index_external_path=*/std::nullopt,
-                                 /*index_file_in_data_file_dir=*/false, pool));
+        EXPECT_OK_AND_ASSIGN(
+            std::shared_ptr<FileStorePathFactory> path_factory,
+            FileStorePathFactory::Create(
+                root_path, unused_schema, /*partition_keys=*/{},
+                /*default_part_value=*/"", file_format->Identifier(),
+                /*data_file_prefix=*/"data-",
+                /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
+                /*global_index_external_paths=*/{},
+                /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool));
         EXPECT_OK_AND_ASSIGN(
             auto manifest_list,
             ManifestList::Create(file_system, file_format, "zstd", path_factory, cache, pool));
@@ -153,9 +154,10 @@ TEST_F(ManifestListTest, DecodedCacheReusesIpcAcrossReaders) {
                        return Status::Invalid("manifest list was not cached");
                    }));
     ASSERT_TRUE(cached);
-    const auto& segment = cached->GetSegment();
-    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment.Data()),
-                                                  segment.Size());
+    auto segment = CacheValue::Get<const MemorySegment>(cached);
+    ASSERT_TRUE(segment);
+    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment->Data()),
+                                                  segment->Size());
     // The existing cache key contains IPC, not source-format bytes.
     auto ipc = arrow::ipc::RecordBatchStreamReader::Open(
         std::make_shared<arrow::io::BufferReader>(buffer));

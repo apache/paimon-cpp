@@ -22,12 +22,15 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "paimon/predicate/predicate.h"
 #include "paimon/visibility.h"
 
 namespace paimon {
+class MemoryPool;
+
 /// `VectorSearch` to perform vector similarity search.
 struct PAIMON_EXPORT VectorSearch {
     /// `PreFilter`: A lightweight pre-filtering function applied **before** similarity scoring.
@@ -56,8 +59,9 @@ struct PAIMON_EXPORT VectorSearch {
           options(_options) {}
 
     std::shared_ptr<VectorSearch> ReplacePreFilter(PreFilter _pre_filter) const {
-        return std::make_shared<VectorSearch>(field_name, limit, query, _pre_filter, predicate,
-                                              distance_type, options);
+        auto search = std::make_shared<VectorSearch>(*this);
+        search->pre_filter = std::move(_pre_filter);
+        return search;
     }
 
     /// Search field name.
@@ -91,5 +95,9 @@ struct PAIMON_EXPORT VectorSearch {
     /// A key-value map of query-specific runtime options.
     /// Such as the size of candidate list in approximate search or parallelism for this query.
     std::map<std::string, std::string> options;
+    /// Optional memory pool for temporary allocations during a Lumina search.
+    /// If null, the search uses the reader's pool. Must support concurrent allocations when
+    /// the search runs in parallel or the pool is shared by concurrent queries.
+    std::shared_ptr<MemoryPool> pool;
 };
 }  // namespace paimon

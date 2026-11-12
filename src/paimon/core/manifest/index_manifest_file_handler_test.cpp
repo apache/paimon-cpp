@@ -65,8 +65,8 @@ class IndexManifestFileHandlerTest : public testing::Test {
                 dir_->Str(), schema, /*partition_keys=*/{}, /*default_part_value=*/"",
                 file_format->Identifier(), /*data_file_prefix=*/"data-",
                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                /*global_index_external_path=*/std::nullopt,
-                /*index_file_in_data_file_dir=*/false, pool_));
+                /*global_index_external_paths=*/{},
+                /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool_));
         PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap({}));
         options.WithCache(cache);
         return IndexManifestFile::Create(dir_->GetFileSystem(), file_format, "zstd", path_factory,
@@ -128,9 +128,10 @@ TEST_F(IndexManifestFileHandlerTest, DecodedCacheReusesIpcAcrossReaders) {
                        return Status::Invalid("index manifest was not cached");
                    }));
     ASSERT_TRUE(cached);
-    const auto& segment = cached->GetSegment();
-    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment.Data()),
-                                                  segment.Size());
+    auto segment = CacheValue::Get<const MemorySegment>(cached);
+    ASSERT_TRUE(segment);
+    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment->Data()),
+                                                  segment->Size());
     auto ipc = arrow::ipc::RecordBatchStreamReader::Open(
         std::make_shared<arrow::io::BufferReader>(buffer));
     ASSERT_TRUE(ipc.ok()) << ipc.status().ToString();

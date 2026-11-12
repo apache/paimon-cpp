@@ -26,6 +26,8 @@
 #include "arrow/c/bridge.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/core/catalog/catalog_utils.h"
+#include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
@@ -412,21 +414,44 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
     if (impl_->catalog_ == nullptr && impl_->identifier_) {
         return Status::Invalid("cannot read through a null catalog");
     }
-    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr) {
-        // A catalog issuing per-table temporary credentials only hands them out through
-        // GetTableFileSystem, so the read uses the credentials of this table.
-        PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
-                               impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
+    // Resolve a branch named by a system table path too, before requesting its credentials.
+    std::optional<SystemTablePath> system_table_path;
+    if (impl_->format_table_ == nullptr) {
+        PAIMON_ASSIGN_OR_RAISE(system_table_path, SystemTableLoader::TryParsePath(impl_->path_));
+    }
+    std::map<std::string, std::string> branch_options = impl_->options_;
+    if (system_table_path && system_table_path->branch) {
+        PAIMON_ASSIGN_OR_RAISE(std::string path_branch,
+                               BranchManager::ResolveBranch(impl_->identifier_, branch_options,
+                                                            system_table_path->branch, "read"));
+        branch_options[Options::BRANCH] = path_branch;
     }
     PAIMON_ASSIGN_OR_RAISE(
         std::string branch,
-        BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, impl_->branch_, "read"));
+        BranchManager::ResolveBranch(impl_->identifier_, branch_options, impl_->branch_, "read"));
+    if (impl_->catalog_ != nullptr && !BranchManager::IsMainBranch(branch)) {
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
+    }
+    std::optional<Identifier> identifier = impl_->identifier_;
+    if (identifier) {
+        PAIMON_ASSIGN_OR_RAISE(Identifier branch_identifier,
+                               CatalogUtils::ResolvedBranchIdentifier(identifier.value(), branch));
+        identifier.emplace(std::move(branch_identifier));
+    }
+    std::shared_ptr<FileSystem> file_system = impl_->specific_file_system_;
+    if (impl_->catalog_ != nullptr && file_system == nullptr) {
+        // A catalog issuing per-table temporary credentials only hands them out through
+        // GetTableFileSystem, so the read uses the credentials of this table.
+        PAIMON_ASSIGN_OR_RAISE(file_system,
+                               impl_->catalog_->GetTableFileSystem(identifier.value()));
+    }
     std::map<std::string, std::string> options = impl_->options_;
     std::optional<std::string> named_branch;
     if (impl_->identifier_) {
         PAIMON_ASSIGN_OR_RAISE(named_branch, impl_->identifier_->GetBranchName());
     }
-    if (impl_->branch_ || named_branch || options.count(Options::BRANCH) != 0) {
+    if (impl_->branch_ || named_branch || options.count(Options::BRANCH) != 0 ||
+        (system_table_path && system_table_path->branch)) {
         options[Options::BRANCH] = branch;
     }
     if (impl_->enable_prefetch_ && impl_->prefetch_max_parallel_num_ == 0) {
@@ -440,7 +465,7 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
         return Status::Invalid(
             "prefetch batch count should be greater than or equal to prefetch max parallel num");
     }
-    if (impl_->specific_file_system_ && !impl_->fs_scheme_to_identifier_map_.empty()) {
+    if (file_system && !impl_->fs_scheme_to_identifier_map_.empty()) {
         return Status::Invalid(
             "WithFileSystem() and WithFileSystemSchemeToIdentifierMap() cannot be used together");
     }
@@ -460,10 +485,10 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
         impl_->enable_predicate_filter_, impl_->enable_prefetch_, impl_->enable_late_materializing_,
         impl_->prefetch_batch_count_, impl_->prefetch_max_parallel_num_,
         impl_->enable_multi_thread_row_to_batch_, impl_->row_to_batch_thread_number_,
-        impl_->table_schema_, impl_->memory_pool_, impl_->executor_, impl_->specific_file_system_,
+        impl_->table_schema_, impl_->memory_pool_, impl_->executor_, file_system,
         impl_->fs_scheme_to_identifier_map_, impl_->realtime_context_, options,
         impl_->read_ahead_cache_enabled_, impl_->cache_config_, impl_->cache_, impl_->format_table_,
-        impl_->warmup_level_, impl_->catalog_, impl_->identifier_);
+        impl_->warmup_level_, impl_->catalog_, identifier);
     if (impl_->read_schema_ && impl_->read_schema_->release) {
         ctx->SetReadSchema(std::move(impl_->read_schema_));
     }

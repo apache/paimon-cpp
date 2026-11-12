@@ -35,6 +35,7 @@
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/data/binary_string.h"
+#include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/casting/date_to_string_cast_executor.h"
 #include "paimon/defs.h"
@@ -133,6 +134,15 @@ class DataConverterUtils {
                     return Status::OK();
                 };
                 break;
+            case arrow::Type::TIME32:
+                converter = [](const std::string& value_str, int32_t field_idx,
+                               BinaryRowWriter* writer) {
+                    PAIMON_ASSIGN_OR_RAISE(int32_t time_value,
+                                           StringUtils::StringToTime(value_str));
+                    writer->WriteInt(field_idx, time_value);
+                    return Status::OK();
+                };
+                break;
             default:
                 return Status::NotImplemented(
                     fmt::format("Do not support type {} in partition binary row",
@@ -141,8 +151,9 @@ class DataConverterUtils {
         return converter;
     }
 
+    /// @param time_precision The declared precision of a TIME field, ignored for other types.
     static Result<BinaryRowFieldToStrConverter> CreateBinaryRowFieldToStringConverter(
-        arrow::Type::type type, bool legacy_partition_name_enabled) {
+        arrow::Type::type type, bool legacy_partition_name_enabled, int32_t time_precision = 0) {
         BinaryRowFieldToStrConverter converter;
         switch (type) {
             case arrow::Type::BOOL:
@@ -199,6 +210,22 @@ class DataConverterUtils {
                                                date_to_string_cast_executor->Cast(
                                                    Literal(FieldType::DATE, data), arrow::utf8()));
                         return literal.GetValue<std::string>();
+                    };
+                }
+                break;
+            }
+            case arrow::Type::TIME32: {
+                if (legacy_partition_name_enabled) {
+                    // Java keeps the internal milliseconds of the day for legacy partition names.
+                    converter = [](const BinaryRow& row, int32_t field_idx) -> Result<std::string> {
+                        return std::to_string(row.GetInt(field_idx));
+                    };
+                } else {
+                    // Java `TimeToStringCastRule`.
+                    converter = [time_precision](const BinaryRow& row,
+                                                 int32_t field_idx) -> Result<std::string> {
+                        return DateTimeUtils::FormatTimeMillis(row.GetInt(field_idx),
+                                                               time_precision);
                     };
                 }
                 break;

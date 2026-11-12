@@ -259,16 +259,21 @@ set(PAIMON_CORE_SRCS
     core/casting/string_to_date_cast_executor.cpp
     core/casting/string_to_decimal_cast_executor.cpp
     core/casting/string_to_numeric_primitive_cast_executor.cpp
+    core/casting/string_to_time_cast_executor.cpp
     core/casting/string_to_timestamp_cast_executor.cpp
+    core/casting/time_to_string_cast_executor.cpp
+    core/casting/time_to_timestamp_cast_executor.cpp
     core/casting/timestamp_to_date_cast_executor.cpp
     core/casting/timestamp_to_numeric_primitive_cast_executor.cpp
     core/casting/timestamp_to_string_cast_executor.cpp
+    core/casting/timestamp_to_time_cast_executor.cpp
     core/casting/timestamp_to_timestamp_cast_executor.cpp
     core/casting/casting_utils.cpp
     core/catalog/catalog.cpp
     core/catalog/catalog_utils.cpp
     core/catalog/file_system_catalog.cpp
     core/catalog/identifier.cpp
+    core/catalog/table_query_auth_result.cpp
     core/core_options.cpp
     core/deletionvectors/deletion_vector.cpp
     core/deletionvectors/deletion_file_writer.cpp
@@ -424,6 +429,11 @@ set(PAIMON_CORE_SRCS
     core/realtime/arrow_realtime_store_factory.cpp
     core/realtime/data_file_key_offset_index_writer.cpp
     core/realtime/key_offset_index_utils.cpp
+    core/realtime/index/hash/hash_realtime_index.cpp
+    core/realtime/index/realtime_index_evaluator.cpp
+    core/realtime/index/realtime_index_factory.cpp
+    core/realtime/index/realtime_index_reader.cpp
+    core/realtime/index/realtime_index_set.cpp
     core/realtime/realtime_key_offset_index.cpp
     core/realtime/realtime_file_schema.cpp
     core/realtime/realtime_offset_file_index_lookup.cpp
@@ -484,6 +494,8 @@ set(PAIMON_CORE_SRCS
     core/table/source/merge_tree_split_generator.cpp
     core/table/source/data_evolution_split_generator.cpp
     core/table/source/plan_impl.cpp
+    core/table/source/query_auth_table_read.cpp
+    core/table/source/query_auth_table_scan.cpp
     core/table/source/realtime_table_scan.cpp
     core/table/source/snapshot/snapshot_reader.cpp
     core/table/source/startup_mode.cpp
@@ -492,6 +504,7 @@ set(PAIMON_CORE_SRCS
     core/table/source/data_evolution_batch_scan.cpp
     core/table/source/data_evolution_full_text_read.cpp
     core/table/source/data_evolution_full_text_scan.cpp
+    core/table/source/filtered_row_id_reader.cpp
     core/table/source/full_text_search_builder.cpp
     core/table/source/full_text_search_split.cpp
     core/table/source/primary_key_sorted_index_scan.cpp
@@ -850,6 +863,7 @@ if(PAIMON_BUILD_TESTS)
                     core/catalog/file_system_catalog_test.cpp
                     core/catalog/catalog_test.cpp
                     core/catalog/identifier_test.cpp
+                    core/catalog/table_query_auth_result_test.cpp
                     core/compact/compact_deletion_file_test.cpp
                     core/compact/compact_future_manager_test.cpp
                     core/compact/noop_compact_manager_test.cpp
@@ -918,6 +932,7 @@ if(PAIMON_BUILD_TESTS)
                     core/realtime/arrow_deduplicate_realtime_store_test.cpp
                     core/realtime/arrow_realtime_store_test.cpp
                     core/realtime/key_offset_index_utils_test.cpp
+                    core/realtime/index/realtime_index_test.cpp
                     core/realtime/primary_key_realtime_store_test.cpp
                     core/realtime/realtime_deduplicate_state_test.cpp
                     core/realtime/realtime_file_schema_test.cpp
@@ -1043,12 +1058,15 @@ if(PAIMON_BUILD_TESTS)
                     core/table/sink/commit_message_impl_test.cpp
                     core/table/source/fallback_data_split_test.cpp
                     core/table/source/primary_key_sorted_index_scan_test.cpp
+                    core/table/source/query_auth_split_test.cpp
+                    core/table/source/query_auth_table_read_test.cpp
                     core/table/source/table_read_test.cpp
                     core/table/source/append_count_reader_test.cpp
                     core/table/source/pk_count_reader_test.cpp
                     core/table/source/data_evolution_batch_scan_test.cpp
                     core/table/source/data_evolution_full_text_read_test.cpp
                     core/table/source/data_evolution_full_text_scan_test.cpp
+                    core/table/source/filtered_row_id_reader_test.cpp
                     core/table/source/full_text_search_split_test.cpp
                     core/table/source/data_split_test.cpp
                     core/table/source/deletion_file_test.cpp

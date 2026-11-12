@@ -56,9 +56,9 @@ class FileIndexWriterWrapper : public GlobalIndexWriter {
         if (count_ == 0) {
             return std::vector<GlobalIndexIOMeta>();
         }
-        PAIMON_ASSIGN_OR_RAISE(std::string file_name, file_manager_->NewFileName(index_type_));
+        PAIMON_ASSIGN_OR_RAISE(std::string file_path, file_manager_->NewPath(index_type_));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<OutputStream> out,
-                               file_manager_->NewOutputStream(file_name));
+                               file_manager_->NewOutputStream(file_path));
         PAIMON_ASSIGN_OR_RAISE(PAIMON_UNIQUE_PTR<Bytes> bytes, writer_->SerializedBytes());
 
         PAIMON_ASSIGN_OR_RAISE(int64_t actual_size, out->Write(bytes->data(), bytes->size()));
@@ -68,7 +68,7 @@ class FileIndexWriterWrapper : public GlobalIndexWriter {
         }
         PAIMON_RETURN_NOT_OK(out->Flush());
         PAIMON_RETURN_NOT_OK(out->Close());
-        GlobalIndexIOMeta meta(file_manager_->ToPath(file_name), /*file_size=*/bytes->size(),
+        GlobalIndexIOMeta meta(file_path, /*file_size=*/bytes->size(),
                                /*row_count=*/count_, /*metadata=*/nullptr);
         return std::vector<GlobalIndexIOMeta>({meta});
     }

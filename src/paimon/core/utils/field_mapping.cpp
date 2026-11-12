@@ -208,8 +208,9 @@ Result<std::vector<std::shared_ptr<CastExecutor>>> FieldMappingBuilder::CreateDa
             PAIMON_ASSIGN_OR_RAISE(FieldType data_type,
                                    FieldTypeUtils::ConvertToFieldType(data_fields[i].Type()->id()));
             auto executor_factory = CastExecutorFactory::GetCastExecutorFactory();
-            auto cast_executor =
-                executor_factory->GetCastExecutor(/*src=*/data_type, /*target=*/read_type);
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<CastExecutor> cast_executor,
+                                   executor_factory->GetCastExecutor(/*src_field=*/data_fields[i],
+                                                                     /*target=*/read_type));
             if (!cast_executor) {
                 return Status::Invalid(
                     fmt::format("CreateDataCastExecutors failed: cannot find cast "

@@ -150,6 +150,8 @@ class DataDefine {
                 return Literal(GetVariantValue<Decimal>(value));
             case arrow::Type::type::DATE32:
                 return Literal(FieldType::DATE, GetVariantValue<int32_t>(value));
+            case arrow::Type::type::TIME32:
+                return Literal(FieldType::TIME, GetVariantValue<int32_t>(value));
             default:
                 return Status::Invalid(
                     fmt::format("Not support arrow type {} in VariantValueToLiteral",

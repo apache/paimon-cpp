@@ -35,7 +35,7 @@ class MockIndexPathFactory : public IndexPathFactory {
         return PathUtil::JoinPath(index_path_, std::string(IndexPathFactory::INDEX_PREFIX) +
                                                    std::to_string(index_file_count_->fetch_add(1)));
     }
-    std::string ToPath(const std::string& file_name) const override {
+    std::string NewPathFromName(const std::string& file_name) const override {
         return PathUtil::JoinPath(index_path_, file_name);
     }
     std::string ToPath(const std::shared_ptr<IndexFileMeta>& file) const override {

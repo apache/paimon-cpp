@@ -97,6 +97,7 @@ class InternalRowEqualizer {
                 return PrimitiveEqualizer<int16_t>(
                     [](const DataGetters& row, int32_t pos) { return row.GetShort(pos); });
             case arrow::Type::INT32:
+            case arrow::Type::TIME32:
                 return PrimitiveEqualizer<int32_t>(
                     [](const DataGetters& row, int32_t pos) { return row.GetInt(pos); });
             case arrow::Type::DATE32:

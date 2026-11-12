@@ -87,13 +87,16 @@ Result<std::shared_ptr<FileStorePathFactory>> CreateFileStorePathFactory(
     auto all_arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                            core_options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                           core_options.CreateGlobalIndexExternalPath());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
+                           core_options.GetExternalPathWeights());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                           core_options.CreateGlobalIndexExternalPaths());
     return FileStorePathFactory::Create(
         table_path, all_arrow_schema, table_schema->PartitionKeys(),
         core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
         core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(), external_paths,
-        global_index_external_path, core_options.IndexFileInDataFileDir(), pool);
+        global_index_external_paths, core_options.IndexFileInDataFileDir(), external_path_weights,
+        pool);
 }
 
 Result<std::shared_ptr<GlobalIndexWriter>> CreateGlobalIndexWriter(
@@ -391,8 +394,10 @@ Result<std::shared_ptr<CommitMessage>> GlobalIndexWriteTask::WriteIndex(
                                path_factory->CreateGlobalIndexCheckpointPathFactory(
                                    index_type, field_name, range, task_id.value()));
     }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexPathFactory> index_path_factory,
+                           path_factory->CreateGlobalIndexFileFactory());
     auto index_file_manager = std::make_shared<GlobalIndexFileManager>(
-        core_options.GetFileSystem(), path_factory->CreateGlobalIndexFileFactory(),
+        core_options.GetFileSystem(), std::move(index_path_factory),
         std::move(checkpoint_path_factory));
 
     // create batch reader
@@ -429,18 +434,24 @@ Status GlobalIndexWriteTask::DeleteCheckpoint(const std::string& table_path,
     PAIMON_ASSIGN_OR_RAISE(schema_and_options,
                            LoadSchemaAndOptions(table_path, options, file_system));
     const CoreOptions& core_options = schema_and_options.second;
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                           core_options.CreateGlobalIndexExternalPath());
-    PAIMON_ASSIGN_OR_RAISE(std::string task_directory,
-                           IndexCheckpointPathFactory::GetTaskDirectory(
-                               table_path, task_id, global_index_external_path));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                           core_options.CreateGlobalIndexExternalPaths());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> task_directories,
+                           IndexCheckpointPathFactory::GetTaskDirectories(
+                               table_path, task_id, global_index_external_paths));
     std::shared_ptr<FileSystem> fs = core_options.GetFileSystem();
-    PAIMON_ASSIGN_OR_RAISE(bool exists, fs->Exists(task_directory));
-    if (!exists) {
-        return Status::OK();
+    Status first_error = Status::OK();
+    for (const auto& task_directory : task_directories) {
+        auto exists = fs->Exists(task_directory);
+        Status status = exists.status();
+        if (exists.ok() && exists.value()) {
+            status = fs->Delete(task_directory, /*recursive=*/true);
+        }
+        if (!status.ok() && !status.IsNotExist() && first_error.ok()) {
+            first_error = status;
+        }
     }
-    Status status = fs->Delete(task_directory, /*recursive=*/true);
-    return status.IsNotExist() ? Status::OK() : status;
+    return first_error;
 }
 
 }  // namespace paimon

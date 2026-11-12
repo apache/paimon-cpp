@@ -47,7 +47,8 @@ class AvroDirectDecoder {
     struct DecodeContext {
         struct BuilderMetadata {
             arrow::Type::type type;
-            std::optional<arrow::TimeUnit::type> timestamp_unit;
+            /// Time unit of a TIMESTAMP or TIME32 builder, empty for other types.
+            std::optional<arrow::TimeUnit::type> time_unit;
         };
 
         /// Returns immutable type metadata without repeatedly copying the builder's DataType.

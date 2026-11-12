@@ -62,9 +62,9 @@ BitmapIndexReader::~BitmapIndexReader() {
     [[maybe_unused]] Status close_status = Close();
 }
 
-std::shared_ptr<GlobalIndexResult> BitmapIndexReader::CreateResult(
+Result<std::shared_ptr<GlobalIndexResult>> BitmapIndexReader::CreateResult(
     std::function<Result<RoaringBitmap64>()> supplier) {
-    return std::make_shared<BitmapGlobalIndexResult>(std::move(supplier));
+    return BitmapGlobalIndexResult::Create(std::move(supplier));
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> BitmapIndexReader::VisitIsNotNull() {

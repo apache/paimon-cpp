@@ -21,12 +21,19 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
 
+#include "arrow/type.h"
 #include "arrow/type_fwd.h"
+#include "arrow/util/key_value_metadata.h"
 #include "gtest/gtest.h"
 #include "paimon/common/predicate/full_text_match_predicate.h"
 #include "paimon/common/predicate/leaf_predicate_impl.h"
 #include "paimon/common/predicate/predicate_filter.h"
+#include "paimon/common/types/data_type.h"
+#include "paimon/core/casting/cast_executor.h"
 #include "paimon/data/decimal.h"
 #include "paimon/defs.h"
 #include "paimon/predicate/full_text_match.h"
@@ -737,7 +744,7 @@ TEST_F(FieldMappingTest, TestMapSelectedKeysMetadataPropagatedToDataSchema) {
     ASSERT_FALSE(custom_metadata_result.ok());
 }
 
-TEST_F(FieldMappingTest, TestTimeWithoutCast) {
+TEST_F(FieldMappingTest, TestTimeCast) {
     std::vector<DataField> fields = {
         DataField(0, arrow::field("time", arrow::time32(arrow::TimeUnit::MILLI)))};
     auto schema = DataField::ConvertDataFieldsToArrowSchema(fields);
@@ -753,6 +760,22 @@ TEST_F(FieldMappingTest, TestTimeWithoutCast) {
     std::vector<DataField> int_fields = {DataField(0, arrow::field("time", arrow::int32()))};
     ASSERT_NOK(FieldMappingBuilder::CreateDataCastExecutors(fields, int_fields));
     ASSERT_NOK(FieldMappingBuilder::CreateDataCastExecutors(int_fields, fields));
+
+    std::vector<DataField> time3_fields = {
+        DataField(0, arrow::field("time", arrow::time32(arrow::TimeUnit::MILLI), /*nullable=*/true,
+                                  arrow::key_value_metadata({DataType::kTimePrecision}, {"3"})))};
+    std::vector<DataField> string_fields = {DataField(0, arrow::field("time", arrow::utf8()))};
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CastExecutor>> to_string,
+                         FieldMappingBuilder::CreateDataCastExecutors(string_fields, time3_fields));
+    ASSERT_EQ(to_string.size(), 1);
+    ASSERT_TRUE(to_string[0]);
+    ASSERT_OK_AND_ASSIGN(Literal literal,
+                         to_string[0]->Cast(Literal(FieldType::TIME, 3723000), arrow::utf8()));
+    ASSERT_EQ("01:02:03.0", literal.GetValue<std::string>());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CastExecutor>> to_time,
+                         FieldMappingBuilder::CreateDataCastExecutors(fields, string_fields));
+    ASSERT_EQ(to_time.size(), 1);
+    ASSERT_TRUE(to_time[0]);
 }
 
 }  // namespace paimon::test

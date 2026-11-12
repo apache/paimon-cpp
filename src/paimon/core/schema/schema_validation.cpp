@@ -335,6 +335,17 @@ Status SchemaValidation::ValidateFormatTableSchema(
         return Status::Invalid("a format table does not support real-time options");
     }
 
+    // The schema's own value too, which the options of a call cannot disable.
+    PAIMON_ASSIGN_OR_RAISE(
+        bool schema_query_auth,
+        OptionsUtils::GetValueFromMap<bool>(schema.Options(), Options::QUERY_AUTH_ENABLED, false));
+    if (schema_query_auth || core_options.QueryAuthEnabled()) {
+        return Status::Invalid(fmt::format(
+            "{} is not supported on a format table: its read does not apply row filters or column "
+            "masks.",
+            Options::QUERY_AUTH_ENABLED));
+    }
+
     // A format table has no branches: its data is the files under its one location, which is
     // where a read or a write would go whatever this named. Refused wherever the option comes
     // from - the schema, a catalog that parsed `tbl$branch_dev`, or one call's options - rather
@@ -482,10 +493,6 @@ Status SchemaValidation::ValidateNotContainSpecificType(
         auto it = fields_map.find(field_name);
         if (it != fields_map.end()) {
             auto field = it->second;
-            if (field->type()->id() == arrow::Type::TIME32) {
-                return Status::Invalid(
-                    fmt::format("partition field {} cannot be TIME", field_name));
-            }
             if (IsComplexType(field)) {
                 return Status::Invalid(
                     fmt::format("partition field {} cannot be TIMESTAMP/DECIMAL/BLOB", field_name));
@@ -655,6 +662,35 @@ Status SchemaValidation::ValidatePrimaryKeyBTreeIndexes(const TableSchema& schem
         }
     }
     return Status::OK();
+}
+
+Result<bool> SchemaValidation::QueryAuthReadEnabled(
+    const std::map<std::string, std::string>& schema_options,
+    const std::map<std::string, std::string>& dynamic_options) {
+    PAIMON_ASSIGN_OR_RAISE(
+        bool schema_enabled,
+        OptionsUtils::GetValueFromMap<bool>(schema_options, Options::QUERY_AUTH_ENABLED, false));
+    PAIMON_ASSIGN_OR_RAISE(bool enabled,
+                           OptionsUtils::GetValueFromMap<bool>(
+                               dynamic_options, Options::QUERY_AUTH_ENABLED, schema_enabled));
+    if (schema_enabled && !enabled) {
+        return Status::Invalid(fmt::format("Option '{}' is not allowed to be disabled dynamically",
+                                           Options::QUERY_AUTH_ENABLED));
+    }
+    return enabled;
+}
+
+Status SchemaValidation::RejectQueryAuth(const TableSchema& schema,
+                                         const std::map<std::string, std::string>& dynamic_options,
+                                         const std::string& what) {
+    PAIMON_ASSIGN_OR_RAISE(bool enabled, QueryAuthReadEnabled(schema.Options(), dynamic_options));
+    if (!enabled) {
+        return Status::OK();
+    }
+    return Status::NotImplemented(
+        fmt::format("{} is not supported on a table with '{}=true': it would not apply the row "
+                    "filters and column masks the catalog defines for the table.",
+                    what, Options::QUERY_AUTH_ENABLED));
 }
 
 Status SchemaValidation::ValidateRealtime(const TableSchema& schema, const CoreOptions& options) {

@@ -1089,8 +1089,10 @@ macro(build_boost)
                                       -sZLIB_LIBRARY_PATH=${ZLIB_PREFIX}/lib
                                       runtime-link=shared threading=multi variant=release
                                       --user-config=${BOOST_USER_CONFIG}
-                                      toolset=${BOOST_TOOLSET} cxxflags=${EP_CXX_FLAGS}
-                                      linkflags=${EP_CXX_FLAGS} install
+                                      toolset=${BOOST_TOOLSET}
+                                      cxxstd=${CMAKE_CXX_STANDARD}
+                                      cxxflags=${EP_CXX_FLAGS} linkflags=${EP_CXX_FLAGS}
+                                      install
                         INSTALL_COMMAND ""
                         DEPENDS zlib
                         BUILD_BYPRODUCTS ${BOOST_BYPRODUCTS}
@@ -1332,7 +1334,7 @@ endmacro()
 macro(build_lumina)
     # The release tarball ships one prebuilt artifact tree per platform; keep this
     # list in sync with the platforms the pinned release actually contains.
-    set(LUMINA_SUPPORTED_PLATFORMS "linux-x86_64")
+    set(LUMINA_SUPPORTED_PLATFORMS "linux-x86_64" "linux-aarch64")
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND PAIMON_TARGET_CPU_FAMILY STREQUAL "x86")
         set(LUMINA_ARTIFACT_PLATFORM "linux-x86_64")
     elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND PAIMON_TARGET_CPU_FAMILY STREQUAL
@@ -1681,10 +1683,16 @@ macro(build_oss_sdk_v2)
              "-DCURL_LIBRARY_RELEASE=${OSS_SDK_V2_CURL_LIBRARY}")
     endif()
 
+    # Avoid copying the metadata variant, which triggers GCC 12's
+    # -Wmaybe-uninitialized warning in optimized builds.
+    set(OSS_SDK_V2_PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/oss_sdk_v2.diff")
     externalproject_add(oss_sdk_v2_ep
                         ${EP_COMMON_OPTIONS}
                         URL ${OSS_SDK_V2_SOURCE_URL}
                         URL_HASH "SHA256=${PAIMON_OSS_SDK_V2_BUILD_SHA256_CHECKSUM}"
+                        LOG_PATCH ON
+                        PATCH_COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> bash -c
+                                      "[ -f .patched ] && echo '<SOURCE_DIR> patch already applied, ignore...' || patch -s -N -p1 -i '${OSS_SDK_V2_PATCH_FILE}' && touch .patched"
                         CMAKE_ARGS ${OSS_SDK_V2_CMAKE_ARGS} ${THIRDPARTY_LOG_OPTIONS}
                         BUILD_BYPRODUCTS "${OSS_SDK_V2_STATIC_LIB}")
 

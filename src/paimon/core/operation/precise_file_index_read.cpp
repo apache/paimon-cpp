@@ -103,9 +103,9 @@ Status PreparePredicate(
         mapped_leaves->emplace(leaf, nullptr);
         return Status::OK();
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        std::optional<std::shared_ptr<Predicate>> mapped,
-        FieldMappingBuilder::ReconstructPredicateWithDataFields(leaf, read_by_name, data_by_id));
+    std::optional<std::shared_ptr<Predicate>> mapped;
+    PAIMON_ASSIGN_OR_RAISE(mapped, FieldMappingBuilder::ReconstructPredicateWithDataFields(
+                                       leaf, read_by_name, data_by_id));
     std::shared_ptr<LeafPredicate> mapped_leaf;
     if (mapped) {
         mapped_leaf = std::dynamic_pointer_cast<LeafPredicate>(*mapped);
@@ -179,11 +179,11 @@ Result<std::unique_ptr<PreciseFileIndexRead>> PreciseFileIndexRead::Create(
     PAIMON_ASSIGN_OR_RAISE(index_options,
                            FileIndexOptions::RewriteFieldNames(
                                split_read.context_->GetCoreOptions().ToMap(), field_names));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<FileIndexEvaluator> indexes,
-        FileIndexEvaluator::Create(data_schema, index_options, path_factory, file,
-                                   split_read.context_->GetCoreOptions().GetFileSystem(),
-                                   split_read.pool_));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexEvaluator> indexes,
+                           FileIndexEvaluator::Create(
+                               data_schema, index_options, path_factory, file,
+                               split_read.context_->GetCoreOptions().GetFileSystem(),
+                               split_read.context_->GetCoreOptions().GetCache(), split_read.pool_));
 
     std::map<std::string, DataField> read_by_name;
     for (const auto& field : read_fields) {

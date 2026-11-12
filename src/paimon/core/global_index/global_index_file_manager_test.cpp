@@ -19,6 +19,7 @@
 
 #include "paimon/core/global_index/global_index_file_manager.h"
 
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <set>
@@ -79,16 +80,27 @@ class GlobalIndexFileManagerTest : public ::testing::Test {
                 dir_->Str(), arrow::schema({}), /*partition_keys=*/{}, /*default_part_value=*/"",
                 /*identifier=*/"mock", /*data_file_prefix=*/"data-",
                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                /*global_index_external_path=*/std::nullopt,
-                /*index_file_in_data_file_dir=*/false, GetDefaultPool()));
+                /*global_index_external_paths=*/{},
+                /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{},
+                GetDefaultPool()));
     }
 
     Result<std::shared_ptr<GlobalIndexFileManager>> CreateManager() const {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexCheckpointPathFactory> checkpoint_path_factory,
                                path_factory_->CreateGlobalIndexCheckpointPathFactory(
                                    "lumina", "vector", Range(10, 20), "task-1"));
-        return std::make_shared<GlobalIndexFileManager>(
-            fs_, path_factory_->CreateGlobalIndexFileFactory(), std::move(checkpoint_path_factory));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexPathFactory> index_path_factory,
+                               path_factory_->CreateGlobalIndexFileFactory());
+        return std::make_shared<GlobalIndexFileManager>(fs_, std::move(index_path_factory),
+                                                        std::move(checkpoint_path_factory));
+    }
+
+    Status SetExternalPaths(const std::vector<std::string>& paths) {
+        PAIMON_ASSIGN_OR_RAISE(
+            path_factory_, FileStorePathFactory::Create(
+                               dir_->Str(), arrow::schema({}), {}, "", "mock", "data-", true, {},
+                               paths, false, /*external_path_weights=*/{}, GetDefaultPool()));
+        return Status::OK();
     }
 
     Result<std::string> CreateCheckpointFile(
@@ -124,22 +136,23 @@ TEST_F(GlobalIndexFileManagerTest, TestIndexIOWithoutCheckpointAccess) {
     ASSERT_TRUE(std::dynamic_pointer_cast<GlobalIndexCheckpointFileManager>(writer));
     ASSERT_TRUE(std::dynamic_pointer_cast<GlobalIndexCheckpointFileManager>(reader));
     ASSERT_TRUE(manager->SupportsCheckpoint());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexPathFactory> index_path_factory,
+                         path_factory_->CreateGlobalIndexFileFactory());
     auto plain_manager = std::make_shared<GlobalIndexFileManager>(
-        fs_, path_factory_->CreateGlobalIndexFileFactory(), /*checkpoint_path_factory=*/nullptr);
+        fs_, std::move(index_path_factory), /*checkpoint_path_factory=*/nullptr);
     ASSERT_TRUE(std::dynamic_pointer_cast<GlobalIndexCheckpointFileManager>(plain_manager));
     ASSERT_FALSE(plain_manager->SupportsCheckpoint());
 
-    ASSERT_OK_AND_ASSIGN(std::string name, writer->NewFileName("lumina"));
-    ASSERT_TRUE(StringUtils::EndsWith(name, ".index"));
-    ASSERT_EQ(writer->ToPath(name), PathUtil::JoinPath(dir_->Str(), "index/" + name));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> output, writer->NewOutputStream(name));
+    ASSERT_OK_AND_ASSIGN(std::string path, writer->NewPath("lumina"));
+    ASSERT_TRUE(StringUtils::EndsWith(path, ".index"));
+    ASSERT_TRUE(StringUtils::StartsWith(path, PathUtil::JoinPath(dir_->Str(), "index/lumina-")));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> output, writer->NewOutputStream(path));
     ASSERT_OK_AND_ASSIGN(int64_t written, output->Write("index", 5));
     ASSERT_EQ(written, 5);
     ASSERT_OK(output->Close());
-    ASSERT_OK_AND_ASSIGN(int64_t size, writer->GetFileSize(name));
+    ASSERT_OK_AND_ASSIGN(int64_t size, writer->GetFileSize(path));
     ASSERT_EQ(size, 5);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> input,
-                         reader->GetInputStream(writer->ToPath(name)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> input, reader->GetInputStream(path));
     char buffer[5];
     ASSERT_OK_AND_ASSIGN(int64_t read, input->Read(buffer, sizeof(buffer)));
     ASSERT_EQ(read, 5);
@@ -153,7 +166,9 @@ TEST_F(GlobalIndexFileManagerTest, TestIndexIOWithoutCheckpointAccess) {
 
 TEST_F(GlobalIndexFileManagerTest, TestCheckpointNotConfigured) {
     fs_->fail_list_ = true;
-    GlobalIndexFileManager manager(fs_, path_factory_->CreateGlobalIndexFileFactory(),
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<IndexPathFactory> index_path_factory,
+                         path_factory_->CreateGlobalIndexFileFactory());
+    GlobalIndexFileManager manager(fs_, std::move(index_path_factory),
                                    /*checkpoint_path_factory=*/nullptr);
     ASSERT_FALSE(manager.SupportsCheckpoint());
     ASSERT_NOK_WITH_MSG(manager.CreateCheckpointOutputStream(),
@@ -200,7 +215,7 @@ TEST_F(GlobalIndexFileManagerTest, TestCheckpointIOAndRestart) {
 
     std::string other_task_path = PathUtil::JoinPath(
         dir_->Str(), "index/checkpoint/task-2/lumina-global-index-vector-10-20-99.index.ckpt");
-    std::string index_path = manager->ToPath("retained.index");
+    ASSERT_OK_AND_ASSIGN(std::string index_path, manager->NewPath("retained"));
     ASSERT_OK(fs_->WriteFile(other_task_path, "other", /*overwrite=*/false));
     ASSERT_OK(fs_->WriteFile(index_path, "index", /*overwrite=*/false));
     ASSERT_OK(restarted->DeleteCheckpoint());
@@ -223,8 +238,8 @@ TEST_F(GlobalIndexFileManagerTest, TestExternalCheckpointIOAndRestart) {
         FileStorePathFactory::Create(
             dir_->Str(), arrow::schema({}), /*partition_keys=*/{}, /*default_part_value=*/"",
             /*identifier=*/"mock", /*data_file_prefix=*/"data-",
-            /*legacy_partition_name_enabled=*/true, /*external_paths=*/{}, external_path,
-            /*index_file_in_data_file_dir=*/false, GetDefaultPool()));
+            /*legacy_partition_name_enabled=*/true, /*external_paths=*/{}, {external_path},
+            /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexFileManager> manager, CreateManager());
     std::string directory = PathUtil::JoinPath(external_path, "checkpoint/task-1");
     std::string file_name = "lumina-global-index-vector-10-20-0.index.ckpt";
@@ -254,10 +269,11 @@ TEST_F(GlobalIndexFileManagerTest, TestExternalCheckpointIOAndRestart) {
     ASSERT_OK_AND_ASSIGN(std::string next_name, CreateCheckpointFile(restarted));
     ASSERT_EQ(next_name, "lumina-global-index-vector-10-20-1.index.ckpt");
 
+    ASSERT_OK_AND_ASSIGN(std::string retained_index_path, manager->NewPath("retained"));
     std::vector<std::string> retained_paths = {
         local_path, PathUtil::JoinPath(external_path, "checkpoint/task-2/" + file_name),
         PathUtil::JoinPath(directory, "lumina-global-index-other-10-20-0.index.ckpt"),
-        manager->ToPath("retained.index")};
+        retained_index_path};
     for (size_t i = 1; i < retained_paths.size(); ++i) {
         ASSERT_OK(fs_->WriteFile(retained_paths[i], "retained", /*overwrite=*/false));
     }
@@ -269,6 +285,80 @@ TEST_F(GlobalIndexFileManagerTest, TestExternalCheckpointIOAndRestart) {
         ASSERT_OK_AND_ASSIGN(exists, fs_->Exists(path));
         ASSERT_TRUE(exists) << path;
     }
+}
+
+TEST_F(GlobalIndexFileManagerTest, CheckpointFilesRoundRobin) {
+    std::vector<std::string> roots = {PathUtil::JoinPath(dir_->Str(), "a"),
+                                      PathUtil::JoinPath(dir_->Str(), "b"),
+                                      PathUtil::JoinPath(dir_->Str(), "c")};
+    ASSERT_OK(SetExternalPaths(roots));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexFileManager> manager, CreateManager());
+    std::vector<std::string> directories;
+    for (const auto& root : roots) {
+        directories.push_back(PathUtil::JoinPath(root, "checkpoint/task-1"));
+    }
+
+    size_t first_directory = 0;
+    for (size_t i = 0; i < directories.size() * 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> output,
+                             manager->CreateCheckpointOutputStream());
+        ASSERT_OK_AND_ASSIGN(std::string path, output->GetUri());
+        ASSERT_OK(output->Close());
+        if (i == 0) {
+            // The first directory is random; subsequent files follow the configured order.
+            auto iter =
+                std::find(directories.begin(), directories.end(), PathUtil::GetParentDirPath(path));
+            ASSERT_NE(iter, directories.end());
+            first_directory = iter - directories.begin();
+        }
+        ASSERT_EQ(path, PathUtil::JoinPath(
+                            directories[(first_directory + i) % directories.size()],
+                            fmt::format("lumina-global-index-vector-10-20-{}.index.ckpt", i)));
+    }
+}
+
+TEST_F(GlobalIndexFileManagerTest, LatestCheckpointIgnoresDuplicateOlderIds) {
+    std::string root_a = PathUtil::JoinPath(dir_->Str(), "a");
+    std::string root_b = PathUtil::JoinPath(dir_->Str(), "b");
+    ASSERT_OK(SetExternalPaths({root_a, root_b}));
+    for (const auto& root : {root_a, root_b}) {
+        ASSERT_OK(fs_->WriteFile(
+            PathUtil::JoinPath(root,
+                               "checkpoint/task-1/lumina-global-index-vector-10-20-9.index.ckpt"),
+            "older", false));
+    }
+    std::string latest_path = PathUtil::JoinPath(
+        root_b, "checkpoint/task-1/lumina-global-index-vector-10-20-10.index.ckpt");
+    ASSERT_OK(fs_->WriteFile(latest_path, "latest", false));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexFileManager> manager, CreateManager());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> input, manager->OpenCheckpointInputStream());
+    ASSERT_OK_AND_ASSIGN(std::string recovered_path, input->GetUri());
+    ASSERT_EQ(recovered_path, latest_path);
+    ASSERT_OK(input->Close());
+    ASSERT_OK_AND_ASSIGN(std::string next, CreateCheckpointFile(manager));
+    ASSERT_TRUE(StringUtils::EndsWith(next, "-11.index.ckpt"));
+    ASSERT_OK(manager->DeleteCheckpoint());
+    ASSERT_OK_AND_ASSIGN(bool exists, manager->CheckpointExists());
+    ASSERT_FALSE(exists);
+}
+
+TEST_F(GlobalIndexFileManagerTest, TaskCleanupVisitsAllRootsAfterAnError) {
+    std::string root_a = "file:" + PathUtil::JoinPath(dir_->Str(), "a");
+    std::string root_b = "file:" + PathUtil::JoinPath(dir_->Str(), "b");
+    ASSERT_OK(CreateSchema({{Options::GLOBAL_INDEX_EXTERNAL_PATH, root_a + "," + root_b}}));
+    std::string directory_a = PathUtil::JoinPath(root_a, "checkpoint/task-1");
+    std::string directory_b = PathUtil::JoinPath(root_b, "checkpoint/task-1");
+    ASSERT_OK(fs_->WriteFile(PathUtil::JoinPath(directory_a, "unfinished"), "x", false));
+    ASSERT_OK(fs_->WriteFile(PathUtil::JoinPath(directory_b, "unfinished"), "x", false));
+    fs_->fail_delete_path_ = directory_a;
+    ASSERT_NOK(GlobalIndexWriteTask::DeleteCheckpoint(dir_->Str(), "task-1", {}, fs_));
+    ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(directory_b));
+    ASSERT_FALSE(exists);
+    ASSERT_OK_AND_ASSIGN(exists, fs_->Exists(directory_a));
+    ASSERT_TRUE(exists);
+    fs_->fail_delete_path_.clear();
+    ASSERT_OK(GlobalIndexWriteTask::DeleteCheckpoint(dir_->Str(), "task-1", {}, fs_));
+    ASSERT_OK(GlobalIndexWriteTask::DeleteCheckpoint(dir_->Str(), "task-1", {}, fs_));
 }
 
 TEST_F(GlobalIndexFileManagerTest, TestInitializationFailureCanRetry) {
@@ -375,6 +465,24 @@ TEST_F(GlobalIndexFileManagerTest, TestDeleteDoesNotResetFileId) {
     ASSERT_OK_AND_ASSIGN(std::string second, CreateCheckpointFile(manager));
     ASSERT_TRUE(StringUtils::EndsWith(second, "-1.index.ckpt"));
     ASSERT_EQ(fs_->list_count_, 2);
+}
+
+TEST_F(GlobalIndexFileManagerTest, CheckpointCleanupPreservesDeleteErrors) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexFileManager> manager, CreateManager());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> output,
+                         manager->CreateCheckpointOutputStream());
+    ASSERT_OK_AND_ASSIGN(std::string path, output->GetUri());
+    ASSERT_OK(output->Close());
+
+    fs_->fail_delete_path_ = path;
+    ASSERT_NOK_WITH_MSG(manager->DeleteCheckpoint(), "checkpoint delete failed");
+    ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(path));
+    ASSERT_TRUE(exists);
+
+    fs_->fail_delete_path_.clear();
+    ASSERT_OK(manager->DeleteCheckpoint());
+    ASSERT_OK_AND_ASSIGN(exists, manager->CheckpointExists());
+    ASSERT_FALSE(exists);
 }
 
 TEST_F(GlobalIndexFileManagerTest, TestDeleteTaskCheckpoint) {

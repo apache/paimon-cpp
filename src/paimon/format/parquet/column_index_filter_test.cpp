@@ -849,6 +849,56 @@ TEST_F(ColumnIndexFilterTest, DecimalWithoutSchemaKeepsAllPages) {
     EXPECT_EQ(row_count, ranges.RowCount());
 }
 
+TEST_F(ColumnIndexFilterTest, TimePages) {
+    auto time_type = arrow::time32(arrow::TimeUnit::MILLI);
+    arrow::Time32Builder builder(time_type, arrow::default_memory_pool());
+    for (int32_t millis : {0, 45296123, 86399999}) {
+        for (int32_t i = 0; i < 10; ++i) {
+            ASSERT_TRUE(builder.Append(millis).ok());
+        }
+    }
+    std::shared_ptr<arrow::Array> values = builder.Finish().ValueOrDie();
+    auto data = arrow::StructArray::Make({values}, {arrow::field("value", time_type)}).ValueOrDie();
+    std::string file_name = dir_->Str() + "/time.parquet";
+    WriteTestFile(file_name, data, /*write_batch_size=*/10, /*max_row_group_length=*/30);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_name));
+    ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
+    auto in_stream = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool_);
+    auto reader = ::parquet::ParquetFileReader::Open(in_stream);
+    ASSERT_TRUE(reader);
+    auto page_index_reader = reader->GetPageIndexReader();
+    ASSERT_TRUE(page_index_reader);
+    int64_t row_count = reader->metadata()->RowGroup(0)->num_rows();
+    auto filter = [&](const std::shared_ptr<Predicate>& predicate) {
+        return ColumnIndexFilter::CalculateRowRanges(predicate, page_index_reader->RowGroup(0),
+                                                     {{"value", 0}}, reader->metadata()->schema(),
+                                                     row_count);
+    };
+
+    auto equal = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"value", FieldType::TIME,
+                                         Literal(FieldType::TIME, 45296123));
+    ASSERT_OK_AND_ASSIGN(auto ranges, filter(equal));
+    ASSERT_EQ(1, ranges.GetRanges().size());
+    EXPECT_EQ(10, ranges.GetRanges()[0].from);
+    EXPECT_EQ(19, ranges.GetRanges()[0].to);
+
+    auto less_than = PredicateBuilder::LessThan(/*field_index=*/0, /*field_name=*/"value",
+                                                FieldType::TIME, Literal(FieldType::TIME, 1000));
+    ASSERT_OK_AND_ASSIGN(ranges, filter(less_than));
+    ASSERT_EQ(1, ranges.GetRanges().size());
+    EXPECT_EQ(0, ranges.GetRanges()[0].from);
+    EXPECT_EQ(9, ranges.GetRanges()[0].to);
+
+    auto greater_or_equal =
+        PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"value", FieldType::TIME,
+                                         Literal(FieldType::TIME, 86399999));
+    ASSERT_OK_AND_ASSIGN(ranges, filter(greater_or_equal));
+    ASSERT_EQ(1, ranges.GetRanges().size());
+    EXPECT_EQ(20, ranges.GetRanges()[0].from);
+    EXPECT_EQ(29, ranges.GetRanges()[0].to);
+}
+
 /// Predicates referencing fields absent from the data file are stripped upstream
 /// by FieldMappingBuilder, so reaching ColumnIndexFilter with such a predicate is
 /// a contract violation and surfaces as an error.

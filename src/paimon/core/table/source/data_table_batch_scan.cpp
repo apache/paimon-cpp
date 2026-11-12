@@ -46,6 +46,8 @@ DataTableBatchScan::DataTableBatchScan(bool pk_table, const CoreOptions& core_op
         snapshot_reader_->WithLevelFilter(
             [top_level](int32_t level) -> bool { return level == top_level; });
         snapshot_reader_->EnableValueFilter();
+    } else if (realtime_pk_scan && core_options.GetMergeEngine() == MergeEngine::PARTIAL_UPDATE) {
+        snapshot_reader_->EnableValueFilterForLevels([](int32_t) -> bool { return false; });
     } else if (pk_table && (core_options.DeletionVectorsEnabled() ||
                             core_options.GetMergeEngine() == MergeEngine::FIRST_ROW)) {
         if (realtime_pk_scan) {

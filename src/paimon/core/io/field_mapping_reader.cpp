@@ -281,6 +281,12 @@ Result<std::shared_ptr<arrow::Array>> FieldMappingReader::GenerateSinglePartitio
             scalar = std::make_shared<arrow::Date32Scalar>(value);
             break;
         }
+        case arrow::Type::type::TIME32: {
+            int32_t value = partition_.GetInt(partition_info_.value().idx_in_partition[idx]);
+            scalar = std::make_shared<arrow::Time32Scalar>(
+                value, partition_info_.value().partition_read_schema[idx].Type());
+            break;
+        }
         default:
             return Status::Invalid(
                 fmt::format("Not support arrow type {} for partition",

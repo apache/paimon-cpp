@@ -62,6 +62,9 @@ constexpr const char kFieldTableId[] = "tableId";
 constexpr const char kFieldCommitUser[] = "commitUser";
 constexpr const char kFieldAcquired[] = "acquired";
 constexpr const char kFieldLeaseMillis[] = "leaseMillis";
+constexpr const char kFieldSelect[] = "select";
+constexpr const char kFieldFilter[] = "filter";
+constexpr const char kFieldColumnMasking[] = "columnMasking";
 
 void AddOptionalStringMember(rapidjson::Value* obj, const char* key,
                              const std::optional<std::string>& value,
@@ -496,6 +499,49 @@ void CommitLockResponse::FromJson(const rapidjson::Value& obj) noexcept(false) {
     expires_at_millis_ = RapidJsonUtil::DeserializeKeyValue<int64_t>(obj, kFieldExpiresAtMillis, 0);
     lease_millis_ = RapidJsonUtil::DeserializeKeyValue<int64_t>(obj, kFieldLeaseMillis, 0);
     snapshot_ = RapidJsonUtil::DeserializeKeyValue<std::optional<Snapshot>>(obj, kFieldSnapshot);
+}
+
+rapidjson::Value AuthTableQueryRequest::ToJson(rapidjson::Document::AllocatorType* allocator) const
+    noexcept(false) {
+    rapidjson::Value obj(rapidjson::kObjectType);
+    if (select_) {
+        obj.AddMember(rapidjson::StringRef(kFieldSelect),
+                      RapidJsonUtil::SerializeValue(select_.value(), allocator).Move(), *allocator);
+    }
+    return obj;
+}
+
+void AuthTableQueryRequest::FromJson(const rapidjson::Value& obj) noexcept(false) {
+    select_ = RapidJsonUtil::DeserializeKeyValue<std::optional<std::vector<std::string>>>(
+        obj, kFieldSelect);
+}
+
+rapidjson::Value AuthTableQueryResponse::ToJson(rapidjson::Document::AllocatorType* allocator) const
+    noexcept(false) {
+    rapidjson::Value obj(rapidjson::kObjectType);
+    if (!filter_.empty()) {
+        obj.AddMember(rapidjson::StringRef(kFieldFilter),
+                      RapidJsonUtil::SerializeValue(filter_, allocator).Move(), *allocator);
+    }
+    if (!column_masking_.empty()) {
+        obj.AddMember(rapidjson::StringRef(kFieldColumnMasking),
+                      RapidJsonUtil::SerializeValue(column_masking_, allocator).Move(), *allocator);
+    }
+    return obj;
+}
+
+void AuthTableQueryResponse::FromJson(const rapidjson::Value& obj) noexcept(false) {
+    // A member named twice fails rather than being read as either of its values.
+    Status unique = RapidJsonUtil::CheckNoDuplicateMembers(obj);
+    if (!unique.ok()) {
+        throw std::invalid_argument(unique.message());
+    }
+    // A member of the wrong type fails rather than reading as no rules, which would let a query
+    // through unrestricted.
+    filter_ = RapidJsonUtil::DeserializeKeyValue<std::vector<std::string>>(
+        obj, kFieldFilter, std::vector<std::string>());
+    column_masking_ = RapidJsonUtil::DeserializeKeyValue<std::map<std::string, std::string>>(
+        obj, kFieldColumnMasking, std::map<std::string, std::string>());
 }
 
 }  // namespace paimon

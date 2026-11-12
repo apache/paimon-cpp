@@ -336,10 +336,27 @@ so its restored file references are visible to the expiration operation.
 
 Reading through the catalog
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-To read a native table with the per-table temporary credentials a catalog issues,
-pass the catalog and table identifier to ``ReadContextBuilder::WithCatalog`` or
-``ScanContextBuilder::WithCatalog``. This is a shorthand for asking the catalog
-for that table's file system and passing it in through ``WithFileSystem``:
+To read a native table through its catalog, pass the catalog and table
+identifier to ``ReadContextBuilder::WithCatalog`` or
+``ScanContextBuilder::WithCatalog``. The catalog then supplies:
+
+* the table's file system, with the per-table temporary credentials the catalog
+  issues, unless ``WithFileSystem`` sets one;
+* whether the table enables ``query-auth.enabled``, read from the schema the
+  catalog holds for the branch read;
+* for a table that does, its row filters and column masks.
+
+Passing only the file system through ``WithFileSystem`` gives neither of the
+last two.
+
+The fields a scan plans with and a read reads with do not come from the catalog,
+but from the schema ``SetTableSchema`` hands in for the main branch or, otherwise,
+from the latest schema published under the table path of the branch read. That
+schema has to exist even when the catalog holds the current one: a table whose
+schema only the catalog holds cannot be scanned or read this way yet, and when
+the two differ, the fields are those of the schema under the table path. A
+query-auth scan also checks column identities and rule types against the
+catalog's schema on every plan:
 
 .. code-block:: cpp
 
@@ -364,19 +381,253 @@ When ``Finish()`` builds the context, it asks the catalog for the table's file
 system through ``Catalog::GetTableFileSystem`` and uses it as-is for the schema,
 snapshots, manifests and data under the table path, so it signs every access with
 the table's credentials and reloads them as they expire. An explicit
-``WithFileSystem`` takes precedence, so the catalog is not asked. A catalog that
-issues no per-table credentials returns its catalog-level file system, so this is
-also how you read with the catalog's own object-store credentials. For a format
-table, use ``ReadContextBuilder(FormatTable)`` or ``ScanContextBuilder(FormatTable)``
-instead; ``WithCatalog`` is rejected because the table already carries the file
-system it was loaded through.
+``WithFileSystem`` takes precedence, so the catalog is not asked for one. A
+catalog that issues no per-table credentials returns its catalog-level file
+system, so this is also how you read with the catalog's own object-store
+credentials. For a format table, use ``ReadContextBuilder(FormatTable)`` or
+``ScanContextBuilder(FormatTable)`` instead; ``WithCatalog`` is rejected because
+the table already carries the file system it was loaded through.
+
+Row filters and column masks
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+A table with ``query-auth.enabled = true`` lets the catalog restrict what a read
+returns with row filters and column masks, as in Java. The option is enabled when
+any of these sets it:
+
+* the latest schema under the table path;
+* the options of the scan or read;
+* for a scan or read built ``WithCatalog``, the schema the catalog holds for the
+  branch read, which ``TableScan::Create`` and ``TableRead::Create`` load as Java
+  loads the table of that branch.
+
+A schema handed in with ``SetTableSchema`` for the main branch does not decide it
+alone: unless the catalog already enabled the option, the latest schema under the
+table path is checked too, so a cache taken before the option was turned on still
+applies the rules.
+
+What the rules may contain:
+
+* Row filters support the ``AND`` and ``OR`` of the comparison, ``IN``,
+  ``BETWEEN``, null, prefix, suffix, ``CONTAINS`` and ``LIKE`` predicates on a
+  column referenced with ``FIELD_REF``, and the ``TRUE`` and ``FALSE`` constants
+  Java's ``PredicateBuilder.alwaysTrue()`` and ``alwaysFalse()`` write on a
+  ``NULL`` transform; a ``FALSE`` filter reads no row. A predicate on any other
+  transform, such as ``UPPER(name)``, is refused. ``LIKE`` matches as Java's
+  does: ``_`` is any one character, a line terminator included.
+* Their literals may be ``BOOLEAN``, ``TINYINT``, ``SMALLINT``, ``INT``,
+  ``BIGINT``, ``FLOAT``, ``DOUBLE``, ``STRING``, ``DECIMAL``, ``DATE``,
+  ``TIMESTAMP`` and ``TIMESTAMP_LTZ``, the temporal ones in the ISO text format
+  written by Java's ``LocalDate``, ``LocalDateTime`` and ``Instant``, with an
+  instant ending in ``Z``. A year outside
+  ``0000`` to ``9999`` takes a sign as in Java, a fraction at most nine digits,
+  and a timestamp must lie within the range of epoch milliseconds. A filter on a
+  column of another type, such as ``TIME``, is refused with ``NotImplemented``;
+  a ``FIELD_REF`` mask still copies such a column. ``DOUBLE`` literals use
+  full-precision parsing to preserve Java's comparison boundaries; non-finite
+  floating-point literals are refused. Integer ``FLOAT`` literals preserve Java's
+  direct integer-to-float rounding, including integers beyond 64 bits.
+* Column masks support the ``NULL``, ``FIELD_REF``, ``CONCAT``, ``CONCAT_WS`` and
+  ``SUBSTRING`` transforms, whose inputs are literals, field references or null;
+  a transform nested in the input of another is refused. As in Java,
+  ``SUBSTRING`` returns null if any input is null, including its position or
+  length.
+* A mask of a system column such as ``_ROW_ID``, which a query-auth read never
+  projects, is parsed but not applied, as Java ignores one the query does not
+  project. If the table schema contains an actual column with such a name, the
+  query fails instead of silently ignoring that column's mask.
+* Malformed rules fail the query, including invalid UTF-8 and unescaped NUL
+  bytes. The ``literals`` array of an ``IN`` or ``NOT_IN`` rule must be present
+  and non-null; an explicit ``[]`` remains valid. A rule, or the auth response
+  carrying it, that names a JSON member twice is refused rather than read as
+  either value. An escaped NUL in a string literal or column name is preserved.
+
+What would not apply the rules fails with ``NotImplemented``: search, an explicit
+read schema (``SetReadSchema``, use ``SetReadFieldNames`` instead), a projected
+or filtered column outside the table schema such as ``_ROW_ID``, real-time
+reads, ``GlobalIndexScan::Create``, a partition filter on a masked partition
+key, a count reader, the ``$files``, ``$manifests``, ``$binlog``, ``$audit_log``
+and ``$ro`` system tables, fallback reads of a query-auth table, and a fallback
+branch that enables the option on a table that does not, including when only its
+catalog schema or a newer schema than the cached one enables it. Each fallback
+branch needs its own authorized splits and schema validation. Passing
+``query-auth.enabled = false`` as a read option fails with ``Invalid`` when the
+table enables the option, and changes nothing otherwise. Writing to and
+committing to the table are not affected. A format table refuses the option,
+whether its schema or the options of a call set it. ``sys.partitions`` leaves
+out the partitions of a query-auth table, whose values its rules may hide,
+including when only its latest published schema enables the option and the
+catalog's schema has not caught up.
+For REST tables, the catalog schema and location come from the same response,
+so a concurrent table recreation cannot pair an old policy with a new location.
+
+Planning and reading a query-auth table
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Every plan of such a table, the first included, asks the catalog for the rules
+of the query (``POST /v1/{prefix}/databases/{database}/tables/{table}/auth``),
+checks that the columns they name still exist with the types they were written
+for and are columns of the schema the scan plans with, and attaches them to each
+split. A scan therefore has to be built ``WithCatalog``, and a catalog that does
+not support the query auth interface is refused with ``NotImplemented``. The
+scan path must be the location ``Catalog::GetTableLocation`` returns for the
+table and branch the rules are asked for, so the rules of one table are never
+applied to the files of another; a different path fails with ``Invalid`` when
+the scan is created or, if the catalog has since bound the table elsewhere, when
+it plans. A scan or read whose catalog leaves ``query-auth.enabled`` off is held
+to the same location, so that setting is never taken for another table, and a
+system table path such as ``tbl$branch_dev$files`` takes it from the branch it
+names. An identifier in the ``sys`` database can only be used with a global
+system table path (``<warehouse>/sys/<table>``); it cannot skip the catalog policy
+of a data table or its per-table system tables.
+The branch the identifier, the ``branch`` option, ``WithBranch()`` or a
+system table path names must agree, which ``Finish()`` checks before it asks the
+catalog for anything. A branch named only by the option or the path is carried
+into the identifier before requesting the table's file system, so the
+``query-auth.enabled`` setting, the credentials and the rules all come from the
+branch the scan plans.
+``Finish()`` also refuses, as for a write, a branch the catalog would read as
+another object, such as ``MAIN`` or a name holding a ``$``
+(see `Naming the branch`_). The request selects every column unless
+``ScanContextBuilder::SetReadFieldNames`` names the columns the query reads; the
+columns of its predicate and partition filter are then selected as well. The
+catalog authorizes these columns by their current names, so every plan also
+checks that each is still the field, by id, that the scan was created with, in
+both the latest published schema and the catalog's current schema. The rules
+must fit both schemas as well. A mismatch fails the plan, even when the catalog
+returns no rules, so a catalog-only rename or column replacement cannot expose
+old data through a stale local schema. Refresh the published or cached schema
+and create the scan again after such a change. For an external table, which Java
+reads without rules, the REST catalog does not ask the server for any once the
+table it loads reports itself as external; a failed load or a failed request
+fails the plan.
+
+Each plan asks for the rules again, but the scan pushes the row filter, and the
+predicate conjuncts on columns not masked, into the planning of its first plan.
+A later plan whose row filter differs, or that masks a column of the predicate
+the first one did not, fails with ``Invalid`` rather than plan with filters
+pushed down under the old rules. Java can replace its row-filter pruning at each
+plan, but likewise refuses a new mask on a column whose user predicate was
+already pushed down. Create the paimon-cpp scan again to apply the new rules; to
+resume a streaming scan, start the new one from the snapshot after the last one
+read, with ``scan.mode = from-snapshot`` and ``scan.snapshot-id``.
+
+Each split records the table location, branch and columns its rules were
+authorized for. Columns are bound by name and field id in the schema the scan
+planned with, including every column when the scan selected them all. The split
+also records the field id of every column its rules reference. The read applies
+the rules a split carries and refuses a split planned without them. It refuses
+a split authorized for another table location or branch, even when their schemas
+and data file names match. This check also applies to a worker without the
+catalog. The read only has to know that the table enables query auth, which the
+schema under the table path, ``WithCatalog`` or the read option
+``query-auth.enabled = true`` tells it. It refuses a split when a column it
+outputs or filters on is not among those the split was authorized for or is now
+another field under the same name, as after a rename or a column added since the
+plan, and when a column the rules reference was renamed, replaced or dropped
+since. It compares names and field ids only: the types the rules declare are
+checked against the schema read, and a rule declaring none, such as a ``NULL``
+mask, only needs its column to exist. Plan again after such a schema change.
+Its rows go through the row filter, then the column masks, then the read's own
+predicate, so that predicate sees the masked values: all of it when
+``EnablePredicateFilter`` asks for it, and otherwise, as in Java, its conjuncts
+on masked columns, which no scan prunes by. The columns the rules and the
+predicate read are read as well and dropped from the output. A masked column is
+output as nullable and decoded. A column a mask, the row filter or that
+predicate reads is decoded for it if the file reader kept it dictionary-encoded
+or as a large string, and is output decoded too unless only a mask reads it.
+Under a row filter no column or nested child is output dictionary-encoded, since
+a dictionary would still hold the values of the rows the filter drops; otherwise
+any other column is output as the file reader returned it.
+Neither the predicate of a read nor the conjuncts of a scan's predicate on masked
+columns prune files, whose statistics hold raw values, and a scan whose predicate
+has such conjuncts does not push its limit down; nor does one whose row filter
+reads data columns. A mask reading another masked column and a rule paimon-cpp
+does not know fail the query.
+
+Query-auth splits across runtimes
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Plan and read a table with ``query-auth.enabled = true`` in the same runtime.
+paimon-cpp can deserialize supported Java query-auth splits but refuses to read
+them. Java rejects the envelope of a split planned by paimon-cpp when
+deserializing it.
+
+A split planned by paimon-cpp serializes in an envelope of its own, the Java
+``SplitSerializer`` bytes of the ``QueryAuthSplit`` followed by that scope, which
+Java rejects as a corrupted split rather than reading it without the scope. A
+``QueryAuthSplit`` Java serialized does not record which columns its rules were
+authorized for, so paimon-cpp deserializes it with the same rules but refuses to
+read it: its rules may be those of other columns than the read outputs. Written
+back, it takes the Java format, though not necessarily the bytes Java wrote: a
+null rule list or map becomes an empty one and the masks are ordered by column.
+Only a Java split of ``SplitSerializer`` version 1 wrapping a ``DataSplit`` or an
+``IndexedSplit``, whose rules paimon-cpp supports, deserializes; one whose
+``authResult`` is null is refused.
+
+Query-auth examples
+^^^^^^^^^^^^^^^^^^^
+These examples use ``shared_catalog`` from `Reading through the catalog`_.
+
+.. code-block:: cpp
+
+   using namespace paimon;
+
+   // Plan with the columns and the filter the read uses.
+   ScanContextBuilder scan_builder(table_path);
+   scan_builder.WithCatalog(shared_catalog, Identifier("db", "tbl"))
+       .SetReadFieldNames({"name", "phone"})
+       .SetPredicate(predicate);
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan,
+                          TableScan::Create(std::move(scan_context)));
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, scan->CreatePlan());
+
+   // A worker without the catalog tells the read that the table enables query auth.
+   ReadContextBuilder read_builder(table_path);
+   read_builder.AddOption(Options::QUERY_AUTH_ENABLED, "true")
+       .SetReadFieldNames({"name", "phone"})
+       .SetPredicate(predicate)
+       .EnablePredicateFilter(true);
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read,
+                          TableRead::Create(std::move(read_context)));
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
+
+The read does not take the branch from the splits or from
+``query-auth.enabled``: a worker reading a branch names it itself, as the scan
+did. As for a scan, a branch named by the ``branch`` option or ``WithBranch`` is
+carried into the identifier of a read built ``WithCatalog``, so the catalog
+hands out the credentials of that branch.
+
+.. code-block:: cpp
+
+   // Plan branch "dev"; Identifier("db", "tbl", "dev") names it as well.
+   ScanContextBuilder dev_scan_builder(table_path);
+   dev_scan_builder.WithCatalog(shared_catalog, Identifier("db", "tbl"))
+       .AddOption(Options::BRANCH, "dev")
+       .SetReadFieldNames({"name", "phone"});
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> dev_scan_context,
+                          dev_scan_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> dev_scan,
+                          TableScan::Create(std::move(dev_scan_context)));
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> dev_plan, dev_scan->CreatePlan());
+
+   // The worker reads the same branch.
+   ReadContextBuilder dev_read_builder(table_path);
+   dev_read_builder.AddOption(Options::QUERY_AUTH_ENABLED, "true")
+       .AddOption(Options::BRANCH, "dev")
+       .SetReadFieldNames({"name", "phone"});
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> dev_read_context,
+                          dev_read_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> dev_read,
+                          TableRead::Create(std::move(dev_read_context)));
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> dev_reader,
+                          dev_read->CreateReader(dev_plan->Splits()));
 
 The C++ REST catalog covers the database, table, snapshot and commit operations
-of the ``Catalog`` API. The parts of the Java REST catalog that have no C++
-counterpart yet — altering a database or a table, views, functions, partitions,
-tags, branch management and consumers — are not supported. Creating, deleting
-and merging a branch is what branch management covers; committing to a branch
-that already exists is supported, as described below.
+of the ``Catalog`` API, and the query auth of a table. The parts of the Java REST
+catalog that have no C++ counterpart yet — altering a database or a table, views,
+functions, partitions, tags, branch management and consumers — are not supported.
+Creating, deleting and merging a branch is what branch management covers;
+committing to a branch that already exists is supported, as described below.
 
 Committing to a branch
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -399,10 +650,10 @@ for the table while the files were written for the branch.
 Identifier aliases such as ``tbl$branch_MAIN`` are normalized to the main branch,
 as is ``paimon::Identifier("db", "tbl", "MAIN")``. This normalization applies to
 identifiers; explicit option values keep their case. Thus ``branch=MAIN`` is
-rejected for catalog writes and commits because the catalog treats it as main
+rejected for catalog scans, reads, writes and commits because the catalog treats it as main
 while file-system metadata would use a separate directory. Names containing a
-``$``, such as ``branch=dev$options``, are also rejected for catalog writes and
-commits because they are ambiguous with system-table identifiers.
+``$``, such as ``branch=dev$options``, are also rejected for catalog operations
+because they are ambiguous with system-table identifiers.
 
 What a branch keeps and what it shares
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -415,13 +666,17 @@ which is why expiration is not supported on a table with branches, as noted
 above.
 
 A write or a commit aimed at a branch reads that schema rather than the
-catalog's, just as a read of that branch does, and asks the catalog for no schema
-at all, so a catalog serving only the table's own current schema still takes the
-branch's snapshots. The new snapshot records the schema id published there as
-well, which is the id a read of the branch resolves under
-``branch/branch-<name>``; only on the main branch is the recorded id the one the
-catalog reports, as its current schema may live nowhere else. Data files record
-the schema they were written with, as they do on the main branch.
+catalog's and asks the catalog for no schema at all, so a catalog serving only
+the table's own current schema still takes the branch's snapshots. A scan or
+read also uses the fields of the schema published under the branch, but through
+``WithCatalog`` it asks for the catalog's branch schema to check
+``query-auth.enabled`` (see `Reading through the catalog`_).
+
+The new snapshot records the schema id published under the branch, which is the
+id a read of the branch resolves under ``branch/branch-<name>``; only on the main
+branch is the recorded id the one the catalog reports, as its current schema may
+live nowhere else. Data files record the schema they were written with, as they
+do on the main branch.
 
 Addressing a branch without a catalog client
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

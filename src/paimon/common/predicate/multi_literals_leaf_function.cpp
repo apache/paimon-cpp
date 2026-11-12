@@ -58,6 +58,7 @@ bool CanProbeWithIsIn(FieldType field_type) {
         case FieldType::FLOAT:
         case FieldType::DOUBLE:
         case FieldType::DATE:
+        case FieldType::TIME:
         case FieldType::STRING:
         case FieldType::BINARY:
         case FieldType::DECIMAL:
@@ -146,6 +147,12 @@ std::shared_ptr<arrow::Array> MakeInValueSet(const std::vector<Literal>& literal
          !IsTimestampOfUnit(data_type, LiteralConverter::MinRequiredTimeUnit(literals)))) {
         return nullptr;
     }
+    // A TIME value set is written in milliseconds, so only a millisecond column is probed without
+    // a cast.
+    if (field_type == FieldType::TIME &&
+        !data_type.Equals(*arrow::time32(arrow::TimeUnit::MILLI))) {
+        return nullptr;
+    }
     for (const auto& literal : literals) {
         // A literal typed differently makes `Literal::CompareTo` fail, keep that on the row by row
         // path.
@@ -168,7 +175,8 @@ std::shared_ptr<arrow::Array> MakeInValueSet(const std::vector<Literal>& literal
     Result<std::shared_ptr<arrow::Array>> value_set =
         LiteralConverter::ConvertLiteralsToArray(field_type, literals, pool);
     // A failure only says the value set is not there, and the row by row path still is. Decimal
-    // literals of mixed precision and scale end up here, anything else is an arrow failure.
+    // literals of mixed precision and scale and a timestamp literal that does not fit int64 in the
+    // unit end up here, anything else is an arrow failure.
     if (!value_set.ok()) {
         return nullptr;
     }

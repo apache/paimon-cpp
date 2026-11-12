@@ -91,12 +91,12 @@ class BitmapIndexTest : public ::testing::Test {
     template <typename ArrowBuilder, typename ValueType>
     Result<std::shared_ptr<arrow::Array>> CreateArray(const std::shared_ptr<arrow::DataType>& type,
                                                       const std::vector<ValueType>& values) const {
-        auto value_builder = std::make_shared<ArrowBuilder>();
+        ArrowBuilder value_builder;
         for (ValueType value : values) {
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(value_builder->Append(value));
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(value_builder.Append(value));
         }
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> value_array,
-                                          value_builder->Finish());
+                                          value_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             std::shared_ptr<arrow::StructArray> struct_array,
             arrow::StructArray::Make({value_array}, {arrow::field("f0", type)}));

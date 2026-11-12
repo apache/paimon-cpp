@@ -31,7 +31,7 @@ class IndexPathFactory {
     virtual ~IndexPathFactory() = default;
 
     virtual std::string NewPath() const = 0;
-    virtual std::string ToPath(const std::string& file_name) const = 0;
+    virtual std::string NewPathFromName(const std::string& file_name) const = 0;
     virtual std::string ToPath(const std::shared_ptr<IndexFileMeta>& file) const = 0;
     virtual bool IsExternalPath() const = 0;
 

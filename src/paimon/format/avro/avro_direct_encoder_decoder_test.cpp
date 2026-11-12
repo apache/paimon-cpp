@@ -265,6 +265,25 @@ TEST_F(AvroDirectEncoderDecoderTest, TestDate32Type) {
     CheckResult(schema_json, input_array, &builder);
 }
 
+TEST_F(AvroDirectEncoderDecoderTest, TestTime32Type) {
+    std::string schema_json = R"({"type": "int", "logicalType": "time-millis"})";
+    arrow::Time32Builder builder(arrow::time32(arrow::TimeUnit::MILLI),
+                                 arrow::default_memory_pool());
+    ASSERT_TRUE(builder.Append(0).ok());         // 00:00:00
+    ASSERT_TRUE(builder.Append(123).ok());       // 00:00:00.123
+    ASSERT_TRUE(builder.Append(86399999).ok());  // 23:59:59.999
+    std::shared_ptr<arrow::Array> input_array;
+    ASSERT_TRUE(builder.Finish(&input_array).ok());
+    CheckResult(schema_json, input_array, &builder);
+
+    auto avro_schema = ::avro::compileJsonSchemaFromString(R"({"type": "int"})");
+    ASSERT_OK_AND_ASSIGN(auto encoded_data, EncodeData(avro_schema.root(), input_array));
+    ASSERT_NOK_WITH_MSG(
+        DecodeWithEncodedData(avro_schema.root(), std::move(encoded_data),
+                              /*projection=*/std::nullopt, input_array->length(), &builder),
+        "Unexpected avro type");
+}
+
 TEST_F(AvroDirectEncoderDecoderTest, TestTimestampType) {
     // Test timestamp-millis
     {

@@ -189,6 +189,26 @@ std::optional<SystemTableFactory> FindSystemTableFactory(const std::string& syst
     return std::nullopt;
 }
 
+// The system tables that read the rows or the file statistics of a query-auth table are refused
+// as soon as they are loaded: `$files` and `$binlog` as in Java, `$audit_log` and `$ro`, whose
+// reads would not apply the rules, and `$manifests`, whose partition statistics hold raw
+// partition values that a mask or a row filter hides. The other system tables report only
+// metadata.
+Status ValidateQueryAuthSystemTable(const std::string& system_table_name,
+                                    const std::shared_ptr<TableSchema>& table_schema,
+                                    const std::map<std::string, std::string>& dynamic_options) {
+    std::string normalized_name = StringUtils::ToLowerCase(system_table_name);
+    if (table_schema == nullptr || (normalized_name != FilesSystemTable::kName &&
+                                    normalized_name != BinlogSystemTable::kName &&
+                                    normalized_name != AuditLogSystemTable::kName &&
+                                    normalized_name != ReadOptimizedSystemTable::kName &&
+                                    normalized_name != ManifestsSystemTable::kName)) {
+        return Status::OK();
+    }
+    return SchemaValidation::RejectQueryAuth(*table_schema, dynamic_options,
+                                             fmt::format("System table '{}'", normalized_name));
+}
+
 }  // namespace
 
 SystemTable::SystemTable(const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
@@ -272,6 +292,8 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::Load(
     const std::map<std::string, std::string>& fs_scheme_map) {
     std::optional<SystemTableFactory> factory = FindSystemTableFactory(system_table_name);
     if (factory) {
+        PAIMON_RETURN_NOT_OK(
+            ValidateQueryAuthSystemTable(system_table_name, table_schema, dynamic_options));
         const std::string effective_name =
             data_table_name.empty() ? PathUtil::GetName(table_path) : data_table_name;
         PAIMON_ASSIGN_OR_RAISE(

@@ -132,8 +132,7 @@ class RecordingGlobalIndexReader : public MockGlobalIndexReader {
         for (int64_t position : positions) {
             bitmap.Add(position);
         }
-        return std::make_shared<BitmapGlobalIndexResult>(
-            [bitmap = std::move(bitmap)]() -> Result<RoaringBitmap64> { return bitmap; });
+        return std::make_shared<BitmapGlobalIndexResult>(std::move(bitmap));
     }
 
     static std::shared_ptr<GlobalIndexResult> NotEvaluable() {
@@ -166,9 +165,10 @@ class GlobalIndexEvaluatorImplTest : public ::testing::Test {
         std::vector<DataField> fields = {
             DataField(0, arrow::field("a", arrow::int64())),
             DataField(1, arrow::field("b", arrow::int64())),
+            DataField(2, arrow::field("c", arrow::int64())),
         };
         table_schema_ = std::make_shared<TableSchema>(
-            /*version=*/1, /*id=*/0, fields, /*highest_field_id=*/1,
+            /*version=*/1, /*id=*/0, fields, /*highest_field_id=*/2,
             /*partition_keys=*/std::vector<std::string>(),
             /*primary_keys=*/std::vector<std::string>(),
             /*options=*/std::map<std::string, std::string>(), /*comment=*/std::nullopt,
@@ -181,7 +181,7 @@ class GlobalIndexEvaluatorImplTest : public ::testing::Test {
         return GlobalIndexEvaluatorImpl(
             table_schema_,
             [reader](int32_t field_id) -> Result<std::vector<std::shared_ptr<GlobalIndexReader>>> {
-                if (field_id == 0) {
+                if (field_id == 0 || field_id == 2) {
                     return std::vector<std::shared_ptr<GlobalIndexReader>>{reader};
                 }
                 return std::vector<std::shared_ptr<GlobalIndexReader>>();
@@ -220,6 +220,104 @@ TEST_F(GlobalIndexEvaluatorImplTest, SupportedAndUnsupportedLeavesCombineSafely)
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> or_result,
                          evaluator.Evaluate(or_predicate));
     ASSERT_EQ(nullptr, or_result);
+}
+
+TEST_F(GlobalIndexEvaluatorImplTest, ReportsContributingFields) {
+    GlobalIndexEvaluatorImpl evaluator = CreateEvaluator();
+    std::shared_ptr<Predicate> indexed = Equal("a", 0);
+    std::shared_ptr<Predicate> unindexed = Equal("b", 1);
+
+    ASSERT_OK_AND_ASSIGN(std::optional<GlobalIndexEvaluatorImpl::Evaluation> evaluation,
+                         evaluator.EvaluateWithContributingFields(nullptr));
+    ASSERT_FALSE(evaluation);
+    ASSERT_OK_AND_ASSIGN(evaluation, evaluator.EvaluateWithContributingFields(unindexed));
+    ASSERT_FALSE(evaluation);
+
+    ASSERT_OK_AND_ASSIGN(evaluation, evaluator.EvaluateWithContributingFields(indexed));
+    ASSERT_TRUE(evaluation);
+    ASSERT_EQ((std::set<int64_t>{1, 3}), CollectPositions(evaluation->result));
+    ASSERT_EQ((std::set<int32_t>{0}), evaluation->contributing_field_ids);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> and_predicate,
+                         PredicateBuilder::And({indexed, unindexed}));
+    ASSERT_OK_AND_ASSIGN(evaluation, evaluator.EvaluateWithContributingFields(and_predicate));
+    ASSERT_TRUE(evaluation);
+    ASSERT_EQ((std::set<int64_t>{1, 3}), CollectPositions(evaluation->result));
+    ASSERT_EQ((std::set<int32_t>{0}), evaluation->contributing_field_ids);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> or_predicate,
+                         PredicateBuilder::Or({indexed, unindexed}));
+    ASSERT_OK_AND_ASSIGN(evaluation, evaluator.EvaluateWithContributingFields(or_predicate));
+    ASSERT_FALSE(evaluation);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> discarded_or,
+                         PredicateBuilder::And({or_predicate, Equal("c", 2)}));
+    ASSERT_OK_AND_ASSIGN(evaluation, evaluator.EvaluateWithContributingFields(discarded_or));
+    ASSERT_TRUE(evaluation);
+    ASSERT_EQ((std::set<int64_t>{1, 3}), CollectPositions(evaluation->result));
+    ASSERT_EQ((std::set<int32_t>{2}), evaluation->contributing_field_ids);
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> unvisited_or,
+                         PredicateBuilder::Or({unindexed, Equal("missing", 0)}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> discarded_unvisited_or,
+                         PredicateBuilder::And({unvisited_or, indexed}));
+    ASSERT_OK_AND_ASSIGN(evaluation,
+                         evaluator.EvaluateWithContributingFields(discarded_unvisited_or));
+    ASSERT_TRUE(evaluation);
+    ASSERT_EQ((std::set<int64_t>{1, 3}), CollectPositions(evaluation->result));
+    ASSERT_EQ((std::set<int32_t>{0}), evaluation->contributing_field_ids);
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> indexed_or,
+        PredicateBuilder::Or({indexed, PredicateBuilder::IsNull(0, "a", FieldType::BIGINT)}));
+    ASSERT_OK_AND_ASSIGN(evaluation, evaluator.EvaluateWithContributingFields(indexed_or));
+    ASSERT_TRUE(evaluation);
+    ASSERT_EQ((std::set<int64_t>{1, 2, 3}), CollectPositions(evaluation->result));
+    ASSERT_EQ((std::set<int32_t>{0}), evaluation->contributing_field_ids);
+
+    std::shared_ptr<Predicate> declined =
+        PredicateBuilder::NotEqual(0, "a", FieldType::BIGINT, Literal(static_cast<int64_t>(1)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> partly_declined,
+                         PredicateBuilder::And({indexed, declined}));
+    ASSERT_OK_AND_ASSIGN(evaluation, evaluator.EvaluateWithContributingFields(partly_declined));
+    ASSERT_TRUE(evaluation);
+    ASSERT_EQ((std::set<int64_t>{1, 3}), CollectPositions(evaluation->result));
+    ASSERT_TRUE(evaluation->contributing_field_ids.empty());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> nested_declined,
+                         PredicateBuilder::Or({indexed, partly_declined}));
+    ASSERT_OK_AND_ASSIGN(evaluation, evaluator.EvaluateWithContributingFields(nested_declined));
+    ASSERT_TRUE(evaluation);
+    ASSERT_EQ((std::set<int64_t>{1, 3}), CollectPositions(evaluation->result));
+    ASSERT_TRUE(evaluation->contributing_field_ids.empty());
+}
+
+TEST_F(GlobalIndexEvaluatorImplTest, AndWithEmptyResultShortCircuits) {
+    GlobalIndexEvaluatorImpl evaluator = CreateEvaluator();
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> predicate,
+        PredicateBuilder::And(
+            {Equal("a", 0), PredicateBuilder::IsNull(0, "a", FieldType::BIGINT), Equal("c", 2)}));
+    ASSERT_OK_AND_ASSIGN(std::optional<GlobalIndexEvaluatorImpl::Evaluation> evaluation,
+                         evaluator.EvaluateWithContributingFields(predicate));
+    ASSERT_TRUE(evaluation);
+    ASSERT_TRUE(CollectPositions(evaluation->result).empty());
+    ASSERT_EQ((std::set<int32_t>{0}), evaluation->contributing_field_ids);
+    ASSERT_EQ(1, reader_->EqualCalls());
+}
+
+TEST_F(GlobalIndexEvaluatorImplTest, CollectFieldIds) {
+    ASSERT_OK_AND_ASSIGN(std::set<int32_t> field_ids,
+                         GlobalIndexEvaluatorImpl::CollectFieldIds(*table_schema_, nullptr));
+    ASSERT_TRUE(field_ids.empty());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::Or({Equal("a", 0), Equal("b", 1)}));
+    ASSERT_OK_AND_ASSIGN(field_ids,
+                         GlobalIndexEvaluatorImpl::CollectFieldIds(*table_schema_, predicate));
+    ASSERT_EQ((std::set<int32_t>{0, 1}), field_ids);
+    ASSERT_OK_AND_ASSIGN(
+        field_ids, GlobalIndexEvaluatorImpl::CollectFieldIds(*table_schema_, Equal("missing", 0)));
+    ASSERT_TRUE(field_ids.empty());
 }
 
 TEST_F(GlobalIndexEvaluatorImplTest, NormalizationFlattensNestedCompounds) {

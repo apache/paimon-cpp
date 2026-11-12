@@ -22,15 +22,19 @@
 #include "arrow/api.h"
 #include "arrow/array/array_nested.h"
 #include "arrow/ipc/json_simple.h"
+#include "arrow/util/key_value_metadata.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/columnar/columnar_row.h"
 #include "paimon/common/data/internal_array.h"
 #include "paimon/common/data/internal_map.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/types/data_type.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/core/utils/field_mapping.h"
+#include "paimon/data/timestamp.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/testing/utils/timezone_guard.h"
 
 namespace paimon::test {
 TEST(CastedRowTest, TestSimpleWithNoCasting) {
@@ -139,6 +143,66 @@ TEST(CastedRowTest, TestSimpleWithCasting) {
     ASSERT_EQ(casted_row->GetByte(10), 5);
 
     ASSERT_EQ("casted row, inner row = ColumnarRow, row_id 0", casted_row->ToString());
+}
+
+TEST(CastedRowTest, TestTimeCasting) {
+    TimezoneGuard tz_guard("Asia/Shanghai");
+    auto pool = GetDefaultPool();
+    auto time_type = arrow::time32(arrow::TimeUnit::MILLI);
+    auto ts_type = arrow::timestamp(arrow::TimeUnit::MILLI);
+    auto ltz_type = arrow::timestamp(arrow::TimeUnit::MILLI, "Asia/Shanghai");
+    std::vector<DataField> fields = {
+        DataField(0, arrow::field("time_to_string", time_type, /*nullable=*/true,
+                                  arrow::key_value_metadata({DataType::kTimePrecision}, {"3"}))),
+        DataField(1, arrow::field("string_to_time", arrow::utf8())),
+        DataField(2, arrow::field("time_to_ts", time_type)),
+        DataField(3, arrow::field("time_to_ltz", time_type)),
+        DataField(4, arrow::field("ts_to_time", ts_type)),
+        DataField(5, arrow::field("ltz_to_time", ltz_type))};
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(
+                     DataField::ConvertDataFieldsToArrowStructType(fields),
+                     R"([[3723000, "12:34:56.123", 45296123, 28800000, 1686227696123, 0]])")
+                     .ValueOrDie();
+    auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(array);
+    ASSERT_TRUE(struct_array);
+    auto row = std::make_shared<ColumnarRow>(struct_array->fields(), pool, /*row_id=*/0);
+
+    std::vector<DataField> target_fields = {
+        DataField(0, arrow::field("time_to_string", arrow::utf8())),
+        DataField(1, arrow::field("string_to_time", time_type)),
+        DataField(2, arrow::field("time_to_ts", ts_type)),
+        DataField(3, arrow::field("time_to_ltz", ltz_type)),
+        DataField(4, arrow::field("ts_to_time", time_type)),
+        DataField(5, arrow::field("ltz_to_time", time_type))};
+    ASSERT_OK_AND_ASSIGN(auto cast_executors,
+                         FieldMappingBuilder::CreateDataCastExecutors(target_fields, fields));
+    ASSERT_OK_AND_ASSIGN(auto casted_row, CastedRow::Create(cast_executors, /*src_fields=*/fields,
+                                                            /*target_fields=*/target_fields, row));
+    ASSERT_EQ(casted_row->GetString(0).ToString(), "01:02:03.0");
+    ASSERT_EQ(casted_row->GetInt(1), 45296123);
+    ASSERT_EQ(casted_row->GetTimestamp(2, /*precision=*/3), Timestamp(45296123, 0));
+    ASSERT_EQ(casted_row->GetTimestamp(3, /*precision=*/3), Timestamp(0, 0));
+    ASSERT_EQ(casted_row->GetInt(4), 45296123);
+    ASSERT_EQ(casted_row->GetInt(5), 28800000);
+}
+
+TEST(CastedRowTest, TestCastToNonMillisecondTime) {
+    auto pool = GetDefaultPool();
+    std::vector<DataField> fields = {DataField(0, arrow::field("f0", arrow::utf8()))};
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(
+                     DataField::ConvertDataFieldsToArrowStructType(fields), R"([["00:00:01"]])")
+                     .ValueOrDie();
+    auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(array);
+    ASSERT_TRUE(struct_array);
+    auto row = std::make_shared<ColumnarRow>(struct_array->fields(), pool, /*row_id=*/0);
+
+    std::vector<DataField> target_fields = {
+        DataField(0, arrow::field("f0", arrow::time32(arrow::TimeUnit::SECOND)))};
+    ASSERT_OK_AND_ASSIGN(auto cast_executors,
+                         FieldMappingBuilder::CreateDataCastExecutors(target_fields, fields));
+    ASSERT_OK_AND_ASSIGN(auto casted_row, CastedRow::Create(cast_executors, /*src_fields=*/fields,
+                                                            /*target_fields=*/target_fields, row));
+    ASSERT_THROW(casted_row->GetInt(0), std::invalid_argument);
 }
 
 TEST(CastedRowTest, TestNestedTypeWithCasting) {

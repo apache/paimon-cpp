@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "paimon/global_index/global_index_result.h"
+#include "paimon/predicate/predicate.h"
 #include "paimon/result.h"
 #include "paimon/table/source/full_text_read.h"
 #include "paimon/table/source/full_text_scan.h"
@@ -49,7 +50,8 @@ class Executor;
 ///
 /// `ExecuteLocal()` plans and searches in this process. To run them in different processes, plan
 /// with `NewFullTextScan()`, serialize the splits with `FullTextSearchSplit::Serialize()`, and
-/// search them with the `NewFullTextRead()` of a builder for the same table, column and query.
+/// search them with the `NewFullTextRead()` of a builder for the same table, column, query and
+/// filter.
 ///
 /// The row ids of the result refer to the snapshot the search was planned from, which
 /// `FullTextScan::Plan::SnapshotId()` returns. If the table may change in between, pin the data
@@ -67,6 +69,17 @@ class PAIMON_EXPORT FullTextSearchBuilder {
     /// `ScanContextBuilder::SetPartitionFilter()`. If not set, every partition is searched.
     FullTextSearchBuilder& SetPartitionFilter(
         const std::vector<std::map<std::string, std::string>>& partition_filters);
+
+    /// Restricts the search to the rows matching `predicate`, as Java
+    /// `FullTextSearchBuilder#withFilter` does: only those rows are ranked, so the result is the
+    /// top `limit` rows among them, and BM25 statistics stay those of the whole index shard. The
+    /// fields of the predicate are matched by name. Repeated calls are ANDed. Conjuncts over
+    /// partition fields alone restrict the partitions, ANDed with `SetPartitionFilter()`, and the
+    /// rest is the row filter that `FullTextRead::Read()` resolves. A conjunct of the row filter
+    /// also restricts the partitions to those it implies, as `(p = 1 AND a > 0) OR (p = 2 AND
+    /// a > 0)` does to `p = 1 OR p = 2`.
+    /// @param predicate The filter; a null predicate adds no filter.
+    FullTextSearchBuilder& WithFilter(const std::shared_ptr<Predicate>& predicate);
 
     /// Sets the number of highest-scoring rows to return. It must be positive to create a read.
     FullTextSearchBuilder& SetLimit(int32_t limit);
@@ -100,9 +113,11 @@ class PAIMON_EXPORT FullTextSearchBuilder {
     /// Creates a scan that plans the search on the current settings. The query must be set, and
     /// its column must exist in the latest schema of the table.
     /// @return The scan, or an error if the settings are invalid or the table cannot be loaded;
-    ///         `NotImplemented` for a primary-key full-text index (`pk-full-text.index.columns`) or
-    ///         a search mode other than `fast` (`full-text-index.search-mode`, or else
-    ///         `global-index.search-mode`).
+    ///         `NotImplemented` for a primary-key full-text index (`pk-full-text.index.columns`), a
+    ///         search mode other than `fast` (`full-text-index.search-mode`, or else
+    ///         `global-index.search-mode`), a row filter whose scalar search mode is not `fast`
+    ///         (`scalar-index.search-mode`, or else `global-index.search-mode`), or a filter with a
+    ///         full-text match.
     Result<std::unique_ptr<FullTextScan>> NewFullTextScan() const;
 
     /// Creates a read that searches the splits of a scan on the current settings. In addition to

@@ -43,6 +43,9 @@ jobs:
       - name: Run CMake module tests
         shell: bash
         run: ci/scripts/test_cmake_modules.sh
+      - name: Test release asset downloads
+        shell: bash
+        run: bash ci/scripts/test_download_release_asset.sh
       - name: Run packaging argument tests
         shell: bash
         run: ci/scripts/test_packaging_args.sh
@@ -88,6 +91,12 @@ jobs:
             cc: gcc-14
             cxx: g++-14
             build_args: --build_type Release
+          - name: gcc13-release-aarch64
+            runner: ubuntu-24.04-arm
+            cc: gcc-13
+            cxx: g++-13
+            gcc_version: '13.3.0'
+            build_args: --build_type Release
           - name: clang-debug-aarch64
             runner: ubuntu-24.04-arm
           - name: asan-ubsan-aarch64
@@ -109,6 +118,8 @@ jobs:
         uses: ./.github/actions/setup-ccache
         with:
           cache-key-prefix: ccache-${{ matrix.name }}
+      - name: Prepare release assets
+        uses: ./.github/actions/setup-release-assets
       - name: Install Rust and protobuf tools
         shell: bash
         run: ci/scripts/setup_rust.sh
@@ -116,6 +127,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gdb libcurl4-openssl-dev libssl-dev
+      - name: Install and verify regression compiler
+        if: matrix.gcc_version
+        shell: bash
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+          EXPECTED_GCC_VERSION: ${{ matrix.gcc_version }}
+        run: |
+          sudo apt-get install -y "${CC}" "${CXX}"
+          "${CC}" --version
+          "${CXX}" --version
+          test "$("${CC}" -dumpfullversion)" = "${EXPECTED_GCC_VERSION}"
+          test "$("${CXX}" -dumpfullversion)" = "${EXPECTED_GCC_VERSION}"
       - name: Install flatc and libclang (Vortex)
         shell: bash
         run: ci/scripts/setup_flatc.sh

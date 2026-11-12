@@ -260,7 +260,7 @@ Result<RealtimeStoreState> RealtimeContextImpl::GetOrCreateRealtimeStore(
     if (!delegate) {
         return Status::Invalid("real-time store factory returned a null store");
     }
-    if (deduplicate_spill && !dynamic_cast<RealtimeStoreTwoPhaseSeal*>(delegate.get())) {
+    if (deduplicate_spill && !dynamic_cast<TwoPhaseSealableRealtimeStore*>(delegate.get())) {
         return Status::Invalid("deduplicate spill requires a delegate with two-phase sealing");
     }
     std::shared_ptr<RealtimeStore> store = delegate;
@@ -530,7 +530,7 @@ Status RealtimeContextImpl::InstallCommittedRefresh(int64_t snapshot_id, Refresh
                 refresh->retired_views.push_back(std::move(retired).value());
             }
         } else if (auto* two_phase =
-                       dynamic_cast<RealtimeStoreTwoPhaseSeal*>(notification.store.get())) {
+                       dynamic_cast<TwoPhaseSealableRealtimeStore*>(notification.store.get())) {
             Result<std::shared_ptr<RealtimeReadView>> retired =
                 two_phase->RetireCommittedSegments(notification.committed_end_offset);
             status = retired.status();

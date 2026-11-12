@@ -221,8 +221,9 @@ class FieldMappingReaderTest : public ::testing::Test {
 
 TEST_F(FieldMappingReaderTest, TestGenerateSinglePartitionArray) {
     PartitionInfo partition_info;
-    // read schema: p7-p0
-    // partition key: p0-p7
+    // read schema: p7-p0, p8
+    // partition key: p0-p8
+    auto time_type = arrow::time32(arrow::TimeUnit::MILLI);
     partition_info.partition_read_schema = {DataField(7, arrow::field("p7", arrow::date32())),
                                             DataField(6, arrow::field("p6", arrow::binary())),
                                             DataField(5, arrow::field("p5", arrow::utf8())),
@@ -230,21 +231,23 @@ TEST_F(FieldMappingReaderTest, TestGenerateSinglePartitionArray) {
                                             DataField(3, arrow::field("p3", arrow::int32())),
                                             DataField(2, arrow::field("p2", arrow::int16())),
                                             DataField(1, arrow::field("p1", arrow::int8())),
-                                            DataField(0, arrow::field("p0", arrow::boolean()))};
-    partition_info.idx_in_target_read_schema = {0, 1, 2, 3, 4, 5, 6, 7};
-    partition_info.idx_in_partition = {7, 6, 5, 4, 3, 2, 1, 0};
+                                            DataField(0, arrow::field("p0", arrow::boolean())),
+                                            DataField(8, arrow::field("p8", time_type))};
+    partition_info.idx_in_target_read_schema = {0, 1, 2, 3, 4, 5, 6, 7, 8};
+    partition_info.idx_in_partition = {7, 6, 5, 4, 3, 2, 1, 0, 8};
 
     NonPartitionInfo non_part_info;
     auto field_mapping = std::make_unique<FieldMapping>(partition_info, non_part_info,
                                                         /*non_exist_field_info=*/std::nullopt);
     auto partition = BinaryRowGenerator::GenerateRow(
         {false, static_cast<int8_t>(1), static_cast<int16_t>(2), static_cast<int32_t>(3),
-         static_cast<int64_t>(4), std::string("5"), std::make_shared<Bytes>("6", pool_.get()), 100},
+         static_cast<int64_t>(4), std::string("5"), std::make_shared<Bytes>("6", pool_.get()), 100,
+         static_cast<int32_t>(45296123)},
         pool_.get());
     ASSERT_OK_AND_ASSIGN(
         auto mapping_reader,
         FieldMappingReader::Create(
-            /*field_count=*/8, /*reader=*/nullptr, partition, std::move(field_mapping),
+            /*field_count=*/9, /*reader=*/nullptr, partition, std::move(field_mapping),
             /*skip_map_selected_keys_filter_field_ids=*/{}, GetArrowPool(pool_)));
 
     {
@@ -293,6 +296,13 @@ TEST_F(FieldMappingReaderTest, TestGenerateSinglePartitionArray) {
         ASSERT_OK_AND_ASSIGN(auto p0_array, mapping_reader->GenerateSinglePartitionArray(
                                                 /*idx=*/7, /*batch_size=*/1));
         ASSERT_EQ(checked_cast<arrow::BooleanArray*>(p0_array.get())->Value(0), false);
+    }
+    {
+        ASSERT_OK_AND_ASSIGN(auto p8_array, mapping_reader->GenerateSinglePartitionArray(
+                                                /*idx=*/8, /*batch_size=*/2));
+        ASSERT_EQ(p8_array->length(), 2);
+        ASSERT_TRUE(p8_array->type()->Equals(time_type));
+        ASSERT_EQ(checked_cast<arrow::Time32Array*>(p8_array.get())->Value(1), 45296123);
     }
 }
 

@@ -541,7 +541,8 @@ std::optional<int32_t> ColumnIndexFilter::CompareEncodedWithLiteral(
         case FieldType::TINYINT:
         case FieldType::SMALLINT:
         case FieldType::INT:
-        case FieldType::DATE: {
+        case FieldType::DATE:
+        case FieldType::TIME: {
             if (encoded.size() < sizeof(int32_t)) {
                 return std::nullopt;
             }

@@ -85,19 +85,24 @@ TEST(ColumnarRowTest, TestSimple) {
 TEST(ColumnarRowRefTest, TestSimple) {
     auto pool = GetDefaultPool();
     std::shared_ptr<arrow::DataType> target_type =
-        arrow::struct_({arrow::field("f1", arrow::int32()), arrow::field("f2", arrow::utf8())});
+        arrow::struct_({arrow::field("f1", arrow::int32()), arrow::field("f2", arrow::utf8()),
+                        arrow::field("f3", arrow::time32(arrow::TimeUnit::MILLI))});
     auto f1 =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::int32(), R"([1, 2, 3])").ValueOrDie();
     auto f2 =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::utf8(), R"(["alpha", "beta", "gamma"])")
             .ValueOrDie();
-    auto data = arrow::StructArray::Make({f1, f2}, target_type->fields()).ValueOrDie();
+    auto f3 = arrow::ipc::internal::json::ArrayFromJSON(arrow::time32(arrow::TimeUnit::MILLI),
+                                                        R"([0, 45296123, 86399999])")
+                  .ValueOrDie();
+    auto data = arrow::StructArray::Make({f1, f2, f3}, target_type->fields()).ValueOrDie();
 
     auto ctx = std::make_shared<ColumnarBatchContext>(data->fields(), pool);
     ColumnarRowRef row(ctx, 1);
-    ASSERT_EQ(row.GetFieldCount(), 2);
+    ASSERT_EQ(row.GetFieldCount(), 3);
     ASSERT_EQ(row.GetInt(0), 2);
     ASSERT_EQ(std::string(row.GetStringView(1)), "beta");
+    ASSERT_EQ(row.GetInt(2), 45296123);
 
     auto row_kind = row.GetRowKind();
     ASSERT_TRUE(row_kind.ok());

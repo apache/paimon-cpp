@@ -458,15 +458,16 @@ TEST(OrphanFilesCleanerTest, TestTableWithIndexManifest) {
     std::shared_ptr<MemoryPool> memory_pool = GetDefaultPool();
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths, options.CreateExternalPaths());
-    ASSERT_OK_AND_ASSIGN(std::optional<std::string> global_index_external_path,
-                         options.CreateGlobalIndexExternalPath());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> global_index_external_paths,
+                         options.CreateGlobalIndexExternalPaths());
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStorePathFactory> path_factory,
         FileStorePathFactory::Create(
             table_path, arrow_schema, table_schema->PartitionKeys(),
             options.GetPartitionDefaultName(), options.GetFileFormat()->Identifier(),
             options.DataFilePrefix(), options.LegacyPartitionNameEnabled(), external_paths,
-            global_index_external_path, options.IndexFileInDataFileDir(), memory_pool));
+            global_index_external_paths, options.IndexFileInDataFileDir(),
+            /*external_path_weights=*/{}, memory_pool));
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<IndexManifestFile> index_manifest_file,
         IndexManifestFile::Create(file_system, options.GetManifestFormat(),

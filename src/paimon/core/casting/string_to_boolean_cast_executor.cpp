@@ -64,10 +64,10 @@ Result<std::shared_ptr<arrow::Array>> StringToBooleanCastExecutor::Cast(
     const std::shared_ptr<arrow::Array>& array, const std::shared_ptr<arrow::DataType>& target_type,
     arrow::MemoryPool* pool) const {
     auto* string_array = checked_cast<arrow::StringArray*>(array.get());
-    auto bool_builder = std::make_shared<arrow::BooleanBuilder>(pool);
+    arrow::BooleanBuilder bool_builder(pool);
     for (int64_t i = 0; i < string_array->length(); ++i) {
         if (string_array->IsNull(i)) {
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(bool_builder->AppendNull());
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(bool_builder.AppendNull());
         } else {
             std::optional<bool> bool_value =
                 StringUtils::StringToValue<bool>(string_array->GetString(i));
@@ -76,11 +76,11 @@ Result<std::shared_ptr<arrow::Array>> StringToBooleanCastExecutor::Cast(
                     "StringToBooleanCastExecutor cast failed: STRING '{}' cannot cast to BOOLEAN",
                     string_array->GetString(i)));
             }
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(bool_builder->Append(bool_value.value()));
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(bool_builder.Append(bool_value.value()));
         }
     }
     std::shared_ptr<arrow::Array> casted_array;
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(bool_builder->Finish(&casted_array));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(bool_builder.Finish(&casted_array));
     return casted_array;
 }
 

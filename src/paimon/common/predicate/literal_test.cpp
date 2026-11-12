@@ -139,6 +139,14 @@ TEST_F(LiteralTest, TestSimple) {
         ASSERT_EQ(literal2.ToString(), "20000");
     }
     {
+        Literal literal1(FieldType::TIME, 123);
+        Literal literal2(FieldType::TIME, 86399999);
+        CheckResult(literal1, literal2, FieldType::TIME);
+        ASSERT_EQ(literal1.ToString(), "123");
+        ASSERT_EQ(literal1.HashCode(), Literal(FieldType::TIME, 123).HashCode());
+        ASSERT_NOK(literal1.CompareTo(Literal(123)));
+    }
+    {
         Literal literal1(Timestamp(1725875365442l, 120000));
         Literal literal2(Timestamp(1725875365442l, 120001));
         CheckResult(literal1, literal2, FieldType::TIMESTAMP);

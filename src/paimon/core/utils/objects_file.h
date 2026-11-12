@@ -302,7 +302,7 @@ Result<std::shared_ptr<CacheValue>> ObjectsFile<T>::SerializeArrowBatches(
                     CacheCallback(), data->capacity()) {}
         std::shared_ptr<arrow::MemoryPool> pool;
         std::shared_ptr<arrow::Buffer> buffer;
-        CacheValue value;
+        MemorySegmentCacheValue value;
     };
     auto owner = std::make_shared<OwnedBuffer>(arrow_pool_, buffer);
     auto* value = &owner->value;
@@ -324,7 +324,6 @@ Status ObjectsFile<T>::ReadArrowBatches(
     auto cached = cache_->Get(key, [&](const std::shared_ptr<CacheKey>&) {
         return SerializeArrowBatches(file_name, file_size, &batches, &read_status);
     });
-    const bool usable = cached.ok() && cached.value() && cached.value()->GetSegment().Data();
     if (read_status) {
         // Publish the query-independent cache before invoking user filters. A filter error
         // does not invalidate the cache or affect other readers of this file.
@@ -334,12 +333,12 @@ Status ObjectsFile<T>::ReadArrowBatches(
         }
         return Status::OK();
     }
-    if (!usable) {
+    auto segment = cached.ok() ? CacheValue::Get<const MemorySegment>(cached.value()) : nullptr;
+    if (!segment || !segment->Data()) {
         return ReadUncachedArrowBatches(file_name, file_size, consumer, prepare_reader);
     }
-    const auto& segment = cached.value()->GetSegment();
-    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment.Data()),
-                                                  segment.Size());
+    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(segment->Data()),
+                                                  segment->Size());
     auto input = std::make_shared<arrow::io::BufferReader>(buffer);
     auto read_options = arrow::ipc::IpcReadOptions::Defaults();
     read_options.memory_pool = arrow_pool_.get();

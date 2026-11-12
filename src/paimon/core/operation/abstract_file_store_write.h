@@ -37,6 +37,7 @@
 #include "paimon/core/deletionvectors/bucketed_dv_maintainer.h"
 #include "paimon/core/index/pk/bucketed_primary_key_index_maintainer.h"
 #include "paimon/core/memory/writer_memory_manager.h"
+#include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/file_store_write.h"
 #include "paimon/logging.h"
 #include "paimon/metrics.h"
@@ -146,6 +147,10 @@ class AbstractFileStoreWrite : public FileStoreWrite {
     virtual std::shared_ptr<RealtimeContext> GetRealtimeContext() const {
         return nullptr;
     }
+
+    Status RefreshRealtimeCommittedProgress(int64_t snapshot_id,
+                                            const RealtimeOffsetMap& committed_offsets,
+                                            const RealtimeDataFileMap& committed_data_files);
 
     Result<std::shared_ptr<RestoreFiles>> ScanExistingFileMetas(const BinaryRow& partition,
                                                                 int32_t bucket) const;

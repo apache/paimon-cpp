@@ -77,6 +77,7 @@ class Literal::Impl {
                        std::hash<int64_t>{}(value_.DecimalVal.LowBits()) * 17 +
                        std::hash<int32_t>{}(value_.DecimalVal.Scale());
             case FieldType::DATE:
+            case FieldType::TIME:
                 return std::hash<int32_t>{}(value_.IntVal);
             default:
                 return 0;
@@ -168,10 +169,10 @@ Literal::Literal(FieldType binary_type, const char* str, size_t size, bool own_d
     }
 }
 
-Literal::Literal(FieldType date_type, int32_t date_value) : impl_(std::make_unique<Impl>()) {
-    impl_->type_ = date_type;
+Literal::Literal(FieldType field_type, int32_t value) : impl_(std::make_unique<Impl>()) {
+    impl_->type_ = field_type;
     impl_->is_null_ = false;
-    impl_->value_.IntVal = date_value;
+    impl_->value_.IntVal = value;
     impl_->hash_code_ = impl_->CalculateHashCode();
 }
 
@@ -289,6 +290,7 @@ std::string Literal::ToString() const {
             sstream << impl_->value_.DecimalVal.ToString();
             break;
         case FieldType::DATE:
+        case FieldType::TIME:
             sstream << impl_->value_.IntVal;
             break;
         default:
@@ -355,6 +357,7 @@ Result<int32_t> Literal::CompareTo(const Literal& other) const {
         case FieldType::DECIMAL:
             return impl_->value_.DecimalVal.CompareTo(other.impl_->value_.DecimalVal);
         case FieldType::DATE:
+        case FieldType::TIME:
             return impl_->value_.IntVal == other.impl_->value_.IntVal
                        ? 0
                        : ((impl_->value_.IntVal < other.impl_->value_.IntVal) ? -1 : 1);

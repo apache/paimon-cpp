@@ -474,6 +474,83 @@ TEST_F(StringUtilsTest, TestStringToDate) {
     ASSERT_NOK(StringUtils::StringToDate("2024-00-01"));
 }
 
+TEST_F(StringUtilsTest, TestStringToTime) {
+    ASSERT_OK_AND_ASSIGN(int32_t time, StringUtils::StringToTime("0"));
+    ASSERT_EQ(time, 0);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("86399999"));
+    ASSERT_EQ(time, 86399999);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("00:00:00"));
+    ASSERT_EQ(time, 0);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("00:00:00.123"));
+    ASSERT_EQ(time, 123);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("23:59:59.999"));
+    ASSERT_EQ(time, 86399999);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("01:02:03"));
+    ASSERT_EQ(time, 3723000);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("01:02"));
+    ASSERT_EQ(time, 3720000);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("1"));
+    ASSERT_EQ(time, 1);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("1:2:3.4"));
+    ASSERT_EQ(time, 3723400);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("12:34:56.123456789"));
+    ASSERT_EQ(time, 45296123);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("12:34:56.1235"));
+    ASSERT_EQ(time, 45296124);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("12:34:56. 5 "));
+    ASSERT_EQ(time, 45296500);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("12:00:00."));
+    ASSERT_EQ(time, 43200000);
+
+    ASSERT_NOK_WITH_MSG(StringUtils::StringToTime(""),
+                        "failed to convert string '' to time, expected milliseconds of the day or "
+                        "H[H][:m[m][:s[s][.f...]]]");
+    ASSERT_NOK(StringUtils::StringToTime("-1"));
+    ASSERT_NOK(StringUtils::StringToTime("86400000"));
+    ASSERT_NOK(StringUtils::StringToTime("24:00:00"));
+    ASSERT_NOK(StringUtils::StringToTime("12:60:00"));
+    ASSERT_NOK(StringUtils::StringToTime("12:00:60"));
+    ASSERT_NOK(StringUtils::StringToTime("12:xx:00"));
+    ASSERT_NOK(StringUtils::StringToTime("12:00:00.1a"));
+    ASSERT_NOK(StringUtils::StringToTime("23:59:59.9999"));
+}
+
+TEST_F(StringUtilsTest, TestStringToTimeWithOffset) {
+    ASSERT_OK_AND_ASSIGN(int32_t time, StringUtils::StringToTime("12:34:56+01:00"));
+    ASSERT_EQ(time, 48896000);  // 13:34:56
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("12:34:56-01:00"));
+    ASSERT_EQ(time, 41696000);  // 11:34:56
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("12:34:56+01:30"));
+    ASSERT_EQ(time, 50696000);  // 14:04:56
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("12:34:56+01"));
+    ASSERT_EQ(time, 48896000);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("12:34:56.123+01:00"));
+    ASSERT_EQ(time, 48896123);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("12:34:56 + 01:00"));
+    ASSERT_EQ(time, 48896000);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("12:34+01"));
+    ASSERT_EQ(time, 48840000);  // 13:34
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("12+01"));
+    ASSERT_EQ(time, 46800000);  // 13:00
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("00:00:00+00:00"));
+    ASSERT_EQ(time, 0);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("01:00:00-01:00"));
+    ASSERT_EQ(time, 0);
+    ASSERT_OK_AND_ASSIGN(time, StringUtils::StringToTime("22:59:59.999+01:00"));
+    ASSERT_EQ(time, 86399999);
+
+    ASSERT_NOK(StringUtils::StringToTime("23:30:00+01:00"));
+    ASSERT_NOK(StringUtils::StringToTime("00:30:00-01:00"));
+    ASSERT_NOK(StringUtils::StringToTime("12:34:56+"));
+    ASSERT_NOK(StringUtils::StringToTime("12:34:56+01:"));
+    ASSERT_NOK(StringUtils::StringToTime("12:34:56+1a"));
+    ASSERT_NOK(StringUtils::StringToTime("12:34:56+01:00:00"));
+    ASSERT_NOK(StringUtils::StringToTime("12:34:56+24:00"));
+    ASSERT_NOK(StringUtils::StringToTime("12:34:56+01:60"));
+    ASSERT_NOK(StringUtils::StringToTime("+01:00"));
+    ASSERT_NOK(StringUtils::StringToTime("-01:00"));
+}
+
 TEST_F(StringUtilsTest, TestStringToTimestampMillis) {
     TimezoneGuard tz_guard("Asia/Shanghai");
     // "yyyy-MM-dd HH:mm:ss" format

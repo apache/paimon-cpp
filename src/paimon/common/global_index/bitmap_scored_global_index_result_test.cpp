@@ -143,7 +143,8 @@ TEST_F(BitmapScoredGlobalIndexResultTest, TestAndBitmapResult) {
             auto bitmap_supplier2 = [&]() -> Result<RoaringBitmap64> {
                 return RoaringBitmap64::From(right_ids);
             };
-            auto index_result2 = std::make_shared<BitmapGlobalIndexResult>(bitmap_supplier2);
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<BitmapGlobalIndexResult> index_result2,
+                                 BitmapGlobalIndexResult::Create(bitmap_supplier2));
 
             ASSERT_OK_AND_ASSIGN(auto result, index_result1->And(index_result2));
             ASSERT_EQ(result->ToString(), expected_str);
@@ -204,7 +205,8 @@ TEST_F(BitmapScoredGlobalIndexResultTest, TestOrBitmapResult) {
         auto bitmap_supplier2 = [&]() -> Result<RoaringBitmap64> {
             return RoaringBitmap64::From(right_ids);
         };
-        auto index_result2 = std::make_shared<BitmapGlobalIndexResult>(bitmap_supplier2);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<BitmapGlobalIndexResult> index_result2,
+                             BitmapGlobalIndexResult::Create(bitmap_supplier2));
 
         ASSERT_OK_AND_ASSIGN(auto result, index_result1->Or(index_result2));
         ASSERT_EQ(result->ToString(), expected_str);

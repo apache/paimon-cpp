@@ -196,6 +196,13 @@ Result<std::unique_ptr<ColumnStats>> ConvertFieldStatistics(
                                    CollectMinMax<int32_t>(stats, DecodeBigEndian<int32_t>));
             return ColumnStats::CreateDateColumnStats(min_max.first, min_max.second, null_count);
         }
+        case arrow::Type::TIME32: {
+            // Like Java MosaicObjects, TIME statistics are the int milliseconds of the day, and
+            // like the other formats they are int statistics.
+            PAIMON_ASSIGN_OR_RAISE(OptionalMinMax<int32_t> min_max,
+                                   CollectMinMax<int32_t>(stats, DecodeBigEndian<int32_t>));
+            return ColumnStats::CreateIntColumnStats(min_max.first, min_max.second, null_count);
+        }
         case arrow::Type::TIMESTAMP: {
             auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(type);
             auto decoder = [&timestamp_type](const std::vector<uint8_t>& bytes) {

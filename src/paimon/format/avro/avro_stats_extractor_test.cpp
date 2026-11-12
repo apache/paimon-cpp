@@ -100,13 +100,14 @@ TEST_F(AvroStatsExtractorTest, TestPrimitiveStatsExtractor) {
         arrow::field("f18", arrow::timestamp(arrow::TimeUnit::MILLI, timezone)),
         arrow::field("f19", arrow::timestamp(arrow::TimeUnit::MICRO, timezone)),
         arrow::field("f20", arrow::timestamp(arrow::TimeUnit::NANO, timezone)),
+        arrow::field("f21", arrow::time32(arrow::TimeUnit::MILLI)),
     };
     auto schema = std::make_shared<arrow::Schema>(fields);
     auto array = std::dynamic_pointer_cast<arrow::StructArray>(
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
-        [1, 11, 111, 1111, 1.1, 1.11, "Hello", "你好", 1234, "2033-05-18 03:33:20.0", "1.22", true, "2033-05-18 03:33:20", "2033-05-18 03:33:20.0", "2033-05-18 03:33:20.0", "2033-05-18 03:33:20.0", "2033-05-18 03:33:20", "2033-05-18 03:33:20.0", "2033-05-18 03:33:20.0", "2033-05-18 03:33:20.0"],
-        [2, 22, 222, 2222, 2.2, 2.22, "World", "世界", -1234, "1899-01-01 00:59:20.001001001", "2.22", false, "1899-01-01 00:59:20", "1899-01-01 00:59:20", "1899-01-01 00:59:20", "1899-01-01 00:59:20.001001001","1899-01-01 00:59:20", "1899-01-01 00:59:20", "1899-01-01 00:59:20", "1899-01-01 00:59:20.001001001"],
-        [null, null, 0, null, null, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null]
+        [1, 11, 111, 1111, 1.1, 1.11, "Hello", "你好", 1234, "2033-05-18 03:33:20.0", "1.22", true, "2033-05-18 03:33:20", "2033-05-18 03:33:20.0", "2033-05-18 03:33:20.0", "2033-05-18 03:33:20.0", "2033-05-18 03:33:20", "2033-05-18 03:33:20.0", "2033-05-18 03:33:20.0", "2033-05-18 03:33:20.0", 0],
+        [2, 22, 222, 2222, 2.2, 2.22, "World", "世界", -1234, "1899-01-01 00:59:20.001001001", "2.22", false, "1899-01-01 00:59:20", "1899-01-01 00:59:20", "1899-01-01 00:59:20", "1899-01-01 00:59:20.001001001","1899-01-01 00:59:20", "1899-01-01 00:59:20", "1899-01-01 00:59:20", "1899-01-01 00:59:20.001001001", 86399999],
+        [null, null, 0, null, null, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null]
     ])")
             .ValueOrDie());
     auto src_chunk_array = std::make_shared<arrow::ChunkedArray>(arrow::ArrayVector({array}));
@@ -126,10 +127,11 @@ TEST_F(AvroStatsExtractorTest, TestPrimitiveStatsExtractor) {
     const auto& column_stats = stats_with_info.first;
     const auto& file_stats = stats_with_info.second;
 
-    ASSERT_EQ(column_stats.size(), 20);
+    ASSERT_EQ(column_stats.size(), 21);
     for (const auto& stats : column_stats) {
         ASSERT_EQ(stats->ToString(), "min null, max null, null count null");
     }
+    ASSERT_EQ(column_stats[20]->GetFieldType(), FieldType::INT);
     ASSERT_EQ(3, file_stats.GetRowCount());
 }
 

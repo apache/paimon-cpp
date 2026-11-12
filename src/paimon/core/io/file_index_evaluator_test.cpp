@@ -59,6 +59,7 @@
 #include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
 #include "paimon/testing/mock/mock_search_file_index.h"
+#include "paimon/testing/utils/counting_cache_test_utils.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/roaring_bitmap32.h"
 
@@ -101,7 +102,7 @@ class FileIndexEvaluatorTest : public ::testing::Test {
         ASSERT_OK_AND_ASSIGN(
             auto evaluator,
             FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), data_file_path_factory,
-                                       data_file_meta, fs_, pool_));
+                                       data_file_meta, fs_, /*cache=*/nullptr, pool_));
         {
             auto predicate =
                 PredicateBuilder::IsNull(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT);
@@ -368,7 +369,7 @@ TEST_F(FileIndexEvaluatorTest, TestTimestampType) {
     ASSERT_OK_AND_ASSIGN(
         auto evaluator,
         FileIndexEvaluator::Create(data_schema, core_options_.ToMap(), data_file_path_factory,
-                                   data_file_meta, /*file_system=*/fs_, pool_));
+                                   data_file_meta, /*file_system=*/fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(auto file_index_result, evaluator->Evaluate(predicate));
     CheckResult(file_index_result, {0, 6});
 }
@@ -390,9 +391,9 @@ TEST_F(FileIndexEvaluatorTest, TestCreateRequiresExternalIndexDependencies) {
         /*external_path=*/std::nullopt, /*first_row_id=*/std::nullopt, /*write_cols=*/std::nullopt,
         /*column_max_sequence_numbers=*/std::nullopt);
     ASSERT_NOK_WITH_MSG(
-        FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                   /*path_factory=*/nullptr, data_file_meta,
-                                   /*file_system=*/nullptr, pool_),
+        FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), /*path_factory=*/nullptr,
+                                   data_file_meta, /*file_system=*/nullptr, /*cache=*/nullptr,
+                                   pool_),
         "read process for FileIndexEvaluator must have data_file_path_factory and file_system");
 }
 
@@ -458,9 +459,9 @@ class FileIndexSearchEvaluatorTest : public FileIndexEvaluatorTest,
 
     void CheckSearchError(SearchIndexType index_type, const std::shared_ptr<DataFileMeta>& meta,
                           const std::string& field, const std::string& message) const {
-        ASSERT_OK_AND_ASSIGN(auto evaluator,
-                             FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                        path_factory_, meta, fs_, pool_));
+        ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                                 data_schema_, core_options_.ToMap(), path_factory_,
+                                                 meta, fs_, /*cache=*/nullptr, pool_));
         if (index_type == SearchIndexType::VECTOR) {
             ASSERT_NOK_WITH_MSG(evaluator->SearchVector(MakeVectorSearch(field)), message);
         } else {
@@ -535,9 +536,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestVectorSearchReadsIndexWithScores) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> bytes,
                          MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                    path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                             data_schema_, core_options_.ToMap(), path_factory_,
+                                             meta, fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> result,
                          evaluator->SearchVector(MakeVectorSearch("embedding")));
     ASSERT_TRUE(result);
@@ -554,9 +555,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestFullTextSearchReadsIndexWithScores) {
         MockSearchFileIndex::MakeIndex("title", MockSearchFileIndex::FULL_TEXT_IDENTIFIER,
                                        {{3, 0.75f}, {1, 0.25f}}, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                    path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                             data_schema_, core_options_.ToMap(), path_factory_,
+                                             meta, fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> result,
                          evaluator->SearchFullText(MakeFullTextSearch("title")));
     ASSERT_TRUE(result);
@@ -570,9 +571,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptyVectorSearchIndex) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> bytes,
                          MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                    path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                             data_schema_, core_options_.ToMap(), path_factory_,
+                                             meta, fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> vector_result,
                          evaluator->SearchVector(MakeVectorSearch("embedding")));
     ASSERT_TRUE(vector_result);
@@ -586,9 +587,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptyFullTextSearchIndex) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> bytes,
                          MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                    path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                             data_schema_, core_options_.ToMap(), path_factory_,
+                                             meta, fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> text_result,
                          evaluator->SearchFullText(MakeFullTextSearch("title")));
     ASSERT_TRUE(text_result);
@@ -609,17 +610,18 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEvaluateNullPredicateAndMissingIndex) {
     indexes["title"]["bitmap"] = nullptr;
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                    path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                             data_schema_, core_options_.ToMap(), path_factory_,
+                                             meta, fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(auto result, evaluator->Evaluate(nullptr));
     ASSERT_EQ(result, FileIndexResult::Remain());
 
     meta->embedded_index.reset();
     meta->extra_files.clear();
     auto missing = PredicateBuilder::IsNull(2, "missing", FieldType::INT);
-    ASSERT_OK_AND_ASSIGN(evaluator, FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                               path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        evaluator, FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), path_factory_,
+                                              meta, fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(missing));
     ASSERT_EQ(result, FileIndexResult::Remain());
     ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(nullptr));
@@ -631,9 +633,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEvaluateValidatesFieldsBeforeAndShortCi
     indexes["title"]["bitmap"] = nullptr;
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                    path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                             data_schema_, core_options_.ToMap(), path_factory_,
+                                             meta, fs_, /*cache=*/nullptr, pool_));
     auto empty = PredicateBuilder::IsNotNull(1, "title", FieldType::STRING);
     ASSERT_OK_AND_ASSIGN(auto result, evaluator->Evaluate(empty));
     ASSERT_OK_AND_ASSIGN(bool remain, result->IsRemain());
@@ -651,9 +653,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionReturnsQueryScores) {
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::MakeQueryIndex(
                                          "title", statistics_index_type_, queries, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                    path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                             data_schema_, core_options_.ToMap(), path_factory_,
+                                             meta, fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK(evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH));
     ASSERT_OK(evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_SEARCH));
     ASSERT_TRUE(statistics_->executions.empty());
@@ -729,9 +731,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionScalarAndSearchReadersCanCoexist
     indexes["title"][statistics_index_type_] = search_payload;
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                    path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                             data_schema_, core_options_.ToMap(), path_factory_,
+                                             meta, fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK(evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH));
     ASSERT_NOK_WITH_MSG(
         evaluator->GetSearchReader("title", FileIndexReader::SearchType::VECTOR_SEARCH),
@@ -761,9 +763,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionPrecheckAndMissingScalarIndex) {
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::MakeIndex("title", statistics_index_type_,
                                                                     {{1, 0.5f}}, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                    path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                             data_schema_, core_options_.ToMap(), path_factory_,
+                                             meta, fs_, /*cache=*/nullptr, pool_));
     ASSERT_NOK_WITH_MSG(
         evaluator->GetSearchReader("embedding", FileIndexReader::SearchType::VECTOR_SEARCH),
         "No File Index reader supports");
@@ -782,8 +784,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionPrecheckAndMissingScalarIndex) {
 
     meta->embedded_index.reset();
     meta->extra_files.clear();
-    ASSERT_OK_AND_ASSIGN(evaluator, FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                               path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        evaluator, FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), path_factory_,
+                                              meta, fs_, /*cache=*/nullptr, pool_));
     ASSERT_NOK_WITH_MSG(
         evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH),
         "has no File Index");
@@ -796,9 +799,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptyScalarIndexDoesNotProvideSearchCap
     indexes["title"]["bitmap"] = nullptr;
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                    path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                             data_schema_, core_options_.ToMap(), path_factory_,
+                                             meta, fs_, /*cache=*/nullptr, pool_));
     ASSERT_NOK_WITH_MSG(
         evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH),
         "No File Index reader supports FULL_TEXT_MATCH for field 'title' in data file "
@@ -816,8 +819,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptyScalarIndexDoesNotProvideSearchCap
                          MockSearchFileIndex::MakePayload({{1, 0.5f}}, pool_));
     ASSERT_OK_AND_ASSIGN(bytes, MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(evaluator, FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                               path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        evaluator, FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), path_factory_,
+                                              meta, fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK(evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH));
     ASSERT_OK_AND_ASSIGN(auto result, evaluator->SearchFullText(MakeFullTextSearch("title")));
     ASSERT_EQ(result->GetRowPositions(), RoaringBitmap32::From({1}));
@@ -830,9 +834,9 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptySearchIndexPreservesCapabilityAndS
     indexes["embedding"][MockSearchFileIndex::VECTOR_IDENTIFIER] = nullptr;
     ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
     ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
-    ASSERT_OK_AND_ASSIGN(auto evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
-                                                    path_factory_, meta, fs_, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                             data_schema_, core_options_.ToMap(), path_factory_,
+                                             meta, fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK(evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH));
     ASSERT_OK(evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_SEARCH));
     ASSERT_NOK_WITH_MSG(
@@ -855,6 +859,409 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptySearchIndexPreservesCapabilityAndS
     ASSERT_TRUE(scored);
     ASSERT_TRUE(scored->IsEmpty());
 }
+
+namespace {
+
+struct SearchReaderOpenState {
+    int32_t count = 0;
+    bool fail = false;
+    std::weak_ptr<MemoryPool> pool;
+};
+
+class CacheableSearchReader final : public FileIndexReader {
+ public:
+    static constexpr int64_t kMemoryUsage = 256;
+
+    CacheableSearchReader(std::shared_ptr<FileIndexReader> delegate,
+                          const std::shared_ptr<MemoryPool>& pool)
+        : pool_(pool), delegate_(std::move(delegate)), retained_(kMemoryUsage, pool.get()) {}
+
+    bool SupportsSearch(SearchType search_type) const override {
+        return delegate_->SupportsSearch(search_type);
+    }
+
+    Result<std::shared_ptr<ScoredFileIndexResult>> VisitVectorSearch(
+        const std::shared_ptr<VectorSearch>& search) override {
+        if (search->query.empty()) {
+            return Status::Invalid("Mock vector query cannot be empty");
+        }
+        return delegate_->VisitVectorSearch(search);
+    }
+
+ private:
+    std::shared_ptr<MemoryPool> pool_;
+    std::shared_ptr<FileIndexReader> delegate_;
+    Bytes retained_;
+};
+
+class CacheableSearchIndexer final : public FileIndexer {
+ public:
+    explicit CacheableSearchIndexer(std::shared_ptr<SearchReaderOpenState> state)
+        : state_(std::move(state)), delegate_(SearchIndexType::VECTOR, nullptr) {}
+
+    std::shared_ptr<FileIndexReader> CreateEmptyReader() const override {
+        return delegate_.CreateEmptyReader();
+    }
+
+    Result<std::shared_ptr<FileIndexReader>> CreateReader(
+        ::ArrowSchema* schema, int64_t start, int64_t length,
+        const std::shared_ptr<InputStream>& input,
+        const std::shared_ptr<MemoryPool>& pool) const override {
+        ++state_->count;
+        state_->pool = pool;
+        if (state_->fail) {
+            return Status::IOError("Cannot open mock vector index");
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexReader> reader,
+                               delegate_.CreateReader(schema, start, length, input, pool));
+        return std::make_shared<CacheableSearchReader>(std::move(reader), pool);
+    }
+
+    Result<std::shared_ptr<FileIndexWriter>> CreateWriter(
+        ::ArrowSchema* schema, const std::shared_ptr<MemoryPool>& pool) const override {
+        return delegate_.CreateWriter(schema, pool);
+    }
+
+ private:
+    std::shared_ptr<SearchReaderOpenState> state_;
+    MockSearchFileIndexer delegate_;
+};
+
+class CacheableSearchFactory final : public FileIndexerFactory {
+ public:
+    explicit CacheableSearchFactory(std::shared_ptr<SearchReaderOpenState> state)
+        : state_(std::move(state)) {}
+
+    const char* Identifier() const override {
+        return "mock-cacheable-vector";
+    }
+
+    Result<std::unique_ptr<FileIndexer>> Create(
+        const std::map<std::string, std::string>&) const override {
+        return std::make_unique<CacheableSearchIndexer>(state_);
+    }
+
+ private:
+    std::shared_ptr<SearchReaderOpenState> state_;
+};
+
+class InvalidSearchReaderCache final : public CountingRoutingCache {
+ public:
+    InvalidSearchReaderCache() : CountingRoutingCache(CacheKind::INDEX_READER, 4096) {}
+
+    Result<std::shared_ptr<CacheValue>> Get(
+        const std::shared_ptr<CacheKey>&,
+        std::function<Result<std::shared_ptr<CacheValue>>(const std::shared_ptr<CacheKey>&)>)
+        override {
+        return std::make_shared<ObjectCacheValue<int32_t>>(std::make_shared<int32_t>(7), nullptr,
+                                                           sizeof(int32_t));
+    }
+};
+
+}  // namespace
+
+class FileIndexCacheEvaluatorTest : public FileIndexSearchEvaluatorTest {
+ protected:
+    void SetUp() override {
+        FileIndexSearchEvaluatorTest::SetUp();
+        open_state_ = std::make_shared<SearchReaderOpenState>();
+        auto factory = std::make_unique<CacheableSearchFactory>(open_state_);
+        identifier_ = factory->Identifier();
+        auto* factories = FactoryCreator::GetInstance();
+        factories->Register(identifier_, factory.release());
+        cache_ = std::make_shared<CountingRoutingCache>(CacheKind::INDEX_READER, 1024 * 1024);
+    }
+
+    void TearDown() override {
+        auto* factories = FactoryCreator::GetInstance();
+        factories->TEST_Unregister(identifier_);
+        FileIndexSearchEvaluatorTest::TearDown();
+    }
+
+    Result<std::shared_ptr<DataFileMeta>> MakeCacheableIndex() const {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Bytes> bytes,
+                               MockSearchFileIndex::MakeIndex("embedding", identifier_,
+                                                              {{3, 0.75f}, {1, 0.25f}}, pool_));
+        return MakeIndex(bytes);
+    }
+
+    Result<std::shared_ptr<ScoredFileIndexResult>> Search(
+        const std::shared_ptr<DataFileMeta>& meta,
+        const std::shared_ptr<VectorSearch>& search) const {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexEvaluator> evaluator,
+                               FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                          path_factory_, meta, fs_, cache_, pool_));
+        return evaluator->SearchVector(search);
+    }
+
+    Status PopulateCache(const std::shared_ptr<DataFileMeta>& meta, const std::string& field) {
+        if (GetParam()) {
+            return Status::OK();
+        }
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<FileIndexEvaluator> evaluator,
+            FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), path_factory_, meta,
+                                       fs_, /*cache=*/nullptr, pool_));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<FileIndexReader> reader,
+            evaluator->GetSearchReader(field, FileIndexReader::SearchType::VECTOR_SEARCH));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<InputStream> input,
+            FileIndexEvaluator::ExtractIndexInputStream(path_factory_, meta, fs_));
+        PAIMON_ASSIGN_OR_RAISE(std::string uri, input->GetUri());
+        return cache_->Put(CacheKey::ForIndexReader(uri, field, identifier_),
+                           std::make_shared<ObjectCacheValue<FileIndexReader>>(
+                               std::move(reader), nullptr, CacheableSearchReader::kMemoryUsage));
+    }
+
+    std::shared_ptr<SearchReaderOpenState> open_state_;
+    std::string identifier_;
+    std::shared_ptr<CountingRoutingCache> cache_;
+};
+
+TEST_P(FileIndexCacheEvaluatorTest, ReusesReaderWithIndependentQueries) {
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeCacheableIndex());
+    ASSERT_OK(PopulateCache(meta, "embedding"));
+    ASSERT_OK_AND_ASSIGN(auto first, Search(meta, MakeVectorSearch("embedding")));
+    ASSERT_EQ(first->GetRowPositions(), RoaringBitmap32::From({1, 3}));
+    ASSERT_EQ(first->GetScores(), std::vector<float>({0.25f, 0.75f}));
+
+    auto filtered = MakeVectorSearch("embedding");
+    filtered->limit = 1;
+    filtered->query = {5.0f, 6.0f};
+    filtered->pre_filter = [](int64_t row_id) { return row_id != 3; };
+    ASSERT_OK_AND_ASSIGN(auto second, Search(meta, filtered));
+    ASSERT_EQ(second->GetRowPositions(), RoaringBitmap32::From({1}));
+    ASSERT_EQ(second->GetScores(), std::vector<float>({0.25f}));
+
+    auto invalid = MakeVectorSearch("embedding");
+    invalid->query.clear();
+    ASSERT_NOK_WITH_MSG(Search(meta, invalid), "Mock vector query cannot be empty");
+    ASSERT_OK_AND_ASSIGN(auto last, Search(meta, MakeVectorSearch("embedding")));
+    ASSERT_EQ(last->GetRowPositions(), first->GetRowPositions());
+    ASSERT_EQ(last->GetScores(), first->GetScores());
+    ASSERT_EQ(open_state_->count, GetParam() ? 4 : 1);
+    ASSERT_EQ(cache_->GetCount(), GetParam() ? 0 : 4);
+    ASSERT_EQ(cache_->SupplierCallCount(), 0);
+    ASSERT_EQ(cache_->Size(), GetParam() ? 0 : 1);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, DisablesCache) {
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeCacheableIndex());
+    for (int32_t i = 0; i < 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<FileIndexEvaluator> evaluator,
+            FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), path_factory_, meta,
+                                       fs_, /*cache=*/nullptr, pool_));
+        ASSERT_OK_AND_ASSIGN(auto result, evaluator->SearchVector(MakeVectorSearch("embedding")));
+        evaluator.reset();
+        ASSERT_EQ(result->GetRowPositions(), RoaringBitmap32::From({1, 3}));
+    }
+    ASSERT_EQ(open_state_->count, 2);
+    ASSERT_EQ(cache_->GetCount(), 0);
+    ASSERT_EQ(cache_->Size(), 0);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, CacheMissUsesSuppliedPoolWithoutPopulatingCache) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeCacheableIndex());
+    for (int32_t i = 0; i < 2; ++i) {
+        std::shared_ptr<MemoryPool> query_pool = GetMemoryPool();
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<FileIndexEvaluator> evaluator,
+            FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), path_factory_, meta,
+                                       fs_, cache_, query_pool));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> result,
+                             evaluator->SearchVector(MakeVectorSearch("embedding")));
+        ASSERT_EQ(query_pool, open_state_->pool.lock());
+        ASSERT_GE(query_pool->CurrentUsage(), CacheableSearchReader::kMemoryUsage);
+        evaluator.reset();
+        ASSERT_EQ(RoaringBitmap32::From({1, 3}), result->GetRowPositions());
+        ASSERT_EQ(std::vector<float>({0.25f, 0.75f}), result->GetScores());
+        ASSERT_EQ(0, query_pool->CurrentUsage());
+        ASSERT_EQ(0, cache_->Size());
+    }
+    ASSERT_EQ(2, open_state_->count);
+    ASSERT_EQ(GetParam() ? 0 : 2, cache_->SupplierCallCount());
+    ASSERT_TRUE(open_state_->pool.expired());
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, DoesNotCacheEmptyIndex) {
+    FileIndexFormat::ColumnIndexes indexes = {{"embedding", {{identifier_, nullptr}}}};
+    ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
+    for (int32_t i = 0; i < 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(auto result, Search(meta, MakeVectorSearch("embedding")));
+        ASSERT_EQ(result->GetRowPositions(), RoaringBitmap32());
+        ASSERT_EQ(result->GetScores(), std::vector<float>());
+    }
+    ASSERT_EQ(open_state_->count, 0);
+    ASSERT_EQ(cache_->Size(), 0);
+    ASSERT_EQ(cache_->SupplierCallCount(), GetParam() ? 0 : 2);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, BypassesCacheWithMultipleIndexTypes) {
+    cache_ = std::make_shared<InvalidSearchReaderCache>();
+    ASSERT_OK_AND_ASSIGN(auto payload, MockSearchFileIndex::MakePayload({{1, 0.25f}}, pool_));
+    FileIndexFormat::ColumnIndexes indexes = {
+        {"embedding",
+         {{identifier_, payload}, {"bitmap", nullptr}, {"unregistered-index", payload}}}};
+    ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
+    for (int32_t i = 0; i < 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(auto result, Search(meta, MakeVectorSearch("embedding")));
+        ASSERT_EQ(result->GetRowPositions(), RoaringBitmap32::From({1}));
+        ASSERT_EQ(result->GetScores(), std::vector<float>({0.25f}));
+    }
+    ASSERT_EQ(open_state_->count, 2);
+    ASSERT_EQ(cache_->Size(), 0);
+    ASSERT_EQ(cache_->SupplierCallCount(), 0);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, FallsBackOnCacheMissForOtherVectorIndexTypes) {
+    ASSERT_OK_AND_ASSIGN(
+        auto bytes, MockSearchFileIndex::MakeIndex(
+                        "embedding", MockSearchFileIndex::VECTOR_IDENTIFIER, {{1, 0.25f}}, pool_));
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
+    ASSERT_OK_AND_ASSIGN(auto result, Search(meta, MakeVectorSearch("embedding")));
+    ASSERT_EQ(result->GetRowPositions(), RoaringBitmap32::From({1}));
+    ASSERT_EQ(result->GetScores(), std::vector<float>({0.25f}));
+    ASSERT_EQ(open_state_->count, 0);
+    ASSERT_EQ(cache_->Size(), 0);
+    ASSERT_EQ(cache_->SupplierCallCount(), GetParam() ? 0 : 1);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, LoadsReaderAfterExternalEntryIsEvicted) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeCacheableIndex());
+    ASSERT_OK(PopulateCache(meta, "embedding"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileIndexEvaluator> evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                    path_factory_, meta, fs_, cache_, pool_));
+    ASSERT_OK(evaluator->GetSearchReader("embedding", FileIndexReader::SearchType::VECTOR_SEARCH));
+    cache_->InvalidateAll();
+    for (int32_t i = 0; i < 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredFileIndexResult> result,
+                             evaluator->SearchVector(MakeVectorSearch("embedding")));
+        ASSERT_EQ(RoaringBitmap32::From({1, 3}), result->GetRowPositions());
+        ASSERT_EQ(std::vector<float>({0.25f, 0.75f}), result->GetScores());
+    }
+    ASSERT_EQ(GetParam() ? 1 : 2, open_state_->count);
+    ASSERT_EQ(GetParam() ? 0 : 3, cache_->GetCount());
+    ASSERT_EQ(GetParam() ? 0 : 2, cache_->SupplierCallCount());
+    ASSERT_EQ(0, cache_->Size());
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, RejectsMultipleReaders) {
+    cache_ = std::make_shared<InvalidSearchReaderCache>();
+    ASSERT_OK_AND_ASSIGN(auto payload, MockSearchFileIndex::MakePayload({{1, 0.25f}}, pool_));
+    FileIndexFormat::ColumnIndexes indexes = {
+        {"embedding", {{identifier_, payload}, {MockSearchFileIndex::VECTOR_IDENTIFIER, nullptr}}}};
+    ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
+    ASSERT_NOK_WITH_MSG(Search(meta, MakeVectorSearch("embedding")),
+                        "Multiple File Index readers support VECTOR_SEARCH for field 'embedding'");
+    ASSERT_EQ(cache_->Size(), 0);
+    ASSERT_EQ(cache_->SupplierCallCount(), 0);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, RetriesFailedLoadsWithoutPopulatingCache) {
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeCacheableIndex());
+    open_state_->fail = true;
+    ASSERT_NOK_WITH_MSG(Search(meta, MakeVectorSearch("embedding")),
+                        "Cannot open mock vector index");
+    ASSERT_EQ(cache_->Size(), 0);
+    open_state_->fail = false;
+    for (int32_t i = 0; i < 2; ++i) {
+        ASSERT_OK_AND_ASSIGN(auto result, Search(meta, MakeVectorSearch("embedding")));
+        ASSERT_EQ(result->GetRowPositions(), RoaringBitmap32::From({1, 3}));
+        ASSERT_EQ(cache_->Size(), 0);
+    }
+    ASSERT_EQ(open_state_->count, 3);
+    ASSERT_EQ(cache_->SupplierCallCount(), GetParam() ? 0 : 3);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, KeysReadersByFileAndField) {
+    ASSERT_OK_AND_ASSIGN(auto payload, MockSearchFileIndex::MakePayload({{1, 0.25f}}, pool_));
+    FileIndexFormat::ColumnIndexes indexes;
+    indexes["embedding"][identifier_] = payload;
+    indexes["title"][identifier_] = payload;
+    ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
+    ASSERT_OK(PopulateCache(meta, "embedding"));
+    ASSERT_OK(PopulateCache(meta, "title"));
+    ASSERT_OK(Search(meta, MakeVectorSearch("embedding")));
+    ASSERT_OK(Search(meta, MakeVectorSearch("title")));
+    ASSERT_EQ(open_state_->count, 2);
+    auto options = core_options_.ToMap();
+    options["file-index." + identifier_ + ".columns"] = "embedding";
+    options["file-index." + identifier_ + ".embedding.variant"] = "second";
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileIndexEvaluator> options_evaluator,
+        FileIndexEvaluator::Create(data_schema_, options, path_factory_, meta, fs_, cache_, pool_));
+    ASSERT_OK(options_evaluator->SearchVector(MakeVectorSearch("embedding")));
+    options_evaluator.reset();
+    ASSERT_EQ(open_state_->count, GetParam() ? 3 : 2);
+    auto schema = arrow::schema({arrow::field("embedding", arrow::list(arrow::float64()))});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileIndexEvaluator> schema_evaluator,
+                         FileIndexEvaluator::Create(schema, core_options_.ToMap(), path_factory_,
+                                                    meta, fs_, cache_, pool_));
+    ASSERT_OK(schema_evaluator->SearchVector(MakeVectorSearch("embedding")));
+    schema_evaluator.reset();
+    ASSERT_EQ(open_state_->count, GetParam() ? 4 : 2);
+    if (!GetParam()) {
+        const std::string copy_name = "another-data.orc.index";
+        ASSERT_OK(fs_->WriteFile(path_factory_->ToAlignedPath(copy_name, meta),
+                                 std::string(bytes->data(), bytes->size()), /*overwrite=*/true));
+        meta->extra_files = {copy_name};
+    }
+    ASSERT_OK(Search(meta, MakeVectorSearch("embedding")));
+    ASSERT_EQ(open_state_->count, GetParam() ? 5 : 3);
+    ASSERT_EQ(cache_->Size(), GetParam() ? 0 : 2);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, RejectsReaderWithoutVectorSearchSupport) {
+    FileIndexFormat::ColumnIndexes indexes = {{"embedding", {{"bitmap", nullptr}}}};
+    ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
+    ASSERT_OK_AND_ASSIGN(auto evaluator,
+                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(),
+                                                    path_factory_, meta, fs_, cache_, pool_));
+    if (!GetParam()) {
+        ASSERT_OK_AND_ASSIGN(auto input,
+                             FileIndexEvaluator::ExtractIndexInputStream(path_factory_, meta, fs_));
+        ASSERT_OK_AND_ASSIGN(auto uri, input->GetUri());
+        ASSERT_OK(cache_->Put(CacheKey::ForIndexReader(uri, "embedding", "bitmap"),
+                              std::make_shared<ObjectCacheValue<FileIndexReader>>(
+                                  std::make_shared<FileIndexReader>(), nullptr, 1)));
+    }
+    auto result =
+        evaluator->GetSearchReader("embedding", FileIndexReader::SearchType::VECTOR_SEARCH);
+    ASSERT_FALSE(result.ok());
+    ASSERT_TRUE(result.status().IsNotImplemented());
+    ASSERT_NOK_WITH_MSG(result,
+                        "No File Index reader supports VECTOR_SEARCH for field 'embedding'");
+    ASSERT_EQ(cache_->GetCount(), GetParam() ? 0 : 1);
+    ASSERT_EQ(cache_->SupplierCallCount(), 0);
+}
+
+TEST_P(FileIndexCacheEvaluatorTest, RejectsWrongCacheValue) {
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeCacheableIndex());
+    cache_ = std::make_shared<InvalidSearchReaderCache>();
+    auto result = Search(meta, MakeVectorSearch("embedding"));
+    if (GetParam()) {
+        ASSERT_OK(result);
+        ASSERT_EQ(result.value()->GetRowPositions(), RoaringBitmap32::From({1, 3}));
+        ASSERT_EQ(open_state_->count, 1);
+    } else {
+        ASSERT_FALSE(result.ok());
+        ASSERT_TRUE(result.status().IsInvalid());
+        ASSERT_EQ(open_state_->count, 0);
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(IndexStorage, FileIndexCacheEvaluatorTest, ::testing::Bool(),
+                         [](const ::testing::TestParamInfo<bool>& info) {
+                             return info.param ? "Embedded" : "External";
+                         });
 
 INSTANTIATE_TEST_SUITE_P(IndexStorage, FileIndexSearchEvaluatorTest, ::testing::Bool(),
                          [](const ::testing::TestParamInfo<bool>& info) {
@@ -879,17 +1286,17 @@ TEST_F(FileIndexEvaluatorTest, TestUnsupportedRowCountSkips32BitIndex) {
         /*column_max_sequence_numbers=*/std::nullopt);
     auto predicate =
         PredicateBuilder::IsNull(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT);
-    ASSERT_OK_AND_ASSIGN(auto evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), nullptr,
-                                                    data_file_meta, nullptr, pool_));
+    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                             data_schema_, core_options_.ToMap(), nullptr,
+                                             data_file_meta, nullptr, /*cache=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(auto result, evaluator->Evaluate(predicate));
     ASSERT_TRUE(result->IsRemain().value());
     ASSERT_EQ(dynamic_cast<BitmapIndexResult*>(result.get()), nullptr);
 
     data_file_meta->row_count = -1;
-    ASSERT_OK_AND_ASSIGN(evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), nullptr,
-                                                    data_file_meta, nullptr, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        evaluator, FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), nullptr,
+                                              data_file_meta, nullptr, /*cache=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(predicate));
     ASSERT_EQ(result, FileIndexResult::Remain());
 
@@ -897,9 +1304,9 @@ TEST_F(FileIndexEvaluatorTest, TestUnsupportedRowCountSkips32BitIndex) {
     indexes["f2"]["bitmap"] = nullptr;
     ASSERT_OK_AND_ASSIGN(data_file_meta->embedded_index,
                          MockSearchFileIndex::Serialize(indexes, pool_));
-    ASSERT_OK_AND_ASSIGN(evaluator,
-                         FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), nullptr,
-                                                    data_file_meta, nullptr, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        evaluator, FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), nullptr,
+                                              data_file_meta, nullptr, /*cache=*/nullptr, pool_));
     auto missing = PredicateBuilder::IsNull(4, "missing", FieldType::INT);
     ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(missing));
     ASSERT_EQ(result, FileIndexResult::Remain());

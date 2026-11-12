@@ -75,6 +75,7 @@ class FieldMaxAgg : public FieldAggregator {
             case arrow::Type::type::INT16:
             case arrow::Type::type::INT32:
             case arrow::Type::type::DATE32:
+            case arrow::Type::type::TIME32:
             case arrow::Type::type::INT64:
             case arrow::Type::type::TIMESTAMP:
             case arrow::Type::type::DECIMAL128:

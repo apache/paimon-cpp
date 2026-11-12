@@ -142,9 +142,9 @@ Result<std::vector<GlobalIndexIOMeta>> BitmapGlobalIndexWriter::Finish() {
     }
     SortedIndexFileMeta index_meta(first_key_bytes, last_key_bytes, !null_rows_.IsEmpty());
     std::shared_ptr<Bytes> metadata = index_meta.Serialize(pool_.get());
-    PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_writer_->GetFileSize(file_name_));
-    return std::vector<GlobalIndexIOMeta>{GlobalIndexIOMeta(
-        file_writer_->ToPath(file_name_), file_size, row_count_, std::move(metadata))};
+    PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_writer_->GetFileSize(file_path_));
+    return std::vector<GlobalIndexIOMeta>{
+        GlobalIndexIOMeta(file_path_, file_size, row_count_, std::move(metadata))};
 }
 
 Status BitmapGlobalIndexWriter::FlushCurrentBitmap() {
@@ -169,9 +169,9 @@ BitmapGlobalIndexWriter::GetOrCreateStreamingWriter() {
     if (streaming_writer_ != nullptr) {
         return streaming_writer_.get();
     }
-    PAIMON_ASSIGN_OR_RAISE(file_name_, file_writer_->NewFileName(kBitmapIdentifier));
+    PAIMON_ASSIGN_OR_RAISE(file_path_, file_writer_->NewPath(kBitmapIdentifier));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> output_stream,
-                           file_writer_->NewOutputStream(file_name_));
+                           file_writer_->NewOutputStream(file_path_));
     output_stream_ = std::move(output_stream);
     PAIMON_ASSIGN_OR_RAISE(streaming_writer_, BitmapGlobalIndexFormat::StreamingWriter::Create(
                                                   output_stream_, dictionary_block_size_,

@@ -81,6 +81,7 @@ bool CanCompareWithKernel(FieldType field_type) {
         case FieldType::INT:
         case FieldType::BIGINT:
         case FieldType::DATE:
+        case FieldType::TIME:
         case FieldType::STRING:
         case FieldType::BINARY:
         case FieldType::DECIMAL:
@@ -142,6 +143,10 @@ bool AgreesWithScalar(const arrow::DataType& column_type, const arrow::DataType&
                    checked_cast<const arrow::TimestampType&>(column_type).unit() ==
                        checked_cast<const arrow::TimestampType&>(scalar_type).unit() &&
                    checked_cast<const arrow::TimestampType&>(column_type).timezone().empty();
+        case arrow::Type::TIME32:
+            // A TIME literal is written in milliseconds, so only a millisecond column compares
+            // without a cast.
+            return column_type.Equals(scalar_type);
         default:
             return true;
     }
@@ -154,8 +159,9 @@ bool AgreesWithScalar(const arrow::DataType& column_type, const arrow::DataType&
 ///                     settles whether a decimal or a timestamp scalar can be compared against it.
 /// @param pool The pool the scalar is allocated from.
 /// @return `nullptr` when the literal cannot be compared by a kernel, which covers a decimal column
-///         of another scale and a timestamp column of another unit or with a time zone. This never
-///         fails.
+///         of another scale, a timestamp column of another unit or with a time zone, and a
+///         timestamp literal that does not fit int64 in the time unit it is written with. This
+///         never fails.
 std::shared_ptr<arrow::Scalar> MakeComparisonScalar(const Literal& literal, FieldType field_type,
                                                     const arrow::DataType& column_type,
                                                     arrow::MemoryPool* pool) {
