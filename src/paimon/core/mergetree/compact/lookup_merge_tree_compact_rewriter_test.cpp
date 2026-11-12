@@ -373,14 +373,14 @@ class LookupMergeTreeCompactRewriterTest : public ::testing::TestWithParam<std::
         const std::string& table_path, const CoreOptions& options) const {
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                                options.CreateExternalPaths());
-        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
-                               options.CreateGlobalIndexExternalPath());
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                               options.CreateGlobalIndexExternalPaths());
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FileStorePathFactory> path_factory,
             FileStorePathFactory::Create(
                 table_path, arrow_schema_, /*partition_keys=*/{}, options.GetPartitionDefaultName(),
                 options.GetFileFormat()->Identifier(), options.DataFilePrefix(),
-                options.LegacyPartitionNameEnabled(), external_paths, global_index_external_path,
+                options.LegacyPartitionNameEnabled(), external_paths, global_index_external_paths,
                 options.IndexFileInDataFileDir(), /*external_path_weights=*/{}, pool_));
         return path_factory;
     }

@@ -53,13 +53,13 @@ Result<std::shared_ptr<FileStorePathFactory>> FileStore::NewPathFactory(
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options_.CreateExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
                            options_.GetExternalPathWeights());
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
-                           options_.CreateGlobalIndexExternalPath());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                           options_.CreateGlobalIndexExternalPaths());
     return FileStorePathFactory::Create(
         root_path_, arrow_schema, partition_keys, options_.GetPartitionDefaultName(),
         file_format_identifier, options_.DataFilePrefix(), options_.LegacyPartitionNameEnabled(),
-        external_paths, global_index_external_path, options_.IndexFileInDataFileDir(),
-        /*external_path_weights=*/external_path_weights, memory_pool);
+        external_paths, global_index_external_paths, options_.IndexFileInDataFileDir(),
+        external_path_weights, memory_pool);
 }
 
 Result<std::shared_ptr<SnapshotManager>> FileStore::NewSnapshotManager(

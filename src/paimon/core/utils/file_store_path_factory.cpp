@@ -73,7 +73,7 @@ FileStorePathFactory::FileStorePathFactory(
     const std::string& data_file_prefix, const std::string& uuid,
     std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
     const std::vector<std::string>& external_paths,
-    const std::vector<std::string>& global_index_external_path, bool index_file_in_data_file_dir,
+    const std::vector<std::string>& global_index_external_paths, bool index_file_in_data_file_dir,
     const std::vector<int32_t>& external_path_weights)
     : root_(root),
       format_identifier_(format_identifier),
@@ -82,7 +82,7 @@ FileStorePathFactory::FileStorePathFactory(
       partition_computer_(std::move(partition_computer)),
       external_paths_(external_paths),
       external_path_weights_(external_path_weights),
-      global_index_external_paths_(global_index_external_path),
+      global_index_external_paths_(global_index_external_paths),
       index_file_in_data_file_dir_(index_file_in_data_file_dir) {}
 
 Result<std::shared_ptr<FileStorePathFactory>> FileStorePathFactory::Create(
@@ -90,7 +90,7 @@ Result<std::shared_ptr<FileStorePathFactory>> FileStorePathFactory::Create(
     const std::vector<std::string>& partition_keys, const std::string& default_part_value,
     const std::string& identifier, const std::string& data_file_prefix,
     bool legacy_partition_name_enabled, const std::vector<std::string>& external_paths,
-    const std::vector<std::string>& global_index_external_path, bool index_file_in_data_file_dir,
+    const std::vector<std::string>& global_index_external_paths, bool index_file_in_data_file_dir,
     const std::vector<int32_t>& external_path_weights,
     const std::shared_ptr<MemoryPool>& memory_pool) {
     if (memory_pool == nullptr) {
@@ -106,7 +106,7 @@ Result<std::shared_ptr<FileStorePathFactory>> FileStorePathFactory::Create(
                                            legacy_partition_name_enabled, memory_pool));
     return std::shared_ptr<FileStorePathFactory>(new FileStorePathFactory(
         root, identifier, data_file_prefix, uuid, std::move(partition_computer), external_paths,
-        global_index_external_path, index_file_in_data_file_dir, external_path_weights));
+        global_index_external_paths, index_file_in_data_file_dir, external_path_weights));
 }
 
 std::unique_ptr<PathFactory> FileStorePathFactory::CreateManifestFileFactory() {
@@ -204,9 +204,6 @@ Result<std::unique_ptr<IndexPathFactory>> FileStorePathFactory::CreateGlobalInde
             if (provider_) {
                 return provider_->GetNextExternalDataPath(file_name);
             }
-            return ToPath(file_name);
-        }
-        std::string ToPath(const std::string& file_name) const override {
             return factory_->ToIndexFilePath(file_name);
         }
         bool IsExternalPath() const override {

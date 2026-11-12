@@ -46,11 +46,11 @@ class IndexCheckpointPathFactory {
     /// Returns the task's checkpoint directories under the configured global index directories.
     static Result<std::vector<std::string>> GetTaskDirectories(
         const std::string& table_path, const std::string& task_id,
-        const std::vector<std::string>& global_index_external_path) {
+        const std::vector<std::string>& global_index_external_paths) {
         PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("checkpoint task id", task_id));
         std::vector<std::string> roots = {PathUtil::JoinPath(table_path, "index")};
-        if (!global_index_external_path.empty()) {
-            roots = global_index_external_path;
+        if (!global_index_external_paths.empty()) {
+            roots = global_index_external_paths;
         }
         std::vector<std::string> directories;
         for (const auto& root : roots) {

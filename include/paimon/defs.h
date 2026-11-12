@@ -495,10 +495,11 @@ struct PAIMON_EXPORT Options {
     /// written, multiple elements separated by commas.
     static const char DATA_FILE_EXTERNAL_PATHS[];
     /// "data-file.external-paths.strategy" - The strategy of selecting an external path when
-    /// writing data. Values: "none", "specific-fs", "round-robin", "weighted". Default is "none".
+    /// writing data. Values: "none", "specific-fs", "round-robin", "weight-robin". Default is
+    /// "none".
     static const char DATA_FILE_EXTERNAL_PATHS_STRATEGY[];
     /// "data-file.external-paths.weights" - The weights for external paths when
-    /// data-file.external-paths.strategy is set to weighted.
+    /// data-file.external-paths.strategy is set to weight-robin.
     /// Format: 'weight1,weight2,...' with weights corresponding to paths in
     /// data-file.external-paths by order.
     /// Example: '10,5,15' means first path has weight 10, second 5, third 15.

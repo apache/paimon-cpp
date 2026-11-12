@@ -89,14 +89,14 @@ Result<std::shared_ptr<FileStorePathFactory>> CreateFileStorePathFactory(
                            core_options.CreateExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
                            core_options.GetExternalPathWeights());
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
-                           core_options.CreateGlobalIndexExternalPath());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                           core_options.CreateGlobalIndexExternalPaths());
     return FileStorePathFactory::Create(
         table_path, all_arrow_schema, table_schema->PartitionKeys(),
         core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
         core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(), external_paths,
-        global_index_external_path, core_options.IndexFileInDataFileDir(),
-        /*external_path_weights=*/external_path_weights, pool);
+        global_index_external_paths, core_options.IndexFileInDataFileDir(), external_path_weights,
+        pool);
 }
 
 Result<std::shared_ptr<GlobalIndexWriter>> CreateGlobalIndexWriter(
@@ -434,11 +434,11 @@ Status GlobalIndexWriteTask::DeleteCheckpoint(const std::string& table_path,
     PAIMON_ASSIGN_OR_RAISE(schema_and_options,
                            LoadSchemaAndOptions(table_path, options, file_system));
     const CoreOptions& core_options = schema_and_options.second;
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
-                           core_options.CreateGlobalIndexExternalPath());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                           core_options.CreateGlobalIndexExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> task_directories,
                            IndexCheckpointPathFactory::GetTaskDirectories(
-                               table_path, task_id, global_index_external_path));
+                               table_path, task_id, global_index_external_paths));
     std::shared_ptr<FileSystem> fs = core_options.GetFileSystem();
     Status first_error = Status::OK();
     for (const auto& task_directory : task_directories) {

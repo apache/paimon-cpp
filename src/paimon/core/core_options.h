@@ -276,7 +276,7 @@ class PAIMON_EXPORT CoreOptions {
     std::string FormatTableFileCompression() const;
 
     bool GlobalIndexEnabled() const;
-    Result<std::vector<std::string>> CreateGlobalIndexExternalPath() const;
+    Result<std::vector<std::string>> CreateGlobalIndexExternalPaths() const;
 
     std::optional<std::string> GetScanTagName() const;
 
@@ -323,7 +323,7 @@ class PAIMON_EXPORT CoreOptions {
 
  private:
     std::optional<std::string> GetDataFileExternalPaths() const;
-    std::optional<std::string> GetGlobalIndexExternalPath() const;
+    std::optional<std::string> GetGlobalIndexExternalPaths() const;
 
  private:
     struct Impl;

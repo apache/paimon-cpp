@@ -129,8 +129,8 @@ class KeyValueFileStoreScanTest : public testing::Test {
         auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                                core_options.CreateExternalPaths());
-        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
-                               core_options.CreateGlobalIndexExternalPath());
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                               core_options.CreateGlobalIndexExternalPaths());
 
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FileStorePathFactory> path_factory,
@@ -138,7 +138,7 @@ class KeyValueFileStoreScanTest : public testing::Test {
                 table_path, arrow_schema, table_schema->PartitionKeys(),
                 core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
                 core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
-                external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
+                external_paths, global_index_external_paths, core_options.IndexFileInDataFileDir(),
                 /*external_path_weights=*/{}, pool_));
         auto manifest_file_format = core_options.GetManifestFormat();
         auto snapshot_manager = std::make_shared<SnapshotManager>(fs, table_path);

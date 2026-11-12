@@ -183,7 +183,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_TRUE(core_options.LegacyPartitionNameEnabled());
     ASSERT_TRUE(core_options.GlobalIndexEnabled());
     ASSERT_FALSE(core_options.GlobalIndexFilterRefineFromData());
-    ASSERT_EQ(std::nullopt, core_options.GetGlobalIndexExternalPath());
+    ASSERT_EQ(std::nullopt, core_options.GetGlobalIndexExternalPaths());
     ASSERT_EQ(std::nullopt, core_options.GetGlobalIndexThreadNum());
     ASSERT_EQ(std::nullopt, core_options.GetScanTagName());
     ASSERT_EQ(std::nullopt, core_options.GetOptimizedCompactionInterval());
@@ -491,8 +491,8 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_FALSE(core_options.GlobalIndexEnabled());
     ASSERT_TRUE(core_options.GlobalIndexFilterRefineFromData());
     ASSERT_EQ(core_options.GetGlobalIndexThreadNum(), 4);
-    ASSERT_TRUE(core_options.GetGlobalIndexExternalPath());
-    ASSERT_EQ(core_options.GetGlobalIndexExternalPath().value(), "FILE:///tmp/global_index/");
+    ASSERT_TRUE(core_options.GetGlobalIndexExternalPaths());
+    ASSERT_EQ(core_options.GetGlobalIndexExternalPaths().value(), "FILE:///tmp/global_index/");
     ASSERT_EQ("test-tag", core_options.GetScanTagName().value());
     ASSERT_EQ(StartupMode::FromSnapshotFull(), core_options.GetStartupMode());
     ASSERT_EQ(375809637, core_options.GetCompactionFileSize(/*has_primary_key=*/true));
@@ -863,62 +863,63 @@ TEST(CoreOptionsTest, TestInvalidCreateExternalPath) {
     }
 }
 
-TEST(CoreOptionsTest, TestCreateGlobalIndexExternalPath) {
+TEST(CoreOptionsTest, TestCreateGlobalIndexExternalPaths) {
     std::map<std::string, std::string> options = {
         {Options::GLOBAL_INDEX_EXTERNAL_PATH, " FILE:///tmp/index1"},
     };
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
-    ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_path,
-                         core_options.CreateGlobalIndexExternalPath());
-    ASSERT_EQ(std::vector<std::string>({"FILE:/tmp/index1"}), external_path);
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
+                         core_options.CreateGlobalIndexExternalPaths());
+    ASSERT_EQ(std::vector<std::string>({"FILE:/tmp/index1"}), external_paths);
 }
 
-TEST(CoreOptionsTest, GlobalIndexExternalPathList) {
-    for (const std::string& value : {"FILE:///a, FILE:///b", ",FILE:///a,,FILE:///b,"}) {
+TEST(CoreOptionsTest, GlobalIndexExternalPathsList) {
+    for (const std::string value : {"FILE:///a, FILE:///b", ",FILE:///a,,FILE:///b,"}) {
         ASSERT_OK_AND_ASSIGN(CoreOptions options,
                              CoreOptions::FromMap({{Options::GLOBAL_INDEX_EXTERNAL_PATH, value}}));
         ASSERT_OK_AND_ASSIGN(std::vector<std::string> paths,
-                             options.CreateGlobalIndexExternalPath());
+                             options.CreateGlobalIndexExternalPaths());
         ASSERT_EQ(paths, std::vector<std::string>({"FILE:/a", "FILE:/b"}));
     }
-    for (const std::string& value : {",", " ", "FILE:///a,/b", "FILE:///a, ,FILE:///b"}) {
+    for (const std::string value : {",", " ", "FILE:///a,/b", "FILE:///a, ,FILE:///b"}) {
         ASSERT_OK_AND_ASSIGN(CoreOptions options,
                              CoreOptions::FromMap({{Options::GLOBAL_INDEX_EXTERNAL_PATH, value}}));
-        ASSERT_NOK(options.CreateGlobalIndexExternalPath());
+        ASSERT_NOK(options.CreateGlobalIndexExternalPaths());
     }
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
-    ASSERT_OK_AND_ASSIGN(std::vector<std::string> paths, options.CreateGlobalIndexExternalPath());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> paths, options.CreateGlobalIndexExternalPaths());
     ASSERT_TRUE(paths.empty());
     ASSERT_OK_AND_ASSIGN(options,
                          CoreOptions::FromMap({{Options::GLOBAL_INDEX_EXTERNAL_PATH, ""}}));
-    ASSERT_OK_AND_ASSIGN(paths, options.CreateGlobalIndexExternalPath());
+    ASSERT_OK_AND_ASSIGN(paths, options.CreateGlobalIndexExternalPaths());
     ASSERT_TRUE(paths.empty());
 }
 
 TEST(CoreOptionsTest, ExternalPathWeights) {
-    for (const std::string& value : {"1, 3", "1,3,", "+1,3,,", "1,,3", ",1,3", "1,,3,"}) {
+    for (const std::string value : {"1, 3", "1,3,", "+1,3,,", "1,,3", ",1,3", "1,,3,"}) {
         ASSERT_OK_AND_ASSIGN(
             CoreOptions options,
             CoreOptions::FromMap({{Options::DATA_FILE_EXTERNAL_PATHS, "FILE:///a,FILE:///b"},
-                                  {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "weighted"},
+                                  {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "weight-robin"},
                                   {Options::DATA_FILE_EXTERNAL_PATHS_WEIGHTS, value}}));
+        ASSERT_EQ(options.GetExternalPathStrategy(), ExternalPathStrategy::WEIGHTED);
         ASSERT_OK_AND_ASSIGN(std::vector<int32_t> weights, options.GetExternalPathWeights());
         ASSERT_EQ(weights, std::vector<int32_t>({1, 3}));
     }
-    for (const std::string& value : {"0", "-1", " ", "1, ,", "2147483648", "1.5", "abc"}) {
+    for (const std::string value : {"0", "-1", " ", "1, ,", "2147483648", "1.5", "abc"}) {
         ASSERT_OK_AND_ASSIGN(
             CoreOptions options,
             CoreOptions::FromMap({{Options::DATA_FILE_EXTERNAL_PATHS, "FILE:///a,FILE:///b"},
-                                  {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "weighted"},
+                                  {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "weight-robin"},
                                   {Options::DATA_FILE_EXTERNAL_PATHS_WEIGHTS, value}}));
         ASSERT_NOK_WITH_MSG(options.GetExternalPathWeights(),
                             "External path weight must be a positive integer:");
     }
-    for (const std::string& value : {"", ",", ",,"}) {
+    for (const std::string value : {"", ",", ",,"}) {
         ASSERT_OK_AND_ASSIGN(
             CoreOptions options,
             CoreOptions::FromMap({{Options::DATA_FILE_EXTERNAL_PATHS, "FILE:///a,FILE:///b"},
-                                  {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "weighted"},
+                                  {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "weight-robin"},
                                   {Options::DATA_FILE_EXTERNAL_PATHS_WEIGHTS, value}}));
         ASSERT_OK_AND_ASSIGN(std::vector<int32_t> weights, options.GetExternalPathWeights());
         ASSERT_TRUE(weights.empty());
@@ -926,14 +927,14 @@ TEST(CoreOptionsTest, ExternalPathWeights) {
     ASSERT_OK_AND_ASSIGN(
         CoreOptions options,
         CoreOptions::FromMap({{Options::DATA_FILE_EXTERNAL_PATHS, "FILE:///a,FILE:///b"},
-                              {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "weighted"}}));
+                              {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "weight-robin"}}));
     ASSERT_OK_AND_ASSIGN(std::vector<int32_t> weights, options.GetExternalPathWeights());
     ASSERT_TRUE(weights.empty());
 }
 
 TEST(CoreOptionsTest, ExternalPathWeightsIgnoredForOtherStrategies) {
-    for (const std::string& strategy : {"none", "round-robin"}) {
-        for (const std::string& value : {"1,99", "1", "1,2,3", "0", "abc"}) {
+    for (const std::string strategy : {"none", "round-robin"}) {
+        for (const std::string value : {"1,99", "1", "1,2,3", "0", "abc"}) {
             ASSERT_OK_AND_ASSIGN(
                 CoreOptions options,
                 CoreOptions::FromMap({{Options::DATA_FILE_EXTERNAL_PATHS, "FILE:///a,FILE:///b"},
@@ -945,12 +946,12 @@ TEST(CoreOptionsTest, ExternalPathWeightsIgnoredForOtherStrategies) {
     }
 }
 
-TEST(CoreOptionsTest, TestInvalidCreateGlobalIndexExternalPath) {
+TEST(CoreOptionsTest, TestInvalidCreateGlobalIndexExternalPaths) {
     std::map<std::string, std::string> options = {
         {Options::GLOBAL_INDEX_EXTERNAL_PATH, "/tmp/index1"},
     };
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
-    ASSERT_NOK_WITH_MSG(core_options.CreateGlobalIndexExternalPath(),
+    ASSERT_NOK_WITH_MSG(core_options.CreateGlobalIndexExternalPaths(),
                         "scheme is null, path is /tmp/index1");
 }
 

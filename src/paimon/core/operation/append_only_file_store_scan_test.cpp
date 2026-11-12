@@ -310,7 +310,7 @@ TEST_F(AppendBucketPruningTest, SelectivelyDecodesInferredBucketCandidates) {
             dir->Str(), initial_scan->schema_, /*partition_keys=*/{},
             /*default_part_value=*/"", "avro", /*data_file_prefix=*/"data-",
             /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-            /*global_index_external_path=*/{},
+            /*global_index_external_paths=*/{},
             /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool_));
     ASSERT_OK(fs->Mkdirs(FileStorePathFactory::ManifestPath(dir->Str())));
     SimpleStats stats = BinaryRowGenerator::GenerateStats(

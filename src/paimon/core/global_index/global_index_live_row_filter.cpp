@@ -69,16 +69,16 @@ Result<std::unique_ptr<SnapshotReader>> CreateSnapshotReader(
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
                            options.GetExternalPathWeights());
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
-                           options.CreateGlobalIndexExternalPath());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                           options.CreateGlobalIndexExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         FileStorePathFactory::Create(
             root_path, arrow_schema, table_schema->PartitionKeys(),
             options.GetPartitionDefaultName(), options.GetFileFormat()->Identifier(),
             options.DataFilePrefix(), options.LegacyPartitionNameEnabled(), external_paths,
-            global_index_external_path, options.IndexFileInDataFileDir(),
-            /*external_path_weights=*/external_path_weights, pool));
+            global_index_external_paths, options.IndexFileInDataFileDir(), external_path_weights,
+            pool));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<ManifestList> manifest_list,
         ManifestList::Create(fs, options.GetManifestFormat(), options.GetManifestCompression(),

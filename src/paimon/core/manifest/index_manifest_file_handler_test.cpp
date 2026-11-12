@@ -65,7 +65,7 @@ class IndexManifestFileHandlerTest : public testing::Test {
                 dir_->Str(), schema, /*partition_keys=*/{}, /*default_part_value=*/"",
                 file_format->Identifier(), /*data_file_prefix=*/"data-",
                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                /*global_index_external_path=*/{},
+                /*global_index_external_paths=*/{},
                 /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool_));
         PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap({}));
         options.WithCache(cache);

@@ -208,16 +208,16 @@ Result<std::shared_ptr<FileStorePathFactory>> CreatePathFactory(
                            core_options.CreateExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
                            core_options.GetExternalPathWeights());
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
-                           core_options.CreateGlobalIndexExternalPath());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                           core_options.CreateGlobalIndexExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         FileStorePathFactory::Create(
             context.table_path, arrow_schema, context.table_schema->PartitionKeys(),
             core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
             core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
-            external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-            /*external_path_weights=*/external_path_weights, pool));
+            external_paths, global_index_external_paths, core_options.IndexFileInDataFileDir(),
+            external_path_weights, pool));
     return path_factory;
 }
 

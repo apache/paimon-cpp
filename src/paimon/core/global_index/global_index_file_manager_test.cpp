@@ -80,7 +80,7 @@ class GlobalIndexFileManagerTest : public ::testing::Test {
                 dir_->Str(), arrow::schema({}), /*partition_keys=*/{}, /*default_part_value=*/"",
                 /*identifier=*/"mock", /*data_file_prefix=*/"data-",
                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                /*global_index_external_path=*/{},
+                /*global_index_external_paths=*/{},
                 /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{},
                 GetDefaultPool()));
     }

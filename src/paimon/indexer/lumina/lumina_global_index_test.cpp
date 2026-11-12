@@ -60,7 +60,7 @@ class LuminaGlobalIndexTest : public ::testing::Test {
             assert(false);
             return "";
         }
-        std::string ToPath(const std::string& file_name) const override {
+        std::string NewPathFromName(const std::string& file_name) const override {
             return PathUtil::JoinPath(index_path_, file_name);
         }
         bool IsExternalPath() const override {
@@ -141,7 +141,7 @@ class LuminaGlobalIndexTest : public ::testing::Test {
             table_path, arrow::schema({}), /*partition_keys=*/{}, /*default_part_value=*/"",
             /*identifier=*/"mock", /*data_file_prefix=*/"data-",
             /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-            /*global_index_external_path=*/{},
+            /*global_index_external_paths=*/{},
             /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool_);
     }
 

@@ -182,8 +182,8 @@ Result<std::unique_ptr<OrphanFilesCleaner>> OrphanFilesCleaner::Create(
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
                            options.GetExternalPathWeights());
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
-                           options.CreateGlobalIndexExternalPath());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                           options.CreateGlobalIndexExternalPaths());
 
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
@@ -191,8 +191,8 @@ Result<std::unique_ptr<OrphanFilesCleaner>> OrphanFilesCleaner::Create(
             ctx->GetRootPath(), arrow_schema, schema->PartitionKeys(),
             options.GetPartitionDefaultName(), options.GetFileFormat()->Identifier(),
             options.DataFilePrefix(), options.LegacyPartitionNameEnabled(), external_paths,
-            global_index_external_path, options.IndexFileInDataFileDir(),
-            /*external_path_weights=*/external_path_weights, ctx->GetMemoryPool()));
+            global_index_external_paths, options.IndexFileInDataFileDir(), external_path_weights,
+            ctx->GetMemoryPool()));
     auto snapshot_manager =
         std::make_shared<SnapshotManager>(options.GetFileSystem(), ctx->GetRootPath());
     PAIMON_ASSIGN_OR_RAISE(

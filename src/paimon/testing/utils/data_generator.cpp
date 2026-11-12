@@ -244,7 +244,7 @@ Result<std::vector<std::unique_ptr<RecordBatch>>> DataGenerator::SplitArrayByPar
             /*default_part_value=*/"__DEFAULT_PARTITION__",
             /*identifier=*/"orc", /*data_file_prefix=*/"data-",
             /*legacy_partition_name_enabled=*/true, /*external_paths=*/std::vector<std::string>(),
-            /*global_index_external_path=*/{},
+            /*global_index_external_paths=*/{},
             /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, memory_pool_));
 
     for (const auto& binary_row : binary_rows) {

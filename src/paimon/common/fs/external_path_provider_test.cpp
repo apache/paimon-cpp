@@ -73,6 +73,28 @@ TEST(ExternalPathProviderTest, TestGetNextExternalDataPath2) {
                                  }));
 }
 
+TEST(ExternalPathProviderTest, TestGetNextExternalDataPathWithWeights) {
+    std::vector<std::string> external_table_paths = {"/tmp/external_path_a/",
+                                                     "/tmp/external_path_b/"};
+    std::string relative_bucket_path = "p0=1/p1=0/bucket-0";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ExternalPathProvider> provider,
+                         ExternalPathProvider::Create(external_table_paths, relative_bucket_path,
+                                                      /*weights=*/{9, 1}));
+
+    int32_t first_path_count = 0;
+    int32_t second_path_count = 0;
+    for (int32_t i = 0; i < 1000; ++i) {
+        std::string path = provider->GetNextExternalDataPath("file.orc");
+        if (path == "/tmp/external_path_a/p0=1/p1=0/bucket-0/file.orc") {
+            ++first_path_count;
+        } else {
+            ASSERT_EQ(path, "/tmp/external_path_b/p0=1/p1=0/bucket-0/file.orc");
+            ++second_path_count;
+        }
+    }
+    ASSERT_GT(first_path_count, second_path_count);
+}
+
 TEST(ExternalPathProviderTest, TestGetNextExternalDataPathConcurrently) {
     std::vector<std::string> external_table_paths;
     external_table_paths.emplace_back("/tmp/external_path_a/");

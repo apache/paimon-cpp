@@ -223,7 +223,7 @@ class ConfigParser {
                          {{"none", ExternalPathStrategy::NONE},
                           {"specific-fs", ExternalPathStrategy::SPECIFIC_FS},
                           {"round-robin", ExternalPathStrategy::ROUND_ROBIN},
-                          {"weighted", ExternalPathStrategy::WEIGHTED}},
+                          {"weight-robin", ExternalPathStrategy::WEIGHTED}},
                          "external path strategy", external_path_strategy);
     }
 
@@ -406,7 +406,7 @@ struct CoreOptions::Impl {
     std::optional<std::string> data_file_external_paths;
     std::optional<std::string> data_file_external_paths_weights;
     std::optional<std::string> changelog_file_compression;
-    std::optional<std::string> global_index_external_path;
+    std::optional<std::string> global_index_external_paths;
     std::optional<std::string> scan_tag_name;
     CompressOptions lookup_compress_options{"zstd", 1};
     CompressOptions spill_compress_options{"zstd", 1};
@@ -940,9 +940,9 @@ struct CoreOptions::Impl {
         // Parse global-index.filter.refine-from-data, default false
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::GLOBAL_INDEX_FILTER_REFINE_FROM_DATA,
                                                 &global_index_filter_refine_from_data));
-        // Parse global-index.external-path - global index root directory
+        // Parse global-index.external-path - global index root directories
         PAIMON_RETURN_NOT_OK(
-            parser.Parse(Options::GLOBAL_INDEX_EXTERNAL_PATH, &global_index_external_path));
+            parser.Parse(Options::GLOBAL_INDEX_EXTERNAL_PATH, &global_index_external_paths));
         return Status::OK();
     }
 
@@ -1961,17 +1961,17 @@ bool CoreOptions::GlobalIndexFilterRefineFromData() const {
     return impl_->global_index_filter_refine_from_data;
 }
 
-std::optional<std::string> CoreOptions::GetGlobalIndexExternalPath() const {
-    return impl_->global_index_external_path;
+std::optional<std::string> CoreOptions::GetGlobalIndexExternalPaths() const {
+    return impl_->global_index_external_paths;
 }
 
-Result<std::vector<std::string>> CoreOptions::CreateGlobalIndexExternalPath() const {
+Result<std::vector<std::string>> CoreOptions::CreateGlobalIndexExternalPaths() const {
     std::vector<std::string> external_paths;
-    std::optional<std::string> global_index_external_path = GetGlobalIndexExternalPath();
-    if (!global_index_external_path || global_index_external_path->empty()) {
+    std::optional<std::string> global_index_external_paths = GetGlobalIndexExternalPaths();
+    if (!global_index_external_paths || global_index_external_paths->empty()) {
         return external_paths;
     }
-    for (auto tmp_path : StringUtils::Split(global_index_external_path.value(), ",")) {
+    for (auto tmp_path : StringUtils::Split(global_index_external_paths.value(), ",")) {
         StringUtils::Trim(&tmp_path);
         PAIMON_ASSIGN_OR_RAISE(Path path, PathUtil::ToPath(tmp_path));
         if (path.scheme.empty()) {

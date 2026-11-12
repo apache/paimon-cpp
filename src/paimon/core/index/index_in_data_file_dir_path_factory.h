@@ -57,10 +57,6 @@ class IndexInDataFileDirPathFactory : public IndexPathFactory {
         return PathUtil::JoinPath(data_file_path_factory_->Parent(), file->FileName());
     }
 
-    std::string ToPath(const std::string& file_name) const override {
-        return data_file_path_factory_->ToPath(file_name);
-    }
-
     bool IsExternalPath() const override {
         return data_file_path_factory_->IsExternalPath();
     }

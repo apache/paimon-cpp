@@ -162,8 +162,7 @@ class GlobalIndexFileManager : public GlobalIndexFileReader,
                 std::string file_name = PathUtil::GetName(file_status.GetPath());
                 std::optional<int64_t> id = checkpoint_path_factory_->GetCheckpointId(file_name);
                 if (id) {
-                    checkpoint_files.push_back(
-                        CheckpointFile{id.value(), PathUtil::JoinPath(directory, file_name)});
+                    checkpoint_files.push_back(CheckpointFile{id.value(), file_status.GetPath()});
                 }
             }
         }

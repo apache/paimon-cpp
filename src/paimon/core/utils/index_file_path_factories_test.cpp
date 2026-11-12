@@ -43,7 +43,7 @@ TEST(IndexFilePathFactoriesTest, TestSimple) {
                                                       /*data_file_prefix=*/"data-",
                                                       /*legacy_partition_name_enabled=*/true,
                                                       /*external_paths=*/{},
-                                                      /*global_index_external_path=*/{},
+                                                      /*global_index_external_paths=*/{},
                                                       /*index_file_in_data_file_dir=*/false,
                                                       /*external_path_weights=*/{}, pool));
     auto uuid = file_store_path_factory->uuid_;
@@ -92,7 +92,7 @@ TEST(IndexFilePathFactoriesTest, TestWithExternalPath) {
                                                       /*data_file_prefix=*/"data-",
                                                       /*legacy_partition_name_enabled=*/true,
                                                       /*external_paths=*/{"/tmp/external-path"},
-                                                      /*global_index_external_path=*/{},
+                                                      /*global_index_external_paths=*/{},
                                                       /*index_file_in_data_file_dir=*/true,
                                                       /*external_path_weights=*/{}, pool));
     auto uuid = file_store_path_factory->uuid_;

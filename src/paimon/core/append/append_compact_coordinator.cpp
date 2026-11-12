@@ -227,14 +227,14 @@ Result<std::shared_ptr<FileStorePathFactory>> BuildPathFactory(
                            core_options.CreateExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
                            core_options.GetExternalPathWeights());
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_path,
-                           core_options.CreateGlobalIndexExternalPath());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                           core_options.CreateGlobalIndexExternalPaths());
     return FileStorePathFactory::Create(
         table_path, arrow_schema, table_schema->PartitionKeys(),
         core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
         core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(), external_paths,
-        global_index_external_path, core_options.IndexFileInDataFileDir(),
-        /*external_path_weights=*/external_path_weights, pool);
+        global_index_external_paths, core_options.IndexFileInDataFileDir(), external_path_weights,
+        pool);
 }
 
 /// Scan the latest snapshot and collect small files grouped by partition.

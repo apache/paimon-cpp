@@ -141,7 +141,7 @@ class ManifestFileTest : public testing::Test {
                 /*default_part_value=*/"", file_format->Identifier(),
                 /*data_file_prefix=*/"data-",
                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                /*global_index_external_path=*/{},
+                /*global_index_external_paths=*/{},
                 /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool));
         PAIMON_ASSIGN_OR_RAISE(CoreOptions options,
                                CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
@@ -289,7 +289,7 @@ TEST_F(ManifestFileTest, TestManifestCacheIsDisabledWithoutInjectedCache) {
                                      /*default_part_value=*/"", file_format->Identifier(),
                                      /*data_file_prefix=*/"data-",
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                     /*global_index_external_path=*/{},
+                                     /*global_index_external_paths=*/{},
                                      /*index_file_in_data_file_dir=*/false,
                                      /*external_path_weights=*/{}, pool));
     ASSERT_OK_AND_ASSIGN(CoreOptions options,
@@ -331,7 +331,7 @@ TEST_F(ManifestFileTest, TestManifestCacheReusesDecodedBatches) {
                                      /*default_part_value=*/"", file_format->Identifier(),
                                      /*data_file_prefix=*/"data-",
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                     /*global_index_external_path=*/{},
+                                     /*global_index_external_paths=*/{},
                                      /*index_file_in_data_file_dir=*/false,
                                      /*external_path_weights=*/{}, pool));
     ASSERT_OK_AND_ASSIGN(CoreOptions options,
@@ -372,7 +372,7 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesMaterializesOnlySelectedBucket) {
                                      /*default_part_value=*/"", file_format->Identifier(),
                                      /*data_file_prefix=*/"data-",
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                     /*global_index_external_path=*/{},
+                                     /*global_index_external_paths=*/{},
                                      /*index_file_in_data_file_dir=*/false,
                                      /*external_path_weights=*/{}, pool));
     ASSERT_OK_AND_ASSIGN(CoreOptions options,
@@ -426,7 +426,7 @@ TEST_F(ManifestFileTest, TestReadPassesKnownSizeToOpen) {
                                      /*default_part_value=*/"", file_format->Identifier(),
                                      /*data_file_prefix=*/"data-",
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                     /*global_index_external_path=*/{},
+                                     /*global_index_external_paths=*/{},
                                      /*index_file_in_data_file_dir=*/false,
                                      /*external_path_weights=*/{}, pool));
     ASSERT_OK_AND_ASSIGN(CoreOptions options,
@@ -479,7 +479,7 @@ TEST_F(ManifestFileTest, TestInferredBucketProbeSkipsArrowMaterialization) {
                 /*default_part_value=*/"", file_format->Identifier(),
                 /*data_file_prefix=*/"data-",
                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                /*global_index_external_path=*/{},
+                /*global_index_external_paths=*/{},
                 /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool));
         ASSERT_OK_AND_ASSIGN(CoreOptions options,
                              CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
@@ -554,7 +554,7 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesSkipsDeserializingOtherBuckets) {
                 /*default_part_value=*/"", file_format->Identifier(),
                 /*data_file_prefix=*/"data-",
                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                /*global_index_external_path=*/{},
+                /*global_index_external_paths=*/{},
                 /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool));
         ASSERT_OK_AND_ASSIGN(CoreOptions options,
                              CoreOptions::FromMap({{Options::FILE_FORMAT, "orc"}}));
@@ -746,7 +746,7 @@ TEST_F(ManifestFileTest, TestLegacyManifestFormatIsReadOnly) {
                                      /*default_part_value=*/"", file_format->Identifier(),
                                      /*data_file_prefix=*/"data-",
                                      /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                                     /*global_index_external_path=*/{},
+                                     /*global_index_external_paths=*/{},
                                      /*index_file_in_data_file_dir=*/false,
                                      /*external_path_weights=*/{}, pool));
     ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));

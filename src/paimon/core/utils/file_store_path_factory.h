@@ -58,7 +58,7 @@ class FileStorePathFactory : public std::enable_shared_from_this<FileStorePathFa
         const std::vector<std::string>& partition_keys, const std::string& default_part_value,
         const std::string& identifier, const std::string& data_file_prefix,
         bool legacy_partition_name_enabled, const std::vector<std::string>& external_paths,
-        const std::vector<std::string>& global_index_external_path,
+        const std::vector<std::string>& global_index_external_paths,
         bool index_file_in_data_file_dir, const std::vector<int32_t>& external_path_weights,
         const std::shared_ptr<MemoryPool>& memory_pool);
 
@@ -102,7 +102,7 @@ class FileStorePathFactory : public std::enable_shared_from_this<FileStorePathFa
         return external_paths_;
     }
 
-    const std::vector<std::string>& GetGlobalIndexExternalPath() const {
+    const std::vector<std::string>& GetGlobalIndexExternalPaths() const {
         return global_index_external_paths_;
     }
 
@@ -146,7 +146,7 @@ class FileStorePathFactory : public std::enable_shared_from_this<FileStorePathFa
                          const std::string& data_file_prefix, const std::string& uuid,
                          std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
                          const std::vector<std::string>& external_paths,
-                         const std::vector<std::string>& global_index_external_path,
+                         const std::vector<std::string>& global_index_external_paths,
                          bool index_file_in_data_file_dir,
                          const std::vector<int32_t>& external_path_weights);
 

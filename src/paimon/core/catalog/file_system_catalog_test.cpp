@@ -1231,7 +1231,7 @@ TEST(FileSystemCatalogTest, TestDropTableWithMultipleExternalPaths) {
     ArrowSchemaRelease(&schema);
 }
 
-TEST(FileSystemCatalogTest, TestDropTableWithGlobalIndexExternalPathOnMainBranch) {
+TEST(FileSystemCatalogTest, TestDropTableWithGlobalIndexExternalPathsOnMainBranch) {
     std::map<std::string, std::string> options;
     options[Options::FILE_SYSTEM] = "local";
     options[Options::FILE_FORMAT] = "orc";
@@ -1300,7 +1300,7 @@ TEST(FileSystemCatalogTest, TestDropTableWithGlobalIndexExternalPathOnMainBranch
     ArrowSchemaRelease(&schema);
 }
 
-TEST(FileSystemCatalogTest, TestDropTableWithGlobalIndexExternalPathOnBranch) {
+TEST(FileSystemCatalogTest, TestDropTableWithGlobalIndexExternalPathsOnBranch) {
     // Copy the real append_table_with_rt_branch.db test data, then patch the
     // branch-rt schema-1 to include a GLOBAL_INDEX_EXTERNAL_PATH option.
     // DropTable should discover and clean up that external path.
