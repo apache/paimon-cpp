@@ -18,6 +18,8 @@
 
 #include "paimon/common/io/cache/cache_key.h"
 
+#include "fmt/format.h"
+
 namespace paimon {
 
 std::shared_ptr<CacheKey> CacheKey::ForPosition(const std::string& file_path, int64_t position,
@@ -31,6 +33,15 @@ std::shared_ptr<CacheKey> CacheKey::ForKind(const std::string& file_path, int64_
     auto key = std::make_shared<PositionCacheKey>(file_path, position, length,
                                                   /*is_index=*/false, kind);
     return key;
+}
+
+std::shared_ptr<CacheKey> CacheKey::ForIndexReader(const std::string& uri,
+                                                   const std::string& column_name,
+                                                   const std::string& index_type) {
+    std::string identity =
+        fmt::format("index-reader:{}:{}:{}:{}:{}:{}", uri.size(), uri, column_name.size(),
+                    column_name, index_type.size(), index_type);
+    return ForKind(identity, 0, 0, CacheKind::INDEX_READER);
 }
 
 std::shared_ptr<CacheKey> SnapshotLiveManifestEntriesCacheKey::ForExplicit(

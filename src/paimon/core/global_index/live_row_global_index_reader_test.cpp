@@ -31,6 +31,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/executor.h"
+#include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
@@ -135,6 +136,7 @@ TEST_F(LiveRowGlobalIndexReaderTest, TestSearchOnlyLiveRowsOfShard) {
     ASSERT_EQ(captured->include_row_ids.value(), RoaringBitmap64::From({10, 11, 13, 14}));
 
     std::shared_ptr<VectorSearch> vector_search = SearchVector();
+    vector_search->pool = GetMemoryPool();
     ASSERT_OK_AND_ASSIGN(result, reader.VisitVectorSearch(vector_search));
     ASSERT_EQ(result->ToString(), "row ids: {11,13}, scores: {0.90,0.50}");
     std::shared_ptr<VectorSearch> captured_vector = mock_reader->CapturedVectorSearch();
@@ -145,6 +147,7 @@ TEST_F(LiveRowGlobalIndexReaderTest, TestSearchOnlyLiveRowsOfShard) {
     ASSERT_EQ(captured_vector->predicate, vector_search->predicate);
     ASSERT_TRUE(captured_vector->distance_type == vector_search->distance_type);
     ASSERT_EQ(captured_vector->options, vector_search->options);
+    ASSERT_EQ(captured_vector->pool, vector_search->pool);
     std::vector<int64_t> row_ids = {1, 9, 10, 11, 12, 13, 14, 15};
     ASSERT_EQ(RowsPassingPreFilter(*captured_vector, row_ids),
               std::vector<int64_t>({10, 11, 13, 14}));

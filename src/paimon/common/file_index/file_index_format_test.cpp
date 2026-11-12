@@ -180,6 +180,30 @@ class FileIndexFormatTest : public ::testing::Test {
     std::shared_ptr<MemoryPool> pool_;
 };
 
+TEST_F(FileIndexFormatTest, TestGetIndexTypesFromMetadata) {
+    for (int32_t version : {FileIndexFormat::V_1, FileIndexFormat::V_2}) {
+        auto payload = std::make_shared<Bytes>(std::string("not an index payload"), pool_.get());
+        FileIndexFormat::ColumnIndexes indexes = {
+            {"embedding", {{"lumina", payload}}},
+            {"mixed", {{"bitmap", nullptr}, {"unregistered-index", payload}}}};
+        auto output = NewIndexOutput(pool_);
+        ASSERT_OK_AND_ASSIGN(auto writer, FileIndexFormat::CreateWriter(output, version, pool_));
+        ASSERT_OK(WriteIndexes(indexes, writer.get()));
+        ASSERT_OK(writer->Finish());
+        ASSERT_OK_AND_ASSIGN(auto bytes, output->Finish(pool_.get()));
+        auto input = std::make_shared<ByteArrayInputStream>(bytes->data(), bytes->size());
+        ASSERT_OK_AND_ASSIGN(auto reader,
+                             FileIndexFormat::CreateReader(input, pool_, /*options=*/{}));
+        ASSERT_OK_AND_ASSIGN(int64_t position, input->GetPos());
+        ASSERT_EQ(reader->GetIndexTypes("embedding"), std::vector<std::string>({"lumina"}));
+        ASSERT_EQ(reader->GetIndexTypes("mixed"),
+                  std::vector<std::string>({"bitmap", "unregistered-index"}));
+        ASSERT_TRUE(reader->GetIndexTypes("missing").empty());
+        ASSERT_OK_AND_ASSIGN(int64_t after, input->GetPos());
+        ASSERT_EQ(position, after);
+    }
+}
+
 TEST_F(FileIndexFormatTest, TestWriteAndReadEmptyIndexGoldenBytes) {
     // the expected bytes are generated from Java Paimon
     std::vector<char> expected = {0,   5,   78,  78, -48, 26, 53, -82, 0, 0, 0, 1, 0, 0, 0,   47,

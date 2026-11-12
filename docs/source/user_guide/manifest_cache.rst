@@ -102,7 +102,8 @@ concurrent cache misses.
 
 Cache implementations should use ``CacheValue::GetMemoryUsage()`` for admission
 and eviction accounting. For manifest IPC, this reports the retained Arrow
-buffer capacity, including unused space from growth. ``GetSegment().Size()``
-continues to describe the valid IPC byte length. The built-in ``LruCache`` uses
+buffer capacity, including unused space from growth.
+``CacheValue::Get<const MemorySegment>(value)->Size()`` describes the valid IPC
+byte length. The built-in ``LruCache`` uses
 the memory usage value; existing cache values without an explicit allocation
 size continue to charge their segment length.
