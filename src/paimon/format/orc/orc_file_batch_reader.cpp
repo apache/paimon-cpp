@@ -88,26 +88,16 @@ void CollectAllColumnIds(const ::orc::Type* type, std::vector<uint64_t>* column_
 
 OrcFileBatchReader::OrcFileBatchReader(std::unique_ptr<::orc::ReaderMetrics>&& reader_metrics,
                                        std::unique_ptr<OrcReaderWrapper>&& reader,
-                                       const std::map<std::string, std::string>& options,
-                                       const std::shared_ptr<FileReadAhead>& read_ahead)
+                                       const std::map<std::string, std::string>& options)
     : options_(options),
       reader_metrics_(std::move(reader_metrics)),
       reader_(std::move(reader)),
-      metrics_(std::make_shared<MetricsImpl>()),
-      read_ahead_(read_ahead) {}
+      metrics_(std::make_shared<MetricsImpl>()) {}
 
 Result<std::unique_ptr<OrcFileBatchReader>> OrcFileBatchReader::Create(
     std::unique_ptr<::orc::InputStream>&& input_stream,
     const std::shared_ptr<OrcReadMemory>& read_memory,
     const std::map<std::string, std::string>& options, int32_t batch_size) {
-    return Create(std::move(input_stream), read_memory, options, batch_size, nullptr);
-}
-
-Result<std::unique_ptr<OrcFileBatchReader>> OrcFileBatchReader::Create(
-    std::unique_ptr<::orc::InputStream>&& input_stream,
-    const std::shared_ptr<OrcReadMemory>& read_memory,
-    const std::map<std::string, std::string>& options, int32_t batch_size,
-    const std::shared_ptr<FileReadAhead>& read_ahead) {
     assert(input_stream);
     std::string file_name = input_stream->getName();
     try {
@@ -136,8 +126,8 @@ Result<std::unique_ptr<OrcFileBatchReader>> OrcFileBatchReader::Create(
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<OrcReaderWrapper> reader_wrapper,
                                OrcReaderWrapper::Create(std::move(reader), file_name, batch_size,
                                                         natural_read_size, options, read_memory));
-        auto orc_file_batch_reader = std::unique_ptr<OrcFileBatchReader>(new OrcFileBatchReader(
-            std::move(reader_metrics), std::move(reader_wrapper), options, read_ahead));
+        auto orc_file_batch_reader = std::unique_ptr<OrcFileBatchReader>(
+            new OrcFileBatchReader(std::move(reader_metrics), std::move(reader_wrapper), options));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<::ArrowSchema> file_schema,
                                orc_file_batch_reader->GetFileSchema());
         PAIMON_RETURN_NOT_OK(orc_file_batch_reader->SetReadSchema(
@@ -213,41 +203,18 @@ Status OrcFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
     target_column_ids_ = target_column_ids;
     previous_batch_row_count_ = 0;
     PAIMON_RETURN_NOT_OK(reader_->SetReadSchema(target_type, row_reader_options));
-    pre_buffered_row_range_.reset();
     return Status::OK();
 }
 
 Status OrcFileBatchReader::SeekToRow(uint64_t row_number) {
-    // ORC may read payload while seeking within a stripe. Warm the target before that I/O.
-    PAIMON_RETURN_NOT_OK(PrepareRangesForRow(row_number));
     return reader_->SeekToRow(row_number);
 }
 
 Result<std::vector<std::pair<uint64_t, uint64_t>>> OrcFileBatchReader::PreBufferRange() {
-    using ByteRanges = std::vector<std::pair<uint64_t, uint64_t>>;
-    std::pair<uint64_t, uint64_t> row_range;
-    PAIMON_ASSIGN_OR_RAISE(
-        ByteRanges ranges,
-        reader_->PreBufferRange(target_column_ids_,
-                                range_preparation_row_.value_or(reader_->GetNextRowToRead()),
-                                &row_range));
-    pre_buffered_row_range_ = row_range;
-    return ranges;
-}
-
-Status OrcFileBatchReader::PrepareRangesForRow(uint64_t row_number) {
-    if (read_ahead_ && (!pre_buffered_row_range_ || row_number < pre_buffered_row_range_->first ||
-                        row_number >= pre_buffered_row_range_->second)) {
-        range_preparation_row_ = row_number;
-        Status status = read_ahead_->PrepareRanges(this);
-        range_preparation_row_.reset();
-        return status;
-    }
-    return Status::OK();
+    return reader_->PreBufferRange(target_column_ids_);
 }
 
 Result<BatchReader::ReadBatch> OrcFileBatchReader::NextBatch() {
-    PAIMON_RETURN_NOT_OK(PrepareRangesForRow(reader_->GetNextRowToRead()));
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch, reader_->Next());
     if (BatchReader::IsEofBatch(batch)) {
         previous_batch_row_count_ = 0;

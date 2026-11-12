@@ -130,12 +130,11 @@ by callbacks count against that budget, so a full budget can temporarily cause a
 read to bypass range caching. The block cache has its separate limit. Parallel
 prefetch retains its existing range-buffer retention policy.
 
-ORC discovers byte ranges one stripe at a time and reports later stripes as
-reading advances. Preparing the first batch does not require warmup to parse
-every stripe footer.
+ORC retains its existing byte-range discovery across all stripes. Preparing
+these ranges can read every stripe footer before the first batch is returned.
 
-Late-materialization payloads and later ORC stripes prepare their ranges through
-the same internal cache context. Format readers expose their initial ranges
+Late-materialization payloads prepare their ranges through the shared internal
+cache context. Format readers expose their initial ranges
 through ``PreBufferRange()``; the public prefetch reader has no range callback
 setter. Plugins overriding the former callback setter must remove that override
 and rebuild against the updated interface.
