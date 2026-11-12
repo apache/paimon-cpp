@@ -882,10 +882,13 @@ macro(build_lucene)
         "-DCMAKE_INSTALL_PREFIX=${LUCENE_PREFIX}")
 
     set(LUCENE_LIB "${LUCENE_PREFIX}/lib/liblucene++.a")
+    set(LUCENE_PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/lucene.diff")
     externalproject_add(lucene_ep
                         ${EP_COMMON_OPTIONS}
                         URL ${LUCENE_SOURCE_URL}
                         URL_HASH "SHA256=${PAIMON_LUCENE_BUILD_SHA256_CHECKSUM}"
+                        PATCH_COMMAND bash -c
+                                      "patch -s -f -R --dry-run -p1 -i '${LUCENE_PATCH_FILE}' >/dev/null 2>&1 || patch -s -f -p1 -i '${LUCENE_PATCH_FILE}'"
                         CMAKE_ARGS ${LUCENE_CMAKE_ARGS}
                         BUILD_BYPRODUCTS ${LUCENE_LIB}
                         DEPENDS zlib
@@ -897,6 +900,7 @@ macro(build_lucene)
                                 boost_system
                                 boost_chrono
                                 boost_atomic)
+    externalproject_add_stepdependencies(lucene_ep patch "${LUCENE_PATCH_FILE}")
 
     set(LUCENE_INCLUDE_DIR "${LUCENE_PREFIX}/include")
     # The include directory must exist before it is referenced by a target.
@@ -907,6 +911,12 @@ macro(build_lucene)
                           PROPERTIES IMPORTED_LOCATION "${LUCENE_LIB}"
                                      INTERFACE_INCLUDE_DIRECTORIES
                                      "${LUCENE_INCLUDE_DIR}")
+    if(APPLE)
+        # Boost 1.66 headers still use the function base classes removed in C++17.
+        target_compile_definitions(lucene
+                                   INTERFACE _LIBCPP_ENABLE_CXX17_REMOVED_UNARY_BINARY_FUNCTION
+        )
+    endif()
 
     target_link_libraries(lucene
                           INTERFACE zlib
@@ -1076,6 +1086,16 @@ macro(build_boost)
     file(WRITE ${BOOST_USER_CONFIG}
          "using ${BOOST_TOOLSET} : : \"${CMAKE_CXX_COMPILER}\" ;\n")
 
+    set(BOOST_CXX_FLAGS "${EP_CXX_FLAGS}")
+    if(APPLE)
+        string(APPEND BOOST_CXX_FLAGS
+               " -D_LIBCPP_ENABLE_CXX17_REMOVED_UNARY_BINARY_FUNCTION")
+    endif()
+    if(APPLE AND CMAKE_OSX_SYSROOT)
+        # b2 does not inherit the SDK flags CMake adds to native targets.
+        string(APPEND BOOST_CXX_FLAGS " -isysroot '${CMAKE_OSX_SYSROOT}'")
+    endif()
+
     externalproject_add(boost_ep
                         URL ${BOOST_SOURCE_URL}
                         URL_HASH "SHA256=${PAIMON_BOOST_BUILD_SHA256_CHECKSUM}"
@@ -1091,8 +1111,8 @@ macro(build_boost)
                                       --user-config=${BOOST_USER_CONFIG}
                                       toolset=${BOOST_TOOLSET}
                                       cxxstd=${CMAKE_CXX_STANDARD}
-                                      cxxflags=${EP_CXX_FLAGS} linkflags=${EP_CXX_FLAGS}
-                                      install
+                                      cxxflags=${BOOST_CXX_FLAGS}
+                                      linkflags=${BOOST_CXX_FLAGS} install
                         INSTALL_COMMAND ""
                         DEPENDS zlib
                         BUILD_BYPRODUCTS ${BOOST_BYPRODUCTS}
@@ -1452,10 +1472,13 @@ macro(build_full_text)
     # Build with the lock file shipped in the source release: a reader rejects index files whose
     # recorded Tantivy version differs from the linked one, so the Tantivy version must match the
     # one used by Java Paimon.
+    set(FULL_TEXT_PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/full_text.diff")
     externalproject_add(full_text_ep
                         URL ${FULL_TEXT_SOURCE_URL}
                         URL_HASH "SHA256=${PAIMON_FULL_TEXT_BUILD_SHA256_CHECKSUM}"
                         ${THIRDPARTY_LOG_OPTIONS}
+                        PATCH_COMMAND bash -c
+                                      "patch -s -f -R --dry-run -p1 -i '${FULL_TEXT_PATCH_FILE}' >/dev/null 2>&1 || patch -s -f -p1 -i '${FULL_TEXT_PATCH_FILE}'"
                         CONFIGURE_COMMAND ""
                         BUILD_COMMAND ${CMAKE_COMMAND} -E env
                                       CARGO_TARGET_DIR=${FULL_TEXT_CARGO_TARGET_DIR}
@@ -1466,6 +1489,7 @@ macro(build_full_text)
                         INSTALL_COMMAND ${CMAKE_COMMAND} -E copy_directory
                                         <SOURCE_DIR>/include ${FULL_TEXT_INCLUDE_DIR}
                         BUILD_BYPRODUCTS "${FULL_TEXT_DYNAMIC_LIB}")
+    externalproject_add_stepdependencies(full_text_ep patch "${FULL_TEXT_PATCH_FILE}")
 
     add_library(paimon_ftindex_ffi SHARED IMPORTED GLOBAL)
     set_target_properties(paimon_ftindex_ffi

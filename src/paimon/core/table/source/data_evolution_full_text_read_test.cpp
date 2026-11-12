@@ -43,6 +43,8 @@
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/source/index_full_text_search_split_impl.h"
+#include "paimon/core/table/source/raw_full_text_read_impl.h"
+#include "paimon/core/table/source/raw_full_text_search_split_impl.h"
 #include "paimon/defs.h"
 #include "paimon/factories/factory.h"
 #include "paimon/fs/file_system.h"
@@ -54,6 +56,7 @@
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/table/source/full_text_search_builder.h"
 #include "paimon/testing/mock/mock_global_index_reader.h"
+#include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/utils/range.h"
 
@@ -299,6 +302,50 @@ ScoredRows ToRows(const ScoredGlobalIndexResult& result) {
 }
 }  // namespace
 
+TEST(InMemoryGlobalIndexFilesTest, TestTemporaryFileLifetimeAndIsolation) {
+    const std::string contents("a\0b", 3);
+    std::shared_ptr<MemoryPool> pool = GetMemoryPool();
+    std::unique_ptr<InputStream> input;
+    {
+        InMemoryGlobalIndexFiles files(pool);
+        ASSERT_OK_AND_ASSIGN(std::string path, files.NewPath("full-text"));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<OutputStream> output, files.NewOutputStream(path));
+        ASSERT_NOK(output->Write(contents.data(), -1));
+        ASSERT_NOK(output->Write(nullptr, 1));
+        ASSERT_OK_AND_ASSIGN(int64_t written, output->Write(contents.data(), contents.size()));
+        ASSERT_EQ(written, 3);
+        ASSERT_NOK(files.GetInputStream(path));
+        ASSERT_OK(output->Close());
+        ASSERT_OK(output->Close());
+        ASSERT_NOK(output->Write(contents.data(), contents.size()));
+        ASSERT_OK_AND_ASSIGN(int64_t position, output->GetPos());
+        ASSERT_EQ(position, written);
+        ASSERT_OK_AND_ASSIGN(int64_t size, files.GetFileSize(path));
+        ASSERT_EQ(size, written);
+        ASSERT_OK_AND_ASSIGN(input, files.GetInputStream(path));
+
+        InMemoryGlobalIndexFiles other_search(pool);
+        ASSERT_OK_AND_ASSIGN(std::string other_path, other_search.NewPath("full-text"));
+        ASSERT_NE(path, other_path);
+        ASSERT_NOK(other_search.GetInputStream(path));
+        ASSERT_OK_AND_ASSIGN(output, other_search.NewOutputStream(other_path));
+        ASSERT_OK_AND_ASSIGN(written, output->Write(nullptr, 0));
+        ASSERT_EQ(written, 0);
+        ASSERT_OK(output->Close());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> empty_file,
+                             other_search.GetInputStream(other_path));
+        ASSERT_OK_AND_ASSIGN(size, empty_file->Length());
+        ASSERT_EQ(size, 0);
+    }
+    ASSERT_GT(pool->CurrentUsage(), 0u);
+    std::string bytes(contents.size(), '\0');
+    ASSERT_OK_AND_ASSIGN(int64_t read, input->Read(bytes.data(), bytes.size(), 0));
+    ASSERT_EQ(read, 3);
+    ASSERT_EQ(bytes, contents);
+    input.reset();
+    ASSERT_EQ(pool->CurrentUsage(), 0u);
+}
+
 class DataEvolutionFullTextReadTest : public ::testing::Test {
  protected:
     void SetUp() override {
@@ -335,7 +382,8 @@ class DataEvolutionFullTextReadTest : public ::testing::Test {
             index_type, file_name, /*file_size=*/128, /*row_count=*/range.Count(),
             /*dv_ranges=*/std::nullopt, /*external_path=*/std::nullopt, meta);
         return IndexFullTextSearchSplitImpl::Create(snapshot_id, "content", range.from, range.to,
-                                                    {file}, search_row_ranges, scalar_index_files)
+                                                    {file}, search_row_ranges, scalar_index_files,
+                                                    TableSchema::FIRST_SCHEMA_ID)
             .value();
     }
 
@@ -597,6 +645,14 @@ TEST_F(DataEvolutionFullTextReadTest, TestReadsEachSplitWithItsOwnIndexFields) {
         NewSplit("dedicated.index", Range(100, 102), {0.1f, 0.5f, 0.2f}, {Range(100, 102)}),
         NewSplit("multi.index", Range(200, 202), {0.3f, 0.4f, 0.6f}, {Range(200, 202)},
                  /*index_field_id=*/2, std::vector<int32_t>({1}))};
+    SchemaManager schemas(dir_->GetFileSystem(), table_path_);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> planned_schema,
+                         schemas.ReadSchema(TableSchema::FIRST_SCHEMA_ID));
+    auto fields = planned_schema->Fields();
+    fields[2] = DataField(2, arrow::field("renamed_title", arrow::utf8()));
+    ASSERT_OK(TestHelper::WriteNextSchema(dir_->GetFileSystem(), table_path_, fields,
+                                          planned_schema->HighestFieldId(),
+                                          planned_schema->Options()));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FullTextRead> read, NewBuilder(3)->NewFullTextRead());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredGlobalIndexResult> result, read->Read(splits));
     ASSERT_EQ(ToRows(*result), ScoredRows({{101, 0.5f}, {201, 0.4f}, {202, 0.6f}}));
@@ -621,7 +677,27 @@ TEST_F(DataEvolutionFullTextReadTest, TestRejectsInvalidSplits) {
                                    /*index_field_id=*/1, std::nullopt, /*snapshot_id=*/2);
     ASSERT_NOK_WITH_MSG(read->Read({split, other_snapshot}),
                         "planned from snapshots 1 and 2 cannot be read together");
-    ASSERT_NOK_WITH_MSG(read->Read({nullptr}), "cannot cast to an index split");
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<RawFullTextSearchSplitImpl> raw_split,
+        RawFullTextSearchSplitImpl::Create(1, "content", kFakeIndexType, {Range(2, 3)}, 1));
+    ASSERT_NOK_WITH_MSG(read->Read({raw_split, other_snapshot}),
+                        "planned from snapshots 1 and 2 cannot be read together");
+    ASSERT_NOK_WITH_MSG(read->Read({other_snapshot, raw_split}),
+                        "planned from snapshots 2 and 1 cannot be read together");
+    ASSERT_OK_AND_ASSIGN(
+        auto first_schema_split,
+        RawFullTextSearchSplitImpl::Create(1, "content", kFakeIndexType, {Range(2, 3)}, 1, 0));
+    ASSERT_OK_AND_ASSIGN(
+        auto second_schema_split,
+        RawFullTextSearchSplitImpl::Create(1, "content", kFakeIndexType, {Range(4, 5)}, 1, 1));
+    ASSERT_NOK_WITH_MSG(read->Read({first_schema_split, second_schema_split}),
+                        "planned with schemas 0 and 1 cannot be read together");
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<RawFullTextSearchSplitImpl> other_backend,
+        RawFullTextSearchSplitImpl::Create(1, "content", "lucene-fts", {Range(4, 5)}, 1));
+    ASSERT_NOK_WITH_MSG(read->Read({raw_split, other_backend}),
+                        "cannot combine raw full-text splits with index types");
+    ASSERT_NOK_WITH_MSG(read->Read({nullptr}), "cannot cast to an index or raw split");
 
     FullTextSearchBuilder title_builder(table_path_);
     title_builder.SetQuery("title", kQuery).SetLimit(3);
@@ -629,14 +705,34 @@ TEST_F(DataEvolutionFullTextReadTest, TestRejectsInvalidSplits) {
     ASSERT_NOK_WITH_MSG(title_read->Read({split}),
                         "a split of column content cannot be read by a full-text search of "
                         "column title");
+    ASSERT_NOK_WITH_MSG(title_read->Read({raw_split}),
+                        "a split of column content cannot be read by a full-text search of "
+                        "column title");
 
-    auto unknown_type = NewSplit("c.index", Range(0, 1), {0.1f, 0.2f}, {Range(0, 1)},
+    auto unknown_type = NewSplit("c.index", Range(0, 15), std::vector<float>(16, 0.1f),
+                                 {Range(0, 1), Range(4, 5), Range(8, 9), Range(12, 13)},
                                  /*index_field_id=*/1, std::nullopt, /*snapshot_id=*/1,
                                  /*index_type=*/"no-such-index");
-    ASSERT_NOK_WITH_MSG(read->Read({unknown_type}),
+    auto failed = read->Read({unknown_type});
+    ASSERT_NOK_WITH_MSG(failed,
                         "no global indexer is registered for index type no-such-index; while "
-                        "searching the split of column content in snapshot 1 over rows [0, 1] "
+                        "searching the split of column content in snapshot 1 over rows [0, 15] "
                         "with no-such-index index files [c.index]");
+    ASSERT_NE(
+        failed.status().message().find("schema 0, 4 search ranges, first [[0, 1], [4, 5], [8, 9]]"),
+        std::string::npos);
+    ASSERT_EQ(failed.status().message().find("[12, 13]"), std::string::npos);
+    ASSERT_OK_AND_ASSIGN(raw_split,
+                         RawFullTextSearchSplitImpl::Create(
+                             1, "content", "no-such-index",
+                             {Range(2, 3), Range(6, 7), Range(10, 11), Range(14, 15)}, 1));
+    failed = read->Read({raw_split});
+    ASSERT_FALSE(failed.ok());
+    ASSERT_NE(failed.status().message().find(
+                  "while searching column content in snapshot 1 with a temporary no-such-index "
+                  "index over 4 unindexed row ranges, first [[2, 3], [6, 7], [10, 11]]"),
+              std::string::npos);
+    ASSERT_EQ(failed.status().message().find("[14, 15]"), std::string::npos);
 }
 
 TEST_F(DataEvolutionFullTextReadTest, TestRejectsSplitOfReplacedColumn) {
@@ -646,6 +742,15 @@ TEST_F(DataEvolutionFullTextReadTest, TestRejectsSplitOfReplacedColumn) {
                  /*index_field_id=*/2, std::vector<int32_t>({1}))};
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FullTextRead> read, NewBuilder(3)->NewFullTextRead());
     ASSERT_OK(read->Read(splits));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<RawFullTextSearchSplitImpl> raw_split,
+        RawFullTextSearchSplitImpl::Create(1, "content", kFakeIndexType, {Range(4, 5)}, 1));
+    ASSERT_OK_AND_ASSIGN(std::string bytes,
+                         FullTextSearchSplit::Serialize(raw_split, GetDefaultPool()));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FullTextSearchSplit> received_raw_split,
+        FullTextSearchSplit::Deserialize(bytes.data(), bytes.size(), GetDefaultPool()));
 
     SchemaManager schema_manager(dir_->GetFileSystem(), table_path_);
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> latest_schema,
@@ -670,6 +775,8 @@ TEST_F(DataEvolutionFullTextReadTest, TestRejectsSplitOfReplacedColumn) {
         ASSERT_NOK_WITH_MSG(read->Read({split}),
                             "a split of column content does not index its field id 3");
     }
+    ASSERT_NOK_WITH_MSG(read->Read({received_raw_split}),
+                        "a raw split of column content was planned for field id 1");
 }
 
 TEST_F(DataEvolutionFullTextReadTest, TestBuilderValidatesSettings) {
@@ -691,8 +798,12 @@ TEST_F(DataEvolutionFullTextReadTest, TestBuilderValidatesSettings) {
 
     std::unique_ptr<FullTextSearchBuilder> full_mode = NewBuilder(3);
     full_mode->AddOption(Options::GLOBAL_INDEX_SEARCH_MODE, "full");
-    ASSERT_NOK_WITH_MSG(full_mode->NewFullTextScan(), "full and detail are not supported yet");
-    ASSERT_NOK_WITH_MSG(full_mode->NewFullTextRead(), "full and detail are not supported yet");
+    ASSERT_OK(full_mode->NewFullTextScan());
+    ASSERT_OK(full_mode->NewFullTextRead());
+    std::unique_ptr<FullTextSearchBuilder> invalid_mode = NewBuilder(3);
+    invalid_mode->AddOption(Options::FULL_TEXT_INDEX_SEARCH_MODE, "invalid");
+    ASSERT_NOK_WITH_MSG(invalid_mode->NewFullTextScan(),
+                        "invalid full-text-index.search-mode: invalid");
 
     std::unique_ptr<FullTextSearchBuilder> no_thread = NewBuilder(3);
     no_thread->AddOption(Options::GLOBAL_INDEX_THREAD_NUM, "0");
@@ -710,7 +821,9 @@ TEST_F(DataEvolutionFullTextReadTest, TestBuilderValidatesSettings) {
     missing_field->WithFilter(
         PredicateBuilder::Equal(/*field_index=*/0, "missing", FieldType::INT, Literal(1)));
     ASSERT_NOK_WITH_MSG(missing_field->NewFullTextScan(), "field missing does not exist in schema");
-    ASSERT_NOK_WITH_MSG(missing_field->NewFullTextRead(), "field missing does not exist in schema");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FullTextRead> worker, missing_field->NewFullTextRead());
+    auto split = NewSplit("a.index", Range(0, 0), {1.0f}, {Range(0, 0)});
+    ASSERT_NOK_WITH_MSG(worker->Read({split}), "field missing does not exist in schema");
 
     std::unique_ptr<FullTextSearchBuilder> row_id_field = NewBuilder(3);
     row_id_field->WithFilter(PredicateBuilder::Equal(
@@ -734,10 +847,8 @@ TEST_F(DataEvolutionFullTextReadTest, TestBuilderValidatesSettings) {
     scalar_full_mode->AddOption(Options::SCALAR_INDEX_SEARCH_MODE, "full");
     ASSERT_OK(scalar_full_mode->NewFullTextScan());
     scalar_full_mode->WithFilter(IdEquals(1));
-    ASSERT_NOK_WITH_MSG(scalar_full_mode->NewFullTextScan(),
-                        "full and detail are not supported yet");
-    ASSERT_NOK_WITH_MSG(scalar_full_mode->NewFullTextRead(),
-                        "full and detail are not supported yet");
+    ASSERT_OK(scalar_full_mode->NewFullTextScan());
+    ASSERT_OK(scalar_full_mode->NewFullTextRead());
 
     std::unique_ptr<FullTextSearchBuilder> null_filter = NewBuilder(3);
     null_filter->WithFilter(nullptr);

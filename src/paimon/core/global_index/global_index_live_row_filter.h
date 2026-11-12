@@ -22,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/core/core_options.h"
@@ -30,6 +31,7 @@
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
+#include "paimon/utils/range.h"
 #include "paimon/utils/roaring_bitmap64.h"
 #include "paimon/utils/row_range_index.h"
 
@@ -62,6 +64,15 @@ class GlobalIndexLiveRowFilter {
         const Snapshot& snapshot, const std::shared_ptr<PredicateFilter>& partition_filter,
         const std::optional<RowRangeIndex>& row_range_index, const CoreOptions& options,
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool);
+
+    /// Returns the global row id ranges of the data files of `snapshot` in the partitions accepted
+    /// by `partition_filter`. Each non-empty file with a first row id contributes its range,
+    /// including rows marked by deletion vectors.
+    static Result<std::vector<Range>> DataRowRanges(
+        const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
+        const Snapshot& snapshot, const std::shared_ptr<PredicateFilter>& partition_filter,
+        const CoreOptions& options, const std::shared_ptr<Executor>& executor,
+        const std::shared_ptr<MemoryPool>& pool);
 };
 
 }  // namespace paimon

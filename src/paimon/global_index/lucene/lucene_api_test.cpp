@@ -180,6 +180,32 @@ class LuceneInterfaceTest : public ::testing::Test {
     }
 };
 
+TEST_F(LuceneInterfaceTest, TestContainerSwap) {
+    Lucene::Collection<int32_t> left_collection = Lucene::Collection<int32_t>::newInstance();
+    Lucene::Collection<int32_t> right_collection = Lucene::Collection<int32_t>::newInstance();
+    left_collection.add(1);
+    right_collection.add(2);
+    right_collection.add(3);
+    left_collection.swap(right_collection);
+    ASSERT_EQ(left_collection.size(), 2);
+    ASSERT_EQ(left_collection[0], 2);
+    ASSERT_EQ(left_collection[1], 3);
+    ASSERT_EQ(right_collection.size(), 1);
+    ASSERT_EQ(right_collection[0], 1);
+
+    Lucene::Set<int32_t> left_set = Lucene::Set<int32_t>::newInstance();
+    Lucene::Set<int32_t> right_set = Lucene::Set<int32_t>::newInstance();
+    left_set.add(1);
+    right_set.add(2);
+    right_set.add(3);
+    left_set.swap(right_set);
+    ASSERT_EQ(left_set.size(), 2);
+    ASSERT_TRUE(left_set.contains(2));
+    ASSERT_TRUE(left_set.contains(3));
+    ASSERT_EQ(right_set.size(), 1);
+    ASSERT_TRUE(right_set.contains(1));
+}
+
 TEST_F(LuceneInterfaceTest, TestSimple) {
     auto dir = paimon::test::UniqueTestDirectory::Create("local");
     std::string index_path = dir->Str() + "/lucene_test";

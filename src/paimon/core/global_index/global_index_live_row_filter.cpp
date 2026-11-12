@@ -217,4 +217,30 @@ Result<std::optional<RoaringBitmap64>> GlobalIndexLiveRowFilter::LiveRows(
     return std::optional<RoaringBitmap64>(std::move(live_rows));
 }
 
+Result<std::vector<Range>> GlobalIndexLiveRowFilter::DataRowRanges(
+    const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
+    const Snapshot& snapshot, const std::shared_ptr<PredicateFilter>& partition_filter,
+    const CoreOptions& options, const std::shared_ptr<Executor>& executor,
+    const std::shared_ptr<MemoryPool>& pool) {
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<SnapshotReader> snapshot_reader,
+        CreateSnapshotReader(root_path, table_schema, partition_filter, options, executor, pool));
+    snapshot_reader->WithMode(ScanMode::ALL)->WithSnapshot(snapshot);
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, snapshot_reader->Read());
+    std::vector<Range> ranges;
+    for (const auto& split : plan->Splits()) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        if (!data_split) {
+            return Status::Invalid("cannot cast split to DataSplitImpl when reading row ranges");
+        }
+        for (const auto& file : data_split->DataFiles()) {
+            if (file->first_row_id && file->row_count > 0) {
+                PAIMON_ASSIGN_OR_RAISE(Range row_id_range, file->NonNullRowIdRange());
+                ranges.push_back(row_id_range);
+            }
+        }
+    }
+    return ranges;
+}
+
 }  // namespace paimon

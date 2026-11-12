@@ -81,4 +81,18 @@ class PAIMON_EXPORT IndexFullTextSearchSplit : public FullTextSearchSplit {
     virtual const std::vector<Range>& SearchRowRanges() const = 0;
 };
 
+/// Ranges of unindexed rows that a full or detail search reads from the planned snapshot.
+class PAIMON_EXPORT RawFullTextSearchSplit : public FullTextSearchSplit {
+ public:
+    /// @return The id of the snapshot the split was planned from, whose data the read searches.
+    virtual int64_t SnapshotId() const = 0;
+
+    /// @return The name of the searched table column.
+    virtual const std::string& ColumnName() const = 0;
+
+    /// @return The sorted, disjoint and non-adjacent global row id ranges to search. Rows of the
+    ///         ranges that are deleted, or outside the partitions of the search, are not ranked.
+    virtual const std::vector<Range>& RowRanges() const = 0;
+};
+
 }  // namespace paimon

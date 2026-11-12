@@ -38,6 +38,7 @@
 #include "paimon/core/index/index_file_meta.h"
 #include "paimon/core/index/index_file_meta_serializer.h"
 #include "paimon/core/table/source/index_full_text_search_split_impl.h"
+#include "paimon/core/table/source/raw_full_text_search_split_impl.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
@@ -79,14 +80,15 @@ std::string FromHex(const std::string& hex) {
     return bytes;
 }
 
-std::string SplitBytes(const std::function<void(MemorySegmentOutputStream*)>& write_body,
-                       const std::shared_ptr<MemoryPool>& pool) {
+std::string Version2IndexSplitBytes(
+    const std::function<void(MemorySegmentOutputStream*)>& write_body,
+    const std::shared_ptr<MemoryPool>& pool) {
     const int64_t snapshot_id = 1;
     const int64_t row_range_start = 0;
     const int64_t row_range_end = 9;
     MemorySegmentOutputStream out(MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool);
     out.WriteValue<int64_t>(IndexFullTextSearchSplitImpl::MAGIC);
-    out.WriteValue<int32_t>(IndexFullTextSearchSplitImpl::VERSION);
+    out.WriteValue<int32_t>(2);
     out.WriteValue(snapshot_id);
     out.WriteString("f0");
     out.WriteValue(row_range_start);
@@ -172,6 +174,13 @@ TEST_F(FullTextSearchSplitTest, TestSerializeRoundTrip) {
     ASSERT_TRUE(version_1_impl);
     ASSERT_EQ(*version_1_impl, *split) << version_1_impl->ToString() << " vs " << split->ToString();
 
+    ASSERT_OK_AND_ASSIGN(split,
+                         IndexFullTextSearchSplitImpl::Create(7, "content", 100, 199, files,
+                                                              split->SearchRowRanges(), {}, 5));
+    ASSERT_OK_AND_ASSIGN(bytes, FullTextSearchSplit::Serialize(split, pool_));
+    ASSERT_EQ(bytes, bytes_of_version("00000003") + FromHex("00000000"
+                                                            "0000000000000005"));
+
     std::string longest_column(std::numeric_limits<uint16_t>::max(), 'c');
     ASSERT_OK_AND_ASSIGN(split, IndexFullTextSearchSplitImpl::Create(
                                     /*snapshot_id=*/7, longest_column, /*row_range_start=*/100,
@@ -194,7 +203,7 @@ TEST_F(FullTextSearchSplitTest, TestSerializeScalarIndexFiles) {
                      pool_)};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFullTextSearchSplitImpl> split,
                          IndexFullTextSearchSplitImpl::Create(/*snapshot_id=*/1, "f0", 0, 99, files,
-                                                              {Range(0, 99)}, scalar_files));
+                                                              {Range(0, 99)}, scalar_files, 5));
     ASSERT_EQ(split->ScalarIndexFiles().size(), 2u);
 
     ASSERT_OK_AND_ASSIGN(std::string bytes, FullTextSearchSplit::Serialize(split, pool_));
@@ -203,13 +212,15 @@ TEST_F(FullTextSearchSplitTest, TestSerializeScalarIndexFiles) {
     auto impl = std::dynamic_pointer_cast<IndexFullTextSearchSplitImpl>(result);
     ASSERT_TRUE(impl);
     ASSERT_EQ(*impl, *split) << impl->ToString() << " vs " << split->ToString();
+    ASSERT_EQ(impl->SchemaId(), 5);
     ASSERT_EQ(impl->ScalarIndexFiles()[0]->FileName(), "btree-0.index");
     ASSERT_EQ(impl->ScalarIndexFiles()[1]->FileName(), "bitmap-0.index");
     ASSERT_NE(impl->ToString().find("scalarIndexFiles=["), std::string::npos);
+    ASSERT_NOK(FullTextSearchSplit::Deserialize(bytes.data(), bytes.size() - 1, pool_));
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<IndexFullTextSearchSplitImpl> no_scalar_files,
-                         IndexFullTextSearchSplitImpl::Create(/*snapshot_id=*/1, "f0", 0, 99, files,
-                                                              {Range(0, 99)}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<IndexFullTextSearchSplitImpl> no_scalar_files,
+        IndexFullTextSearchSplitImpl::Create(1, "f0", 0, 99, files, {Range(0, 99)}, {}, 5));
     ASSERT_FALSE(*no_scalar_files == *split);
 }
 
@@ -252,10 +263,10 @@ TEST_F(FullTextSearchSplitTest, TestDeserializeRejectsInvalidBytes) {
         std::string newer_version = ToBytes(&out, pool_);
         ASSERT_NOK_WITH_MSG(
             FullTextSearchSplit::Deserialize(newer_version.data(), newer_version.size(), pool_),
-            "unsupported IndexFullTextSearchSplit version: 3");
+            "unsupported IndexFullTextSearchSplit version: 4");
     }
     ASSERT_NOK_WITH_MSG(FullTextSearchSplit::Serialize(nullptr, pool_),
-                        "cannot cast to an index split");
+                        "cannot cast to an index or raw split");
 }
 
 TEST_F(FullTextSearchSplitTest, TestDeserializeRejectsCorruptFileLayout) {
@@ -316,7 +327,7 @@ TEST_F(FullTextSearchSplitTest, TestDeserializeRejectsCorruptFileLayout) {
 
 TEST_F(FullTextSearchSplitTest, TestDeserializeRejectsCorruptEntries) {
     auto deserialize = [this](const std::function<void(MemorySegmentOutputStream*)>& write_body) {
-        std::string bytes = SplitBytes(write_body, pool_);
+        std::string bytes = Version2IndexSplitBytes(write_body, pool_);
         return FullTextSearchSplit::Deserialize(bytes.data(), bytes.size(), pool_);
     };
     auto write_one_range = [](MemorySegmentOutputStream* out) {
@@ -390,6 +401,9 @@ TEST_F(FullTextSearchSplitTest, TestCreateValidatesArguments) {
                                                     search_row_ranges);
     };
     ASSERT_OK(create(files, {Range(10, 11), Range(13, 19)}));
+    ASSERT_NOK_WITH_MSG(
+        IndexFullTextSearchSplitImpl::Create(1, "f0", 10, 19, files, {Range(10, 19)}, {}, -1),
+        "non-negative schema id");
     ASSERT_NOK_WITH_MSG(create({}, {Range(10, 19)}), "at least one index file");
     ASSERT_NOK_WITH_MSG(create(files, {}), "at least one search row range");
     ASSERT_NOK_WITH_MSG(create(files, {Range(9, 19)}), "outside physical index range [10, 19]");
@@ -438,6 +452,138 @@ TEST_F(FullTextSearchSplitTest, TestCreateValidatesArguments) {
                                 /*snapshot_id=*/1, "f0", 10, 19, files, {Range(10, 19)},
                                 {NewScalarIndexFile(start, end, pool_)}),
                             "scalar index file btree-0.index covers an invalid row range");
+    }
+}
+
+TEST_F(FullTextSearchSplitTest, TestRawSplitSerializeRoundTrip) {
+    const std::vector<Range> ranges = {Range(0, 4), Range(10, 19)};
+    const std::string range_bytes = FromHex(
+        "00000002"
+        "0000000000000000"
+        "0000000000000004"
+        "000000000000000A"
+        "0000000000000013");
+    struct Encoding {
+        std::string version;
+        std::optional<int32_t> field_id;
+        std::string field_bytes;
+        std::optional<int64_t> schema_id;
+        std::string schema_bytes;
+    };
+    for (const auto& encoding :
+         std::vector<Encoding>{{"00000001", std::nullopt, "", std::nullopt, ""},
+                               {"00000002", 3, "00000003", std::nullopt, ""},
+                               {"00000003", 3, "00000003", 5, "0000000000000005"}}) {
+        SCOPED_TRACE(encoding.version);
+        std::string bytes = "PFTRAWS1" + FromHex(encoding.version + "00000000000000070002") + "f0" +
+                            FromHex(encoding.field_bytes + "0009") + "full-text" + range_bytes +
+                            FromHex(encoding.schema_bytes);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FullTextSearchSplit> result,
+                             FullTextSearchSplit::Deserialize(bytes.data(), bytes.size(), pool_));
+        auto split = std::dynamic_pointer_cast<RawFullTextSearchSplitImpl>(result);
+        ASSERT_TRUE(split);
+        ASSERT_EQ(split->SnapshotId(), 7);
+        ASSERT_EQ(split->ColumnName(), "f0");
+        ASSERT_EQ(split->IndexType(), "full-text");
+        ASSERT_EQ(split->RowRanges(), ranges);
+        ASSERT_EQ(split->FieldId(), encoding.field_id);
+        ASSERT_EQ(split->SchemaId(), encoding.schema_id);
+        ASSERT_OK_AND_ASSIGN(std::string serialized, FullTextSearchSplit::Serialize(split, pool_));
+        ASSERT_EQ(serialized, bytes);
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<RawFullTextSearchSplitImpl> other_type,
+            RawFullTextSearchSplitImpl::Create(7, "f0", "lucene-fts", ranges, encoding.field_id,
+                                               encoding.schema_id));
+        ASSERT_FALSE(*other_type == *split);
+    }
+}
+
+TEST_F(FullTextSearchSplitTest, TestRawSplitCreateValidatesArguments) {
+    ASSERT_NOK_WITH_MSG(
+        RawFullTextSearchSplitImpl::Create(1, "f0", "full-text", {Range(0, 4)}, 0, -1),
+        "non-negative schema id");
+    ASSERT_NOK_WITH_MSG(
+        RawFullTextSearchSplitImpl::Create(1, "f0", "full-text", {Range(0, 4)}, std::nullopt, 0),
+        "a field id");
+    auto create = [](const std::vector<Range>& row_ranges) {
+        return RawFullTextSearchSplitImpl::Create(1, "f0", "full-text", row_ranges, 0);
+    };
+    ASSERT_OK(create({Range(0, 0), Range(2, std::numeric_limits<int64_t>::max() - 1)}));
+    ASSERT_NOK_WITH_MSG(create({}), "at least one row range");
+    ASSERT_NOK_WITH_MSG(create({Range(-1, 3)}), "invalid raw full-text search row range");
+    ASSERT_NOK_WITH_MSG(create({Range(0, std::numeric_limits<int64_t>::max())}),
+                        "invalid raw full-text search row range");
+    ASSERT_NOK_WITH_MSG(create({Range(5, 9), Range(0, 3)}),
+                        "not sorted, disjoint and non-adjacent");
+    ASSERT_NOK_WITH_MSG(create({Range(0, 4), Range(4, 9)}),
+                        "not sorted, disjoint and non-adjacent");
+    ASSERT_NOK_WITH_MSG(create({Range(0, 4), Range(5, 9)}),
+                        "not sorted, disjoint and non-adjacent");
+    ASSERT_NOK_WITH_MSG(RawFullTextSearchSplitImpl::Create(1, "", "full-text", {Range(0, 4)}, 0),
+                        "requires a column name");
+    ASSERT_NOK_WITH_MSG(RawFullTextSearchSplitImpl::Create(1, "f0", "", {Range(0, 4)}, 0),
+                        "requires an index type");
+    std::string too_long(std::numeric_limits<uint16_t>::max() + 1, 'c');
+    ASSERT_NOK_WITH_MSG(RawFullTextSearchSplitImpl::Create(1, "f0", too_long, {Range(0, 4)}, 0),
+                        "index type of at most 65535 bytes, but got 65536 bytes");
+}
+
+TEST_F(FullTextSearchSplitTest, TestRawSplitDeserializeRejectsInvalidBytes) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RawFullTextSearchSplitImpl> split,
+                         RawFullTextSearchSplitImpl::Create(1, "f0", "full-text",
+                                                            {Range(0, 4), Range(10, 19)}, 0, 5));
+    ASSERT_OK_AND_ASSIGN(std::string bytes, FullTextSearchSplit::Serialize(split, pool_));
+    std::string trailing = bytes + std::string(1, '\0');
+    ASSERT_NOK_WITH_MSG(FullTextSearchSplit::Deserialize(trailing.data(), trailing.size(), pool_),
+                        "remaining 1 bytes after deserializing");
+    for (size_t size = 0; size < bytes.size(); ++size) {
+        ASSERT_NOK(FullTextSearchSplit::Deserialize(bytes.data(), size, pool_)) << size;
+    }
+    auto write_header = [](MemorySegmentOutputStream* out, int32_t version) {
+        out->WriteValue<int64_t>(RawFullTextSearchSplitImpl::MAGIC);
+        out->WriteValue<int32_t>(version);
+        out->WriteValue<int64_t>(1);
+        out->WriteString("f0");
+        out->WriteValue<int32_t>(0);
+        out->WriteString("full-text");
+    };
+    {
+        MemorySegmentOutputStream out(MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_);
+        write_header(&out, RawFullTextSearchSplitImpl::VERSION + 1);
+        std::string newer_version = ToBytes(&out, pool_);
+        ASSERT_NOK_WITH_MSG(
+            FullTextSearchSplit::Deserialize(newer_version.data(), newer_version.size(), pool_),
+            "unsupported RawFullTextSearchSplit version: 4");
+    }
+    {
+        MemorySegmentOutputStream out(MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_);
+        write_header(&out, RawFullTextSearchSplitImpl::VERSION);
+        out.WriteValue<int32_t>(std::numeric_limits<int32_t>::max());
+        std::string too_many_ranges = ToBytes(&out, pool_);
+        ASSERT_NOK_WITH_MSG(
+            FullTextSearchSplit::Deserialize(too_many_ranges.data(), too_many_ranges.size(), pool_),
+            "2147483647 row ranges exceed the remaining 0 bytes");
+    }
+    {
+        MemorySegmentOutputStream out(MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_);
+        write_header(&out, RawFullTextSearchSplitImpl::VERSION);
+        out.WriteValue<int32_t>(1);
+        out.WriteValue<int64_t>(9);
+        out.WriteValue<int64_t>(0);
+        std::string reversed_range = ToBytes(&out, pool_);
+        ASSERT_NOK_WITH_MSG(
+            FullTextSearchSplit::Deserialize(reversed_range.data(), reversed_range.size(), pool_),
+            "row range [9, 0] ends before it starts");
+    }
+    {
+        MemorySegmentOutputStream out(MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool_);
+        write_header(&out, RawFullTextSearchSplitImpl::VERSION);
+        out.WriteValue<int32_t>(0);
+        out.WriteValue<int64_t>(5);
+        std::string no_ranges = ToBytes(&out, pool_);
+        ASSERT_NOK_WITH_MSG(
+            FullTextSearchSplit::Deserialize(no_ranges.data(), no_ranges.size(), pool_),
+            "at least one row range");
     }
 }
 
