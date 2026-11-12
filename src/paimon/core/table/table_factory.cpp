@@ -54,12 +54,13 @@ Result<std::shared_ptr<Table>> ManagedTable(
     const std::string& path, const std::string& branch, const std::shared_ptr<TableSchema>& schema,
     CoreOptions options, const std::optional<Identifier>& identifier,
     const std::optional<std::string>& table_id,
-    const std::map<std::string, std::string>& fs_scheme_map) {
+    const std::map<std::string, std::string>& fs_scheme_map,
+    const std::shared_ptr<SchemaManager>& schema_manager = nullptr) {
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStoreTable> table,
         FileStoreTable::Create(std::make_unique<FileStore>(path, std::move(options)), schema,
                                identifier.value_or(CatalogUtils::IdentifierFromPath(path, branch)),
-                               table_id.value_or(""), fs_scheme_map));
+                               table_id.value_or(""), fs_scheme_map, schema_manager));
     return std::shared_ptr<Table>(std::move(table));
 }
 }  // namespace
@@ -145,7 +146,7 @@ Result<std::shared_ptr<Table>> TableFactory::Create(const WriteContext* ctx) {
         CoreOptions::FromMap(opts, specific_fs, ctx->GetFileSystemSchemeToIdentifierMap()));
     return ManagedTable(ctx->GetRootPath(), branch, schema, std::move(options),
                         ctx->GetIdentifier(), std::nullopt,
-                        ctx->GetFileSystemSchemeToIdentifierMap());
+                        ctx->GetFileSystemSchemeToIdentifierMap(), schema_manager);
 }
 
 Result<std::shared_ptr<Table>> TableFactory::Create(const CommitContext* ctx) {
@@ -227,7 +228,7 @@ Result<std::shared_ptr<Table>> TableFactory::Create(const CommitContext* ctx) {
     opts[Options::BRANCH] = branch;
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(opts, specific_fs));
     return ManagedTable(ctx->GetRootPath(), branch, schema, std::move(options),
-                        ctx->GetIdentifier(), ctx->GetTableId(), {});
+                        ctx->GetIdentifier(), ctx->GetTableId(), {}, schema_manager);
 }
 
 Result<std::shared_ptr<Table>> TableFactory::Create(const ScanContext* context) {

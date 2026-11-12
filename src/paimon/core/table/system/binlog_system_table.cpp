@@ -78,13 +78,13 @@ BinlogSystemTable::BinlogSystemTable(std::shared_ptr<FileSystem> fs, std::string
     : AuditLogSystemTable(std::move(fs), std::move(table_path), std::move(table_schema),
                           std::move(options), ComposeName(data_table_name, kName)) {}
 
-Result<std::shared_ptr<arrow::Schema>> BinlogSystemTable::ArrowSchema() const {
+Result<std::shared_ptr<arrow::Schema>> BinlogSystemTable::ChangelogSchema(
+    bool include_sequence_number) const {
     std::shared_ptr<arrow::Field> rowkind_field =
         DataField::ConvertDataFieldToArrowField(SpecialFields::RowKind());
     rowkind_field = rowkind_field->WithNullable(false);
     arrow::FieldVector fields = {rowkind_field};
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options_));
-    if (core_options.TableReadSequenceNumberEnabled()) {
+    if (include_sequence_number) {
         fields.push_back(DataField::ConvertDataFieldToArrowField(SpecialFields::SequenceNumber()));
     }
     for (const auto& field : table_schema_->Fields()) {

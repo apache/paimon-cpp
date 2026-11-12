@@ -34,6 +34,7 @@
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
 #include "arrow/c/abi.h"
+#include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "arrow/util/key_value_metadata.h"
 #include "gtest/gtest.h"
@@ -1822,6 +1823,70 @@ TEST(SystemTableReadInteTest, TestChangelogSequenceNumberCannotBeDisabledByReadO
             AssertStructArrayEqualsJson(array, kind == "audit_log" ? R"([["+I", 0, "a", 1]])"
                                                                    : R"([["+I", 0, ["a"], [1]]])");
         }
+    }
+}
+
+TEST(SystemTableReadInteTest, TestLoadedChangelogHonorsDynamicSequenceNumber) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
+                                       arrow::field("v", arrow::int32())};
+    const std::map<std::string, std::string> options = {
+        {Options::FILE_SYSTEM, "local"},
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED, "false"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         TestHelper::Create(dir->Str(), arrow::schema(fields), {}, {"pk"}, options,
+                                            /*is_streaming_mode=*/true));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["a", 1]])", {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+    FileSystemCatalog catalog(dir->GetFileSystem(), dir->Str(), {});
+    const std::map<std::string, std::string> read_options = {
+        {Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "false"},
+        {Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED, "true"}};
+    for (const std::string kind : {"audit_log", "binlog"}) {
+        SCOPED_TRACE(kind);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                             catalog.GetTable(Identifier("foo", "bar$" + kind)));
+        for (bool direct : {false, true}) {
+            SCOPED_TRACE(direct);
+            const std::string path = table->GetRootPath() + "$" + kind;
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                                 ScanContextBuilder(path).SetOptions(read_options).Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                                 direct ? table->NewScan(std::move(scan_context))
+                                        : TableScan::Create(std::move(scan_context)));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                                 ReadContextBuilder(path).SetOptions(read_options).Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                                 direct ? table->NewRead(std::move(read_context))
+                                        : TableRead::Create(std::move(read_context)));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                                 read->CreateReader(plan->Splits()));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                                 ReadResultCollector::CollectResult(std::move(reader)));
+            auto array = SingleStructChunk(result);
+            ASSERT_EQ((std::vector<std::string>{"rowkind", "_SEQUENCE_NUMBER", "pk", "v"}),
+                      StructFieldNames(array));
+            AssertStructArrayEqualsJson(array, kind == "audit_log" ? R"([["+I", 0, "a", 1]])"
+                                                                   : R"([["+I", 0, ["a"], [1]]])");
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> reloaded,
+                             catalog.GetTable(Identifier("foo", "bar$" + kind)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> bound_schema,
+                             table->GetSchema()->GetArrowSchema());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> fresh_schema,
+                             reloaded->GetSchema()->GetArrowSchema());
+        auto bound = arrow::ImportSchema(bound_schema.get());
+        auto fresh = arrow::ImportSchema(fresh_schema.get());
+        ASSERT_TRUE(bound.ok()) << bound.status().ToString();
+        ASSERT_TRUE(fresh.ok()) << fresh.status().ToString();
+        ASSERT_TRUE(bound.ValueOrDie()->Equals(fresh.ValueOrDie()));
+        ASSERT_EQ(3, bound.ValueOrDie()->num_fields());
     }
 }
 

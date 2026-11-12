@@ -36,6 +36,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/sensitive_config_utils.h"
@@ -202,7 +203,9 @@ FileStoreTable::FileStoreTable(const std::shared_ptr<FileSystem>& file_system,
                                const std::shared_ptr<TableSchema>& schema,
                                const Identifier& identifier, const std::string& uuid,
                                const std::map<std::string, std::string>& options)
-    : Table(file_system, root_path, schema, identifier, uuid), options_(options) {}
+    : Table(file_system, root_path, schema, identifier, uuid),
+      options_(options),
+      schema_manager_(std::make_shared<SchemaManager>(file_system, root_path, CurrentBranch())) {}
 
 Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
     const std::shared_ptr<FileSystem>& specified_file_system, const std::string& root_path,
@@ -236,15 +239,22 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
 Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
     std::unique_ptr<FileStore> store, const std::shared_ptr<TableSchema>& schema,
     const Identifier& identifier, const std::string& uuid,
-    const std::map<std::string, std::string>& fs_scheme_map) {
+    const std::map<std::string, std::string>& fs_scheme_map,
+    const std::shared_ptr<SchemaManager>& schema_manager) {
     if (!store || !schema) {
         return Status::Invalid("managed table requires a store and schema");
     }
     PAIMON_RETURN_NOT_OK(
         CatalogUtils::CheckManagedTableType(identifier, schema, "FileStoreTable::Create"));
     PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(store->CurrentBranch()));
-    return CreateWithOptions(store->GetFileSystem(), store->GetRootPath(), schema, identifier, uuid,
-                             store->GetOptions().ToMap(), fs_scheme_map);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FileStoreTable> table,
+        CreateWithOptions(store->GetFileSystem(), store->GetRootPath(), schema, identifier, uuid,
+                          store->GetOptions().ToMap(), fs_scheme_map));
+    if (schema_manager) {
+        table->schema_manager_ = schema_manager;
+    }
+    return table;
 }
 
 Result<std::shared_ptr<FileStoreTable>> FileStoreTable::CreateWithOptions(
@@ -396,7 +406,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreTable::NewWrite(
     if (ctx->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(CurrentBranch()));
     }
-    std::shared_ptr<TableSchema> schema = std::static_pointer_cast<TableSchema>(schema_);
+    std::shared_ptr<TableSchema> schema = checked_pointer_cast<TableSchema>(schema_);
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options, ResolveOptions(ctx->GetOptions()));
     FileStore file_store(root_path_, options);
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
@@ -446,7 +456,7 @@ Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
     if (context->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(CurrentBranch()));
     }
-    std::shared_ptr<TableSchema> table_schema = std::static_pointer_cast<TableSchema>(schema_);
+    std::shared_ptr<TableSchema> table_schema = checked_pointer_cast<TableSchema>(schema_);
     std::map<std::string, std::string> read_options;
     PAIMON_ASSIGN_OR_RAISE(
         read_options, CatalogUtils::ResolveQueryAuthReadOptions(
@@ -591,7 +601,7 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
     if (read_context->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(CurrentBranch()));
     }
-    std::shared_ptr<TableSchema> loaded_schema = std::static_pointer_cast<TableSchema>(schema_);
+    std::shared_ptr<TableSchema> loaded_schema = checked_pointer_cast<TableSchema>(schema_);
     std::map<std::string, std::string> read_options;
     PAIMON_ASSIGN_OR_RAISE(
         read_options,
@@ -704,7 +714,7 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreTable::NewCommit(
             return data_schema->Id();
         };
     }
-    std::shared_ptr<TableSchema> schema = std::static_pointer_cast<TableSchema>(schema_);
+    std::shared_ptr<TableSchema> schema = checked_pointer_cast<TableSchema>(schema_);
     std::shared_ptr<arrow::Schema> arrow_schema =
         DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options, ResolveOptions(ctx->GetOptions()));

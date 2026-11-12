@@ -148,6 +148,11 @@ class PAIMON_EXPORT Catalog : public std::enable_shared_from_this<Catalog> {
 
     /// Gets a managed, format or read-only system table.
     ///
+    /// Global system tables (sys.*) retain the catalog for deferred reads. Before loading one,
+    /// transfer the unique_ptr returned by Create() into a std::shared_ptr<Catalog>.
+    /// GetTable() returns Invalid otherwise, even when TableExists() returns true.
+    /// LoadTableSchema() does not require shared ownership.
+    ///
     /// @param identifier Identifier of the table to get.
     /// @return A result containing the table, or an error status.
     virtual Result<std::shared_ptr<Table>> GetTable(const Identifier& identifier) const = 0;

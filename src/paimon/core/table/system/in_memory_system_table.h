@@ -21,6 +21,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -38,7 +39,7 @@ class FileSystem;
 class InMemorySystemTable : public SystemTable {
  public:
     InMemorySystemTable(const std::shared_ptr<FileSystem>& fs, std::string table_path,
-                        std::string name);
+                        std::string name, std::optional<std::string> branch = std::nullopt);
 
     Result<std::unique_ptr<TableScan>> NewScan(
         std::unique_ptr<ScanContext> /*context*/) const override;
@@ -46,6 +47,8 @@ class InMemorySystemTable : public SystemTable {
     virtual Result<std::vector<GenericRow>> BuildRows() const = 0;
 
  protected:
+    Status CheckBranch(const std::map<std::string, std::string>& options) const;
+
     /// Creates an independent read view when dynamic options affect materialized rows.
     virtual Result<std::shared_ptr<const InMemorySystemTable>> ForRead(
         const std::map<std::string, std::string>& options) const;
@@ -53,6 +56,9 @@ class InMemorySystemTable : public SystemTable {
     const std::string& TablePath() const {
         return GetRootPath();
     }
+
+ private:
+    const std::optional<std::string> branch_;
 };
 
 }  // namespace paimon

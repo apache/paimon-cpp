@@ -2105,6 +2105,10 @@ TEST(TableTest, TestGlobalSystemTableRetainsCatalog) {
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<Catalog> unique_catalog,
                          Catalog::Create(dir->Str(), {}, dir->GetFileSystem()));
+    ASSERT_OK_AND_ASSIGN(bool exists, unique_catalog->TableExists(Identifier("sys", "tables")));
+    ASSERT_TRUE(exists);
+    ASSERT_NOK_WITH_MSG(unique_catalog->GetTable(Identifier("sys", "tables")), "std::shared_ptr");
+    ASSERT_OK(unique_catalog->LoadTableSchema(Identifier("sys", "tables")));
     std::shared_ptr<Catalog> catalog(std::move(unique_catalog));
     std::weak_ptr<Catalog> weak_catalog = catalog;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
@@ -2130,6 +2134,63 @@ TEST(TableTest, TestGlobalSystemTableRetainsCatalog) {
     reader.reset();
     read.reset();
     ASSERT_TRUE(weak_catalog.expired());
+}
+
+TEST(TableTest, TestMetadataSystemTablesRejectConflictingBranches) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const std::string path = dir->Str() + "/db.db/tbl";
+    ASSERT_OK(CreateManagedTable(dir->GetFileSystem(), path, Identifier("db", "tbl")));
+    ASSERT_OK(
+        CreateManagedTable(dir->GetFileSystem(), path, Identifier("db", "tbl", "dev"), "dev"));
+    FileSystemCatalog catalog(dir->GetFileSystem(), dir->Str(), {});
+    for (const std::string branch : {"main", "dev"}) {
+        for (const std::string kind : {"snapshots", "schemas", "tags", "branches", "consumers"}) {
+            SCOPED_TRACE(branch + ":" + kind);
+            const std::string name = branch == "main" ? "tbl$" + kind : "tbl$branch_dev$" + kind;
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                                 catalog.GetTable(Identifier("db", name)));
+            for (const std::string requested : {"main", "dev"}) {
+                ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                                     ReadContextBuilder(path).WithBranch(requested).Finish());
+                ASSERT_OK_AND_ASSIGN(
+                    std::unique_ptr<ScanContext> scan_context,
+                    ScanContextBuilder(path).AddOption(Options::BRANCH, requested).Finish());
+                auto read = table->NewRead(std::move(read_context));
+                auto scan = table->NewScan(std::move(scan_context));
+                if (requested == branch) {
+                    ASSERT_OK(read);
+                    ASSERT_OK(scan);
+                } else {
+                    ASSERT_NOK_WITH_MSG(read, "context branch contradicts the loaded table");
+                    ASSERT_NOK_WITH_MSG(scan, "context branch contradicts the loaded table");
+                }
+            }
+        }
+    }
+}
+
+TEST(TableTest, TestOperatorFactoryPreservesLoadedSchemaCache) {
+    for (bool commit : {false, true}) {
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        ASSERT_OK(CreateManagedTable(dir->GetFileSystem(), dir->Str(), Identifier("db", "tbl")));
+        std::shared_ptr<Table> table;
+        if (commit) {
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
+                                 CommitContextBuilder(dir->Str(), "user").Finish());
+            ASSERT_OK_AND_ASSIGN(table, TableFactory::Create(context.get()));
+        } else {
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> context,
+                                 WriteContextBuilder(dir->Str(), "user").Finish());
+            ASSERT_OK_AND_ASSIGN(table, TableFactory::Create(context.get()));
+        }
+        auto managed = checked_pointer_cast<FileStoreTable>(table);
+        ASSERT_OK(dir->GetFileSystem()->Delete(dir->Str() + "/schema/schema-0", false));
+        // The factory already read schema-0. Repeated accesses must use its warmed cache.
+        ASSERT_OK(managed->GetSchemaManager()->ReadSchema(0));
+        ASSERT_OK(managed->GetSchemaManager()->ReadSchema(0));
+    }
 }
 
 TEST(TableTest, TestMainBranchAliasesUseMainSchemaForAllOperatorEntryPoints) {

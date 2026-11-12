@@ -267,13 +267,14 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
         // ChangelogTableRead that wraps it is local to audit_log_system_table.cpp, so a test cannot
         // name the type to reach the read underneath it. EXPECT rather than ASSERT, because the
         // three chains are independent and one broken chain must not hide another.
-        ASSERT_OK_AND_ASSIGN(auto audit_log_options, audit_log.ReadOptions());
+        ASSERT_OK_AND_ASSIGN(auto audit_log_options,
+                             audit_log.ReadOptions(caller_context->GetOptions()));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> audit_log_context,
                              audit_log.CreateDataReadContext(caller_context, audit_log_options));
         EXPECT_EQ(level, audit_log_context->GetWarmupLevel())
             << "$audit_log dropped the caller's WarmupLevel";
 
-        ASSERT_OK_AND_ASSIGN(auto binlog_options, binlog.ReadOptions());
+        ASSERT_OK_AND_ASSIGN(auto binlog_options, binlog.ReadOptions(caller_context->GetOptions()));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> binlog_context,
                              binlog.CreateDataReadContext(caller_context, binlog_options));
         EXPECT_EQ(level, binlog_context->GetWarmupLevel())

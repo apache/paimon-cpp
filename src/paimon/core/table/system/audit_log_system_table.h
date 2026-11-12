@@ -80,8 +80,11 @@ class AuditLogSystemTable : public SystemTable {
     Result<std::unique_ptr<ReadContext>> CreateDataReadContext(
         const std::shared_ptr<ReadContext>& context,
         const std::map<std::string, std::string>& read_options) const;
-    Result<std::shared_ptr<arrow::Schema>> BaseReadSchema() const;
-    Result<std::map<std::string, std::string>> ReadOptions() const;
+    virtual Result<std::shared_ptr<arrow::Schema>> ChangelogSchema(
+        bool include_sequence_number) const;
+    Result<std::shared_ptr<arrow::Schema>> BaseReadSchema(bool include_sequence_number) const;
+    Result<std::map<std::string, std::string>> ReadOptions(
+        const std::map<std::string, std::string>& overrides) const;
 
     std::shared_ptr<FileSystem> fs_;
     std::string table_path_;

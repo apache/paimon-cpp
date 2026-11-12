@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "fmt/format.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/deletionvectors/bucketed_dv_maintainer.h"
 #include "paimon/core/index/index_file_handler.h"
 #include "paimon/core/operation/append_only_file_store_scan.h"
@@ -61,7 +62,7 @@ Result<std::unique_ptr<FileStoreWrite>> AppendOnlyFileStoreTable::CreateWrite(
     const std::shared_ptr<SnapshotManager>& snapshot_manager,
     const std::shared_ptr<IOManager>& io_manager, bool ignore_previous_files) const {
     const std::shared_ptr<FileStorePathFactory>& file_store_path_factory = path_factory;
-    auto schema = std::static_pointer_cast<TableSchema>(schema_);
+    auto schema = checked_pointer_cast<TableSchema>(schema_);
     auto schema_manager = GetSchemaManager();
     const std::string& branch = CurrentBranch();
     FileStore file_store(root_path_, options);
@@ -149,7 +150,7 @@ Result<std::unique_ptr<FileStoreScan>> AppendOnlyFileStoreTable::NewFileStoreSca
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& memory_pool,
     const ScanContext* context) const {
     // TODO(liancheng.lsz): support fallback branch in scan
-    std::shared_ptr<TableSchema> table_schema = std::static_pointer_cast<TableSchema>(schema_);
+    std::shared_ptr<TableSchema> table_schema = checked_pointer_cast<TableSchema>(schema_);
     std::unique_ptr<FileStoreScan> scan;
     if (core_options.DataEvolutionEnabled()) {
         PAIMON_ASSIGN_OR_RAISE(
@@ -189,7 +190,7 @@ CommitScanner::ScanSupplier AppendOnlyFileStoreTable::NewCommitScanSupplier(
     const std::shared_ptr<arrow::Schema>& arrow_schema, const CoreOptions& options,
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) const {
     const std::shared_ptr<SchemaManager>& schema_manager = GetSchemaManager();
-    std::shared_ptr<TableSchema> table_schema = std::static_pointer_cast<TableSchema>(schema_);
+    std::shared_ptr<TableSchema> table_schema = checked_pointer_cast<TableSchema>(schema_);
     return [snapshot_manager, schema_manager, manifest_list, manifest_file, table_schema,
             arrow_schema, options, executor, pool](const std::shared_ptr<ScanFilter>& scan_filter)
                -> Result<std::unique_ptr<FileStoreScan>> {

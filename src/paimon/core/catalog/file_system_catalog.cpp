@@ -34,7 +34,9 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/options/table_type.h"
 #include "paimon/core/snapshot.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/system/global_system_tables.h"
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/table/system/system_table_schema.h"
@@ -44,15 +46,12 @@
 #include "paimon/fs/file_system.h"
 #include "paimon/logging.h"
 #include "paimon/result.h"
+#include "paimon/table/format/format_table.h"
 
 namespace arrow {
 class Schema;
 }  // namespace arrow
 struct ArrowSchema;
-
-#include "paimon/core/options/table_type.h"
-#include "paimon/core/table/file_store_table.h"
-#include "paimon/table/format/format_table.h"
 
 namespace paimon {
 FileSystemCatalog::FileSystemCatalog(const std::shared_ptr<FileSystem>& fs,

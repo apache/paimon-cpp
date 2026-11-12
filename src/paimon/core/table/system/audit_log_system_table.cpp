@@ -375,12 +375,17 @@ AuditLogSystemTable::AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::st
       options_(std::move(options)) {}
 
 Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::ArrowSchema() const {
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options_));
+    return ChangelogSchema(core_options.TableReadSequenceNumberEnabled());
+}
+
+Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::ChangelogSchema(
+    bool include_sequence_number) const {
     std::shared_ptr<arrow::Field> row_kind_field =
         DataField::ConvertDataFieldToArrowField(SpecialFields::RowKind());
     row_kind_field = row_kind_field->WithNullable(false);
     arrow::FieldVector fields = {row_kind_field};
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options_));
-    if (core_options.TableReadSequenceNumberEnabled()) {
+    if (include_sequence_number) {
         fields.push_back(DataField::ConvertDataFieldToArrowField(SpecialFields::SequenceNumber()));
     }
     for (const auto& field : table_schema_->Fields()) {
@@ -440,13 +445,13 @@ Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewChangelogRead(
     }
 
     using StringMap = std::map<std::string, std::string>;
-    PAIMON_ASSIGN_OR_RAISE(StringMap read_options, ReadOptions());
+    PAIMON_ASSIGN_OR_RAISE(StringMap read_options, ReadOptions(context->GetOptions()));
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> data_context,
                            CreateDataReadContext(context, read_options));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
-                           CreateDataTable(table_schema_, read_options,
-                                           context->GetFileSystemSchemeToIdentifierMap()));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FileStoreTable> data_table,
+        CreateDataTable(table_schema_, options_, context->GetFileSystemSchemeToIdentifierMap()));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> data_read,
                            data_table->NewRead(std::move(data_context)));
     auto* key_value_read = dynamic_cast<KeyValueTableRead*>(data_read.get());
@@ -455,7 +460,8 @@ Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewChangelogRead(
     }
     key_value_read->ForceKeepDelete(true);
     bool include_sequence_number = core_options.TableReadSequenceNumberEnabled();
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> output_schema, ArrowSchema());
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> output_schema,
+                           ChangelogSchema(include_sequence_number));
     return std::make_unique<ChangelogTableRead>(std::move(data_read), std::move(output_schema),
                                                 include_sequence_number, std::move(converter),
                                                 context->GetMemoryPool());
@@ -464,9 +470,10 @@ Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewChangelogRead(
 Result<std::unique_ptr<ReadContext>> AuditLogSystemTable::CreateDataReadContext(
     const std::shared_ptr<ReadContext>& context,
     const std::map<std::string, std::string>& read_options) const {
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> base_read_schema, BaseReadSchema());
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
-    auto options = context->GetOptions();
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> base_read_schema,
+                           BaseReadSchema(core_options.TableReadSequenceNumberEnabled()));
+    auto options = read_options;
     if (core_options.TableReadSequenceNumberEnabled()) {
         options[Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED] = "true";
     }
@@ -488,11 +495,10 @@ Result<std::unique_ptr<ReadContext>> AuditLogSystemTable::CreateDataReadContext(
     return builder.Finish();
 }
 
-Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::BaseReadSchema() const {
+Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::BaseReadSchema(
+    bool include_sequence_number) const {
     arrow::FieldVector fields = {
         DataField::ConvertDataFieldToArrowField(SpecialFields::ValueKind())};
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options_));
-    bool include_sequence_number = core_options.TableReadSequenceNumberEnabled();
     if (include_sequence_number) {
         fields.push_back(DataField::ConvertDataFieldToArrowField(SpecialFields::SequenceNumber()));
     }
@@ -502,9 +508,13 @@ Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::BaseReadSchema() con
     return arrow::schema(fields);
 }
 
-Result<std::map<std::string, std::string>> AuditLogSystemTable::ReadOptions() const {
+Result<std::map<std::string, std::string>> AuditLogSystemTable::ReadOptions(
+    const std::map<std::string, std::string>& overrides) const {
     auto read_options = options_;
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options_));
+    for (const auto& [key, value] : overrides) {
+        read_options[key] = value;
+    }
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
     if (core_options.TableReadSequenceNumberEnabled()) {
         read_options[Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED] = "true";
     }

@@ -29,6 +29,9 @@ class CommitContext;
 /// Compatibility loading for the existing static operator factories.
 class TableFactory {
  public:
+    TableFactory() = delete;
+    ~TableFactory() = delete;
+
     static Result<std::shared_ptr<Table>> Create(const ScanContext* context);
     static Result<std::shared_ptr<Table>> Create(const ReadContext* context);
     static Result<std::shared_ptr<Table>> Create(const WriteContext* context);

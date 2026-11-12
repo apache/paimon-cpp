@@ -59,10 +59,12 @@ class FileStoreTable : public Table {
         const std::map<std::string, std::string>& fs_scheme_map = {});
 
     /// Binds a resolved store without replacing the loaded schema's options.
+    /// @param schema_manager Manager used to load this store's schema, preserving its cache.
     static Result<std::shared_ptr<FileStoreTable>> Create(
         std::unique_ptr<FileStore> store, const std::shared_ptr<TableSchema>& schema,
         const Identifier& identifier, const std::string& uuid,
-        const std::map<std::string, std::string>& fs_scheme_map = {});
+        const std::map<std::string, std::string>& fs_scheme_map = {},
+        const std::shared_ptr<SchemaManager>& schema_manager = nullptr);
 
     std::string CurrentBranch() const {
         auto branch = options_.find(Options::BRANCH);
@@ -71,7 +73,7 @@ class FileStoreTable : public Table {
     }
 
     std::shared_ptr<SchemaManager> GetSchemaManager() const {
-        return std::make_shared<SchemaManager>(file_system_, root_path_, CurrentBranch());
+        return schema_manager_;
     }
 
     std::shared_ptr<SnapshotManager> GetSnapshotManager() const {
@@ -166,6 +168,7 @@ class FileStoreTable : public Table {
         const std::shared_ptr<MemoryPool>& pool) const = 0;
 
     const std::map<std::string, std::string> options_;
+    std::shared_ptr<SchemaManager> schema_manager_;
 
     /// URI routing supplied when this table was loaded.
     std::map<std::string, std::string> fs_scheme_map_;
