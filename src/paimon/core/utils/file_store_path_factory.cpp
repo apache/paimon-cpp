@@ -73,14 +73,16 @@ FileStorePathFactory::FileStorePathFactory(
     const std::string& data_file_prefix, const std::string& uuid,
     std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
     const std::vector<std::string>& external_paths,
-    const std::optional<std::string>& global_index_external_path, bool index_file_in_data_file_dir)
+    const std::vector<std::string>& global_index_external_paths, bool index_file_in_data_file_dir,
+    const std::vector<int32_t>& external_path_weights)
     : root_(root),
       format_identifier_(format_identifier),
       data_file_prefix_(data_file_prefix),
       uuid_(uuid),
       partition_computer_(std::move(partition_computer)),
       external_paths_(external_paths),
-      global_index_external_path_(global_index_external_path),
+      external_path_weights_(external_path_weights),
+      global_index_external_paths_(global_index_external_paths),
       index_file_in_data_file_dir_(index_file_in_data_file_dir) {}
 
 Result<std::shared_ptr<FileStorePathFactory>> FileStorePathFactory::Create(
@@ -88,7 +90,8 @@ Result<std::shared_ptr<FileStorePathFactory>> FileStorePathFactory::Create(
     const std::vector<std::string>& partition_keys, const std::string& default_part_value,
     const std::string& identifier, const std::string& data_file_prefix,
     bool legacy_partition_name_enabled, const std::vector<std::string>& external_paths,
-    const std::optional<std::string>& global_index_external_path, bool index_file_in_data_file_dir,
+    const std::vector<std::string>& global_index_external_paths, bool index_file_in_data_file_dir,
+    const std::vector<int32_t>& external_path_weights,
     const std::shared_ptr<MemoryPool>& memory_pool) {
     if (memory_pool == nullptr) {
         return Status::Invalid("memory pool is null pointer");
@@ -103,7 +106,7 @@ Result<std::shared_ptr<FileStorePathFactory>> FileStorePathFactory::Create(
                                            legacy_partition_name_enabled, memory_pool));
     return std::shared_ptr<FileStorePathFactory>(new FileStorePathFactory(
         root, identifier, data_file_prefix, uuid, std::move(partition_computer), external_paths,
-        global_index_external_path, index_file_in_data_file_dir));
+        global_index_external_paths, index_file_in_data_file_dir, external_path_weights));
 }
 
 std::unique_ptr<PathFactory> FileStorePathFactory::CreateManifestFileFactory() {
@@ -178,15 +181,17 @@ Result<std::unique_ptr<IndexPathFactory>> FileStorePathFactory::CreateIndexFileF
     return CreateGlobalIndexFileFactory();
 }
 
-std::unique_ptr<IndexPathFactory> FileStorePathFactory::CreateGlobalIndexFileFactory() {
+Result<std::unique_ptr<IndexPathFactory>> FileStorePathFactory::CreateGlobalIndexFileFactory() {
     class IndexPathFactoryImpl : public IndexPathFactory {
      public:
-        explicit IndexPathFactoryImpl(const std::shared_ptr<FileStorePathFactory>& factory)
-            : factory_(factory) {
+        IndexPathFactoryImpl(const std::shared_ptr<FileStorePathFactory>& factory,
+                             std::unique_ptr<ExternalPathProvider> provider)
+            : factory_(factory), provider_(std::move(provider)) {
             assert(factory_);
         }
         std::string NewPath() const override {
-            return factory_->NewIndexFile();
+            return NewPathFromName(fmt::format("{}{}-{}", INDEX_PREFIX, factory_->UUID(),
+                                               factory_->index_file_count_->fetch_add(1)));
         }
         std::string ToPath(const std::shared_ptr<IndexFileMeta>& file) const override {
             const auto& external_path = file->ExternalPath();
@@ -195,21 +200,33 @@ std::unique_ptr<IndexPathFactory> FileStorePathFactory::CreateGlobalIndexFileFac
             }
             return PathUtil::JoinPath(factory_->IndexPath(factory_->RootPath()), file->FileName());
         }
-        std::string ToPath(const std::string& file_name) const override {
-            const auto& external_path = factory_->GetGlobalIndexExternalPath();
-            if (external_path) {
-                return PathUtil::JoinPath(external_path.value(), file_name);
+        std::string NewPathFromName(const std::string& file_name) const override {
+            if (provider_) {
+                return provider_->GetNextExternalDataPath(file_name);
             }
-            return PathUtil::JoinPath(factory_->IndexPath(factory_->RootPath()), file_name);
+            return factory_->ToIndexFilePath(file_name);
         }
         bool IsExternalPath() const override {
-            return factory_->GetGlobalIndexExternalPath() != std::nullopt;
+            return provider_ != nullptr;
         }
 
      private:
         std::shared_ptr<FileStorePathFactory> factory_;
+        std::unique_ptr<ExternalPathProvider> provider_;
     };
-    return std::make_unique<IndexPathFactoryImpl>(shared_from_this());
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ExternalPathProvider> provider,
+                           CreateExternalIndexPathProvider());
+    return std::unique_ptr<IndexPathFactory>(
+        std::make_unique<IndexPathFactoryImpl>(shared_from_this(), std::move(provider)));
+}
+
+Result<std::unique_ptr<ExternalPathProvider>>
+FileStorePathFactory::CreateExternalIndexPathProvider() const {
+    if (global_index_external_paths_.empty()) {
+        return std::unique_ptr<ExternalPathProvider>();
+    }
+    return ExternalPathProvider::Create(global_index_external_paths_, /*relative_bucket_path=*/"",
+                                        /*weights=*/{});
 }
 
 Result<std::unique_ptr<IndexCheckpointPathFactory>>
@@ -219,23 +236,22 @@ FileStorePathFactory::CreateGlobalIndexCheckpointPathFactory(const std::string& 
                                                              const std::string& task_id) {
     class IndexCheckpointPathFactoryImpl : public IndexCheckpointPathFactory {
      public:
-        IndexCheckpointPathFactoryImpl(const std::string& directory,
-                                       const std::string& file_name_prefix)
-            : directory_(directory), file_name_prefix_(file_name_prefix) {}
+        IndexCheckpointPathFactoryImpl(const std::vector<std::string>& directories,
+                                       const std::string& file_name_prefix,
+                                       std::unique_ptr<ExternalPathProvider> provider)
+            : directories_(directories),
+              file_name_prefix_(file_name_prefix),
+              provider_(std::move(provider)) {}
 
         std::string NewPath(int64_t checkpoint_id) const override {
             assert(checkpoint_id >= 0);
             std::string file_name =
                 fmt::format("{}{}{}", file_name_prefix_, checkpoint_id, kIndexCheckpointFileSuffix);
-            return ToPath(file_name);
+            return provider_->GetNextExternalDataPath(file_name);
         }
 
-        std::string ToPath(const std::string& file_name) const override {
-            return PathUtil::JoinPath(directory_, file_name);
-        }
-
-        const std::string& GetDirectoryPath() const override {
-            return directory_;
+        const std::vector<std::string>& GetDirectoryPaths() const override {
+            return directories_;
         }
 
         std::optional<int64_t> GetCheckpointId(const std::string& file_name) const override {
@@ -243,17 +259,23 @@ FileStorePathFactory::CreateGlobalIndexCheckpointPathFactory(const std::string& 
         }
 
      private:
-        std::string directory_;
+        std::vector<std::string> directories_;
         std::string file_name_prefix_;
+        std::unique_ptr<ExternalPathProvider> provider_;
     };
     PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("checkpoint index type", index_type));
     PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("checkpoint field", field_name));
-    PAIMON_ASSIGN_OR_RAISE(std::string directory, IndexCheckpointPathFactory::GetTaskDirectory(
-                                                      root_, task_id, global_index_external_path_));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> directories,
+                           IndexCheckpointPathFactory::GetTaskDirectories(
+                               root_, task_id, global_index_external_paths_));
     std::string file_name_prefix =
         fmt::format("{}-global-index-{}-{}-{}-", index_type, field_name, range.from, range.to);
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ExternalPathProvider> provider,
+                           ExternalPathProvider::Create(directories, /*relative_bucket_path=*/"",
+                                                        /*weights=*/{}));
     return std::unique_ptr<IndexCheckpointPathFactory>(
-        std::make_unique<IndexCheckpointPathFactoryImpl>(directory, file_name_prefix));
+        std::make_unique<IndexCheckpointPathFactoryImpl>(directories, file_name_prefix,
+                                                         std::move(provider)));
 }
 
 Result<std::shared_ptr<DataFilePathFactory>> FileStorePathFactory::CreateDataFilePathFactory(
@@ -273,7 +295,7 @@ Result<std::unique_ptr<ExternalPathProvider>> FileStorePathFactory::CreateExtern
         return std::unique_ptr<ExternalPathProvider>();
     }
     PAIMON_ASSIGN_OR_RAISE(std::string bucket_path, RelativeBucketPath(partition, bucket));
-    return ExternalPathProvider::Create(external_paths_, bucket_path);
+    return ExternalPathProvider::Create(external_paths_, bucket_path, external_path_weights_);
 }
 
 Result<std::string> FileStorePathFactory::RelativeBucketPath(const BinaryRow& partition,

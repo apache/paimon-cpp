@@ -56,16 +56,12 @@ class GlobalIndexFileManager : public GlobalIndexFileReader,
         return fs_->Open(file_path);
     }
 
-    Result<std::string> NewFileName(const std::string& prefix) const override {
+    Result<std::string> NewPath(const std::string& prefix) const override {
         std::string uuid;
         if (PAIMON_UNLIKELY(!UUID::Generate(&uuid))) {
             return Status::Invalid("fail to generate uuid for global index file manager");
         }
-        return prefix + "-" + "global-index-" + uuid + ".index";
-    }
-
-    std::string ToPath(const std::string& file_name) const override {
-        return path_factory_->ToPath(file_name);
+        return path_factory_->NewPathFromName(prefix + "-global-index-" + uuid + ".index");
     }
 
     std::string ToPath(const std::shared_ptr<IndexFileMeta>& file) const {
@@ -73,12 +69,12 @@ class GlobalIndexFileManager : public GlobalIndexFileReader,
     }
 
     Result<std::unique_ptr<OutputStream>> NewOutputStream(
-        const std::string& file_name) const override {
-        return fs_->Create(ToPath(file_name), /*overwrite=*/false);
+        const std::string& file_path) const override {
+        return fs_->Create(file_path, /*overwrite=*/false);
     }
 
-    Result<int64_t> GetFileSize(const std::string& file_name) const override {
-        PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(ToPath(file_name)));
+    Result<int64_t> GetFileSize(const std::string& file_path) const override {
+        PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs_->GetFileStatus(file_path));
         return file_status.GetLen();
     }
 
@@ -95,8 +91,9 @@ class GlobalIndexFileManager : public GlobalIndexFileReader,
             return Status::Invalid("global index checkpoint storage is not configured");
         }
         PAIMON_ASSIGN_OR_RAISE(int64_t file_id, NextCheckpointFileId());
-        PAIMON_RETURN_NOT_OK(fs_->Mkdirs(checkpoint_path_factory_->GetDirectoryPath()));
-        return fs_->Create(checkpoint_path_factory_->NewPath(file_id), /*overwrite=*/false);
+        std::string path = checkpoint_path_factory_->NewPath(file_id);
+        PAIMON_RETURN_NOT_OK(fs_->Mkdirs(PathUtil::GetParentDirPath(path)));
+        return fs_->Create(path, /*overwrite=*/false);
     }
 
     Result<std::unique_ptr<InputStream>> OpenCheckpointInputStream() const override {
@@ -154,21 +151,20 @@ class GlobalIndexFileManager : public GlobalIndexFileReader,
     }
 
     Result<std::vector<CheckpointFile>> ListCheckpointFiles() const {
-        std::vector<BasicFileStatus> file_statuses;
-        PAIMON_RETURN_NOT_OK(
-            fs_->ListDir(checkpoint_path_factory_->GetDirectoryPath(), &file_statuses));
         std::vector<CheckpointFile> checkpoint_files;
-        for (const BasicFileStatus& file_status : file_statuses) {
-            if (file_status.IsDir()) {
-                continue;
+        for (const auto& directory : checkpoint_path_factory_->GetDirectoryPaths()) {
+            std::vector<BasicFileStatus> file_statuses;
+            PAIMON_RETURN_NOT_OK(fs_->ListDir(directory, &file_statuses));
+            for (const BasicFileStatus& file_status : file_statuses) {
+                if (file_status.IsDir()) {
+                    continue;
+                }
+                std::string file_name = PathUtil::GetName(file_status.GetPath());
+                std::optional<int64_t> id = checkpoint_path_factory_->GetCheckpointId(file_name);
+                if (id) {
+                    checkpoint_files.push_back(CheckpointFile{id.value(), file_status.GetPath()});
+                }
             }
-            std::string file_name = PathUtil::GetName(file_status.GetPath());
-            std::optional<int64_t> id = checkpoint_path_factory_->GetCheckpointId(file_name);
-            if (!id) {
-                continue;
-            }
-            checkpoint_files.push_back(
-                CheckpointFile{id.value(), checkpoint_path_factory_->ToPath(file_name)});
         }
         return checkpoint_files;
     }

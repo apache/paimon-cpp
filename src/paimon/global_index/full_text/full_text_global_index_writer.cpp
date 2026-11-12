@@ -194,15 +194,15 @@ Result<std::vector<GlobalIndexIOMeta>> FullTextGlobalIndexWriter::Finish() {
 
 Result<GlobalIndexIOMeta> FullTextGlobalIndexWriter::WriteIndex(
     PaimonFtindexWriterHandle* writer) const {
-    PAIMON_ASSIGN_OR_RAISE(std::string file_name, file_writer_->NewFileName(kFileNamePrefix));
+    PAIMON_ASSIGN_OR_RAISE(std::string file_path, file_writer_->NewPath(kFileNamePrefix));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<OutputStream> out,
-                           file_writer_->NewOutputStream(file_name));
+                           file_writer_->NewOutputStream(file_path));
     // Closes the stream on every error path, keeping the original error.
     ScopeGuard close_guard([&]() {
         Status status = out->Close();
         if (!status.ok()) {
             PAIMON_LOG_WARN(logger_, "failed to close full-text index file %s: %s",
-                            file_name.c_str(), status.ToString().c_str());
+                            file_path.c_str(), status.ToString().c_str());
         }
     });
     OutputContext ctx;
@@ -210,17 +210,17 @@ Result<GlobalIndexIOMeta> FullTextGlobalIndexWriter::WriteIndex(
     PaimonFtindexOutputFile output{static_cast<void*>(&ctx), &WriteToOutputStream,
                                    &FlushOutputStream};
     if (paimon_ftindex_writer_write_index(writer, output) != 0) {
-        return LastFtindexError(fmt::format("write full-text index {}", file_name), ctx.status);
+        return LastFtindexError(fmt::format("write full-text index {}", file_path), ctx.status);
     }
     PAIMON_RETURN_NOT_OK(out->Flush());
     close_guard.Release();
     PAIMON_RETURN_NOT_OK(out->Close());
 
-    PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_writer_->GetFileSize(file_name));
+    PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_writer_->GetFileSize(file_path));
     std::string options_json;
     PAIMON_RETURN_NOT_OK(RapidJsonUtil::ToJsonString(options_, &options_json));
     auto metadata = std::make_shared<Bytes>(options_json, pool_.get());
-    return GlobalIndexIOMeta(file_writer_->ToPath(file_name), file_size, row_count_, metadata);
+    return GlobalIndexIOMeta(file_path, file_size, row_count_, metadata);
 }
 
 }  // namespace paimon::full_text

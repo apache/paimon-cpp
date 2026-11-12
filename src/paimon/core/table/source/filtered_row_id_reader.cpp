@@ -114,16 +114,18 @@ Result<std::unique_ptr<TableRead>> CreateReadWithSchema(
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                            core_options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                           core_options.CreateGlobalIndexExternalPath());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
+                           core_options.GetExternalPathWeights());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                           core_options.CreateGlobalIndexExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         FileStorePathFactory::Create(
             internal_context->GetPath(), arrow_schema, table_schema->PartitionKeys(),
             core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
             core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
-            external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-            pool));
+            external_paths, global_index_external_paths, core_options.IndexFileInDataFileDir(),
+            external_path_weights, pool));
     return std::unique_ptr<TableRead>(
         std::make_unique<AppendOnlyTableRead>(path_factory, internal_context, pool, executor));
 }

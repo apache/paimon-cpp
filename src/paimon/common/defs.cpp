@@ -127,6 +127,7 @@ const char Options::FILE_INDEX_FORMAT_VERSION[] = "file-index.format.version";
 const char Options::FILE_INDEX_IN_MANIFEST_THRESHOLD[] = "file-index.in-manifest-threshold";
 const char Options::DATA_FILE_EXTERNAL_PATHS[] = "data-file.external-paths";
 const char Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY[] = "data-file.external-paths.strategy";
+const char Options::DATA_FILE_EXTERNAL_PATHS_WEIGHTS[] = "data-file.external-paths.weights";
 const char Options::DATA_FILE_PREFIX[] = "data-file.prefix";
 const char Options::INDEX_FILE_IN_DATA_FILE_DIR[] = "index-file-in-data-file-dir";
 const char Options::ROW_TRACKING_ENABLED[] = "row-tracking.enabled";

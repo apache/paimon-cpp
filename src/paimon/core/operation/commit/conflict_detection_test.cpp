@@ -141,8 +141,9 @@ class ConflictDetectionTest : public testing::Test {
                 /*root=*/"/tmp/conflict_detection_test", arrow::schema(fields_), partition_keys,
                 /*default_part_value=*/"__DEFAULT_PARTITION__", /*identifier=*/"orc",
                 /*data_file_prefix=*/"data-", /*legacy_partition_name_enabled=*/false,
-                /*external_paths=*/{}, /*global_index_external_path=*/std::nullopt,
-                /*index_file_in_data_file_dir=*/false, GetDefaultPool()));
+                /*external_paths=*/{}, /*global_index_external_paths=*/{},
+                /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{},
+                GetDefaultPool()));
         return path_factory;
     }
 

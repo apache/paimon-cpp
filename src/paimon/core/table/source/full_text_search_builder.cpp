@@ -249,15 +249,18 @@ Result<FullTextSearchBuilder::Impl::ResolvedSearch> FullTextSearchBuilder::Impl:
             Options::SCALAR_INDEX_SEARCH_MODE, Options::GLOBAL_INDEX_SEARCH_MODE));
     }
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                           options.CreateGlobalIndexExternalPath());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
+                           options.GetExternalPathWeights());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                           options.CreateGlobalIndexExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         FileStorePathFactory::Create(
             root_path, arrow_schema, table_schema->PartitionKeys(),
             options.GetPartitionDefaultName(), options.GetFileFormat()->Identifier(),
             options.DataFilePrefix(), options.LegacyPartitionNameEnabled(), external_paths,
-            global_index_external_path, options.IndexFileInDataFileDir(), memory_pool_));
+            global_index_external_paths, options.IndexFileInDataFileDir(), external_path_weights,
+            memory_pool_));
     std::shared_ptr<PredicateFilter> partition_filter;
     if (!partition_filters_.empty()) {
         PAIMON_ASSIGN_OR_RAISE(partition_filter,

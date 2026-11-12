@@ -167,8 +167,8 @@ Result<std::unique_ptr<DataEvolutionFullTextRead>> DataEvolutionFullTextRead::Cr
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Executor> final_executor,
                            GlobalIndexScanImpl::GetOrCreateExecutor(executor, options));
-    std::shared_ptr<IndexPathFactory> index_path_factory =
-        path_factory->CreateGlobalIndexFileFactory();
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<IndexPathFactory> index_path_factory,
+                           path_factory->CreateGlobalIndexFileFactory());
     auto index_file_manager = std::make_shared<GlobalIndexFileManager>(
         options.GetFileSystem(), index_path_factory, /*checkpoint_path_factory=*/nullptr);
     return std::unique_ptr<DataEvolutionFullTextRead>(new DataEvolutionFullTextRead(

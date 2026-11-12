@@ -127,8 +127,9 @@ class CommitScannerTest : public testing::Test {
                 /*default_part_value=*/"__DEFAULT_PARTITION__", file_format->Identifier(),
                 /*data_file_prefix=*/"data-",
                 /*legacy_partition_name_enabled=*/true, /*external_paths=*/{},
-                /*global_index_external_path=*/std::nullopt,
-                /*index_file_in_data_file_dir=*/false, GetDefaultPool()));
+                /*global_index_external_paths=*/{},
+                /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{},
+                GetDefaultPool()));
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<IndexManifestFile> index_manifest_file,
             IndexManifestFile::Create(dir_->GetFileSystem(), file_format, "zstd", path_factory,

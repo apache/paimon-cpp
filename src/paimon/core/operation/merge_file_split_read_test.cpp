@@ -337,8 +337,8 @@ class MergeFileSplitReadTest : public ::testing::Test,
         auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
         EXPECT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
                              core_options.CreateExternalPaths());
-        EXPECT_OK_AND_ASSIGN(std::optional<std::string> global_index_external_path,
-                             core_options.CreateGlobalIndexExternalPath());
+        EXPECT_OK_AND_ASSIGN(std::vector<std::string> global_index_external_paths,
+                             core_options.CreateGlobalIndexExternalPaths());
 
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FileStorePathFactory> path_factory,
@@ -346,8 +346,8 @@ class MergeFileSplitReadTest : public ::testing::Test,
                 internal_context->GetPath(), arrow_schema, table_schema->PartitionKeys(),
                 core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
                 core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
-                external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-                pool_));
+                external_paths, global_index_external_paths, core_options.IndexFileInDataFileDir(),
+                /*external_path_weights=*/{}, pool_));
         return MergeFileSplitRead::Create(path_factory, internal_context, pool_, executor_);
     }
 

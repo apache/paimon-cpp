@@ -61,9 +61,10 @@ class RowRangeManifestFileTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> format,
                                FileFormatFactory::Get("avro", {}));
         auto schema = arrow::schema(arrow::FieldVector{});
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
-                               FileStorePathFactory::Create(path, schema, {}, "", "avro", "data-",
-                                                            true, {}, std::nullopt, false, pool));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<FileStorePathFactory> path_factory,
+            FileStorePathFactory::Create(path, schema, {}, "", "avro", "data-", true, {}, {}, false,
+                                         /*external_path_weights=*/{}, pool));
         PAIMON_ASSIGN_OR_RAISE(CoreOptions options,
                                CoreOptions::FromMap({{Options::READ_BATCH_SIZE, "2"}}));
         if (cache) {
@@ -283,8 +284,8 @@ TEST_F(RowRangeManifestFileTest, ScanPlanPreservesResultsAcrossLazyDecodeAndCach
                              FileFormatFactory::Get("avro", {}));
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<FileStorePathFactory> paths,
-            FileStorePathFactory::Create(dir->Str(), schema, {}, "", "avro", "data-", true, {},
-                                         std::nullopt, false, pool));
+            FileStorePathFactory::Create(dir->Str(), schema, {}, "", "avro", "data-", true, {}, {},
+                                         false, /*external_path_weights=*/{}, pool));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ManifestList> lists,
                              ManifestList::Create(fs, format, "null", paths, cache, pool));
         ASSERT_OK_AND_ASSIGN(WrittenFile base_list, lists->Write({base_meta}));
@@ -347,9 +348,10 @@ TEST_F(RowRangeManifestFileTest, OrcCachePreservesManifestMetadata) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> format, FileFormatFactory::Get("orc", {}));
     auto schema = arrow::schema(arrow::FieldVector{});
     const std::string path = GetDataDir() + "/orc/append_09.db/append_09";
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStorePathFactory> paths,
-                         FileStorePathFactory::Create(path, schema, {}, "", "orc", "data-", true,
-                                                      {}, std::nullopt, false, pool));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStorePathFactory> paths,
+        FileStorePathFactory::Create(path, schema, {}, "", "orc", "data-", true, {}, {}, false,
+                                     /*external_path_weights=*/{}, pool));
     ASSERT_OK_AND_ASSIGN(CoreOptions options,
                          CoreOptions::FromMap({{Options::READ_BATCH_SIZE, "2"}}));
     ASSERT_OK_AND_ASSIGN(

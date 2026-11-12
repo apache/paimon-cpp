@@ -244,6 +244,7 @@ class PAIMON_EXPORT CoreOptions {
 
     ExternalPathStrategy GetExternalPathStrategy() const;
     Result<std::vector<std::string>> CreateExternalPaths() const;
+    Result<std::vector<int32_t>> GetExternalPathWeights() const;
     bool EnableAdaptivePrefetchStrategy() const;
 
     std::string DataFilePrefix() const;
@@ -276,7 +277,7 @@ class PAIMON_EXPORT CoreOptions {
     std::string FormatTableFileCompression() const;
 
     bool GlobalIndexEnabled() const;
-    Result<std::optional<std::string>> CreateGlobalIndexExternalPath() const;
+    Result<std::vector<std::string>> CreateGlobalIndexExternalPaths() const;
 
     std::optional<std::string> GetScanTagName() const;
 
@@ -323,7 +324,7 @@ class PAIMON_EXPORT CoreOptions {
 
  private:
     std::optional<std::string> GetDataFileExternalPaths() const;
-    std::optional<std::string> GetGlobalIndexExternalPath() const;
+    std::optional<std::string> GetGlobalIndexExternalPaths() const;
 
  private:
     struct Impl;

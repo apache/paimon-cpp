@@ -410,11 +410,11 @@ Result<std::vector<std::string>> FileSystemCatalog::GetSchemaExternalPaths(
         for (const auto& path : data_external_paths) {
             external_paths_set.insert(path);
         }
-        // collect external global index path
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> index_external_path,
-                               core_options.CreateGlobalIndexExternalPath());
-        if (index_external_path != std::nullopt) {
-            external_paths_set.insert(index_external_path.value());
+        // collect external global index paths
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> index_external_paths,
+                               core_options.CreateGlobalIndexExternalPaths());
+        for (const auto& path : index_external_paths) {
+            external_paths_set.insert(path);
         }
     }
     return std::vector<std::string>(external_paths_set.begin(), external_paths_set.end());
