@@ -24,15 +24,6 @@
 #include "paimon/status.h"
 
 namespace paimon {
-bool FileIndexReader::SupportsSearch(SearchType) const {
-    return false;
-}
-
-std::optional<double> FileIndexReader::EstimateSelectivity(
-    const std::shared_ptr<LeafPredicate>&) const {
-    return std::nullopt;
-}
-
 Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitIsNotNull() {
     return FileIndexResult::Remain();
 }

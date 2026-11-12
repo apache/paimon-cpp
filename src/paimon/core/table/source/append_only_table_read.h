@@ -68,6 +68,7 @@ class AppendOnlyTableRead : public TableRead {
 
     std::vector<std::unique_ptr<SplitRead>> split_reads_;
     std::shared_ptr<InternalReadContext> context_;
+    std::shared_ptr<FileStorePathFactory> path_factory_;
     std::shared_ptr<RealtimeFileSchema> realtime_file_schema_;
 };
 

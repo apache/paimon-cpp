@@ -32,9 +32,11 @@
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/macros.h"
 #include "paimon/metrics.h"
+#include "paimon/realtime/index/realtime_index_read_source.h"
 #include "paimon/record_batch.h"
 
 namespace paimon {
@@ -136,17 +138,22 @@ class ArrowDeduplicateRealtimeStore::SegmentHandle final : public RealtimeSegmen
     std::shared_ptr<const RoaringBitmap64> offset_deletions_;
 };
 
-class ArrowDeduplicateRealtimeStore::ReadView final : public RealtimeReadView {
+class ArrowDeduplicateRealtimeStore::ReadView final : public RealtimeIndexedReadView {
  public:
     ReadView(std::shared_ptr<RealtimeReadView> delegate, std::optional<OffsetRange> offset_range,
-             std::shared_ptr<const RoaringBitmap64> offset_deletions)
+             std::shared_ptr<const RoaringBitmap64> offset_deletions,
+             const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
         : delegate_(std::move(delegate)),
           offset_range_(offset_range),
-          offset_deletions_(std::move(offset_deletions)) {}
+          offset_deletions_(std::move(offset_deletions)),
+          arrow_pool_(arrow_pool) {}
 
     std::optional<OffsetRange> GetOffsetRange() const override {
         return offset_range_;
     }
+
+    Result<std::vector<std::shared_ptr<RealtimeIndexReadSource>>> CreateIndexReadSources(
+        const OffsetRange& offset_range) const override;
 
     const std::shared_ptr<RealtimeReadView>& Delegate() const {
         return delegate_;
@@ -160,6 +167,7 @@ class ArrowDeduplicateRealtimeStore::ReadView final : public RealtimeReadView {
     std::shared_ptr<RealtimeReadView> delegate_;
     std::optional<OffsetRange> offset_range_;
     std::shared_ptr<const RoaringBitmap64> offset_deletions_;
+    std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
 
 class ArrowDeduplicateRealtimeStore::RetiredReadView final : public RealtimeReadView {
@@ -233,6 +241,47 @@ class ArrowDeduplicateRealtimeStore::OffsetFilteringBatchReader final : public B
     std::shared_ptr<const RoaringBitmap64> offset_deletions_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
 };
+
+class ArrowDeduplicateRealtimeStore::IndexReadSource final : public RealtimeIndexReadSource {
+ public:
+    IndexReadSource(std::shared_ptr<RealtimeIndexReadSource> source,
+                    const std::shared_ptr<const RoaringBitmap64>& deletions)
+        : source_(std::move(source)), deletions_(deletions) {}
+
+    OffsetRange GetOffsetRange() const override {
+        return source_->GetOffsetRange();
+    }
+
+    Result<RoaringBitmap64> CreateCandidates() const override {
+        PAIMON_ASSIGN_OR_RAISE(RoaringBitmap64 candidates, source_->CreateCandidates());
+        candidates -= *deletions_;
+        return candidates;
+    }
+
+    Result<std::vector<std::shared_ptr<RealtimeIndexReader>>> CreateIndexReaders(
+        const std::string& field_name) const override {
+        return source_->CreateIndexReaders(field_name);
+    }
+
+ private:
+    std::shared_ptr<RealtimeIndexReadSource> source_;
+    std::shared_ptr<const RoaringBitmap64> deletions_;
+};
+
+Result<std::vector<std::shared_ptr<RealtimeIndexReadSource>>>
+ArrowDeduplicateRealtimeStore::ReadView::CreateIndexReadSources(
+    const OffsetRange& offset_range) const {
+    auto indexed = std::dynamic_pointer_cast<RealtimeIndexedReadView>(delegate_);
+    if (!indexed) {
+        return Status::NotImplemented("Deduplicate delegate has no precise index read capability");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<RealtimeIndexReadSource>> sources,
+                           indexed->CreateIndexReadSources(offset_range));
+    for (auto& source : sources) {
+        source = std::make_shared<IndexReadSource>(std::move(source), offset_deletions_);
+    }
+    return sources;
+}
 
 Result<std::shared_ptr<ArrowDeduplicateRealtimeStore>> ArrowDeduplicateRealtimeStore::Create(
     const std::shared_ptr<arrow::Schema>& write_schema,
@@ -498,7 +547,7 @@ Result<std::shared_ptr<RealtimeReadView>> ArrowDeduplicateRealtimeStore::Acquire
                 : building_offset_range_;
     }
     return std::shared_ptr<RealtimeReadView>(
-        new ReadView(std::move(delegate_view), range, pending_offset_deletions_));
+        new ReadView(std::move(delegate_view), range, pending_offset_deletions_, arrow_pool_));
 }
 
 Result<std::vector<std::unique_ptr<BatchReader>>> ArrowDeduplicateRealtimeStore::CreateQueryReaders(
@@ -510,24 +559,27 @@ Result<std::vector<std::unique_ptr<BatchReader>>> ArrowDeduplicateRealtimeStore:
     if (!context.read_schema || !context.read_schema->release) {
         return Status::Invalid("deduplicate query read schema is null");
     }
+    if (context.offset_range.begin < 0 || context.offset_range.begin > context.offset_range.end) {
+        return Status::Invalid("real-time query offset range is invalid");
+    }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> output_schema,
                                       arrow::ImportSchema(context.read_schema));
     PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateOffsetField(output_schema));
     ArrowSchema inner_c_schema;
     ArrowSchemaMarkReleased(&inner_c_schema);
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*output_schema, &inner_c_schema));
-    RealtimeQueryContext inner_context{&inner_c_schema, context.predicate, context.offset_range,
-                                       context.read_batch_size};
-    PAIMON_ASSIGN_OR_RAISE(
-        std::vector<std::unique_ptr<BatchReader>> inner,
-        delegate_->CreateQueryReaders(deduplicate_view->Delegate(), inner_context));
-    std::vector<std::unique_ptr<BatchReader>> readers;
-    readers.reserve(inner.size());
-    for (std::unique_ptr<BatchReader>& reader : inner) {
-        readers.push_back(std::make_unique<OffsetFilteringBatchReader>(
-            std::move(reader), output_schema, deduplicate_view->OffsetDeletions(), arrow_pool_));
+    ScopeGuard schema_guard([&]() { ArrowSchemaRelease(&inner_c_schema); });
+    RealtimeQueryContext inner_context = context;
+    inner_context.read_schema = &inner_c_schema;
+    const auto& deletions = deduplicate_view->OffsetDeletions();
+    if (!context.offset_deletions || context.offset_deletions->IsEmpty()) {
+        inner_context.offset_deletions = deletions;
+    } else if (deletions && !deletions->IsEmpty()) {
+        auto combined = std::make_shared<RoaringBitmap64>(*context.offset_deletions);
+        *combined |= *deletions;
+        inner_context.offset_deletions = std::move(combined);
     }
-    return readers;
+    return delegate_->CreateQueryReaders(deduplicate_view->Delegate(), inner_context);
 }
 
 Status ArrowDeduplicateRealtimeStore::AdvanceCommittedOffset(int64_t) {

@@ -171,6 +171,16 @@ std::vector<std::shared_ptr<RealtimeIndex>> RealtimeIndexSet::FindIndexes(
     return result;
 }
 
+std::vector<std::shared_ptr<RealtimeIndex>> RealtimeIndexSet::FindIndexes(
+    const std::string& field_name) const {
+    std::vector<std::shared_ptr<RealtimeIndex>> result;
+    const auto range = indexes_.equal_range(field_name);
+    for (auto iter = range.first; iter != range.second; ++iter) {
+        result.push_back(iter->second.index);
+    }
+    return result;
+}
+
 uint64_t RealtimeIndexSet::GetMemoryUsage() const {
     uint64_t bytes = 0;
     for (const auto& item : indexes_) {

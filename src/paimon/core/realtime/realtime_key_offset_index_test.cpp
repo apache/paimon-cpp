@@ -94,7 +94,7 @@ TEST(RealtimeKeyOffsetIndexTest, TestMutableIndexSnapshotIsCopyOnWrite) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<MutableKeyOffsetIndex> index,
                          MutableKeyOffsetIndex::Create(key_field, GetDefaultPool()));
     ASSERT_OK(index->Add(MakeKeys(key_field, R"([[1], [2]])"), MakeOffsets("[10, 20]")));
-    const std::shared_ptr<const KeyOffsetLookup> snapshot = index->Snapshot();
+    const std::shared_ptr<const MutableKeyOffsetIndex> snapshot = index->Snapshot();
 
     ASSERT_OK(index->Add(MakeKeys(key_field, R"([[1]])"), MakeOffsets("[30]")));
     ASSERT_OK(index->Erase(MakeKeys(key_field, R"([[2]])")));
@@ -106,7 +106,7 @@ TEST(RealtimeKeyOffsetIndexTest, TestMutableIndexSnapshotIsCopyOnWrite) {
                          snapshot->LookupOffsets(MakeKeys(key_field, R"([[1], [2], [3]])")));
     AssertOffsets(pinned, {10, 20});
 
-    const std::shared_ptr<const KeyOffsetLookup> deleted_snapshot = index->Snapshot();
+    const std::shared_ptr<const MutableKeyOffsetIndex> deleted_snapshot = index->Snapshot();
     ASSERT_OK(index->Add(MakeKeys(key_field, R"([[2]])"), MakeOffsets("[40]")));
     ASSERT_OK(index->Erase(MakeKeys(key_field, R"([[99]])")));
     ASSERT_OK_AND_ASSIGN(current, index->LookupOffsets(MakeKeys(key_field, R"([[1], [2]])")));

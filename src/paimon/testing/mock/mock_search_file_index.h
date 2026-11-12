@@ -81,6 +81,11 @@ class MockSearchFileIndex {
     static Result<std::shared_ptr<Bytes>> MakePayload(const ScoredRows& rows,
                                                       const std::shared_ptr<MemoryPool>& pool);
 
+    /// Read all raw payloads from a V1 or V2 container for merging test indexes. Null input
+    /// returns an empty map; empty index entries retain their null payloads.
+    static Result<FileIndexFormat::ColumnIndexes> ReadIndexes(
+        const std::shared_ptr<InputStream>& input, const std::shared_ptr<MemoryPool>& pool);
+
     /// Wrap per-column index payloads in a complete FileIndexFormat container.
     /// @param indexes Payloads keyed by field name and index identifier. A nullptr payload
     /// represents an empty index.

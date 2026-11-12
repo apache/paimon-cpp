@@ -33,9 +33,10 @@ struct PAIMON_EXPORT VectorSearch {
     /// `PreFilter`: A lightweight pre-filtering function applied **before** similarity scoring.
     /// The row id domain is determined by the reader executing the search: `GlobalIndexReader`
     /// supplies global row ids, while `FileIndexReader` supplies physical row ids local to the
-    /// current data file. This filter enables early pruning of irrelevant candidates (e.g., "only
-    /// consider rows with label X"), significantly reducing the search space. Returns true to
-    /// include the row in vector search process; false to exclude it.
+    /// current data file. Real-time index readers supply real-time offsets. This filter enables
+    /// early pruning of irrelevant candidates (e.g., "only consider rows with label X"),
+    /// significantly reducing the search space. Returns true to include the row in vector search
+    /// process; false to exclude it.
     ///
     /// @note Must be thread-safe.
     using PreFilter = std::function<bool(int64_t)>;
@@ -67,7 +68,7 @@ struct PAIMON_EXPORT VectorSearch {
     /// The query vector (must match the dimensionality of the indexed vectors).
     std::vector<float> query;
     /// A pre-filter whose row id domain is determined by the reader: global row ids for Global
-    /// Index and file-local physical row ids for File Index.
+    /// Index, file-local physical row ids for File Index, and offsets for Real-time Index.
     std::function<bool(int64_t)> pre_filter;
     /// A runtime filtering condition that may involve graph traversal of
     /// structured attributes. **Using this parameter often yields better

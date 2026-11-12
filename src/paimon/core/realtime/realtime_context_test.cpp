@@ -41,6 +41,7 @@
 #include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/realtime/realtime_deduplicate_state.h"
 #include "paimon/core/realtime/realtime_offset_file_index_lookup.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/realtime/arrow_realtime_store_factory.h"
@@ -463,6 +464,48 @@ TEST(RealtimeContextTest, TestRejectsMismatchedSchemaOnStoreReuse) {
     ASSERT_EQ(1, factory->stores.size());
 }
 
+TEST(RealtimeContextTest, TestReadViewRejectsMismatchedTableSchema) {
+    const auto id = arrow::field("id", arrow::int64());
+    const auto payload = arrow::field(
+        "payload",
+        arrow::struct_({arrow::field("x", arrow::int64()), arrow::field("y", arrow::utf8())}));
+    const auto table_schema = arrow::schema({id, payload});
+    for (RealtimeStoreMode mode :
+         {RealtimeStoreMode::APPEND_ONLY, RealtimeStoreMode::PRIMARY_KEY}) {
+        SCOPED_TRACE(static_cast<int32_t>(mode));
+        auto factory = std::make_shared<TestingRealtimeStoreFactory>();
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RealtimeSchemaLayout> layout,
+                             RealtimeSchemaLayout::Create(mode, table_schema));
+        const RealtimePartitionBucket partition_bucket({{"dt", "2026-08-02"}}, 0);
+        ASSERT_OK(context->GetOrCreateRealtimeStore(
+            RealtimeStoreCreateRequest{ExportSchema(layout->StoreWriteSchema()), /*options=*/{},
+                                       GetDefaultPool(), mode},
+            partition_bucket));
+        ASSERT_OK_AND_ASSIGN(RealtimeReadState state, context->AcquireReadState());
+        ASSERT_EQ(1, state.views.size());
+        const auto& view = state.views[0];
+        ASSERT_TRUE(
+            view.write_schema->Equals(*layout->StoreWriteSchema(), /*check_metadata=*/true));
+        ASSERT_OK(view.ValidateTableSchema(table_schema));
+        const std::vector<std::shared_ptr<arrow::Schema>> incompatible{
+            arrow::schema({arrow::field("id", arrow::int32()), payload}),
+            arrow::schema({id}),
+            arrow::schema({id, payload, arrow::field("added", arrow::utf8())}),
+            arrow::schema({payload, id}),
+            arrow::schema(
+                {id, arrow::field("payload", arrow::struct_({arrow::field("x", arrow::int64())}))}),
+            arrow::schema(
+                {id->WithMetadata(arrow::key_value_metadata({"field_id"}, {"changed"})), payload})};
+        for (const auto& schema : incompatible) {
+            ASSERT_NOK_WITH_MSG(
+                view.ValidateTableSchema(schema),
+                "real-time store schema mismatch for partition {dt=2026-08-02}, bucket 0; "
+                "recreate the RealtimeContext");
+        }
+    }
+}
+
 TEST(RealtimeContextTest, TestReconcilesPrimaryKeyInitialSequence) {
     auto factory = std::make_shared<TestingRealtimeStoreFactory>();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context, CreateContext(factory));
@@ -774,6 +817,7 @@ TEST(RealtimeContextTest, TestPinsResolvesAndReleasesReadViewTicket) {
     ASSERT_EQ(views[0].partition_bucket, resolved.partition_bucket);
     ASSERT_EQ(views[0].store, resolved.store);
     ASSERT_EQ(views[0].read_view, resolved.read_view);
+    ASSERT_EQ(views[0].write_schema, resolved.write_schema);
 
     ASSERT_OK(context->ReleaseReadView(ticket));
     ASSERT_OK(context->ReleaseReadView(ticket));

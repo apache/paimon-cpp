@@ -221,7 +221,10 @@ TEST(PrimaryKeyRealtimeStoreTest, TestSpilledFileReturnsOneIndependentReaderPerS
     RealtimeQueryContext context{c_schema.get(),
                                  /*predicate=*/nullptr,
                                  view->GetOffsetRange().value_or(OffsetRange(0, 0)),
-                                 /*read_batch_size=*/1};
+                                 /*read_batch_size=*/1,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> query_readers,
                          store->CreateQueryReaders(view, context));
     ASSERT_EQ(2, query_readers.size());
@@ -303,7 +306,11 @@ TEST(PrimaryKeyRealtimeStoreTest, TestSlicedReadersExportZeroOffsets) {
     ASSERT_TRUE(arrow::ExportSchema(*schema, c_schema.get()).ok());
     RealtimeQueryContext context{c_schema.get(),
                                  /*predicate=*/nullptr,
-                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+                                 1024,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(readers, store->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
     AssertSlicedBatch(readers[0].get());
@@ -350,7 +357,11 @@ TEST(PrimaryKeyRealtimeStoreTest, TestReclaimKeepsReadView) {
     ASSERT_TRUE(arrow::ExportSchema(*StoreWriteSchema(), c_schema.get()).ok());
     RealtimeQueryContext context{c_schema.get(),
                                  /*predicate=*/nullptr,
-                                 retained_view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+                                 retained_view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+                                 1024,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(retained_view, context));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> actual, ReadArray(std::move(readers)));
@@ -376,7 +387,11 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderPerStoredBatch) {
     ASSERT_TRUE(arrow::ExportSchema(*StoreWriteSchema(), c_schema.get()).ok());
     RealtimeQueryContext context{/*read_schema=*/c_schema.get(),
                                  /*predicate=*/nullptr,
-                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+                                 1024,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(view, context));
     ASSERT_EQ(2, readers.size());
@@ -400,8 +415,13 @@ TEST(PrimaryKeyRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingStoredBatch
     ASSERT_TRUE(arrow::ExportSchema(*StoreWriteSchema(), c_schema.get()).ok());
     std::shared_ptr<Predicate> predicate = PredicateBuilder::Equal(
         /*field_index=*/3, /*field_name=*/"id", FieldType::BIGINT, Literal(int64_t{10}));
-    RealtimeQueryContext context{c_schema.get(), predicate,
-                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+    RealtimeQueryContext context{c_schema.get(),
+                                 predicate,
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+                                 1024,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
@@ -431,7 +451,11 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryBatchOutlivesStoreAndReader) {
     ASSERT_TRUE(arrow::ExportSchema(*stored_schema, c_schema.get()).ok());
     RealtimeQueryContext context{c_schema.get(),
                                  /*predicate=*/nullptr,
-                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+                                 1024,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
@@ -489,7 +513,11 @@ TEST(PrimaryKeyRealtimeStoreTest, TestQueryReaderProjectsNestedFields) {
     ASSERT_TRUE(arrow::ExportSchema(*requested_schema, c_schema.get()).ok());
     RealtimeQueryContext context{c_schema.get(),
                                  /*predicate=*/nullptr,
-                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+                                 1024,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(view, context));
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, readers[0]->NextBatch());
