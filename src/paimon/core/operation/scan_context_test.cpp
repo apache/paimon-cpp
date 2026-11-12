@@ -172,4 +172,20 @@ TEST(ScanContextTest, TestDefaultExecutorIsCreatedPerContext) {
     ASSERT_NE(executor, reset_ctx->GetExecutor());
 }
 
+TEST(ScanContextTest, FailedBranchValidationDoesNotRetainTableCredentials) {
+    auto first_fs = std::make_shared<MockFileSystem>();
+    auto second_fs = std::make_shared<MockFileSystem>();
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(first_fs);
+    ScanContextBuilder builder("table_b");
+    builder.WithCatalog(catalog, Identifier("db", "a", "dev"))
+        .SetOptions({{Options::BRANCH, "main"}});
+    ASSERT_NOK(builder.Finish());
+    catalog->SetTableFileSystem(second_fs);
+    builder.WithCatalog(catalog, Identifier("db", "b"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
+    ASSERT_EQ(second_fs, context->GetSpecificFileSystem());
+    ASSERT_EQ(Identifier("db", "b"), catalog->TableFileSystemRequests().back());
+}
+
 }  // namespace paimon::test

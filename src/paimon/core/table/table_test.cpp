@@ -34,6 +34,7 @@
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/catalog/file_system_catalog.h"
 #include "paimon/core/core_options.h"
+#include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
@@ -46,6 +47,7 @@
 #include "paimon/core/table/table_factory.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/realtime/realtime_context.h"
@@ -526,6 +528,8 @@ TEST(TableTest, TestGlobalSystemTableRetainsCatalog) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
                          catalog->GetTable(Identifier("sys", "tables")));
     ASSERT_NE(nullptr, std::dynamic_pointer_cast<SystemTable>(table));
+    ASSERT_EQ("sys.tables", table->FullName());
+    ASSERT_EQ("sys.tables", table->Uuid());
     ASSERT_EQ(nullptr, std::dynamic_pointer_cast<DataSchema>(table->GetSchema()));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
                          ScanContextBuilder(table->GetRootPath()).Finish());
@@ -900,6 +904,177 @@ TEST(TableTest, TestRealtimeFallbackOnlyAllowsMainBranch) {
                 ASSERT_OK(read);
             }
         }
+    }
+}
+
+TEST(TableTest, SystemTablePathUsesEffectiveBranchSchema) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    auto main_schema = arrow::schema({arrow::field("id", arrow::int32())});
+    auto dev_schema =
+        arrow::schema({arrow::field("id", arrow::int32()), arrow::field("extra", arrow::int32())});
+    SchemaManager main_manager(fs, dir->Str(), "main");
+    SchemaManager dev_manager(fs, dir->Str(), "dev");
+    ASSERT_OK(main_manager.CreateTable(main_schema, {}, {}, {}));
+    ASSERT_OK(dev_manager.CreateTable(dev_schema, {}, {}, {}));
+    for (bool path_branch : {false, true}) {
+        SCOPED_TRACE(path_branch);
+        const std::string path = dir->Str() + (path_branch ? "$branch_dev$ro" : "$ro");
+        const std::map<std::string, std::string> options =
+            path_branch ? std::map<std::string, std::string>()
+                        : std::map<std::string, std::string>{{Options::BRANCH, "dev"}};
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<ReadContext> context,
+            ReadContextBuilder(path).SetOptions(options).SetReadFieldNames({"extra"}).Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                             TableRead::Create(std::move(context)));
+        auto* append_read = dynamic_cast<AppendOnlyTableRead*>(read.get());
+        ASSERT_NE(nullptr, append_read);
+        ASSERT_EQ("dev", append_read->context_->GetCoreOptions().GetBranch());
+        ASSERT_EQ(dev_schema->field_names(), append_read->context_->GetTableSchema()->FieldNames());
+        ASSERT_EQ((std::vector<std::string>{"extra"}),
+                  append_read->context_->GetReadSchema()->field_names());
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<ScanContext> scan_context,
+            ScanContextBuilder(path)
+                .SetOptions(options)
+                .SetPredicate(PredicateBuilder::GreaterThan(1, "extra", FieldType::INT, Literal(0)))
+                .Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                             TableScan::Create(std::move(scan_context)));
+        ASSERT_OK(scan->CreatePlan());
+    }
+    ASSERT_NOK(SystemTableLoader::LoadFromPath(fs, dir->Str() + "$branch_dev$ro",
+                                               {{Options::BRANCH, "main"}}, {}));
+}
+
+TEST(TableTest, SystemTableMainAliasReturnsExistingSnapshots) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    const std::string path = dir->Str() + "/db.db/tbl";
+    ASSERT_TRUE(TestUtil::CopyDirectory(
+        std::filesystem::path(
+            GetDataDir() + "/parquet/append_table_with_rt_branch.db/append_table_with_rt_branch"),
+        std::filesystem::path(path)));
+    FileSystemCatalog catalog(fs, dir->Str(), {});
+    std::shared_ptr<arrow::ChunkedArray> expected;
+    for (const std::string& name :
+         std::vector<std::string>{"tbl$snapshots", "tbl$branch_MAIN$snapshots"}) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                             catalog.GetTable(Identifier("db", name)));
+        ASSERT_EQ("db." + name, table->FullName());
+        ASSERT_EQ(table->FullName(), table->Uuid());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                             ScanContextBuilder(table->GetRootPath()).Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                             table->NewScan(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                             ReadContextBuilder(table->GetRootPath()).Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                             table->NewRead(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                             read->CreateReader(plan->Splits()));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> rows,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_GT(rows->length(), 0);
+        if (expected) {
+            ASSERT_TRUE(expected->Equals(rows));
+        } else {
+            expected = rows;
+        }
+    }
+}
+
+TEST(TableTest, StaticFallbackReadUsesSuppliedMainSchema) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> main,
+                         CreateManagedTable(fs, dir->Str(), Identifier("db", "tbl"), "main"));
+    ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::shared_ptr<Table> dev,
+                         CreateManagedTable(fs, dir->Str(), Identifier("db", "tbl", "dev"), "dev"));
+    ASSERT_OK_AND_ASSIGN(std::string main_json, main->GetSchema()->GetJsonSchema());
+    ASSERT_OK(fs->Delete(dir->Str() + "/schema", true));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
+                         ReadContextBuilder(dir->Str())
+                             .WithBranch("dev")
+                             .AddOption(Options::SCAN_FALLBACK_BRANCH, "main")
+                             .SetTableSchema(main_json)
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, TableRead::Create(std::move(context)));
+    auto* fallback = dynamic_cast<FallbackTableRead*>(read.get());
+    ASSERT_NE(nullptr, fallback);
+    auto* fallback_read = dynamic_cast<AppendOnlyTableRead*>(fallback->fallback_table_.get());
+    ASSERT_NE(nullptr, fallback_read);
+    ASSERT_EQ(main->GetSchema()->FieldNames(),
+              fallback_read->context_->GetTableSchema()->FieldNames());
+    ASSERT_EQ("main", fallback_read->context_->GetCoreOptions().GetBranch());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> missing_schema,
+                         ReadContextBuilder(dir->Str())
+                             .WithBranch("dev")
+                             .AddOption(Options::SCAN_FALLBACK_BRANCH, "main")
+                             .Finish());
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(missing_schema)), "fallback schema not found");
+}
+
+TEST(TableTest, LoadedFallbackReadIgnoresForeignContextSchema) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    ASSERT_OK(CreateManagedTable(fs, dir->Str(), Identifier("db", "tbl"), "main"));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev,
+                         CreateManagedTable(fs, dir->Str(), Identifier("db", "tbl", "dev"), "dev"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
+                         ReadContextBuilder(dir->Str() + "/other")
+                             .WithBranch("dev")
+                             .AddOption(Options::SCAN_FALLBACK_BRANCH, "main")
+                             .SetTableSchema("invalid json")
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, dev->NewRead(std::move(context)));
+    ASSERT_NE(nullptr, dynamic_cast<FallbackTableRead*>(read.get()));
+}
+
+TEST(TableTest, CatalogMetadataDoesNotRequireDataFormatPlugin) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    const std::string path = dir->Str() + "/db.db/tbl";
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> schema,
+        TableSchema::Create(0, arrow::schema({arrow::field("id", arrow::int32())}), {}, {},
+                            {{Options::FILE_FORMAT, "unavailable_format_for_metadata_test"}}));
+    ASSERT_OK_AND_ASSIGN(std::string json, schema->GetJsonSchema());
+    ASSERT_OK(fs->Mkdirs(path + "/schema"));
+    ASSERT_OK(fs->AtomicStore(path + "/schema/schema-0", json));
+    FileSystemCatalog catalog(fs, dir->Str(), {});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog.GetTable(Identifier("db", "tbl")));
+    ASSERT_EQ(path, table->GetRootPath());
+    ASSERT_EQ((std::vector<std::string>{"id"}), table->GetSchema()->FieldNames());
+    ASSERT_EQ("db.tbl", table->Uuid());
+    auto managed = std::dynamic_pointer_cast<FileStoreTable>(table);
+    ASSERT_NE(nullptr, managed);
+    ASSERT_OK(managed->GetSchemaManager()->Latest());
+    ASSERT_OK(managed->GetSnapshotManager()->LatestSnapshot());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, ReadContextBuilder(path).Finish());
+    ASSERT_NOK_WITH_MSG(table->NewRead(std::move(context)), "FileFormatFactory");
+}
+
+TEST(TableTest, SystemTableFullNamesDistinguishDatabases) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    FileSystemCatalog catalog(fs, dir->Str(), {});
+    for (const std::string& db : std::vector<std::string>{"db1", "db2"}) {
+        ASSERT_OK(CreateManagedTable(fs, dir->Str() + "/" + db + ".db/tbl", Identifier(db, "tbl"),
+                                     "main"));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                             catalog.GetTable(Identifier(db, "tbl$options")));
+        ASSERT_EQ("tbl$options", table->Name());
+        ASSERT_EQ(db + ".tbl$options", table->FullName());
+        ASSERT_EQ(table->FullName(), table->Uuid());
     }
 }
 

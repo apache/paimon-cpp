@@ -468,13 +468,8 @@ Result<std::shared_ptr<SystemTable>> RestCatalog::LoadSystemTable(
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
                            GetTableFileSystem(identifier));
-    // Use the catalog name, including any branch, even when data lives under a UUID directory.
-    PAIMON_ASSIGN_OR_RAISE(
-        Identifier data_identifier,
-        CatalogUtils::BranchIdentifier(identifier, branch.value_or(std::string())));
-    return SystemTableLoader::Load(system_table_name.value(), table_file_system, data_table_path,
-                                   latest_schema, dynamic_options, data_identifier.GetObjectName(),
-                                   fs_scheme_to_identifier_map_);
+    return SystemTableLoader::Load(identifier, table_file_system, data_table_path, latest_schema,
+                                   dynamic_options, fs_scheme_to_identifier_map_);
 }
 
 Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifier) const {

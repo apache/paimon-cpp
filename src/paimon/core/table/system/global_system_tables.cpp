@@ -305,6 +305,7 @@ Result<std::shared_ptr<SystemTable>> GlobalSystemTableLoader::Load(
                                               table_name);
             }
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> table, entry.factory(context));
+            table->full_name_ = Identifier(Catalog::SYSTEM_DATABASE_NAME, normalized).GetFullName();
             PAIMON_RETURN_NOT_OK(table->AdoptOwnSchema());
             return table;
         }

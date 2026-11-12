@@ -24,6 +24,7 @@
 #include "paimon/commit_context.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/options_utils.h"
+#include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/options/table_type.h"
@@ -333,6 +334,27 @@ Result<std::unique_ptr<FileStoreCommit>> NewFormatTableCommit(
     return std::unique_ptr<FileStoreCommit>(std::move(format_commit));
 }
 }  // namespace
+Status FormatTable::CheckWriteContext(const std::string& path,
+                                      const std::shared_ptr<FormatTable>& context_table) const {
+    PAIMON_ASSIGN_OR_RAISE(std::string context_path, PathUtil::NormalizePath(path));
+    PAIMON_ASSIGN_OR_RAISE(std::string table_path, PathUtil::NormalizePath(Location()));
+    if (context_path != table_path) {
+        return Status::Invalid("write/commit context path contradicts the loaded format table");
+    }
+    if (context_table) {
+        const Identifier& other = context_table->identifier_;
+        const bool database_matches =
+            identifier_.GetDatabaseName() == Identifier::kUnknownDatabase ||
+            other.GetDatabaseName() == Identifier::kUnknownDatabase ||
+            identifier_.GetDatabaseName() == other.GetDatabaseName();
+        if (!database_matches || identifier_.GetObjectName() != other.GetObjectName()) {
+            return Status::Invalid(
+                "write/commit context identity contradicts the loaded format table");
+        }
+    }
+    return Status::OK();
+}
+
 Result<std::shared_ptr<FormatTable>> FormatTable::ForContext(
     const std::map<std::string, std::string>& options) const {
     return Copy(std::make_shared<FormatTable>(*this), options);
@@ -352,6 +374,7 @@ Result<std::unique_ptr<TableRead>> FormatTable::NewRead(std::unique_ptr<ReadCont
 Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
     std::unique_ptr<WriteContext> ctx) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "write"));
+    PAIMON_RETURN_NOT_OK(CheckWriteContext(ctx->GetRootPath(), ctx->GetFormatTable()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, ForContext(ctx->GetOptions()));
     std::shared_ptr<WriteContext> context = std::move(ctx);
     return NewFormatTableWrite(table, *context);
@@ -359,6 +382,7 @@ Result<std::unique_ptr<FileStoreWrite>> FormatTable::NewWrite(
 Result<std::unique_ptr<FileStoreCommit>> FormatTable::NewCommit(
     std::unique_ptr<CommitContext> ctx) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(ctx, "commit"));
+    PAIMON_RETURN_NOT_OK(CheckWriteContext(ctx->GetRootPath(), ctx->GetFormatTable()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table, ForContext(ctx->GetOptions()));
     std::shared_ptr<CommitContext> context = std::move(ctx);
     return NewFormatTableCommit(table, *context);

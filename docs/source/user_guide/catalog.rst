@@ -160,7 +160,9 @@ offsets when a real-time writer is created:
 
 ``Catalog::GetTable()`` returns a common ``Table`` interface for managed, format and
 system tables. The managed implementation selects append-only or primary-key behavior
-from the loaded schema; system tables reject writes and commits.
+from the loaded schema; system tables reject writes and commits. Loading a managed
+table's schema, location and catalog UUID does not require its data-format plugin;
+the plugin is resolved when creating an operator that uses the format.
 
 ``table->NewCommit()``, ``NewWrite()``, ``NewRead()`` and ``NewScan()`` use the table's
 bound type, path, schema and file system. ``GetSchema()`` returns that schema without
@@ -394,15 +396,13 @@ mean the main branch. Naming a branch only in the option or ``WithBranch`` while
 the identifier names the bare table is rejected, as the catalog would then answer
 for the table while the files were written for the branch.
 
-Names a catalog cannot tell apart from another object are rejected where a
-builder sees them: a name differing from ``main`` by case alone, such as
-``tbl$branch_MAIN`` or ``branch=MAIN``, which a catalog reads as the main branch
-while its snapshots go to a directory of their own; and a name holding a ``$``,
-such as ``branch=dev$options``, which ``tbl$branch_dev$options`` reads back as
-the ``options`` system table of branch ``dev``. ``paimon::Identifier("db",
-"tbl", "MAIN")`` never reaches that check: the constructor folds every spelling
-of ``main`` into the bare table name, as the Java client does, and so names the
-main branch.
+Identifier aliases such as ``tbl$branch_MAIN`` are normalized to the main branch,
+as is ``paimon::Identifier("db", "tbl", "MAIN")``. This normalization applies to
+identifiers; explicit option values keep their case. Thus ``branch=MAIN`` is
+rejected for catalog writes and commits because the catalog treats it as main
+while file-system metadata would use a separate directory. Names containing a
+``$``, such as ``branch=dev$options``, are also rejected for catalog writes and
+commits because they are ambiguous with system-table identifiers.
 
 What a branch keeps and what it shares
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -5134,4 +5134,59 @@ TEST(FormatTableTest, TestWriteRejectsWrongPartitionSpec) {
     ASSERT_OK(write->Abort());
 }
 
+TEST(FormatTableTest, LoadedTableRejectsAnotherTablesWriteAndCommitContext) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> first,
+                         CreateTable(fs, dir->Str() + "/a", {"dt"}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> second,
+                         CreateTable(fs, dir->Str() + "/b", {"dt"}));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch({1}, {"alice"}, "p", {{"dt", "p"}}));
+    ASSERT_OK(WriteAndCommit(first, std::move(batch)));
+    std::vector<FileStatus> before;
+    ASSERT_OK(fs->ListFileStatus(first->Location() + "/dt=p", &before));
+    before.erase(std::remove_if(before.begin(), before.end(),
+                                [](const FileStatus& file) { return file.IsDir(); }),
+                 before.end());
+    ASSERT_FALSE(before.empty());
+    for (bool typed : {false, true}) {
+        std::unique_ptr<CommitContext> commit_context;
+        std::unique_ptr<WriteContext> write_context;
+        if (typed) {
+            ASSERT_OK_AND_ASSIGN(commit_context, CommitContextBuilder(second).Finish());
+            ASSERT_OK_AND_ASSIGN(write_context, WriteContextBuilder(second).Finish());
+        } else {
+            ASSERT_OK_AND_ASSIGN(commit_context,
+                                 CommitContextBuilder(second->Location(), "user").Finish());
+            ASSERT_OK_AND_ASSIGN(write_context,
+                                 WriteContextBuilder(second->Location(), "user").Finish());
+        }
+        ASSERT_NOK_WITH_MSG(first->NewCommit(std::move(commit_context)),
+                            "context path contradicts");
+        ASSERT_NOK_WITH_MSG(first->NewWrite(std::move(write_context)), "context path contradicts");
+        for (const auto& file : before) {
+            ASSERT_OK_AND_ASSIGN(bool exists, fs->Exists(file.GetPath()));
+            ASSERT_TRUE(exists);
+        }
+    }
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FormatTable> other_identity,
+        FormatTable::Create(fs, first->Location(), Identifier("other_db", "tbl"), {}));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> wrong_identity,
+                         CommitContextBuilder(other_identity).Finish());
+    ASSERT_NOK_WITH_MSG(first->NewCommit(std::move(wrong_identity)),
+                        "context identity contradicts");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> valid,
+                         CommitContextBuilder(first).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         first->NewCommit(std::move(valid)));
+    ASSERT_OK(commit->Overwrite({{"dt", "p"}}, {}, BATCH_WRITE_COMMIT_IDENTIFIER));
+    for (const auto& file : before) {
+        ASSERT_OK_AND_ASSIGN(bool exists, fs->Exists(file.GetPath()));
+        ASSERT_FALSE(exists);
+    }
+}
+
 }  // namespace paimon::test

@@ -31,6 +31,7 @@
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/commit_context.h"
+#include "paimon/common/fs/resolving_file_system.h"
 #include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
@@ -193,11 +194,12 @@ Result<std::shared_ptr<SnapshotCommit>> NewSnapshotCommit(
 class Executor;
 class MemoryPool;
 
-FileStoreTable::FileStoreTable(std::unique_ptr<FileStore> store,
+FileStoreTable::FileStoreTable(const std::shared_ptr<FileSystem>& file_system,
+                               const std::string& root_path,
                                const std::shared_ptr<TableSchema>& schema,
-                               const Identifier& identifier, const std::string& uuid)
-    : Table(store->GetFileSystem(), store->GetRootPath(), schema, identifier, uuid),
-      store_(std::move(store)) {}
+                               const Identifier& identifier, const std::string& uuid,
+                               const std::map<std::string, std::string>& options)
+    : Table(file_system, root_path, schema, identifier, uuid), options_(options) {}
 
 Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
     const std::shared_ptr<FileSystem>& specified_file_system, const std::string& root_path,
@@ -224,11 +226,8 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
                                schema->Copy(options));
         effective_schema = std::shared_ptr<TableSchema>(std::move(normalized_schema));
     }
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
-                           CoreOptions::FromMap(options, specified_file_system, fs_scheme_map));
-    std::unique_ptr<FileStore> store =
-        std::make_unique<FileStore>(root_path, std::move(core_options));
-    return Create(std::move(store), effective_schema, identifier, uuid, fs_scheme_map);
+    return CreateWithOptions(specified_file_system, root_path, effective_schema, identifier, uuid,
+                             options, fs_scheme_map);
 }
 
 Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
@@ -241,13 +240,30 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
     PAIMON_RETURN_NOT_OK(
         CatalogUtils::CheckManagedTableType(identifier, schema, "FileStoreTable::Create"));
     PAIMON_RETURN_NOT_OK(BranchManager::CheckValidBranch(store->CurrentBranch()));
+    return CreateWithOptions(store->GetFileSystem(), store->GetRootPath(), schema, identifier, uuid,
+                             store->GetOptions().ToMap(), fs_scheme_map);
+}
+
+Result<std::shared_ptr<FileStoreTable>> FileStoreTable::CreateWithOptions(
+    const std::shared_ptr<FileSystem>& specified_file_system, const std::string& root_path,
+    const std::shared_ptr<TableSchema>& schema, const Identifier& identifier,
+    const std::string& uuid, const std::map<std::string, std::string>& options,
+    const std::map<std::string, std::string>& fs_scheme_map) {
+    // Loading metadata must not require the data-format plugins used by operators.
+    std::shared_ptr<FileSystem> file_system = specified_file_system;
+    if (!file_system) {
+        PAIMON_ASSIGN_OR_RAISE(std::string default_fs, OptionsUtils::GetValueFromMap<std::string>(
+                                                           options, Options::FILE_SYSTEM, "local"));
+        file_system = std::make_shared<ResolvingFileSystem>(
+            fs_scheme_map, StringUtils::ToLowerCase(default_fs), options);
+    }
     std::shared_ptr<FileStoreTable> table;
     if (!schema->PrimaryKeys().empty()) {
-        table =
-            std::make_shared<PrimaryKeyFileStoreTable>(std::move(store), schema, identifier, uuid);
+        table = std::make_shared<PrimaryKeyFileStoreTable>(file_system, root_path, schema,
+                                                           identifier, uuid, options);
     } else {
-        table =
-            std::make_shared<AppendOnlyFileStoreTable>(std::move(store), schema, identifier, uuid);
+        table = std::make_shared<AppendOnlyFileStoreTable>(file_system, root_path, schema,
+                                                           identifier, uuid, options);
     }
     table->fs_scheme_map_ = fs_scheme_map;
     return table;
@@ -255,10 +271,7 @@ Result<std::shared_ptr<FileStoreTable>> FileStoreTable::Create(
 
 Result<CoreOptions> FileStoreTable::ResolveOptions(
     const std::map<std::string, std::string>& overrides) const {
-    if (overrides.empty()) {
-        return store_->GetOptions();
-    }
-    auto options = store_->GetOptions().ToMap();
+    auto options = options_;
     for (const auto& [key, value] : overrides) {
         options[key] = value;
     }
@@ -268,8 +281,7 @@ Result<CoreOptions> FileStoreTable::ResolveOptions(
         return Status::Invalid("context branch contradicts the loaded table");
     }
     PAIMON_ASSIGN_OR_RAISE(TableType type, TableTypeDefine::FromOptions(options));
-    PAIMON_ASSIGN_OR_RAISE(TableType bound_type,
-                           TableTypeDefine::FromOptions(store_->GetOptions().ToMap()));
+    PAIMON_ASSIGN_OR_RAISE(TableType bound_type, TableTypeDefine::FromOptions(options_));
     if (type != bound_type) {
         return Status::Invalid("context type contradicts the loaded table");
     }

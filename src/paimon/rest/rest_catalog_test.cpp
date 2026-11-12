@@ -1068,6 +1068,25 @@ TEST_F(RestCatalogTest, ClientAndServerHeadersAreSent) {
     }
 }
 
+TEST_F(RestCatalogTest, MetadataLookupDoesNotRequireDataFormatPlugin) {
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    MockCatalogState::TableData data;
+    data.schema_json = R"({"fields": [{"id": 0, "name": "f0", "type": "INT NOT NULL"}],
+        "partitionKeys": [], "primaryKeys": [],
+        "options": {"file.format": "unavailable_format_for_metadata_test"}})";
+    data.path = "wh1/db1.db/metadata_only";
+    data.id = "catalog-uuid";
+    {
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->databases["db1"]["metadata_only"] = data;
+    }
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         catalog->GetTable(Identifier("db1", "metadata_only")));
+    ASSERT_EQ(data.path, table->GetRootPath());
+    ASSERT_EQ((std::vector<std::string>{"f0"}), table->GetSchema()->FieldNames());
+    ASSERT_EQ(std::optional<std::string>("catalog-uuid"), table->CatalogUuid());
+}
+
 TEST_F(RestCatalogTest, SystemTableSchema) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
     ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
@@ -1094,7 +1113,8 @@ TEST_F(RestCatalogTest, SystemTableSchema) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, catalog->GetTable(system_identifier));
     ASSERT_EQ("t1$options", table->Name());
     ASSERT_EQ((std::vector<std::string>{"key", "value"}), table->GetSchema()->FieldNames());
-    ASSERT_EQ("t1$options", table->Uuid());
+    ASSERT_EQ("db1.t1$options", table->FullName());
+    ASSERT_EQ("db1.t1$options", table->Uuid());
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
         ASSERT_EQ(requests_before + 1, state_->get_table_requests);

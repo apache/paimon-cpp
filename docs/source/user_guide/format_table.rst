@@ -44,6 +44,9 @@ Use :cpp:func:`Catalog::GetTable` to load a format table through the common ``Ta
 interface. Its ``NewScan``, ``NewRead``, ``NewWrite`` and ``NewCommit`` methods use the
 loaded schema, location and file system. :cpp:func:`Catalog::GetFormatTable` also returns
 the concrete ``FormatTable`` interface for callers using the legacy context constructors.
+Write and commit contexts must name the loaded table's location and, when they
+carry a format-table handle, its identity. Conflicting contexts are rejected
+before creating an operator, including for overwrite commits.
 
 Reading and writing go through the entry points every other table uses: ``TableScan::Create``,
 ``TableRead::Create``, ``FileStoreWrite::Create`` and ``FileStoreCommit::Create``, each from its

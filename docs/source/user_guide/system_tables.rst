@@ -74,15 +74,12 @@ bare ``<warehouse>/sys/<name>`` path fails with ``global system table requires
 catalog context: <name>``. ``sys.catalog_options`` enumerates nothing, and is
 the one a bare path serves.
 
-.. note::
-
-   No public read path serves those three yet. A catalog lists them and
-   returns their schema, but does not hand back a readable table:
-   ``Catalog::GetTable(Identifier("sys", "tables"))`` is rejected by a
-   file-system catalog with ``do not support checking TableSchemaExists for
-   system table``, and a REST catalog returns one whose path is left unset,
-   which ``TableScan`` and ``TableRead`` cannot dispatch to the global system
-   table loader.
+Load these tables with ``Catalog::GetTable()`` on a catalog owned by
+``std::shared_ptr``. The returned table retains the catalog for deferred reads;
+use its ``NewScan()`` and ``NewRead()`` methods to create the operators.
+Catalog-loaded system tables retain their database-qualified ``FullName()``
+(for example, ``sys.tables`` or ``db.orders$snapshots``), which is also the
+fallback value of ``Uuid()`` when no catalog UUID is available.
 
 Read-Optimized System Table
 ---------------------------

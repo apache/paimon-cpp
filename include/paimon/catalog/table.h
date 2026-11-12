@@ -62,7 +62,7 @@ class PAIMON_EXPORT Table {
     /// Returns the object name for data tables, or the system table name.
     virtual std::string Name() const = 0;
 
-    /// Returns database.tableName for data tables, or Name() for system tables.
+    /// Returns database.tableName when the database is known, otherwise Name().
     virtual std::string FullName() const = 0;
 
     /// Returns the metastore UUID, falling back to `FullName()`.

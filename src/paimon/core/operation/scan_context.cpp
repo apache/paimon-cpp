@@ -237,12 +237,6 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
     if (impl_->catalog_ == nullptr && impl_->identifier_) {
         return Status::Invalid("cannot scan through a null catalog");
     }
-    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr) {
-        // A catalog issuing per-table temporary credentials only hands them out through
-        // GetTableFileSystem, so the scan uses the credentials of this table.
-        PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
-                               impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
-    }
     PAIMON_ASSIGN_OR_RAISE(
         std::string branch,
         BranchManager::ResolveBranch(impl_->identifier_, impl_->options_, std::nullopt, "scan"));
@@ -254,6 +248,12 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
     if (named_branch || options.count(Options::BRANCH) != 0) {
         options[Options::BRANCH] = branch;
     }
+    // Keep derived credentials local so a failed Finish() cannot bind a later retry to a table.
+    std::shared_ptr<FileSystem> file_system = impl_->specific_file_system_;
+    if (impl_->catalog_ != nullptr && file_system == nullptr) {
+        PAIMON_ASSIGN_OR_RAISE(file_system,
+                               impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
+    }
     std::shared_ptr<Executor> executor =
         impl_->executor_ ? impl_->executor_ : CreateDefaultExecutor();
     auto ctx = std::make_unique<ScanContext>(
@@ -261,8 +261,8 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
         std::make_shared<ScanFilter>(impl_->predicates_, impl_->partition_filters_,
                                      impl_->bucket_filter_),
         impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_, executor,
-        impl_->specific_file_system_, impl_->table_schema_, options, impl_->cache_,
-        impl_->format_table_, impl_->catalog_, impl_->identifier_);
+        file_system, impl_->table_schema_, options, impl_->cache_, impl_->format_table_,
+        impl_->catalog_, impl_->identifier_);
     impl_->Reset();
     return ctx;
 }

@@ -194,6 +194,8 @@ class PAIMON_EXPORT FormatTable : public Table {
     }
 
  private:
+    Status CheckWriteContext(const std::string& path,
+                             const std::shared_ptr<FormatTable>& context_table) const;
     Result<std::shared_ptr<FormatTable>> ForContext(
         const std::map<std::string, std::string>& options) const;
     FormatTable(const std::shared_ptr<FileSystem>& file_system, const std::string& location,

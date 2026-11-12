@@ -37,9 +37,11 @@ class TableSchema;
 /// Managed table with primary keys; uses the shared FileStoreTable operator flows.
 class PrimaryKeyFileStoreTable : public FileStoreTable {
  public:
-    PrimaryKeyFileStoreTable(std::unique_ptr<FileStore> store,
+    PrimaryKeyFileStoreTable(const std::shared_ptr<FileSystem>& file_system,
+                             const std::string& root_path,
                              const std::shared_ptr<TableSchema>& schema,
-                             const Identifier& identifier, const std::string& uuid);
+                             const Identifier& identifier, const std::string& uuid,
+                             const std::map<std::string, std::string>& options);
 
  private:
     Result<std::unique_ptr<FileStoreWrite>> CreateWrite(

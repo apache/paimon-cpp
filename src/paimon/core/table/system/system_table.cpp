@@ -247,6 +247,25 @@ bool SystemTableLoader::IsSupported(const std::string& system_table_name) {
 }
 
 Result<std::shared_ptr<SystemTable>> SystemTableLoader::Load(
+    const Identifier& identifier, const std::shared_ptr<FileSystem>& fs,
+    const std::string& table_path, const std::shared_ptr<TableSchema>& table_schema,
+    const std::map<std::string, std::string>& dynamic_options,
+    const std::map<std::string, std::string>& fs_scheme_map) {
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> kind, identifier.GetSystemTableName());
+    if (!kind) {
+        return Status::Invalid("not a system table identifier: ", identifier.GetFullName());
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::string branch, identifier.GetBranchNameOrDefault());
+    PAIMON_ASSIGN_OR_RAISE(Identifier data_identifier,
+                           CatalogUtils::BranchIdentifier(identifier, branch));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> table,
+                           Load(kind.value(), fs, table_path, table_schema, dynamic_options,
+                                data_identifier.GetObjectName(), fs_scheme_map));
+    table->full_name_ = identifier.GetFullName();
+    return table;
+}
+
+Result<std::shared_ptr<SystemTable>> SystemTableLoader::Load(
     const std::string& system_table_name, const std::shared_ptr<FileSystem>& fs,
     const std::string& table_path, const std::shared_ptr<TableSchema>& table_schema,
     const std::map<std::string, std::string>& dynamic_options, const std::string& data_table_name,
@@ -320,21 +339,23 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
         return GlobalSystemTableLoader::Load(parsed.system_table_name, context);
     }
 
-    SchemaManager schema_manager(fs, parsed.table_path,
-                                 parsed.branch.value_or(BranchManager::DEFAULT_MAIN_BRANCH));
+    const Identifier path_identifier(Identifier::kUnknownDatabase, PathUtil::GetName(path));
+    PAIMON_ASSIGN_OR_RAISE(std::string branch,
+                           BranchManager::ResolveBranch(path_identifier, dynamic_options,
+                                                        std::nullopt, "system table"));
+    SchemaManager schema_manager(fs, parsed.table_path, branch);
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
                            schema_manager.Latest());
     if (!latest_schema) {
         return Status::NotExist("base table schema not found for system table path: ", path);
     }
     auto options = dynamic_options;
-    if (parsed.branch) {
-        options[Options::BRANCH] = parsed.branch.value();
+    if (parsed.branch || options.count(Options::BRANCH) != 0) {
+        options[Options::BRANCH] = branch;
     }
     // Preserve branch-qualified logical names when deriving identifiers from paths.
     const Identifier data_identifier(Identifier::kUnknownDatabase,
-                                     PathUtil::GetName(parsed.table_path),
-                                     parsed.branch.value_or(std::string()));
+                                     PathUtil::GetName(parsed.table_path), branch);
     return Load(parsed.system_table_name, fs, parsed.table_path, latest_schema.value(), options,
                 data_identifier.GetObjectName(), fs_scheme_map);
 }

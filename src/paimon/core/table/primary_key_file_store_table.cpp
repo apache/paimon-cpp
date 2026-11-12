@@ -89,11 +89,11 @@ struct KeyValue;
 template <typename T>
 class MergeFunctionWrapper;
 
-PrimaryKeyFileStoreTable::PrimaryKeyFileStoreTable(std::unique_ptr<FileStore> store,
-                                                   const std::shared_ptr<TableSchema>& schema,
-                                                   const Identifier& identifier,
-                                                   const std::string& uuid)
-    : FileStoreTable(std::move(store), schema, identifier, uuid) {}
+PrimaryKeyFileStoreTable::PrimaryKeyFileStoreTable(
+    const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
+    const std::shared_ptr<TableSchema>& schema, const Identifier& identifier,
+    const std::string& uuid, const std::map<std::string, std::string>& options)
+    : FileStoreTable(file_system, root_path, schema, identifier, uuid, options) {}
 
 Result<std::unique_ptr<FileStoreWrite>> PrimaryKeyFileStoreTable::CreateWrite(
     const WriteContext& ctx, const std::shared_ptr<arrow::Schema>& arrow_schema,

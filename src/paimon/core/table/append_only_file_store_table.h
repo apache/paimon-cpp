@@ -37,9 +37,11 @@ class TableSchema;
 /// Managed table without primary keys; uses the shared FileStoreTable operator flows.
 class AppendOnlyFileStoreTable : public FileStoreTable {
  public:
-    AppendOnlyFileStoreTable(std::unique_ptr<FileStore> store,
+    AppendOnlyFileStoreTable(const std::shared_ptr<FileSystem>& file_system,
+                             const std::string& root_path,
                              const std::shared_ptr<TableSchema>& schema,
-                             const Identifier& identifier, const std::string& uuid);
+                             const Identifier& identifier, const std::string& uuid,
+                             const std::map<std::string, std::string>& options);
 
  private:
     Result<std::unique_ptr<FileStoreWrite>> CreateWrite(

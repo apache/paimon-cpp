@@ -65,15 +65,17 @@ class FileStoreTable : public Table {
         const std::map<std::string, std::string>& fs_scheme_map = {});
 
     std::string CurrentBranch() const {
-        return store_->CurrentBranch();
+        auto branch = options_.find(Options::BRANCH);
+        return branch == options_.end() ? BranchManager::DEFAULT_MAIN_BRANCH
+                                        : BranchManager::NormalizeBranch(branch->second);
     }
 
     std::shared_ptr<SchemaManager> GetSchemaManager() const {
-        return store_->GetSchemaManager();
+        return std::make_shared<SchemaManager>(file_system_, root_path_, CurrentBranch());
     }
 
     std::shared_ptr<SnapshotManager> GetSnapshotManager() const {
-        return store_->GetSnapshotManager();
+        return std::make_shared<SnapshotManager>(file_system_, root_path_, CurrentBranch());
     }
 
     std::string Name() const override {
@@ -95,6 +97,12 @@ class FileStoreTable : public Table {
         std::unique_ptr<CommitContext> context) const override;
 
  private:
+    static Result<std::shared_ptr<FileStoreTable>> CreateWithOptions(
+        const std::shared_ptr<FileSystem>& specified_file_system, const std::string& root_path,
+        const std::shared_ptr<TableSchema>& schema, const Identifier& identifier,
+        const std::string& uuid, const std::map<std::string, std::string>& options,
+        const std::map<std::string, std::string>& fs_scheme_map);
+
     Result<CoreOptions> ResolveOptions(const std::map<std::string, std::string>& options) const;
     /// Rejects paths, identifiers or UUIDs that contradict this table's identity.
     /// Missing context fields are allowed.
@@ -111,8 +119,9 @@ class FileStoreTable : public Table {
         const std::shared_ptr<Executor>& executor) const;
 
  protected:
-    FileStoreTable(std::unique_ptr<FileStore> store, const std::shared_ptr<TableSchema>& schema,
-                   const Identifier& identifier, const std::string& uuid);
+    FileStoreTable(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
+                   const std::shared_ptr<TableSchema>& schema, const Identifier& identifier,
+                   const std::string& uuid, const std::map<std::string, std::string>& options);
 
     /// Restores real-time write progress from the latest snapshot.
     static Status RestoreRealtimeCommittedProgress(
@@ -150,7 +159,7 @@ class FileStoreTable : public Table {
         const std::shared_ptr<Executor>& executor,
         const std::shared_ptr<MemoryPool>& pool) const = 0;
 
-    std::unique_ptr<FileStore> store_;
+    const std::map<std::string, std::string> options_;
 
     /// URI routing supplied when this table was loaded.
     std::map<std::string, std::string> fs_scheme_map_;

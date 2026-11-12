@@ -345,23 +345,19 @@ Result<std::shared_ptr<SystemTable>> FileSystemCatalog::LoadSystemTable(
     if (!system_table_name || !SystemTableLoader::IsSupported(system_table_name.value())) {
         return Status::NotExist(fmt::format("{} not exist", identifier.ToString()));
     }
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> branch, identifier.GetBranchName());
-    PAIMON_ASSIGN_OR_RAISE(
-        Identifier data_identifier,
-        CatalogUtils::BranchIdentifier(identifier, branch.value_or(std::string())));
+    PAIMON_ASSIGN_OR_RAISE(std::string branch, identifier.GetBranchNameOrDefault());
+    PAIMON_ASSIGN_OR_RAISE(Identifier data_identifier,
+                           CatalogUtils::BranchIdentifier(identifier, branch));
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
                            TableSchemaExists(data_identifier));
     if (!latest_schema) {
         return Status::NotExist(fmt::format("{} not exist", data_identifier.ToString()));
     }
     std::map<std::string, std::string> dynamic_options;
-    if (branch) {
-        dynamic_options[Options::BRANCH] = branch.value();
-    }
+    dynamic_options[Options::BRANCH] = branch;
     PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(data_identifier));
-    return SystemTableLoader::Load(system_table_name.value(), fs_, table_path,
-                                   latest_schema.value(), dynamic_options,
-                                   data_identifier.GetObjectName(), {});
+    return SystemTableLoader::Load(identifier, fs_, table_path, latest_schema.value(),
+                                   dynamic_options, {});
 }
 
 Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& identifier) const {

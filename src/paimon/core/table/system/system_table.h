@@ -53,7 +53,8 @@ struct SystemTablePath {
 };
 
 /// Read-only table-scoped or global system view.
-/// Table-scoped names are <data table>$<kind>; global names are <kind>. FullName() equals Name().
+/// Table-scoped names are <data table>$<kind>; global names are <kind>.
+/// Catalog-loaded tables retain the database in FullName().
 class SystemTable : public Table, public std::enable_shared_from_this<SystemTable> {
  public:
     std::string Name() const override {
@@ -61,7 +62,7 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
     }
 
     std::string FullName() const override {
-        return name_;
+        return full_name_.empty() ? name_ : full_name_;
     }
 
     /// Returns this view's schema, rather than its data table's schema.
@@ -100,6 +101,7 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
 
  private:
     std::string name_;
+    std::string full_name_;
     std::map<std::string, std::string> fs_scheme_map_;
 };
 
@@ -109,6 +111,13 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
 class SystemTableLoader {
  public:
     static bool IsSupported(const std::string& system_table_name);
+
+    /// Loads a catalog view while retaining its full logical identity.
+    static Result<std::shared_ptr<SystemTable>> Load(
+        const Identifier& identifier, const std::shared_ptr<FileSystem>& fs,
+        const std::string& table_path, const std::shared_ptr<TableSchema>& table_schema,
+        const std::map<std::string, std::string>& dynamic_options,
+        const std::map<std::string, std::string>& fs_scheme_map);
 
     static Result<std::shared_ptr<SystemTable>> Load(
         const std::string& system_table_name, const std::shared_ptr<FileSystem>& fs,

@@ -48,11 +48,11 @@
 
 namespace paimon {
 
-AppendOnlyFileStoreTable::AppendOnlyFileStoreTable(std::unique_ptr<FileStore> store,
-                                                   const std::shared_ptr<TableSchema>& schema,
-                                                   const Identifier& identifier,
-                                                   const std::string& uuid)
-    : FileStoreTable(std::move(store), schema, identifier, uuid) {}
+AppendOnlyFileStoreTable::AppendOnlyFileStoreTable(
+    const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
+    const std::shared_ptr<TableSchema>& schema, const Identifier& identifier,
+    const std::string& uuid, const std::map<std::string, std::string>& options)
+    : FileStoreTable(file_system, root_path, schema, identifier, uuid, options) {}
 
 Result<std::unique_ptr<FileStoreWrite>> AppendOnlyFileStoreTable::CreateWrite(
     const WriteContext& ctx, const std::shared_ptr<arrow::Schema>& arrow_schema,
