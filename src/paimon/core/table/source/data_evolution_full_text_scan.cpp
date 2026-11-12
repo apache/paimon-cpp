@@ -22,7 +22,6 @@
 #include <algorithm>
 #include <cassert>
 #include <functional>
-#include <iterator>
 #include <limits>
 #include <map>
 #include <optional>
@@ -34,23 +33,24 @@
 
 #include "fmt/format.h"
 #include "fmt/ranges.h"
+#include "paimon/core/global_index/data_evolution_global_index_coverage.h"
 #include "paimon/core/global_index/global_index_evaluator_impl.h"
+#include "paimon/core/global_index/global_index_live_row_filter.h"
+#include "paimon/core/global_index/global_index_scan_impl.h"
 #include "paimon/core/index/index_file_handler.h"
 #include "paimon/core/manifest/index_manifest_entry.h"
 #include "paimon/core/manifest/index_manifest_file.h"
-#include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/source/index_full_text_search_split_impl.h"
-#include "paimon/core/tag/tag.h"
+#include "paimon/core/table/source/raw_full_text_search_split_impl.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/index_file_path_factories.h"
 #include "paimon/core/utils/snapshot_manager.h"
-#include "paimon/core/utils/tag_manager.h"
-#include "paimon/defs.h"
 #include "paimon/global_index/full_text/full_text_defs.h"
 #include "paimon/global_index/global_indexer.h"
 #include "paimon/global_index/global_indexer_factory.h"
 #include "paimon/global_index/lucene/lucene_defs.h"
+#include "paimon/utils/row_range_index.h"
 
 namespace paimon {
 namespace {
@@ -64,63 +64,6 @@ struct IndexRangeCandidate {
     /// The rows assigned to this shard, merged as they are assigned in ascending order.
     std::vector<Range> assigned;
 };
-
-/// Resolves the snapshot to search as Java `TimeTravelUtil#tryTravelOrLatest` does: the one that
-/// the time-travel option selects, or else the latest one.
-///
-/// TODO: take the column, the partition keys and the options from the schema of the selected
-/// snapshot, as Java time travel does. They still come from the latest schema, so a column dropped
-/// and added again with the same name since that snapshot finds no index files.
-Result<std::optional<Snapshot>> ResolveSnapshot(const CoreOptions& options,
-                                                const SnapshotManager& snapshot_manager,
-                                                const TagManager& tag_manager) {
-    // Java checks the options against `scan.mode` when it loads the table with them, which leaves
-    // at most one time-travel option set.
-    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateStartupMode(options));
-    // Java `TimeTravelUtil#SCAN_KEYS`, without `scan.watermark`, which Paimon C++ does not define.
-    const char* const time_travel_keys[] = {Options::SCAN_SNAPSHOT_ID, Options::SCAN_TAG_NAME,
-                                            Options::SCAN_TIMESTAMP,
-                                            Options::SCAN_TIMESTAMP_MILLIS};
-    const std::map<std::string, std::string>& raw_options = options.ToMap();
-    auto key_iter =
-        std::find_if(std::begin(time_travel_keys), std::end(time_travel_keys),
-                     [&raw_options](const char* key) { return raw_options.count(key) > 0; });
-    if (key_iter == std::end(time_travel_keys)) {
-        return snapshot_manager.LatestSnapshot();
-    }
-    const std::string key = *key_iter;
-    if (key == Options::SCAN_SNAPSHOT_ID) {
-        const std::optional<int64_t>& snapshot_id = options.GetScanSnapshotId();
-        if (!snapshot_id) {
-            return Status::Invalid(fmt::format("invalid {}", key));
-        }
-        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot,
-                               snapshot_manager.LoadSnapshot(snapshot_id.value()));
-        return std::optional<Snapshot>(std::move(snapshot));
-    }
-    if (key == Options::SCAN_TAG_NAME) {
-        std::optional<std::string> tag_name = options.GetScanTagName();
-        if (!tag_name) {
-            return Status::Invalid(fmt::format("invalid {}", key));
-        }
-        PAIMON_ASSIGN_OR_RAISE(Tag tag, tag_manager.GetOrThrow(tag_name.value()));
-        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, tag.TrimToSnapshot());
-        return std::optional<Snapshot>(std::move(snapshot));
-    }
-    // `CoreOptions` parses both `scan.timestamp` and `scan.timestamp-millis` into milliseconds.
-    std::optional<int64_t> timestamp_millis = options.GetScanTimestampMillis();
-    if (!timestamp_millis) {
-        return Status::Invalid(fmt::format("invalid {}", key));
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot,
-                           snapshot_manager.EarlierOrEqualTimeMillis(timestamp_millis.value()));
-    if (!snapshot) {
-        return Status::Invalid(
-            fmt::format("There is currently no snapshot earlier than or equal to timestamp [{}]",
-                        timestamp_millis.value()));
-    }
-    return snapshot;
-}
 
 /// Returns whether `left` is chosen before `right` for a row that both cover, as Java
 /// `DataEvolutionFullTextScan#compareCandidates` does.
@@ -137,17 +80,20 @@ struct CandidateRanksBefore {
 
 DataEvolutionFullTextScan::DataEvolutionFullTextScan(
     const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
-    const CoreOptions& options, const std::shared_ptr<FileStorePathFactory>& path_factory,
+    const std::optional<Snapshot>& time_travel_snapshot, const CoreOptions& options,
+    const std::shared_ptr<FileStorePathFactory>& path_factory,
     const std::shared_ptr<PredicateFilter>& partition_filter,
     const std::shared_ptr<Predicate>& filter, const DataField& text_field,
-    const std::shared_ptr<MemoryPool>& pool)
+    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool)
     : root_path_(root_path),
       table_schema_(table_schema),
+      time_travel_snapshot_(time_travel_snapshot),
       options_(options),
       path_factory_(path_factory),
       partition_filter_(partition_filter),
       filter_(filter),
       text_field_(text_field),
+      executor_(executor),
       pool_(pool) {}
 
 bool DataEvolutionFullTextScan::IndexesField(const GlobalIndexMeta& meta, int32_t field_id) {
@@ -167,20 +113,6 @@ bool DataEvolutionFullTextScan::IsScalarPreFilterFile(const GlobalIndexMeta& met
            filter_field_ids.count(meta.index_field_id) > 0;
 }
 
-Result<std::vector<std::shared_ptr<IndexFileMeta>>> DataEvolutionFullTextScan::IntersectingFiles(
-    const std::vector<std::shared_ptr<IndexFileMeta>>& index_files, const Range& row_range) {
-    std::vector<std::shared_ptr<IndexFileMeta>> files;
-    for (const auto& file : index_files) {
-        // Checked before a `Range` is built from it, as a reversed range breaks its invariant.
-        PAIMON_RETURN_NOT_OK(IndexFullTextSearchSplitImpl::CheckScalarIndexFile(file));
-        const GlobalIndexMeta& meta = file->GetGlobalIndexMeta().value();
-        if (Range::HasIntersection(Range(meta.row_range_start, meta.row_range_end), row_range)) {
-            files.push_back(file);
-        }
-    }
-    return files;
-}
-
 std::string DataEvolutionFullTextScan::IndexIdentity(const IndexFileMeta& file) {
     const std::optional<GlobalIndexMeta>& meta = file.GetGlobalIndexMeta();
     assert(meta);
@@ -189,7 +121,7 @@ std::string DataEvolutionFullTextScan::IndexIdentity(const IndexFileMeta& file) 
                        fmt::join(extra_field_ids, ", "));
 }
 
-std::vector<DataEvolutionFullTextScan::IndexRangeSelection>
+Result<std::vector<DataEvolutionFullTextScan::IndexRangeSelection>>
 DataEvolutionFullTextScan::ChooseIndexRanges(
     const std::vector<std::shared_ptr<IndexFileMeta>>& index_files, int32_t field_id) {
     // (physical range, identity) -> candidate
@@ -199,6 +131,7 @@ DataEvolutionFullTextScan::ChooseIndexRanges(
         if (!meta || !IndexesField(meta.value(), field_id)) {
             continue;
         }
+        PAIMON_RETURN_NOT_OK(IndexFullTextSearchSplitImpl::CheckIndexFile(file, "full-text"));
         Range file_range(meta->row_range_start, meta->row_range_end);
         std::string identity = IndexIdentity(*file);
         auto iter = candidates
@@ -282,12 +215,41 @@ Result<bool> DataEvolutionFullTextScan::ServesFullTextSearch(const std::string& 
     return false;
 }
 
+Result<std::shared_ptr<RawFullTextSearchSplitImpl>> DataEvolutionFullTextScan::PlanRawSplit(
+    const Snapshot& snapshot,
+    const std::vector<std::shared_ptr<IndexFileMeta>>& full_text_index_files,
+    const std::vector<IndexRangeSelection>& selections) const {
+    GlobalIndexSearchMode search_mode = options_.GetFullTextIndexSearchMode();
+    if (search_mode == GlobalIndexSearchMode::FAST || selections.empty()) {
+        return std::shared_ptr<RawFullTextSearchSplitImpl>();
+    }
+    // Coverage counts every single-field definition, including unselected shards.
+    std::vector<Range> indexed_ranges =
+        DataEvolutionGlobalIndexCoverage::IndexedRanges(full_text_index_files, {text_field_.Id()});
+    auto data_ranges = [&]() -> Result<std::vector<Range>> {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Executor> executor,
+                               GlobalIndexScanImpl::GetOrCreateExecutor(executor_, options_));
+        return GlobalIndexLiveRowFilter::DataRowRanges(
+            root_path_, table_schema_, snapshot, partition_filter_, options_, executor, pool_);
+    };
+    PAIMON_ASSIGN_OR_RAISE(std::vector<Range> raw_ranges,
+                           DataEvolutionGlobalIndexCoverage::UnindexedRanges(
+                               search_mode, snapshot.NextRowId(), indexed_ranges, data_ranges));
+    if (raw_ranges.empty()) {
+        return std::shared_ptr<RawFullTextSearchSplitImpl>();
+    }
+    return RawFullTextSearchSplitImpl::Create(
+        snapshot.Id(), text_field_.Name(), selections.front().files.front()->IndexType(),
+        std::move(raw_ranges), text_field_.Id(), table_schema_->Id());
+}
+
 Result<std::shared_ptr<FullTextScan::Plan>> DataEvolutionFullTextScan::CreatePlan() {
-    std::string branch = BranchManager::NormalizeBranch(options_.GetBranch());
-    SnapshotManager snapshot_manager(options_.GetFileSystem(), root_path_, branch);
-    TagManager tag_manager(options_.GetFileSystem(), root_path_, branch);
-    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot,
-                           ResolveSnapshot(options_, snapshot_manager, tag_manager));
+    std::optional<Snapshot> snapshot = time_travel_snapshot_;
+    if (!snapshot) {
+        SnapshotManager snapshots(options_.GetFileSystem(), root_path_,
+                                  BranchManager::NormalizeBranch(options_.GetBranch()));
+        PAIMON_ASSIGN_OR_RAISE(snapshot, snapshots.LatestSnapshot());
+    }
     if (!snapshot) {
         return std::make_shared<Plan>(std::nullopt,
                                       std::vector<std::shared_ptr<FullTextSearchSplit>>());
@@ -344,23 +306,40 @@ Result<std::shared_ptr<FullTextScan::Plan>> DataEvolutionFullTextScan::CreatePla
                 full_text_index_files.push_back(entry.index_file);
             }
         }
-        bool supports_full_text = indexer != nullptr && indexer->SupportsFullTextSearch();
-        if (IsScalarPreFilterFile(meta, filter_field_ids, supports_full_text)) {
+        if (indexer &&
+            IsScalarPreFilterFile(meta, filter_field_ids, indexer->SupportsFullTextSearch())) {
             scalar_index_files.push_back(entry.index_file);
         }
     }
 
     std::vector<std::shared_ptr<FullTextSearchSplit>> splits;
-    for (auto& selection : ChooseIndexRanges(full_text_index_files, field_id)) {
-        PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<IndexFileMeta>> split_scalar_files,
-                               IntersectingFiles(scalar_index_files, selection.file_range));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<IndexRangeSelection> selections,
+                           ChooseIndexRanges(full_text_index_files, field_id));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RawFullTextSearchSplitImpl> raw_split,
+                           PlanRawSplit(*snapshot, full_text_index_files, selections));
+    std::optional<RowRangeIndex> raw_rows;
+    if (raw_split) {
+        PAIMON_ASSIGN_OR_RAISE(raw_rows, RowRangeIndex::Create(raw_split->RowRanges()));
+    }
+    for (auto& selection : selections) {
+        if (raw_rows) {
+            // Keep the physical shard range for translating index-local row ids.
+            selection.search_ranges =
+                DataEvolutionGlobalIndexCoverage::ExcludeRanges(selection.search_ranges, *raw_rows);
+            if (selection.search_ranges.empty()) {
+                continue;
+            }
+        }
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<IndexFullTextSearchSplitImpl> split,
             IndexFullTextSearchSplitImpl::Create(
                 snapshot->Id(), text_field_.Name(), selection.file_range.from,
                 selection.file_range.to, std::move(selection.files),
-                std::move(selection.search_ranges), std::move(split_scalar_files)));
+                std::move(selection.search_ranges), scalar_index_files, table_schema_->Id()));
         splits.push_back(std::move(split));
+    }
+    if (raw_split) {
+        splits.push_back(std::move(raw_split));
     }
     return std::make_shared<Plan>(snapshot->Id(), std::move(splits));
 }

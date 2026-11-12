@@ -20,6 +20,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -37,7 +38,9 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/table/source/full_text_read.h"
+#include "paimon/utils/range.h"
 #include "paimon/utils/roaring_bitmap64.h"
+#include "paimon/utils/row_range_index.h"
 
 namespace paimon {
 /// `FullTextRead` of a data-evolution table, aligned with Java `DataEvolutionFullTextRead`.
@@ -46,6 +49,7 @@ class DataEvolutionFullTextRead : public FullTextRead {
     /// @param root_path        Root directory of the table.
     /// @param table_schema     Schema of the table.
     /// @param options          Options of the table, merged with those of the search.
+    /// @param option_overrides Options explicitly set on the search builder.
     /// @param path_factory     Path factory of the table.
     /// @param partition_filter Predicate over the partition fields used to read live rows and
     ///                         candidate rows, or null for all partitions.
@@ -58,11 +62,17 @@ class DataEvolutionFullTextRead : public FullTextRead {
     /// @param pool             Memory pool for reading indexes, manifests and candidate rows.
     static Result<std::unique_ptr<DataEvolutionFullTextRead>> Create(
         const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
-        const CoreOptions& options, const std::shared_ptr<FileStorePathFactory>& path_factory,
+        const CoreOptions& options, const std::map<std::string, std::string>& option_overrides,
+        const std::shared_ptr<FileStorePathFactory>& path_factory,
         const std::shared_ptr<PredicateFilter>& partition_filter,
         const std::shared_ptr<Predicate>& filter, const DataField& text_field,
         const std::string& query, int32_t limit, const std::shared_ptr<Executor>& executor,
         const std::shared_ptr<MemoryPool>& pool);
+
+    /// Checks query authorization and binds BLOB field options to the selected schema.
+    static Status BindSchemaOptions(const TableSchema& schema,
+                                    const std::map<std::string, std::string>& option_overrides,
+                                    CoreOptions* options);
 
     using FullTextRead::Read;
 
@@ -82,6 +92,7 @@ class DataEvolutionFullTextRead : public FullTextRead {
     DataEvolutionFullTextRead(const std::string& root_path,
                               const std::shared_ptr<TableSchema>& table_schema,
                               const CoreOptions& options,
+                              const std::map<std::string, std::string>& option_overrides,
                               const std::shared_ptr<IndexPathFactory>& index_path_factory,
                               const std::shared_ptr<GlobalIndexFileManager>& index_file_manager,
                               const std::shared_ptr<PredicateFilter>& partition_filter,
@@ -90,18 +101,22 @@ class DataEvolutionFullTextRead : public FullTextRead {
                               const std::shared_ptr<Executor>& executor,
                               const std::shared_ptr<MemoryPool>& pool);
 
-    /// Returns the rows live in snapshot `snapshot_id`, or nullopt if every row counts as live.
-    Result<std::optional<RoaringBitmap64>> LiveRows(int64_t snapshot_id) const;
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> SearchSplits(
+        const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits,
+        int64_t snapshot_id, const RowRangeIndex& raw_rows,
+        const std::string& raw_index_type) const;
 
-    /// Resolves the row filter into the rows of `index_splits` that satisfy it, as Java
-    /// `DataEvolutionFullTextRead#matchedRows` does in the `fast` `scalar-index.search-mode`, the
-    /// only one supported so far: rows that no scalar index can evaluate are excluded. Candidates
-    /// that the indexes cannot decide exactly are verified against the data with
-    /// `global-index.filter.refine-from-data`, and excluded without it.
-    /// @return The matched rows, all of them live, or nullopt if there is no row filter.
+    Result<std::optional<RoaringBitmap64>> LiveRows(
+        const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits,
+        int64_t snapshot_id) const;
+
+    /// Returns nullopt when the live-row filter alone determines which indexed rows can rank.
     Result<std::optional<RoaringBitmap64>> MatchedRows(
         const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits,
         int64_t snapshot_id, const std::optional<RoaringBitmap64>& live_rows) const;
+
+    static std::vector<Range> CollectSearchRanges(
+        const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits);
 
     /// Searches the index shard of `split` among `include_row_ids`, or all of its rows if not set,
     /// and returns at most `limit_` rows with global row ids.
@@ -112,6 +127,7 @@ class DataEvolutionFullTextRead : public FullTextRead {
     std::string root_path_;
     std::shared_ptr<TableSchema> table_schema_;
     CoreOptions options_;
+    std::map<std::string, std::string> option_overrides_;
     std::shared_ptr<IndexPathFactory> index_path_factory_;
     std::shared_ptr<GlobalIndexFileManager> index_file_manager_;
     std::shared_ptr<PredicateFilter> partition_filter_;

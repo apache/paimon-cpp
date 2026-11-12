@@ -1,0 +1,237 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Paimon Full Text 0.1.0 uses a temporary directory for its Tantivy writer.
+# Provide a RAM-backed writer for unindexed rows with the same archive and reader.
+
+diff --git a/core/src/index.rs b/core/src/index.rs
+--- a/core/src/index.rs
++++ b/core/src/index.rs
+@@ -20,7 +20,9 @@
+ use crate::error::{FtIndexError, Result};
+ use crate::io::{FullTextReadMetrics, ReadMetrics, ReadRequest, SeekRead, SeekWrite};
+ use crate::query::{BooleanOccur, MatchOperator, QuerySpec};
+-use crate::storage::{read_header, write_envelope_from_paths, ArchiveFileEntry, IndexHeader};
++use crate::storage::{
++    read_header, write_envelope_from_paths, write_envelope_header, ArchiveFileEntry, IndexHeader,
++};
+ use crate::tokenizer::{TokenizerConfig, TokenizerKind};
+ use levenshtein_automata::{Distance, LevenshteinAutomatonBuilder, DFA, SINK_STATE};
+ use roaring::RoaringTreemap;
+@@ -30,6 +32,7 @@
+ use std::path::{Path, PathBuf};
+ use std::sync::{Arc, Mutex};
+ use tantivy::collector::{FilterCollector, TopDocs};
++use tantivy::directory::{Directory, RamDirectory};
+ use tantivy::query::{
+     BooleanQuery, BoostQuery, ConstScorer, EmptyQuery, EnableScoring, Explanation, Occur, Query,
+     QueryParser, Scorer, TermQuery, Weight,
+@@ -64,7 +67,12 @@
+
+ struct FullTextIndexWriterState {
+     index_writer: IndexWriter<TantivyDocument>,
+-    temp_dir: TempDir,
++    directory: WriterDirectory,
++}
++
++enum WriterDirectory {
++    Disk(TempDir),
++    Memory(RamDirectory),
+ }
+
+ #[derive(Clone, Debug, PartialEq, Eq)]
+@@ -77,8 +85,23 @@
+     pub fn new(config: FullTextIndexConfig) -> Result<Self> {
+         config.validate()?;
+         let temp_dir = TempDir::new()?;
+-        let schema = build_schema(&config);
+-        let mut index = Index::create_in_dir(temp_dir.path(), schema.clone())?;
++        let index = Index::create_in_dir(temp_dir.path(), build_schema(&config))?;
++        Self::with_index(config, index, WriterDirectory::Disk(temp_dir))
++    }
++
++    pub fn new_in_memory(config: FullTextIndexConfig) -> Result<Self> {
++        config.validate()?;
++        let directory = RamDirectory::create();
++        let index = Index::create(directory.clone(), build_schema(&config), Default::default())?;
++        Self::with_index(config, index, WriterDirectory::Memory(directory))
++    }
++
++    fn with_index(
++        config: FullTextIndexConfig,
++        mut index: Index,
++        directory: WriterDirectory,
++    ) -> Result<Self> {
++        let schema = index.schema();
+         register_tokenizer(&mut index, &config.tokenizer)?;
+         let row_id_field = schema
+             .get_field(&config.row_id_field)
+@@ -89,7 +112,7 @@
+             config,
+             state: Some(FullTextIndexWriterState {
+                 index_writer,
+-                temp_dir,
++                directory,
+             }),
+             row_id_field,
+             text_fields,
+@@ -157,11 +180,23 @@
+         })?;
+         let FullTextIndexWriterState {
+             mut index_writer,
+-            temp_dir,
++            directory,
+         } = state;
+         index_writer.commit()?;
++        let index = index_writer.index().clone();
+         index_writer.wait_merging_threads()?;
+
++        let metadata = FullTextIndexMetadata {
++            config: self.config.clone(),
++            document_count: self.document_count,
++            tantivy_version: tantivy::version().to_string(),
++        };
++        let temp_dir = match directory {
++            WriterDirectory::Disk(temp_dir) => temp_dir,
++            WriterDirectory::Memory(ram) => {
++                return write_ram_archive(output, metadata, index, ram);
++            }
++        };
+         let files = collect_index_files(temp_dir.path())?;
+         let mut offset = 0u64;
+         let mut entries = Vec::with_capacity(files.len());
+@@ -177,11 +212,7 @@
+         }
+
+         let header = IndexHeader {
+-            metadata: FullTextIndexMetadata {
+-                config: self.config.clone(),
+-                document_count: self.document_count,
+-                tantivy_version: tantivy::version().to_string(),
+-            },
++            metadata,
+             files: entries,
+         };
+         let paths = files.iter().map(|file| &file.path).collect::<Vec<_>>();
+@@ -485,6 +516,43 @@
+             "document field '{field}' is not configured for this index"
+         )))
+     }
++}
++
++/// Write the same archive as the on-disk writer, including Tantivy's segment footers.
++fn write_ram_archive<W: SeekWrite>(
++    output: &mut W,
++    metadata: FullTextIndexMetadata,
++    index: Index,
++    directory: RamDirectory,
++) -> Result<()> {
++    let mut paths: Vec<_> = index.directory().list_managed_files().into_iter().collect();
++    paths.push(PathBuf::from(".managed.json"));
++    paths.sort();
++    let mut files = Vec::with_capacity(paths.len());
++    let mut contents = Vec::with_capacity(paths.len());
++    let mut offset = 0u64;
++    for path in paths {
++        let bytes = directory
++            .open_read(&path)
++            .map_err(tantivy::TantivyError::from)?
++            .read_bytes()?;
++        let length = bytes.len() as u64;
++        files.push(ArchiveFileEntry {
++            name: path.to_string_lossy().into_owned(),
++            offset,
++            length,
++        });
++        offset = offset.checked_add(length).ok_or_else(|| {
++            FtIndexError::InvalidStorage("full-text archive size overflow".to_string())
++        })?;
++        contents.push(bytes);
++    }
++    write_envelope_header(output, &IndexHeader { metadata, files })?;
++    for bytes in contents {
++        output.write_all(bytes.as_slice())?;
++    }
++    output.flush()?;
++    Ok(())
+ }
+
+ struct IndexFile {
+diff --git a/core/src/storage.rs b/core/src/storage.rs
+--- a/core/src/storage.rs
++++ b/core/src/storage.rs
+@@ -87,7 +87,10 @@
+     Ok(())
+ }
+
+-fn write_envelope_header<W: SeekWrite>(output: &mut W, header: &IndexHeader) -> Result<()> {
++pub(crate) fn write_envelope_header<W: SeekWrite>(
++    output: &mut W,
++    header: &IndexHeader,
++) -> Result<()> {
+     let header_json = serde_json::to_vec(header)?;
+     if header_json.len() > MAX_HEADER_BYTES {
+         return Err(FtIndexError::InvalidStorage(format!(
+diff --git a/ffi/src/lib.rs b/ffi/src/lib.rs
+--- a/ffi/src/lib.rs
++++ b/ffi/src/lib.rs
+@@ -220,10 +220,28 @@
+     values: *const *const c_char,
+     len: usize,
+ ) -> *mut PaimonFtindexWriterHandle {
++    open_writer(keys, values, len, FullTextIndexWriter::new)
++}
++
++#[no_mangle]
++pub unsafe extern "C" fn paimon_ftindex_writer_open_in_memory(
++    keys: *const *const c_char,
++    values: *const *const c_char,
++    len: usize,
++) -> *mut PaimonFtindexWriterHandle {
++    open_writer(keys, values, len, FullTextIndexWriter::new_in_memory)
++}
++
++unsafe fn open_writer(
++    keys: *const *const c_char,
++    values: *const *const c_char,
++    len: usize,
++    create: fn(FullTextIndexConfig) -> paimon_ftindex_core::Result<FullTextIndexWriter>,
++) -> *mut PaimonFtindexWriterHandle {
+     ffi_ptr(|| {
+         let options = options_from_raw(keys, values, len)?;
+         let config = FullTextIndexConfig::from_options(&options).map_err(|e| e.to_string())?;
+-        let writer = FullTextIndexWriter::new(config).map_err(|e| e.to_string())?;
++        let writer = create(config).map_err(|e| e.to_string())?;
+         Ok(Box::into_raw(Box::new(PaimonFtindexWriterHandle {
+             inner: writer,
+         })))
+diff --git a/include/paimon_ftindex.h b/include/paimon_ftindex.h
+--- a/include/paimon_ftindex.h
++++ b/include/paimon_ftindex.h
+@@ -59,6 +59,12 @@
+     const char **values,
+     size_t len);
+
++/* Builds the index segments in memory for a temporary search index. */
++PaimonFtindexWriterHandle *paimon_ftindex_writer_open_in_memory(
++    const char **keys,
++    const char **values,
++    size_t len);
++
+ int paimon_ftindex_writer_add_document(
+     PaimonFtindexWriterHandle *writer,
+     int64_t row_id,
