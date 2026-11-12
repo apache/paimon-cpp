@@ -98,7 +98,7 @@ class BitmapIndexReader : public GlobalIndexReader,
           file_size_(file_size),
           pool_(std::move(pool)) {}
 
-    std::shared_ptr<GlobalIndexResult> CreateResult(
+    Result<std::shared_ptr<GlobalIndexResult>> CreateResult(
         std::function<Result<RoaringBitmap64>()> supplier);
 
     Result<RoaringBitmap64> IsNull();

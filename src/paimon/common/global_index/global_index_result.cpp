@@ -62,7 +62,7 @@ Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexResult::And(
         bitmap1 &= bitmap2;
         return bitmap1;
     };
-    return std::make_shared<BitmapGlobalIndexResult>(supplier);
+    return BitmapGlobalIndexResult::Create(std::move(supplier));
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexResult::Or(
@@ -81,7 +81,7 @@ Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexResult::Or(
         }
         return bitmap;
     };
-    return std::make_shared<BitmapGlobalIndexResult>(supplier);
+    return BitmapGlobalIndexResult::Create(std::move(supplier));
 }
 
 Result<PAIMON_UNIQUE_PTR<Bytes>> GlobalIndexResult::Serialize(
@@ -122,8 +122,7 @@ Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexResult::Deserialize(
 
     PAIMON_ASSIGN_OR_RAISE(int32_t score_len, in.ReadValue<int32_t>());
     if (score_len == 0) {
-        return std::make_shared<BitmapGlobalIndexResult>(
-            [bitmap]() -> Result<RoaringBitmap64> { return bitmap; });
+        return std::make_shared<BitmapGlobalIndexResult>(std::move(bitmap));
     }
     if (score_len != bitmap.Cardinality()) {
         return Status::Invalid("row id count mismatches score count");

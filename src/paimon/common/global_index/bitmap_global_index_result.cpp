@@ -19,6 +19,12 @@
 #include "paimon/global_index/bitmap_global_index_result.h"
 
 namespace paimon {
+Result<std::shared_ptr<BitmapGlobalIndexResult>> BitmapGlobalIndexResult::Create(
+    BitmapSupplier bitmap_supplier) {
+    PAIMON_ASSIGN_OR_RAISE(RoaringBitmap64 bitmap, bitmap_supplier());
+    return std::make_shared<BitmapGlobalIndexResult>(std::move(bitmap));
+}
+
 Result<std::unique_ptr<GlobalIndexResult::Iterator>> BitmapGlobalIndexResult::CreateIterator()
     const {
     PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* bitmap, GetBitmap());
@@ -30,13 +36,8 @@ Result<std::shared_ptr<GlobalIndexResult>> BitmapGlobalIndexResult::And(
     const std::shared_ptr<GlobalIndexResult>& other) {
     auto typed_result = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(other);
     if (typed_result) {
-        auto supplier = [typed_result, result = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(
-                                           shared_from_this())]() -> Result<RoaringBitmap64> {
-            PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* r1, result->GetBitmap());
-            PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* r2, typed_result->GetBitmap());
-            return RoaringBitmap64::And(*r1, *r2);
-        };
-        return std::make_shared<BitmapGlobalIndexResult>(supplier);
+        return std::make_shared<BitmapGlobalIndexResult>(
+            RoaringBitmap64::And(bitmap_, typed_result->bitmap_));
     }
     return GlobalIndexResult::And(other);
 }
@@ -45,16 +46,8 @@ Result<std::shared_ptr<GlobalIndexResult>> BitmapGlobalIndexResult::Or(
     const std::shared_ptr<GlobalIndexResult>& other) {
     auto typed_result = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(other);
     if (typed_result) {
-        // Repeated lazy ORs build deep supplier chains that retain operands and materialized
-        // intermediate unions. Merge eagerly to avoid deep recursion and let previous results
-        // be released when callers drop them. AND remains lazy so callers that short-circuit
-        // can avoid materializing unused intersections.
-        PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* r1, GetBitmap());
-        PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* r2, typed_result->GetBitmap());
-        auto result = std::make_shared<BitmapGlobalIndexResult>(BitmapSupplier{});
-        result->bitmap_ = RoaringBitmap64::Or(*r1, *r2);
-        result->initialized_ = true;
-        return result;
+        return std::make_shared<BitmapGlobalIndexResult>(
+            RoaringBitmap64::Or(bitmap_, typed_result->bitmap_));
     }
     return GlobalIndexResult::Or(other);
 }
@@ -63,49 +56,32 @@ Result<std::shared_ptr<GlobalIndexResult>> BitmapGlobalIndexResult::AddOffset(in
     if (offset == 0) {
         return shared_from_this();
     }
-    auto supplier = [offset, result = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(
-                                 shared_from_this())]() -> Result<RoaringBitmap64> {
-        PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* bitmap, result->GetBitmap());
-        RoaringBitmap64 bitmap64;
-        for (auto iter = bitmap->Begin(); iter != bitmap->End(); ++iter) {
-            bitmap64.Add(offset + (*iter));
-        }
-        bitmap64.RunOptimize();
-        return bitmap64;
-    };
-    return std::make_shared<BitmapGlobalIndexResult>(supplier);
+    RoaringBitmap64 bitmap64;
+    for (auto iter = bitmap_.Begin(); iter != bitmap_.End(); ++iter) {
+        bitmap64.Add(offset + (*iter));
+    }
+    bitmap64.RunOptimize();
+    return std::make_shared<BitmapGlobalIndexResult>(std::move(bitmap64));
 }
 
 Result<const RoaringBitmap64*> BitmapGlobalIndexResult::GetBitmap() const {
-    if (!initialized_) {
-        PAIMON_ASSIGN_OR_RAISE(bitmap_, bitmap_supplier_());
-        initialized_ = true;
-    }
     return &bitmap_;
 }
 
 Result<bool> BitmapGlobalIndexResult::IsEmpty() const {
-    PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* bitmap, GetBitmap());
-    return bitmap->IsEmpty();
+    return bitmap_.IsEmpty();
 }
 
 std::string BitmapGlobalIndexResult::ToString() const {
-    auto bitmap = GetBitmap();
-    if (!bitmap.ok()) {
-        return bitmap.status().ToString();
-    }
-    return bitmap.value()->ToString();
+    return bitmap_.ToString();
 }
 
 std::shared_ptr<BitmapGlobalIndexResult> BitmapGlobalIndexResult::FromRanges(
     const std::vector<Range>& ranges) {
-    BitmapGlobalIndexResult::BitmapSupplier supplier = [ranges]() -> Result<RoaringBitmap64> {
-        RoaringBitmap64 bitmap;
-        for (const auto& range : ranges) {
-            bitmap.AddRange(range.from, range.to + 1);
-        }
-        return bitmap;
-    };
-    return std::make_shared<BitmapGlobalIndexResult>(supplier);
+    RoaringBitmap64 bitmap;
+    for (const auto& range : ranges) {
+        bitmap.AddRange(range.from, range.to + 1);
+    }
+    return std::make_shared<BitmapGlobalIndexResult>(std::move(bitmap));
 }
 }  // namespace paimon

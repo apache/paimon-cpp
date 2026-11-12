@@ -52,12 +52,18 @@ TEST(FileIndexReaderWrapperTest, TestToGlobalIndexResult) {
         check_result(global_result, {});
     }
     {
-        auto bitmap_supplier = []() -> Result<RoaringBitmap32> {
+        int32_t supplier_calls = 0;
+        auto bitmap_supplier = [&supplier_calls]() -> Result<RoaringBitmap32> {
+            ++supplier_calls;
             return RoaringBitmap32::From({1, 4, 2147483647});
         };
         auto file_result = std::make_shared<BitmapIndexResult>(bitmap_supplier);
         ASSERT_OK_AND_ASSIGN(auto global_result,
                              FileIndexReaderWrapper::ToGlobalIndexResult(file_result));
+        ASSERT_EQ(supplier_calls, 1);
+        std::weak_ptr<BitmapIndexResult> weak_file_result = file_result;
+        file_result.reset();
+        ASSERT_TRUE(weak_file_result.expired());
         check_result(global_result, {1l, 4l, 2147483647l});
     }
     {

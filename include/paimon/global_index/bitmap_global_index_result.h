@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -29,15 +30,15 @@
 #include "paimon/visibility.h"
 
 namespace paimon {
-/// Represents a global index query result backed by a Roaring bitmap. Supplier-backed results
-/// materialize their matching row ids on the first GetBitmap() call, avoiding unnecessary work
-/// when the result is not used. OR between bitmap results materializes both operands immediately
-/// and returns a cached bitmap without retaining the input results.
+/// Represents a global index query result backed by a Roaring bitmap.
 class PAIMON_EXPORT BitmapGlobalIndexResult : public GlobalIndexResult {
  public:
     using BitmapSupplier = std::function<Result<RoaringBitmap64>()>;
-    explicit BitmapGlobalIndexResult(BitmapSupplier bitmap_supplier)
-        : bitmap_supplier_(bitmap_supplier) {}
+    explicit BitmapGlobalIndexResult(RoaringBitmap64 bitmap) : bitmap_(std::move(bitmap)) {}
+
+    /// Executes the supplier immediately and returns its bitmap, or propagates its error.
+    /// The returned result does not retain the supplier or its captures.
+    static Result<std::shared_ptr<BitmapGlobalIndexResult>> Create(BitmapSupplier bitmap_supplier);
 
     class Iterator : public GlobalIndexResult::Iterator {
      public:
@@ -75,9 +76,7 @@ class PAIMON_EXPORT BitmapGlobalIndexResult : public GlobalIndexResult {
 
     /// @return A non-owning, const pointer to the bitmap. The returned pointer is valid as long as
     ///         this BitmapGlobalIndexResult object is alive. The caller must not modify the bitmap.
-    /// @note Supplier-backed results construct the bitmap on the first call to this method.
-    ///       Precomputed results and subsequent calls return the cached instance.
-    ///       Materialization may involve non-trivial CPU/IO cost. **Not thread-safe**.
+    /// @note Returns the stored bitmap without performing computation or I/O.
     Result<const RoaringBitmap64*> GetBitmap() const;
 
     /// Creates `BitmapGlobalIndexResult` for all row ids in the given ranges.
@@ -85,8 +84,6 @@ class PAIMON_EXPORT BitmapGlobalIndexResult : public GlobalIndexResult {
     static std::shared_ptr<BitmapGlobalIndexResult> FromRanges(const std::vector<Range>& ranges);
 
  private:
-    mutable bool initialized_ = false;
-    BitmapSupplier bitmap_supplier_;
-    mutable RoaringBitmap64 bitmap_;
+    RoaringBitmap64 bitmap_;
 };
 }  // namespace paimon

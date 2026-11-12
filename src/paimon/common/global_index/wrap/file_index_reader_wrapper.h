@@ -145,15 +145,12 @@ class FileIndexReaderWrapper : public GlobalIndexReader {
         if (auto remain = std::dynamic_pointer_cast<Remain>(result)) {
             return std::shared_ptr<GlobalIndexResult>();
         } else if (auto skip = std::dynamic_pointer_cast<Skip>(result)) {
-            return std::make_shared<BitmapGlobalIndexResult>(
-                []() -> Result<RoaringBitmap64> { return RoaringBitmap64(); });
+            return std::make_shared<BitmapGlobalIndexResult>(RoaringBitmap64());
         } else if (auto bitmap_result = std::dynamic_pointer_cast<BitmapIndexResult>(result)) {
-            return std::make_shared<BitmapGlobalIndexResult>(
-                [bitmap_result]() -> Result<RoaringBitmap64> {
-                    PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap32* bitmap,
-                                           bitmap_result->GetBitmap());
-                    return RoaringBitmap64(*bitmap);
-                });
+            return BitmapGlobalIndexResult::Create([bitmap_result]() -> Result<RoaringBitmap64> {
+                PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap32* bitmap, bitmap_result->GetBitmap());
+                return RoaringBitmap64(*bitmap);
+            });
         }
         return Status::Invalid(
             "invalid FileIndexResult, supposed to be Remain or Skip or BitmapIndexResult");

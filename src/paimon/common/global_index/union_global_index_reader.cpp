@@ -254,21 +254,18 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> UnionGlobalIndexReader::UnionSc
 Result<std::shared_ptr<GlobalIndexResult>> UnionGlobalIndexReader::Union(ReaderAction action) {
     auto results = ExecuteAllReaders<Result<std::shared_ptr<GlobalIndexResult>>>(action);
 
-    std::shared_ptr<GlobalIndexResult> merged_result = nullptr;
+    std::vector<std::shared_ptr<GlobalIndexResult>> index_results;
+    index_results.reserve(results.size());
     for (auto& result_or_status : results) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexResult> result,
                                std::move(result_or_status));
         if (result == nullptr) {
             return std::shared_ptr<GlobalIndexResult>(nullptr);
         }
-        if (merged_result == nullptr) {
-            merged_result = std::move(result);
-        } else {
-            PAIMON_ASSIGN_OR_RAISE(merged_result, merged_result->Or(result));
-        }
+        index_results.push_back(std::move(result));
     }
 
-    return merged_result;
+    return GlobalIndexUtils::UnionResults(index_results);
 }
 
 bool UnionGlobalIndexReader::IsThreadSafe() const {

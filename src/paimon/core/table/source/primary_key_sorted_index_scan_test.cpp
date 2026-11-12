@@ -117,9 +117,7 @@ class StubGlobalIndexReader : public MockGlobalIndexReader {
         if (equal_call_count_ != nullptr) {
             (*equal_call_count_)++;
         }
-        RoaringBitmap64 copy = equal_result_;
-        return std::make_shared<BitmapGlobalIndexResult>(
-            [bitmap = std::move(copy)]() -> Result<RoaringBitmap64> { return bitmap; });
+        return std::make_shared<BitmapGlobalIndexResult>(equal_result_);
     }
     Result<std::shared_ptr<GlobalIndexResult>> VisitNotEqual(const Literal& literal) override {
         return NotEvaluable();

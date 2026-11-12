@@ -209,9 +209,7 @@ class MockGlobalIndexReader : public GlobalIndexReader {
         if (return_nullptr_) {
             return std::shared_ptr<GlobalIndexResult>(nullptr);
         }
-        auto ids = default_result_;
-        return std::make_shared<BitmapGlobalIndexResult>(
-            [ids]() { return RoaringBitmap64::From(ids); });
+        return std::make_shared<BitmapGlobalIndexResult>(RoaringBitmap64::From(default_result_));
     }
 
  private:

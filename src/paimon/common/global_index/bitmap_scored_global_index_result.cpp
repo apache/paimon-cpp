@@ -69,7 +69,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BitmapScoredGlobalIndexResult::And(
             PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* r2, result->GetBitmap());
             return RoaringBitmap64::And(*r1, *r2);
         };
-        return std::make_shared<BitmapGlobalIndexResult>(supplier);
+        return BitmapGlobalIndexResult::Create(std::move(supplier));
     }
     auto bitmap_other = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(other);
     if (bitmap_other) {
@@ -119,7 +119,7 @@ Result<std::shared_ptr<GlobalIndexResult>> BitmapScoredGlobalIndexResult::Or(
             PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* r2, result->GetBitmap());
             return RoaringBitmap64::Or(*r1, *r2);
         };
-        return std::make_shared<BitmapGlobalIndexResult>(supplier);
+        return BitmapGlobalIndexResult::Create(std::move(supplier));
     }
     return GlobalIndexResult::Or(other);
 }
