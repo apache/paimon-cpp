@@ -25,6 +25,7 @@ if(PAIMON_ENABLE_VORTEX)
         vortex_format_writer.cpp
         vortex_ffi_util.cpp
         vortex_io_callbacks.cpp
+        vortex_predicate_converter.cpp
         vortex_stats_extractor.cpp
         vortex_writer_builder.cpp)
 
@@ -51,6 +52,7 @@ if(PAIMON_ENABLE_VORTEX)
         add_paimon_test(vortex_format_test
                         SOURCES
                         vortex_file_format_test.cpp
+                        vortex_predicate_converter_test.cpp
                         STATIC_LINK_LIBS
                         paimon_shared
                         test_utils_static

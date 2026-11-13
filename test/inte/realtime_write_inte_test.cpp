@@ -48,6 +48,7 @@
 #include "paimon/commit_context.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/predicate/equal.h"
+#include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
@@ -7007,6 +7008,169 @@ TEST_F(RealtimeWriteInteTest, TestProjectionAndPredicateForMemoryAndDisk) {
             .ValueOrDie();
     ASSERT_NE(nullptr, union_result);
     ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected_union)->Equals(*union_result));
+    ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
+TEST_F(RealtimeWriteInteTest, TestPredicateFilteringForMemoryAndSpilledCandidates) {
+    fields_ = {arrow::field("id", arrow::int64()), arrow::field("value", arrow::float64()),
+               arrow::field("payload", arrow::utf8())};
+    schema_ = arrow::schema(fields_);
+    options_[Options::REALTIME_SPILL_ENABLED] = "true";
+    options_[Options::REALTIME_STORE_STATS_MODE] = "full";
+    options_[Options::READ_BATCH_SIZE] = "2";
+    CreateTable(/*partition_keys=*/{});
+    const std::string temp_directory = PathUtil::JoinPath(dir_->Str(), "late-filter-spill");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                         RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                         CreateRealtimeWriter(realtime_context, temp_directory));
+    // Keep matching and non-matching rows in one stored batch: statistics may retain the whole
+    // batch, but exact filtering must evaluate individual rows after the read pipeline rebuilds it.
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        MakeUnpartitionedBatchFromJson(
+            R"([[0,0,-1,"minus"],[1,1,0,"zero"],[2,2,1,"one"],[3,3,null,"null"]])"));
+    ASSERT_OK(writer->Write(std::move(batch)));
+
+    struct PredicateCase {
+        std::string field_name;
+        std::shared_ptr<Predicate> predicate;
+        std::shared_ptr<arrow::DataType> type;
+        std::string expected;
+        std::string expected_with_payload;
+    };
+    std::vector<Literal> values = {Literal(int64_t{2})};
+    for (int64_t value = 100; value < 132; ++value) {
+        values.emplace_back(value);
+    }
+    const std::vector<PredicateCase> cases = {
+        {"value", PredicateBuilder::GreaterThan(0, "value", FieldType::DOUBLE, Literal(0.0)),
+         arrow::float64(), R"([[0,1]])", R"([[0,1,"one"]])"},
+        {"id", PredicateBuilder::In(0, "id", FieldType::BIGINT, values), arrow::int64(),
+         R"([[0,2]])", R"([[0,2,"one"]])"},
+        {"id", PredicateBuilder::NotIn(0, "id", FieldType::BIGINT, values), arrow::int64(),
+         R"([[0,0],[0,1],[0,3]])", R"([[0,0,"minus"],[0,1,"zero"],[0,3,"null"]])"}};
+
+    double memory_before_spill = 0;
+    for (bool spilled : {false, true}) {
+        SCOPED_TRACE(spilled);
+        if (spilled) {
+            ASSERT_OK(writer->Seal());
+            ASSERT_EQ(1, TestHelper::CountChannelFiles(dir_->GetFileSystem(), temp_directory));
+        }
+        ASSERT_OK_AND_ASSIGN(RealtimeMetricValues metrics,
+                             ReadRealtimeMetrics(writer->GetMetrics()));
+        ASSERT_EQ(4, metrics.total_rows);
+        if (spilled) {
+            // Full batch statistics stay resident after spilling the Arrow payload to IPC.
+            ASSERT_EQ(0, metrics.building_memory);
+            ASSERT_EQ(0, metrics.building_rows);
+            ASSERT_EQ(4, metrics.sealed_rows);
+            ASSERT_GT(metrics.sealed_memory, 0);
+            ASSERT_EQ(metrics.sealed_memory, metrics.total_memory);
+            ASSERT_LT(metrics.total_memory, memory_before_spill);
+        } else {
+            ASSERT_GT(metrics.building_memory, 0);
+            ASSERT_EQ(4, metrics.building_rows);
+            ASSERT_EQ(0, metrics.sealed_rows);
+            memory_before_spill = metrics.building_memory;
+        }
+
+        for (const auto& test_case : cases) {
+            SCOPED_TRACE(test_case.predicate->ToString());
+            for (bool with_payload : {false, true}) {
+                SCOPED_TRACE(with_payload);
+                std::vector<std::string> projection = {test_case.field_name};
+                arrow::FieldVector result_fields = {
+                    arrow::field("_VALUE_KIND", arrow::int8()),
+                    arrow::field(test_case.field_name, test_case.type)};
+                if (with_payload) {
+                    projection.push_back("payload");
+                    result_fields.push_back(fields_[2]);
+                }
+                const auto result_type = arrow::struct_(result_fields);
+                const std::string candidates =
+                    test_case.field_name == "value"
+                        ? (with_payload
+                               ? R"([[0,-1,"minus"],[0,0,"zero"],[0,1,"one"],[0,null,"null"]])"
+                               : R"([[0,-1],[0,0],[0,1],[0,null]])")
+                        : (with_payload ? R"([[0,0,"minus"],[0,1,"zero"],[0,2,"one"],[0,3,"null"]])"
+                                        : R"([[0,0],[0,1],[0,2],[0,3]])");
+                for (bool exact_filter : {false, true}) {
+                    SCOPED_TRACE(exact_filter);
+                    for (bool late_materializing : {false, true}) {
+                        SCOPED_TRACE(late_materializing);
+                        for (bool use_bitmap : {false, true}) {
+                            SCOPED_TRACE(use_bitmap);
+                            // Each read consumes its own real-time read-view ticket.
+                            ASSERT_OK_AND_ASSIGN(
+                                std::shared_ptr<Plan> plan,
+                                CreatePlan(realtime_context, /*predicate=*/nullptr));
+                            ASSERT_EQ(1, plan->Splits().size());
+                            auto split =
+                                std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits()[0]);
+                            ASSERT_NE(nullptr, split);
+                            ASSERT_TRUE(split->DiskSplits().empty());
+                            ReadContextBuilder read_builder(table_path_);
+                            read_builder.SetOptions(options_)
+                                .SetReadFieldNames(projection)
+                                .SetPredicate(test_case.predicate)
+                                .EnablePredicateFilter(exact_filter)
+                                .EnableLateMaterializing(late_materializing)
+                                .WithRealtimeContext(realtime_context)
+                                .WithMemoryPool(pool_);
+                            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                                                 read_builder.Finish());
+                            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                                                 TableRead::Create(std::move(read_context)));
+                            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                                                 table_read->CreateReader(plan->Splits()));
+                            std::shared_ptr<arrow::ChunkedArray> result;
+                            if (!use_bitmap) {
+                                ASSERT_OK_AND_ASSIGN(
+                                    result, ReadResultCollector::CollectResult(std::move(reader)));
+                            } else {
+                                ScopeGuard close_reader([&reader]() { reader->Close(); });
+                                auto arrow_pool = std::shared_ptr<arrow::MemoryPool>(
+                                    arrow::default_memory_pool(), [](arrow::MemoryPool*) {});
+                                arrow::ArrayVector arrays;
+                                while (true) {
+                                    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap next,
+                                                         reader->NextBatchWithBitmap());
+                                    if (BatchReader::IsEofBatch(next)) {
+                                        break;
+                                    }
+                                    ASSERT_OK(ReadResultCollector::CheckBatchOffset(next.first));
+                                    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch filtered,
+                                                         ReaderUtils::ApplyBitmapToReadBatch(
+                                                             std::move(next), arrow_pool));
+                                    ASSERT_OK_AND_ASSIGN(
+                                        std::shared_ptr<arrow::Array> array,
+                                        ReadResultCollector::GetArray(std::move(filtered)));
+                                    arrays.push_back(std::move(array));
+                                }
+                                auto chunked = arrow::ChunkedArray::Make(std::move(arrays));
+                                ASSERT_TRUE(chunked.ok()) << chunked.status().ToString();
+                                result = std::move(chunked).ValueOrDie();
+                            }
+                            // Memory and IPC candidates do not pass through the file probe.
+                            const std::string& expected_json =
+                                exact_filter ? (with_payload ? test_case.expected_with_payload
+                                                             : test_case.expected)
+                                             : candidates;
+                            auto expected = arrow::ipc::internal::json::ArrayFromJSON(result_type,
+                                                                                      expected_json)
+                                                .ValueOrDie();
+                            ASSERT_NE(nullptr, result);
+                            ASSERT_TRUE(
+                                std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
+                                << result->ToString();
+                        }
+                    }
+                }
+            }
+        }
+    }
     ASSERT_OK(PrepareAndClose(writer.get()));
 }
 

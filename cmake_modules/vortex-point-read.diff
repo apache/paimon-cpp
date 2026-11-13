@@ -1,0 +1,374 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+diff --git a/vortex-layout/src/layouts/dict/reader.rs b/vortex-layout/src/layouts/dict/reader.rs
+--- a/vortex-layout/src/layouts/dict/reader.rs
++++ b/vortex-layout/src/layouts/dict/reader.rs
+@@ -45,8 +45,8 @@
+     values_len: usize,
+     /// Cached dict values array
+     values_array: OnceLock<SharedArrayFuture>,
+-    /// Cache of expression evaluation results on the values array by expression
+-    values_evals: DashMap<Expression, SharedArrayFuture>,
++    /// Expression results are only cached for filtering, not payload projection.
++    values_evals: OnceLock<DashMap<Expression, SharedArrayFuture>>,
+
+     values: LayoutReaderRef,
+     codes: LayoutReaderRef,
+@@ -135,12 +135,13 @@
+         // shouldn't.
+         // TODO(joe): fixme
+
++        let values_evals = self.values_evals.get_or_init(DashMap::default);
+         // Check cache first with read-only lock
+-        if let Some(fut) = self.values_evals.get(&expr) {
++        if let Some(fut) = values_evals.get(&expr) {
+             return fut.clone();
+         }
+
+-        self.values_evals
++        values_evals
+             .entry(expr.clone())
+             .or_insert_with(|| {
+                 self.values_array_uncanonical()
+@@ -290,12 +291,15 @@
+     use vortex_array::session::ArraySession;
+     use vortex_array::validity::Validity;
+     use vortex_error::VortexExpect;
++    use vortex_error::VortexResult;
++    use vortex_error::vortex_err;
+     use vortex_io::runtime::Handle;
+     use vortex_io::runtime::single::block_on;
+     use vortex_io::session::RuntimeSession;
+     use vortex_io::session::RuntimeSessionExt;
+     use vortex_session::VortexSession;
+
++    use super::DictReader;
+     use crate::LayoutId;
+     use crate::LayoutRef;
+     use crate::LayoutStrategy;
+@@ -373,9 +377,12 @@
+                 Nullability::NonNullable,
+             );
+             assert!(layout.encoding_id() == LayoutId::new("vortex.dict"));
+-            let actual = layout
++            let reader = layout
+                 .new_reader("".into(), segments, &session, &Default::default())
+-                .unwrap()
++                .unwrap();
++            let dict_reader = reader.as_any().downcast_ref::<DictReader>().unwrap();
++            assert!(dict_reader.values_evals.get().is_none());
++            let actual = reader
+                 .projection_evaluation(
+                     &(0..layout.row_count()),
+                     &expression,
+@@ -384,6 +391,7 @@
+                 .unwrap()
+                 .await
+                 .unwrap();
++            assert!(dict_reader.values_evals.get().is_none());
+             let expected = StructArray::try_new(
+                 FieldNames::from([FieldName::from("top")]),
+                 vec![
+@@ -402,6 +410,92 @@
+             .unwrap()
+             .into_array();
+             assert_arrays_eq!(actual, expected);
++        })
++    }
++
++    #[test]
++    fn repeated_nullable_filters_share_lazy_expression_cache() -> VortexResult<()> {
++        block_on(|handle| async move {
++            let session = session_with_handle(handle);
++            let strategy = DictStrategy::new(
++                FlatLayoutStrategy::default(),
++                FlatLayoutStrategy::default(),
++                FlatLayoutStrategy::default(),
++                DictLayoutOptions::default(),
++            );
++            let array = VarBinArray::from_iter(
++                [
++                    Some("abc"),
++                    Some("def"),
++                    None,
++                    Some("abc"),
++                    Some("def"),
++                    None,
++                    Some("abc"),
++                    Some("def"),
++                    None,
++                ],
++                DType::Utf8(Nullability::Nullable),
++            )
++            .into_array();
++            let segments = Arc::new(TestSegments::default());
++            let (ptr, eof) = SequenceId::root().split();
++            let layout = strategy
++                .write_stream(
++                    ArrayContext::empty(),
++                    Arc::<TestSegments>::clone(&segments),
++                    SequentialStreamAdapter::new(
++                        DType::Utf8(Nullability::Nullable),
++                        array.to_array_stream().sequenced(ptr),
++                    )
++                    .sendable(),
++                    eof,
++                    &session,
++                )
++                .await?;
++            assert!(layout.encoding_id() == LayoutId::new("vortex.dict"));
++            let reader = layout.new_reader("".into(), segments, &session, &Default::default())?;
++            let dict_reader = reader
++                .as_any()
++                .downcast_ref::<DictReader>()
++                .ok_or_else(|| vortex_err!("dict fixture did not create a DictReader"))?;
++            assert!(dict_reader.values_evals.get().is_none());
++
++            let filter = eq(
++                root(),
++                lit(vortex_array::scalar::Scalar::utf8(
++                    "abc",
++                    Nullability::Nullable,
++                )),
++            );
++            let first_mask = reader
++                .filter_evaluation(&(0..9), &filter, MaskFuture::new_true(9))?
++                .await?;
++            let expected = [true, false, false, true, false, false, true, false, false];
++            assert_arrays_eq!(first_mask.into_array(), BoolArray::from_iter(expected));
++            let cache = dict_reader
++                .values_evals
++                .get()
++                .ok_or_else(|| vortex_err!("filter did not initialize the expression cache"))?;
++            assert_eq!(cache.len(), 1);
++            let first_future = cache
++                .get(&filter)
++                .ok_or_else(|| vortex_err!("first expression future is missing"))?
++                .value()
++                .clone();
++
++            let second_mask = reader
++                .filter_evaluation(&(0..9), &filter, MaskFuture::new_true(9))?
++                .await?;
++            assert_arrays_eq!(second_mask.into_array(), BoolArray::from_iter(expected));
++            assert_eq!(cache.len(), 1);
++            let second_future = cache
++                .get(&filter)
++                .ok_or_else(|| vortex_err!("repeated expression future is missing"))?
++                .value()
++                .clone();
++            assert!(first_future.ptr_eq(&second_future));
++            Ok(())
+         })
+     }
+
+diff --git a/vortex-ffi/src/session.rs b/vortex-ffi/src/session.rs
+--- a/vortex-ffi/src/session.rs
++++ b/vortex-ffi/src/session.rs
+@@ -1,7 +1,10 @@
+ // SPDX-License-Identifier: Apache-2.0
+ // SPDX-FileCopyrightText: Copyright the Vortex contributors
+
++use std::sync::LazyLock;
++
+ use vortex::VortexSessionDefault;
++use vortex::array::arrow::ArrowSessionExt;
+ use vortex::error::VortexResult;
+ use vortex::error::vortex_ensure;
+ use vortex::io::runtime::BlockingRuntime;
+@@ -16,6 +19,34 @@
+     VortexSession,
+     vx_session
+ );
++
++// This session is private to the Paimon callback reader. Public/configurable
++// sessions must remain fresh: VortexSession::clone shares mutable SessionVars.
++// Single-file callback opens keep file metadata, caches and execution contexts
++// outside this default session. Initialize the only lazy read-path registry
++// before publishing it, and never configure/register against these handles.
++static PAIMON_READ_SESSION: LazyLock<VortexSession> = LazyLock::new(|| {
++    let session = VortexSession::default().with_handle(RUNTIME.handle());
++    drop(session.arrow());
++    session
++});
++
++/// Create an owned handle to Paimon's shared default callback-reader session.
++///
++/// This private integration entry point does not change the isolation of
++/// [`vx_session_new`] or [`vx_session_new_with`]. Free the owned handle with
++/// [`vx_session_free`]; other reader handles remain valid.
++///
++/// # Safety
++///
++/// The handle is only for Paimon's fixed-runtime, single-file callback read and
++/// Arrow export paths. The caller must not configure it, register plugins, change
++/// session variables/allocators/runtime, or pass it to a writer or multi-file
++/// source. Those operations require a fresh [`vx_session_new`] session.
++#[unsafe(no_mangle)]
++pub unsafe extern "C-unwind" fn vx_paimon_read_session_new() -> *mut vx_session {
++    vx_session::new(PAIMON_READ_SESSION.clone())
++}
+
+ /// Create an FFI session from a configured default session.
+ pub fn vx_session_new_with(
+@@ -58,9 +89,30 @@
+
+ #[cfg(test)]
+ mod tests {
++    use std::collections::BTreeSet;
++    use std::thread;
++
++    use arrow_schema::DataType;
++    use arrow_schema::Field;
++    use vortex::array::IntoArray;
++    use vortex::array::VortexSessionExecute;
++    use vortex::array::arrays::PrimitiveArray;
++    use vortex::array::arrow::ArrowSessionExt;
++    use vortex::array::session::ArraySessionExt;
++    use vortex::array::validity::Validity;
++    use vortex::buffer::buffer;
++    use vortex::error::VortexResult;
++    use vortex::error::vortex_err;
++    use vortex::io::session::RuntimeSessionExt;
++    use vortex::session::registry::Id;
++    use vortex_array::assert_arrays_eq;
++
++    use crate::session::vx_paimon_read_session_new;
++    use crate::session::vx_session;
+     use crate::session::vx_session_clone;
+     use crate::session::vx_session_free;
+     use crate::session::vx_session_new;
++    use crate::session::vx_session_new_with;
+
+     #[test]
+     #[cfg_attr(miri, ignore)]
+@@ -81,9 +133,113 @@
+
+             let copy = vx_session_clone(session);
+             assert!(!copy.is_null());
++            drop(vx_session::as_ref(copy).clone().allow_unknown());
++            assert!(vx_session::as_ref(session).allows_unknown());
++            let fresh = vx_session_new();
++            assert!(!vx_session::as_ref(fresh).allows_unknown());
++            vx_session_free(fresh);
+             vx_session_free(session);
+
+             vx_session_free(copy);
+         }
+     }
+-}
++
++    #[test]
++    #[cfg_attr(miri, ignore)]
++    fn test_configured_sessions_are_isolated_from_paimon_read_defaults() {
++        unsafe {
++            let custom_id = Id::new("paimon.session.isolation-test");
++            let custom = vx_session_new_with(|session| {
++                let registry = session.arrays().registry().clone();
++                let plugin = registry.items().next();
++                if let Some(plugin) = plugin {
++                    registry.register(custom_id, plugin);
++                }
++                session.allow_unknown()
++            });
++            let reader = vx_paimon_read_session_new();
++            let fresh = vx_session_new();
++            assert!(vx_session::as_ref(custom).allows_unknown());
++            assert!(
++                vx_session::as_ref(custom)
++                    .arrays()
++                    .registry()
++                    .find(&custom_id)
++                    .is_some()
++            );
++            for handle in [reader, fresh] {
++                let session = vx_session::as_ref(handle);
++                assert!(!session.allows_unknown());
++                assert!(session.arrays().registry().find(&custom_id).is_none());
++            }
++            vx_session_free(custom);
++            vx_session_free(reader);
++            vx_session_free(fresh);
++        }
++    }
++
++    #[test]
++    #[cfg_attr(miri, ignore)]
++    fn test_paimon_read_defaults_survive_handle_lifetimes() {
++        unsafe {
++            let first = vx_paimon_read_session_new();
++            let second = vx_paimon_read_session_new();
++            assert_ne!(first, second);
++            let expected = vx_session::as_ref(first)
++                .arrays()
++                .registry()
++                .ids()
++                .collect::<BTreeSet<_>>();
++            vx_session_free(first);
++            let actual = vx_session::as_ref(second)
++                .arrays()
++                .registry()
++                .ids()
++                .collect::<BTreeSet<_>>();
++            assert_eq!(actual, expected);
++            assert!(!actual.is_empty());
++            drop(vx_session::as_ref(second).handle());
++            vx_session_free(second);
++        }
++    }
++
++    #[test]
++    #[cfg_attr(miri, ignore)]
++    fn test_paimon_read_defaults_support_concurrent_arrow_execution() -> VortexResult<()> {
++        let workers = (0..8)
++            .map(|_| {
++                thread::spawn(|| -> VortexResult<()> {
++                    for _ in 0..16 {
++                        // Keep a session reference after releasing its FFI handle,
++                        // just as a file/data-source keeps its own session clone.
++                        let session = unsafe {
++                            let handle = vx_paimon_read_session_new();
++                            let session = vx_session::as_ref(handle).clone();
++                            vx_session_free(handle);
++                            session
++                        };
++                        let input =
++                            PrimitiveArray::new(buffer![1_i32, 2, 3], Validity::NonNullable)
++                                .into_array();
++                        let mut ctx = session.create_execution_ctx();
++                        let exported =
++                            session
++                                .arrow()
++                                .execute_arrow(input.clone(), None, &mut ctx)?;
++                        let imported = session
++                            .arrow()
++                            .from_arrow_array(exported, &Field::new("", DataType::Int32, false))?;
++                        assert_arrays_eq!(input, imported);
++                    }
++                    Ok(())
++                })
++            })
++            .collect::<Vec<_>>();
++        for worker in workers {
++            worker
++                .join()
++                .map_err(|_| vortex_err!("Paimon session worker panicked"))??;
++        }
++        Ok(())
++    }
++}
