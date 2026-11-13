@@ -32,7 +32,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/utils/path_util.h"
@@ -466,7 +466,7 @@ TEST(SnapshotFileScanTest, TestCommittedRealtimeOffsetFiles) {
     const std::string table_path = dir->Str() + "/foo.db/bar";
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
-    TableLoadOptions write_builder_load_options{table_path};
+    TableLoadContext write_builder_load_context{table_path};
     std::map<std::string, std::string> write_builder_options;
     WriteContextBuilder write_builder("test");
     write_builder_options[Options::REALTIME_ENABLED] = "true";
@@ -474,7 +474,7 @@ TEST(SnapshotFileScanTest, TestCommittedRealtimeOffsetFiles) {
         std::unique_ptr<WriteContext> write_context,
         write_builder.WithStreamingMode(true).WithRealtimeContext(realtime_context).Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
-                         FileStoreWrite::Create(write_builder_load_options,
+                         FileStoreWrite::Create(write_builder_load_context,
                                                 std::move(write_context), write_builder_options));
     auto input_type = arrow::struct_({arrow::field("_REALTIME_OFFSET", arrow::int64(), false),
                                       schema->field(0), schema->field(1)});
@@ -484,14 +484,14 @@ TEST(SnapshotFileScanTest, TestCommittedRealtimeOffsetFiles) {
     ASSERT_OK(writer->Write(std::move(batch)));
     ASSERT_OK_AND_ASSIGN(auto progress, writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
     ASSERT_FALSE(progress.empty());
-    TableLoadOptions commit_builder_load_options{table_path};
+    TableLoadContext commit_builder_load_context{table_path};
     std::map<std::string, std::string> commit_builder_options;
     CommitContextBuilder commit_builder("test");
     commit_builder_options[Options::REALTIME_ENABLED] = "true";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<FileStoreCommit> commit,
-        FileStoreCommit::Create(commit_builder_load_options, std::move(commit_context),
+        FileStoreCommit::Create(commit_builder_load_context, std::move(commit_context),
                                 commit_builder_options));
     ASSERT_OK_AND_ASSIGN(int64_t snapshot_id,
                          commit->CommitWithProgress(progress, 0, std::nullopt));

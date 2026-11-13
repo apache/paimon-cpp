@@ -36,7 +36,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
@@ -112,14 +112,14 @@ class AppendOnlyFileStoreWriteTest : public testing::Test {
         const std::string& table_path, const std::shared_ptr<arrow::Schema>& schema,
         const std::map<std::string, std::string>& options, const std::string& json,
         int64_t commit_identifier) const {
-        TableLoadOptions builder_load_options{table_path};
+        TableLoadContext builder_load_context{table_path};
         std::map<std::string, std::string> builder_options;
         WriteContextBuilder builder(commit_user_);
         builder_options = options;
 
         EXPECT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
         EXPECT_OK_AND_ASSIGN(auto file_store_write,
-                             FileStoreWrite::Create(builder_load_options, std::move(write_context),
+                             FileStoreWrite::Create(builder_load_context, std::move(write_context),
                                                     builder_options));
         EXPECT_OK(file_store_write->Write(MakeBatch(schema, json)));
         EXPECT_OK_AND_ASSIGN(auto commit_msgs, file_store_write->PrepareCommit(
@@ -133,14 +133,14 @@ class AppendOnlyFileStoreWriteTest : public testing::Test {
         const std::map<std::string, std::string>& options,
         const std::vector<std::string>& write_schema, const std::string& json,
         int64_t commit_identifier) const {
-        TableLoadOptions builder_load_options{table_path};
+        TableLoadContext builder_load_context{table_path};
         std::map<std::string, std::string> builder_options;
         WriteContextBuilder builder(commit_user_);
         builder_options = options;
         builder.WithWriteSchema(write_schema);
         EXPECT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
         EXPECT_OK_AND_ASSIGN(auto file_store_write,
-                             FileStoreWrite::Create(builder_load_options, std::move(write_context),
+                             FileStoreWrite::Create(builder_load_context, std::move(write_context),
                                                     builder_options));
         EXPECT_OK(file_store_write->Write(MakeBatch(schema, json)));
         EXPECT_OK_AND_ASSIGN(auto commit_msgs, file_store_write->PrepareCommit(
@@ -151,14 +151,14 @@ class AppendOnlyFileStoreWriteTest : public testing::Test {
 
     void Commit(const std::string& table_path, const std::map<std::string, std::string>& options,
                 const std::vector<std::shared_ptr<CommitMessage>>& commit_msgs) const {
-        TableLoadOptions builder_load_options{table_path};
+        TableLoadContext builder_load_context{table_path};
         std::map<std::string, std::string> builder_options;
         CommitContextBuilder builder(commit_user_);
         builder_options = options;
 
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto file_store_commit,
-                             FileStoreCommit::Create(builder_load_options,
+                             FileStoreCommit::Create(builder_load_context,
                                                      std::move(commit_context), builder_options));
         ASSERT_OK(file_store_commit->Commit(commit_msgs));
     }
@@ -238,12 +238,12 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestWriteWithInvalidBatch) {
                                        /*primary_keys=*/{}, /*options=*/{},
                                        /*ignore_if_exists=*/false));
 
-        TableLoadOptions builder_load_options{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
+        TableLoadContext builder_load_context{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
         std::map<std::string, std::string> builder_options;
         WriteContextBuilder builder(commit_user_);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto file_store_write,
-                             FileStoreWrite::Create(builder_load_options, std::move(write_context),
+                             FileStoreWrite::Create(builder_load_context, std::move(write_context),
                                                     builder_options));
         ASSERT_NOK_WITH_MSG(file_store_write->PrepareCommitWithProgress(/*commit_identifier=*/0),
                             "PrepareCommitWithProgress is only supported by a real-time writer");
@@ -261,13 +261,13 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestWriteWithInvalidBatch) {
                                        /*primary_keys=*/{}, /*options=*/{},
                                        /*ignore_if_exists=*/false));
 
-        TableLoadOptions context_builder_load_options{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
+        TableLoadContext context_builder_load_context{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
         std::map<std::string, std::string> context_builder_options;
         WriteContextBuilder context_builder(commit_user_);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(
             auto file_store_write,
-            FileStoreWrite::Create(context_builder_load_options, std::move(write_context),
+            FileStoreWrite::Create(context_builder_load_context, std::move(write_context),
                                    context_builder_options));
         auto array = std::make_shared<arrow::Array>();
         arrow::StringBuilder builder;
@@ -309,7 +309,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksExternalOffsetRange)
     {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> batch_realtime_context,
                              RealtimeContext::Create());
-        TableLoadOptions batch_builder_load_options{table_path};
+        TableLoadContext batch_builder_load_context{table_path};
         std::map<std::string, std::string> batch_builder_options;
         WriteContextBuilder batch_builder(commit_user_);
         batch_builder_options = options;
@@ -317,7 +317,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksExternalOffsetRange)
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> batch_context, batch_builder.Finish());
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<FileStoreWrite> batch_writer,
-            FileStoreWrite::Create(batch_builder_load_options, std::move(batch_context),
+            FileStoreWrite::Create(batch_builder_load_context, std::move(batch_context),
                                    batch_builder_options));
         ASSERT_NOK_WITH_MSG(batch_writer->PrepareCommitWithProgress(/*commit_identifier=*/0),
                             "PrepareCommitWithProgress requires streaming mode");
@@ -326,7 +326,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksExternalOffsetRange)
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
-    TableLoadOptions builder_load_options{table_path};
+    TableLoadContext builder_load_context{table_path};
     std::map<std::string, std::string> builder_options;
     WriteContextBuilder builder(commit_user_);
     builder_options = options;
@@ -334,7 +334,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksExternalOffsetRange)
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         auto file_store_write,
-        FileStoreWrite::Create(builder_load_options, std::move(write_context), builder_options));
+        FileStoreWrite::Create(builder_load_context, std::move(write_context), builder_options));
 
     ASSERT_OK(file_store_write->Write(MakeBatch(realtime_schema, R"([
         [10, 1, "a"],
@@ -407,8 +407,8 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksExternalOffsetRange)
 }
 
 TEST_F(AppendOnlyFileStoreWriteTest, TestGetMaxSequenceNumberFromMultiPartition) {
-    TableLoadOptions builder_load_options;
-    builder_load_options.path =
+    TableLoadContext builder_load_context;
+    builder_load_context.path =
         paimon::test::GetDataDir() +
         "/orc/multi_partition_append_table.db/multi_partition_append_table/";
     std::map<std::string, std::string> builder_options;
@@ -418,7 +418,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestGetMaxSequenceNumberFromMultiPartition)
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         auto file_store_write,
-        FileStoreWrite::Create(builder_load_options, std::move(write_context), builder_options));
+        FileStoreWrite::Create(builder_load_context, std::move(write_context), builder_options));
     auto write = dynamic_cast<AppendOnlyFileStoreWrite*>(file_store_write.get());
     auto pool = GetDefaultPool();
     {
@@ -478,7 +478,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingMapAdaptsAcrossRollingFi
 
     std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
 
-    TableLoadOptions builder_load_options{table_path};
+    TableLoadContext builder_load_context{table_path};
     std::map<std::string, std::string> builder_options;
     WriteContextBuilder builder(commit_user_);
     builder_options = options;
@@ -486,7 +486,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingMapAdaptsAcrossRollingFi
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         auto file_store_write,
-        FileStoreWrite::Create(builder_load_options, std::move(write_context), builder_options));
+        FileStoreWrite::Create(builder_load_context, std::move(write_context), builder_options));
     ASSERT_OK(file_store_write->Write(MakeBatch(logical_schema, R"([
         [1, [["a", 1], ["b", 2]]]
     ])")));
@@ -591,7 +591,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingMultipleMapColumnsAdaptA
     CreateTable(dir->Str(), logical_schema, options);
     std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
 
-    TableLoadOptions builder_load_options{table_path};
+    TableLoadContext builder_load_context{table_path};
     std::map<std::string, std::string> builder_options;
     WriteContextBuilder builder(commit_user_);
     builder_options = options;
@@ -599,7 +599,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestSharedShreddingMultipleMapColumnsAdaptA
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         auto file_store_write,
-        FileStoreWrite::Create(builder_load_options, std::move(write_context), builder_options));
+        FileStoreWrite::Create(builder_load_context, std::move(write_context), builder_options));
     ASSERT_OK(file_store_write->Write(MakeBatch(logical_schema, R"([
         [1, [["a", 1], ["b", 2]], [["c", 3], ["d", 4], ["e", 5], ["f", 6]]]
     ])")));

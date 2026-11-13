@@ -30,7 +30,7 @@
 
 #include "arrow/memory_pool.h"
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -118,10 +118,10 @@ Result<std::unique_ptr<TableScan>> OrdinaryScan(
     std::ifstream schema_file(input.path + "/schema/schema-0");
     std::string schema{std::istreambuf_iterator<char>(schema_file),
                        std::istreambuf_iterator<char>()};
-    TableLoadOptions builder_load_options{input.path};
+    TableLoadContext builder_load_context{input.path};
     std::map<std::string, std::string> builder_options;
     ScanContextBuilder builder;
-    builder_load_options.table_schema_json = schema;
+    builder_load_context.table_schema_json = schema;
     builder_options["scan.snapshot-id"] = input.snapshot;
     builder.WithMemoryPool(pool).WithExecutor(executor);
     if (input.cache) {
@@ -130,9 +130,9 @@ Result<std::unique_ptr<TableScan>> OrdinaryScan(
         builder.WithCache(input.cache);
     }
     if (input.bucket) builder.SetBucketFilter(*input.bucket);
-    builder_load_options.file_system = input.file_system;
+    builder_load_context.file_system = input.file_system;
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context, builder.Finish());
-    return TableScan::Create(builder_load_options, std::move(context), builder_options);
+    return TableScan::Create(builder_load_context, std::move(context), builder_options);
 }
 
 class RejectingPlanningExecutor final : public Executor {

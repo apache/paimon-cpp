@@ -29,7 +29,7 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/catalog_options.h"
 #include "paimon/common/catalog/catalog_context.h"
 #include "paimon/common/table/special_fields.h"
@@ -53,11 +53,11 @@ namespace paimon::test {
 TEST(InternalReadContext, TestReadWithUnspecifiedSchema) {
     // no read schema is specified, read all fields
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    TableLoadOptions context_builder_load_options{path};
+    TableLoadContext context_builder_load_context{path};
     ReadContextBuilder context_builder;
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                 context_builder_load_options.path);
+                                 context_builder_load_context.path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(std::move(read_context), table_schema,
@@ -77,7 +77,7 @@ TEST(InternalReadContext, TestPreciseScalarEvaluation) {
                                                             arrow::field("f1", arrow::utf8())}),
                                              {}, {}, {}));
     for (bool enabled : {false, true}) {
-        TableLoadOptions builder_load_options{"unused-table-path"};
+        TableLoadContext builder_load_context{"unused-table-path"};
         std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder;
         builder.EnablePreciseFileIndexEvaluate(enabled).SetPredicate(
@@ -86,9 +86,9 @@ TEST(InternalReadContext, TestPreciseScalarEvaluation) {
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<InternalReadContext> internal_context,
             InternalReadContext::Create(
-                context, table_schema, table_schema->Options(), builder_load_options.file_system,
-                builder_load_options.path, builder_load_options.fs_scheme_to_identifier_map,
-                builder_load_options.catalog, builder_load_options.identifier, builder_options));
+                context, table_schema, table_schema->Options(), builder_load_context.file_system,
+                builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+                builder_load_context.catalog, builder_load_context.identifier, builder_options));
         ASSERT_EQ(internal_context->EnablePreciseFileIndexEvaluate(), enabled);
         ASSERT_FALSE(internal_context->EnablePredicateFilter());
         ASSERT_TRUE(internal_context->GetCoreOptions().FileIndexReadEnabled());
@@ -100,7 +100,7 @@ TEST(InternalReadContext, TestPreciseScalarEvaluation) {
     }
     auto match = std::make_shared<FullTextMatch>("f1", R"({"match":{"query":"apple"}})");
     ASSERT_OK_AND_ASSIGN(auto full_text, PredicateBuilder::FullTextMatch(1, match));
-    TableLoadOptions builder_load_options{"unused-table-path"};
+    TableLoadContext builder_load_context{"unused-table-path"};
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.SetPredicate(full_text);
@@ -109,16 +109,16 @@ TEST(InternalReadContext, TestPreciseScalarEvaluation) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
     ASSERT_TRUE(context->EnablePreciseFileIndexEvaluate());
     ASSERT_OK(InternalReadContext::Create(
-        context, table_schema, table_schema->Options(), builder_load_options.file_system,
-        builder_load_options.path, builder_load_options.fs_scheme_to_identifier_map,
-        builder_load_options.catalog, builder_load_options.identifier, builder_options));
+        context, table_schema, table_schema->Options(), builder_load_context.file_system,
+        builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+        builder_load_context.catalog, builder_load_context.identifier, builder_options));
 }
 
 TEST(InternalReadContext, TestPreciseEvaluationRequiresFileIndexRead) {
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<TableSchema> table_schema,
         TableSchema::Create(0, arrow::schema({arrow::field("f0", arrow::int32())}), {}, {}, {}));
-    TableLoadOptions builder_load_options{"unused-table-path"};
+    TableLoadContext builder_load_context{"unused-table-path"};
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true);
@@ -126,20 +126,20 @@ TEST(InternalReadContext, TestPreciseEvaluationRequiresFileIndexRead) {
     ASSERT_NOK_WITH_MSG(
         InternalReadContext::Create(
             context, table_schema, {{Options::FILE_INDEX_READ_ENABLED, "false"}},
-            builder_load_options.file_system, builder_load_options.path,
-            builder_load_options.fs_scheme_to_identifier_map, builder_load_options.catalog,
-            builder_load_options.identifier, builder_options),
+            builder_load_context.file_system, builder_load_context.path,
+            builder_load_context.fs_scheme_to_identifier_map, builder_load_context.catalog,
+            builder_load_context.identifier, builder_options),
         "requires file-index.read.enabled=true");
 }
 
 TEST(InternalReadContext, TestReadWithSpecifiedSchema) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    TableLoadOptions context_builder_load_options{path};
+    TableLoadContext context_builder_load_context{path};
     ReadContextBuilder context_builder;
     context_builder.SetReadFieldNames({"f3", "f0"});
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                 context_builder_load_options.path);
+                                 context_builder_load_context.path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(std::move(read_context), table_schema,
@@ -167,11 +167,11 @@ TEST(InternalReadContext, TestDependencyReadMergesTableCatalogAndReadOptions) {
         {CatalogOptions::URI, "http://read"},
         {CatalogOptions::TOKEN, "read-token"},
         {Options::BLOB_VIEW_RESOLVE_ENABLED, "false"}};
-    TableLoadOptions builder_load_options{path};
+    TableLoadContext builder_load_context{path};
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
-    builder_load_options.catalog = catalog;
-    builder_load_options.identifier.emplace(Identifier("db1", "t1"));
+    builder_load_context.catalog = catalog;
+    builder_load_context.identifier.emplace(Identifier("db1", "t1"));
     builder_options = read_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
     std::map<std::string, std::string> options = table_schema->Options();
@@ -184,9 +184,9 @@ TEST(InternalReadContext, TestDependencyReadMergesTableCatalogAndReadOptions) {
     ASSERT_OK_AND_ASSIGN(
         auto internal_context,
         InternalReadContext::Create(
-            read_context, table_schema, options, builder_load_options.file_system,
-            builder_load_options.path, builder_load_options.fs_scheme_to_identifier_map,
-            builder_load_options.catalog, builder_load_options.identifier, builder_options));
+            read_context, table_schema, options, builder_load_context.file_system,
+            builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+            builder_load_context.catalog, builder_load_context.identifier, builder_options));
 
     auto dependency_context = internal_context->CreateDependencyCatalogContext();
     auto expected_options = options;
@@ -223,11 +223,11 @@ TEST(InternalReadContext, TestDependencyReadKeepsTheOutermostView) {
         if (test_case.read_header) {
             read_options["header.X-Paimon-Read-Via"] = test_case.read_header;
         }
-        TableLoadOptions builder_load_options{path};
+        TableLoadContext builder_load_context{path};
         std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder;
-        builder_load_options.catalog = catalog;
-        builder_load_options.identifier.emplace(Identifier("db1", "nested-view"));
+        builder_load_context.catalog = catalog;
+        builder_load_context.identifier.emplace(Identifier("db1", "nested-view"));
         builder_options = read_options;
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
         auto options = table_schema->Options();
@@ -236,9 +236,9 @@ TEST(InternalReadContext, TestDependencyReadKeepsTheOutermostView) {
         ASSERT_OK_AND_ASSIGN(
             auto internal_context,
             InternalReadContext::Create(
-                read_context, table_schema, options, builder_load_options.file_system,
-                builder_load_options.path, builder_load_options.fs_scheme_to_identifier_map,
-                builder_load_options.catalog, builder_load_options.identifier, builder_options));
+                read_context, table_schema, options, builder_load_context.file_system,
+                builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+                builder_load_context.catalog, builder_load_context.identifier, builder_options));
         auto dependency_context = internal_context->CreateDependencyCatalogContext();
         ASSERT_EQ(dependency_context->options.at("header.X-Paimon-Read-Via"),
                   test_case.expected_header);
@@ -286,19 +286,19 @@ TEST(InternalReadContext, TestDependencyReadHeaderUsesFinalMetastore) {
             read_options[CatalogOptions::METASTORE] = test_case.read_metastore;
             options[CatalogOptions::METASTORE] = test_case.read_metastore;
         }
-        TableLoadOptions builder_load_options{path};
+        TableLoadContext builder_load_context{path};
         std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder;
-        builder_load_options.catalog = catalog;
-        builder_load_options.identifier.emplace(Identifier("db1", "t1"));
+        builder_load_context.catalog = catalog;
+        builder_load_context.identifier.emplace(Identifier("db1", "t1"));
         builder_options = read_options;
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(
             auto internal_context,
             InternalReadContext::Create(
-                read_context, table_schema, options, builder_load_options.file_system,
-                builder_load_options.path, builder_load_options.fs_scheme_to_identifier_map,
-                builder_load_options.catalog, builder_load_options.identifier, builder_options));
+                read_context, table_schema, options, builder_load_context.file_system,
+                builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+                builder_load_context.catalog, builder_load_context.identifier, builder_options));
         auto dependency_context = internal_context->CreateDependencyCatalogContext();
         if (test_case.expected_metastore) {
             ASSERT_EQ(dependency_context->options.at(CatalogOptions::METASTORE),
@@ -321,10 +321,10 @@ TEST(InternalReadContext, TestDependencyReadHeaderNeedsAnIdentifier) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
-    TableLoadOptions builder_load_options{path};
+    TableLoadContext builder_load_context{path};
     ReadContextBuilder builder;
     ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
-    ASSERT_FALSE(builder_load_options.identifier);
+    ASSERT_FALSE(builder_load_context.identifier);
     auto options = table_schema->Options();
     options[CatalogOptions::METASTORE] = "REST";
     ASSERT_OK_AND_ASSIGN(auto internal_context, InternalReadContext::Create(std::move(read_context),
@@ -359,13 +359,13 @@ TEST(InternalReadContext, TestFileSystemSchemeMapReachesTheDependencyRead) {
     // surfaces as a `dfs://` dependency table that cannot be opened, far away from the cause.
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
     const std::map<std::string, std::string> scheme_map = {{"file", "local"}};
-    TableLoadOptions context_builder_load_options{path};
+    TableLoadContext context_builder_load_context{path};
     ReadContextBuilder context_builder;
-    context_builder_load_options.fs_scheme_to_identifier_map = scheme_map;
+    context_builder_load_context.fs_scheme_to_identifier_map = scheme_map;
 
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                 context_builder_load_options.path);
+                                 context_builder_load_context.path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(
         auto internal_context,
@@ -378,12 +378,12 @@ TEST(InternalReadContext, TestFileSystemSchemeMapReachesTheDependencyRead) {
 
 TEST(InternalReadContext, TestReadWithSpecifiedFieldId) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    TableLoadOptions context_builder_load_options{path};
+    TableLoadContext context_builder_load_context{path};
     ReadContextBuilder context_builder;
     context_builder.SetReadFieldIds({3, 0});
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                 context_builder_load_options.path);
+                                 context_builder_load_context.path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(std::move(read_context), table_schema,
@@ -396,7 +396,7 @@ TEST(InternalReadContext, TestReadWithSpecifiedFieldId) {
 
 TEST(InternalReadContext, TestReadWithSpecifiedFieldIdAndSchema) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    TableLoadOptions context_builder_load_options{path};
+    TableLoadContext context_builder_load_context{path};
     ReadContextBuilder context_builder;
     // read schema is specified, read fields in schema
     // will use field ids instead of field names.
@@ -404,7 +404,7 @@ TEST(InternalReadContext, TestReadWithSpecifiedFieldIdAndSchema) {
     context_builder.SetReadFieldIds({3, 0});
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                 context_builder_load_options.path);
+                                 context_builder_load_context.path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(std::move(read_context), table_schema,
@@ -419,13 +419,13 @@ TEST(InternalReadContext, TestReadWithRowTrackingAndScoreFields) {
     {
         // test simple
         std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-        TableLoadOptions context_builder_load_options{path};
+        TableLoadContext context_builder_load_context{path};
         ReadContextBuilder context_builder;
         context_builder.SetReadFieldNames(
             {"f3", "f0", "_ROW_ID", "_SEQUENCE_NUMBER", "_INDEX_SCORE"});
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                     context_builder_load_options.path);
+                                     context_builder_load_context.path);
         ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
         auto new_options = table_schema->Options();
         new_options[Options::ROW_TRACKING_ENABLED] = "true";
@@ -443,12 +443,12 @@ TEST(InternalReadContext, TestReadWithRowTrackingAndScoreFields) {
     {
         // test invalid case: disable row tracking while read row tracking fields
         std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-        TableLoadOptions context_builder_load_options{path};
+        TableLoadContext context_builder_load_context{path};
         ReadContextBuilder context_builder;
         context_builder.SetReadFieldNames({"f3", "f0", "_ROW_ID", "_SEQUENCE_NUMBER"});
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                     context_builder_load_options.path);
+                                     context_builder_load_context.path);
         ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
         ASSERT_NOK_WITH_MSG(InternalReadContext::Create(std::move(read_context), table_schema,
                                                         table_schema->Options()),
@@ -457,12 +457,12 @@ TEST(InternalReadContext, TestReadWithRowTrackingAndScoreFields) {
     {
         // test invalid case: disable data evolution while read score fields
         std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-        TableLoadOptions context_builder_load_options{path};
+        TableLoadContext context_builder_load_context{path};
         ReadContextBuilder context_builder;
         context_builder.SetReadFieldNames({"f3", "f0", "_INDEX_SCORE"});
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                     context_builder_load_options.path);
+                                     context_builder_load_context.path);
         ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
         ASSERT_NOK_WITH_MSG(InternalReadContext::Create(std::move(read_context), table_schema,
                                                         table_schema->Options()),
@@ -477,7 +477,7 @@ TEST(InternalReadContext, TestPreciseEvaluationRejectsUnnamedScoreProjection) {
     for (const auto& search_type :
          std::vector<std::string>{"none", "scalar", "vector", "full-text", "full-text-match"}) {
         for (const auto& projection : std::vector<std::string>{"names", "ids", "schema"}) {
-            TableLoadOptions builder_load_options{path};
+            TableLoadContext builder_load_context{path};
             std::map<std::string, std::string> builder_options;
             ReadContextBuilder builder;
             builder.EnablePreciseFileIndexEvaluate(true).SetReadFieldNames({"f0"});
@@ -515,9 +515,9 @@ TEST(InternalReadContext, TestPreciseEvaluationRejectsUnnamedScoreProjection) {
             ASSERT_NOK_WITH_MSG(
                 InternalReadContext::Create(
                     context, table_schema, table_schema->Options(),
-                    builder_load_options.file_system, builder_load_options.path,
-                    builder_load_options.fs_scheme_to_identifier_map, builder_load_options.catalog,
-                    builder_load_options.identifier, builder_options),
+                    builder_load_context.file_system, builder_load_context.path,
+                    builder_load_context.fs_scheme_to_identifier_map, builder_load_context.catalog,
+                    builder_load_context.identifier, builder_options),
                 "not exist in table schema");
         }
     }
@@ -531,7 +531,7 @@ TEST(InternalReadContext, TestPrimaryKeyVectorSearchRequiresDeletionVectors) {
     std::shared_ptr<VectorSearch> search =
         std::make_shared<VectorSearch>("f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr,
                                        nullptr, std::nullopt, std::map<std::string, std::string>{});
-    TableLoadOptions builder_load_options{path};
+    TableLoadContext builder_load_context{path};
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.SetReadFieldNames({"f0", "_f3_INDEX_SCORE"})
@@ -541,9 +541,9 @@ TEST(InternalReadContext, TestPrimaryKeyVectorSearchRequiresDeletionVectors) {
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<InternalReadContext> internal,
         InternalReadContext::Create(
-            context, table_schema, table_schema->Options(), builder_load_options.file_system,
-            builder_load_options.path, builder_load_options.fs_scheme_to_identifier_map,
-            builder_load_options.catalog, builder_load_options.identifier, builder_options));
+            context, table_schema, table_schema->Options(), builder_load_context.file_system,
+            builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+            builder_load_context.catalog, builder_load_context.identifier, builder_options));
     EXPECT_TRUE(internal->HasVectorOrFullTextSearch());
     EXPECT_TRUE(internal->EnablePreciseFileIndexEvaluate());
 
@@ -551,9 +551,9 @@ TEST(InternalReadContext, TestPrimaryKeyVectorSearchRequiresDeletionVectors) {
     options[Options::DELETION_VECTORS_ENABLED] = "false";
     ASSERT_NOK_WITH_MSG(
         InternalReadContext::Create(
-            context, table_schema, options, builder_load_options.file_system,
-            builder_load_options.path, builder_load_options.fs_scheme_to_identifier_map,
-            builder_load_options.catalog, builder_load_options.identifier, builder_options),
+            context, table_schema, options, builder_load_context.file_system,
+            builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+            builder_load_context.catalog, builder_load_context.identifier, builder_options),
         "primary-key tables requires deletion vectors");
 }
 
@@ -580,7 +580,7 @@ TEST(InternalReadContext, TestFullTextMatchValidatesProjection) {
             std::make_shared<FullTextMatch>(test_case.field_name, R"({"match":{"query":"apple"}})");
         ASSERT_OK_AND_ASSIGN(auto predicate,
                              PredicateBuilder::FullTextMatch(test_case.field_index, match));
-        TableLoadOptions builder_load_options{path};
+        TableLoadContext builder_load_context{path};
         std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder;
         builder.EnablePreciseFileIndexEvaluate(true)
@@ -592,9 +592,9 @@ TEST(InternalReadContext, TestFullTextMatchValidatesProjection) {
                 std::shared_ptr<InternalReadContext> internal,
                 InternalReadContext::Create(
                     context, table_schema, table_schema->Options(),
-                    builder_load_options.file_system, builder_load_options.path,
-                    builder_load_options.fs_scheme_to_identifier_map, builder_load_options.catalog,
-                    builder_load_options.identifier, builder_options));
+                    builder_load_context.file_system, builder_load_context.path,
+                    builder_load_context.fs_scheme_to_identifier_map, builder_load_context.catalog,
+                    builder_load_context.identifier, builder_options));
             ASSERT_TRUE(internal->GetIndexScoreBindings().empty());
             ASSERT_FALSE(internal->NeedsScores(
                 {InternalReadContext::IndexScoreSource::Type::FULL_TEXT_MATCH, match->field_name}));
@@ -605,9 +605,9 @@ TEST(InternalReadContext, TestFullTextMatchValidatesProjection) {
             ASSERT_NOK_WITH_MSG(
                 InternalReadContext::Create(
                     context, table_schema, table_schema->Options(),
-                    builder_load_options.file_system, builder_load_options.path,
-                    builder_load_options.fs_scheme_to_identifier_map, builder_load_options.catalog,
-                    builder_load_options.identifier, builder_options),
+                    builder_load_context.file_system, builder_load_context.path,
+                    builder_load_context.fs_scheme_to_identifier_map, builder_load_context.catalog,
+                    builder_load_context.identifier, builder_options),
                 test_case.expected_error);
         }
     }
@@ -621,7 +621,7 @@ TEST(InternalReadContext, TestPerFieldTopKScoreBindings) {
     for (bool vector_search : {false, true}) {
         for (const auto& projection_type : std::vector<std::string>{"none", "names", "schema"}) {
             const bool project_score = projection_type != "none";
-            TableLoadOptions builder_load_options{path};
+            TableLoadContext builder_load_context{path};
             std::map<std::string, std::string> builder_options;
             ReadContextBuilder builder;
             std::vector<std::string> projection = {"f1"};
@@ -656,9 +656,9 @@ TEST(InternalReadContext, TestPerFieldTopKScoreBindings) {
                 std::shared_ptr<InternalReadContext> internal,
                 InternalReadContext::Create(
                     context, table_schema, table_schema->Options(),
-                    builder_load_options.file_system, builder_load_options.path,
-                    builder_load_options.fs_scheme_to_identifier_map, builder_load_options.catalog,
-                    builder_load_options.identifier, builder_options));
+                    builder_load_context.file_system, builder_load_context.path,
+                    builder_load_context.fs_scheme_to_identifier_map, builder_load_context.catalog,
+                    builder_load_context.identifier, builder_options));
             ASSERT_EQ(internal->GetReadSchema()->field_names(), projection);
             ASSERT_TRUE(internal->NeedsScores(source));
             ASSERT_FALSE(internal->NeedsScores(
@@ -969,12 +969,12 @@ TEST_F(InternalReadContextScoreTest, SchemaReplacementUsesProvidedSchema) {
 
 TEST(InternalReadContext, TestReadWithValueKindField) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    TableLoadOptions context_builder_load_options{path};
+    TableLoadContext context_builder_load_context{path};
     ReadContextBuilder context_builder;
     context_builder.SetReadFieldNames({"f3", "_VALUE_KIND", "f0"});
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                 context_builder_load_options.path);
+                                 context_builder_load_context.path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(std::move(read_context), table_schema,
@@ -990,7 +990,7 @@ TEST(InternalReadContext, TestReadWithFieldIdsAndSpecialFields) {
     {
         // test simple
         std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-        TableLoadOptions context_builder_load_options{path};
+        TableLoadContext context_builder_load_context{path};
         ReadContextBuilder context_builder;
         // here we use field ids instead of field names, and specify special ids for row id,
         // sequence number and index score.
@@ -999,7 +999,7 @@ TEST(InternalReadContext, TestReadWithFieldIdsAndSpecialFields) {
                                          SpecialFieldIds::INDEX_SCORE});
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                     context_builder_load_options.path);
+                                     context_builder_load_context.path);
         ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
         auto new_options = table_schema->Options();
         new_options[Options::ROW_TRACKING_ENABLED] = "true";
@@ -1030,7 +1030,7 @@ TEST(InternalReadContext, TestReadWithProjectedSchemaAndSpecialFields) {
         auto projected_schema = DataField::ConvertDataFieldsToArrowSchema(projected_fields);
         auto c_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_schema.get()).ok());
-        TableLoadOptions context_builder_load_options{path};
+        TableLoadContext context_builder_load_context{path};
         std::map<std::string, std::string> context_builder_options;
         ReadContextBuilder context_builder;
         context_builder.SetReadSchema(std::move(c_schema));
@@ -1039,9 +1039,9 @@ TEST(InternalReadContext, TestReadWithProjectedSchemaAndSpecialFields) {
         ASSERT_NOK_WITH_MSG(
             InternalReadContext::Create(
                 read_context, table_schema, table_schema->Options(),
-                context_builder_load_options.file_system, context_builder_load_options.path,
-                context_builder_load_options.fs_scheme_to_identifier_map,
-                context_builder_load_options.catalog, context_builder_load_options.identifier,
+                context_builder_load_context.file_system, context_builder_load_context.path,
+                context_builder_load_context.fs_scheme_to_identifier_map,
+                context_builder_load_context.catalog, context_builder_load_context.identifier,
                 context_builder_options),
             "not exist in table schema");
     }
@@ -1055,7 +1055,7 @@ TEST(InternalReadContext, TestReadWithProjectedSchemaAndSpecialFields) {
         auto projected_schema = DataField::ConvertDataFieldsToArrowSchema(projected_fields);
         auto c_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_schema.get()).ok());
-        TableLoadOptions context_builder_load_options{path};
+        TableLoadContext context_builder_load_context{path};
         std::map<std::string, std::string> context_builder_options;
         ReadContextBuilder context_builder;
         context_builder.SetReadSchema(std::move(c_schema));
@@ -1065,9 +1065,9 @@ TEST(InternalReadContext, TestReadWithProjectedSchemaAndSpecialFields) {
             auto internal_context,
             InternalReadContext::Create(
                 read_context, table_schema, enabled_options,
-                context_builder_load_options.file_system, context_builder_load_options.path,
-                context_builder_load_options.fs_scheme_to_identifier_map,
-                context_builder_load_options.catalog, context_builder_load_options.identifier,
+                context_builder_load_context.file_system, context_builder_load_context.path,
+                context_builder_load_context.fs_scheme_to_identifier_map,
+                context_builder_load_context.catalog, context_builder_load_context.identifier,
                 context_builder_options));
         auto expected_schema = DataField::ConvertDataFieldsToArrowSchema(projected_fields);
         ASSERT_TRUE(internal_context->GetReadSchema()->Equals(expected_schema));
@@ -1082,7 +1082,7 @@ TEST(InternalReadContext, TestReadWithProjectedSchemaWithoutFieldIds) {
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_schema.get()).ok());
 
-    TableLoadOptions context_builder_load_options{path};
+    TableLoadContext context_builder_load_context{path};
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
     context_builder.SetReadSchema(std::move(c_schema));
@@ -1090,16 +1090,16 @@ TEST(InternalReadContext, TestReadWithProjectedSchemaWithoutFieldIds) {
     std::shared_ptr<ReadContext> read_context = std::move(unique_read_context);
 
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                 context_builder_load_options.path);
+                                 context_builder_load_context.path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
 
     ASSERT_OK_AND_ASSIGN(
         auto internal_context,
         InternalReadContext::Create(
             read_context, table_schema, table_schema->Options(),
-            context_builder_load_options.file_system, context_builder_load_options.path,
-            context_builder_load_options.fs_scheme_to_identifier_map,
-            context_builder_load_options.catalog, context_builder_load_options.identifier,
+            context_builder_load_context.file_system, context_builder_load_context.path,
+            context_builder_load_context.fs_scheme_to_identifier_map,
+            context_builder_load_context.catalog, context_builder_load_context.identifier,
             context_builder_options));
 
     std::vector<DataField> expected_fields = {
@@ -1122,7 +1122,7 @@ TEST(InternalReadContext, TestProjectedSchemaMetadataWhitelist) {
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_schema.get()).ok());
 
-    TableLoadOptions context_builder_load_options{path};
+    TableLoadContext context_builder_load_context{path};
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
     context_builder.SetReadSchema(std::move(c_schema));
@@ -1130,16 +1130,16 @@ TEST(InternalReadContext, TestProjectedSchemaMetadataWhitelist) {
     std::shared_ptr<ReadContext> read_context = std::move(unique_read_context);
 
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                 context_builder_load_options.path);
+                                 context_builder_load_context.path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
 
     ASSERT_OK_AND_ASSIGN(
         auto internal_context,
         InternalReadContext::Create(
             read_context, table_schema, table_schema->Options(),
-            context_builder_load_options.file_system, context_builder_load_options.path,
-            context_builder_load_options.fs_scheme_to_identifier_map,
-            context_builder_load_options.catalog, context_builder_load_options.identifier,
+            context_builder_load_context.file_system, context_builder_load_context.path,
+            context_builder_load_context.fs_scheme_to_identifier_map,
+            context_builder_load_context.catalog, context_builder_load_context.identifier,
             context_builder_options));
 
     auto aligned_field = internal_context->GetReadSchema()->GetFieldByName("f0");
@@ -1175,7 +1175,7 @@ TEST(InternalReadContext, TestMapSharedShreddingAccessRequiresSharedShreddingLay
 
     auto c_read_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*arrow::schema({access_field}), c_read_schema.get()).ok());
-    TableLoadOptions context_builder_load_options{"/tmp/unused-table-path"};
+    TableLoadContext context_builder_load_context{"/tmp/unused-table-path"};
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
     context_builder.SetReadSchema(std::move(c_read_schema));
@@ -1185,9 +1185,9 @@ TEST(InternalReadContext, TestMapSharedShreddingAccessRequiresSharedShreddingLay
     ASSERT_NOK_WITH_MSG(
         InternalReadContext::Create(
             read_context, table_schema, table_schema->Options(),
-            context_builder_load_options.file_system, context_builder_load_options.path,
-            context_builder_load_options.fs_scheme_to_identifier_map,
-            context_builder_load_options.catalog, context_builder_load_options.identifier,
+            context_builder_load_context.file_system, context_builder_load_context.path,
+            context_builder_load_context.fs_scheme_to_identifier_map,
+            context_builder_load_context.catalog, context_builder_load_context.identifier,
             context_builder_options),
         "Selected-key MAP pushdown only supports top-level shared-shredding MAP field: tags");
 }

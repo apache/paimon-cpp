@@ -36,7 +36,7 @@
 #include "fmt/ranges.h"
 #include "gtest/gtest.h"
 #include "paimon/bucket/bucket_id_calculator.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/table/special_fields.h"
@@ -89,7 +89,7 @@ class ScanAndReadInteTest : public testing::Test,
  public:
     // Reuse the fixture's records with a schema declaring the engine under test. Merge engines
     // are immutable runtime options, so both operators must load that schema from the start.
-    Result<TableLoadOptions> LoadWithMergeEngine(const std::string& path,
+    Result<TableLoadContext> LoadWithMergeEngine(const std::string& path,
                                                  const std::string& merge_engine) const {
         SchemaManager manager(std::make_shared<LocalFileSystem>(), path);
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
@@ -100,7 +100,7 @@ class ScanAndReadInteTest : public testing::Test,
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<TableSchema> schema,
             latest.value()->MergeOptions({{Options::MERGE_ENGINE, merge_engine}}));
-        TableLoadOptions load{path};
+        TableLoadContext load{path};
         PAIMON_ASSIGN_OR_RAISE(load.table_schema_json, schema->GetJsonSchema());
         return load;
     }
@@ -263,7 +263,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshotIOException) {
         ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
         io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
         // scan
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "1";
@@ -272,7 +272,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshotIOException) {
             FinishScanContext(scan_context_builder, scan_context_builder_options);
         CHECK_HOOK_STATUS(scan_context.status(), i);
         Result<std::unique_ptr<TableScan>> table_scan =
-            TableScan::Create(scan_context_builder_load_options, std::move(scan_context).value(),
+            TableScan::Create(scan_context_builder_load_context, std::move(scan_context).value(),
                               scan_context_builder_options);
         CHECK_HOOK_STATUS(table_scan.status(), i);
         Result<std::shared_ptr<Plan>> result_plan = table_scan.value()->CreatePlan();
@@ -282,7 +282,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshotIOException) {
         auto splits = result_plan.value()->Splits();
         ASSERT_EQ(3, splits.size());
         // read
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
@@ -290,7 +290,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshotIOException) {
                              read_context_builder.Finish());
 
         Result<std::unique_ptr<TableRead>> table_read =
-            TableRead::Create(read_context_builder_load_options, std::move(read_context),
+            TableRead::Create(read_context_builder_load_context, std::move(read_context),
                               read_context_builder_options);
         CHECK_HOOK_STATUS(table_read.status(), i);
         Result<std::unique_ptr<BatchReader>> batch_reader =
@@ -329,7 +329,7 @@ TEST_P(ScanAndReadInteTest, TestWithPkSnapshotIOException) {
         ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
         io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
         // scan
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "6";
@@ -338,7 +338,7 @@ TEST_P(ScanAndReadInteTest, TestWithPkSnapshotIOException) {
             FinishScanContext(scan_context_builder, scan_context_builder_options);
         CHECK_HOOK_STATUS(scan_context.status(), i);
         Result<std::unique_ptr<TableScan>> table_scan =
-            TableScan::Create(scan_context_builder_load_options, std::move(scan_context).value(),
+            TableScan::Create(scan_context_builder_load_context, std::move(scan_context).value(),
                               scan_context_builder_options);
         CHECK_HOOK_STATUS(table_scan.status(), i);
         Result<std::shared_ptr<Plan>> result_plan = table_scan.value()->CreatePlan();
@@ -347,7 +347,7 @@ TEST_P(ScanAndReadInteTest, TestWithPkSnapshotIOException) {
         auto splits = result_plan.value()->Splits();
         ASSERT_EQ(3, splits.size());
         // read
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
@@ -355,7 +355,7 @@ TEST_P(ScanAndReadInteTest, TestWithPkSnapshotIOException) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                              read_context_builder.Finish());
         Result<std::unique_ptr<TableRead>> table_read =
-            TableRead::Create(read_context_builder_load_options, std::move(read_context),
+            TableRead::Create(read_context_builder_load_context, std::move(read_context),
                               read_context_builder_options);
         CHECK_HOOK_STATUS(table_read.status(), i);
         Result<std::unique_ptr<BatchReader>> batch_reader =
@@ -391,7 +391,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot1) {
     std::string table_path = GetDataDir() + "/" + file_format + "/append_09.db/append_09";
 
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "1";
@@ -399,7 +399,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot1) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 1);
@@ -407,14 +407,14 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot1) {
     auto splits = result_plan->Splits();
     ASSERT_EQ(3, splits.size());
     // read
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -443,7 +443,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot3) {
     std::string table_path = GetDataDir() + "/" + file_format + "/append_09.db/append_09";
 
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "3";
@@ -451,7 +451,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot3) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 3);
@@ -460,13 +460,13 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot3) {
     ASSERT_EQ(3, splits.size());
 
     // read
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -566,7 +566,7 @@ TEST(SelectiveManifestDecodeInteTest, TestPartitionedPointLookup) {
                     bool entry_cache) -> Result<ScanResult> {
         std::shared_ptr<MemoryPool> pool = GetMemoryPool();
         scan_pools.push_back(pool);
-        TableLoadOptions builder_load_options{table_path};
+        TableLoadContext builder_load_context{table_path};
         std::map<std::string, std::string> builder_options;
         ScanContextBuilder builder;
         builder_options[Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS] = entry_cache ? "3" : "0";
@@ -581,7 +581,7 @@ TEST(SelectiveManifestDecodeInteTest, TestPartitionedPointLookup) {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context, builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<TableScan> table_scan,
-            TableScan::Create(builder_load_options, std::move(context), builder_options));
+            TableScan::Create(builder_load_context, std::move(context), builder_options));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
         PAIMON_ASSIGN_OR_RAISE(uint64_t enabled, table_scan->GetMetrics()->GetCounter(
                                                      ScanMetrics::LAST_SNAPSHOT_CACHE_ENABLED));
@@ -599,14 +599,14 @@ TEST(SelectiveManifestDecodeInteTest, TestPartitionedPointLookup) {
                         (historical && data_split->Bucket() == kBuckets / 2 - 1));
             ASSERT_EQ(data_split->GetFileList().size(), 1);
         }
-        TableLoadOptions builder_load_options{table_path};
+        TableLoadContext builder_load_context{table_path};
         std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder;
         builder.SetPredicate(predicate).EnablePredicateFilter(true);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<TableRead> read,
-            TableRead::Create(builder_load_options, std::move(context), builder_options));
+            TableRead::Create(builder_load_context, std::move(context), builder_options));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                              read->CreateReader(result.plan->Splits()));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> rows,
@@ -755,7 +755,7 @@ TEST(SelectiveManifestDecodeInteTest, TestSchemaEvolutionPreservesBucketPruning)
             }
             auto cache = std::make_shared<CountingRoutingCache>(capacities);
             for (int32_t attempt = 0; attempt < 2; ++attempt) {
-                TableLoadOptions builder_load_options{table_path};
+                TableLoadContext builder_load_context{table_path};
                 std::map<std::string, std::string> builder_options;
                 ScanContextBuilder builder;
                 builder_options[Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS] = "3";
@@ -765,7 +765,7 @@ TEST(SelectiveManifestDecodeInteTest, TestSchemaEvolutionPreservesBucketPruning)
                 ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
                 ASSERT_OK_AND_ASSIGN(
                     std::unique_ptr<TableScan> scan,
-                    TableScan::Create(builder_load_options, std::move(context), builder_options));
+                    TableScan::Create(builder_load_context, std::move(context), builder_options));
                 ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
                 ASSERT_EQ(plan->Splits().size(), 1);
                 auto split = std::dynamic_pointer_cast<DataSplit>(plan->Splits()[0]);
@@ -774,7 +774,7 @@ TEST(SelectiveManifestDecodeInteTest, TestSchemaEvolutionPreservesBucketPruning)
                 ASSERT_OK_AND_ASSIGN(uint64_t hit, scan->GetMetrics()->GetCounter(
                                                        ScanMetrics::LAST_SNAPSHOT_CACHE_HIT));
                 ASSERT_EQ(hit, attempt);
-                TableLoadOptions read_builder_load_options{table_path};
+                TableLoadContext read_builder_load_context{table_path};
                 std::map<std::string, std::string> read_builder_options;
                 ReadContextBuilder read_builder;
                 read_builder.SetPredicate(predicate).EnablePredicateFilter(true);
@@ -782,7 +782,7 @@ TEST(SelectiveManifestDecodeInteTest, TestSchemaEvolutionPreservesBucketPruning)
                                      read_builder.Finish());
                 ASSERT_OK_AND_ASSIGN(
                     std::unique_ptr<TableRead> read,
-                    TableRead::Create(read_builder_load_options, std::move(read_context),
+                    TableRead::Create(read_builder_load_context, std::move(read_context),
                                       read_builder_options));
                 ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                                      read->CreateReader(plan->Splits()));
@@ -850,12 +850,12 @@ TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
         // All buckets have overlapping stats for this key. An explicit filter bypasses
         // inference, proving that ordinary statistics cannot account for the pruning.
         for (int32_t bucket = 0; bucket < kNumBuckets; ++bucket) {
-            TableLoadOptions builder_load_options{table_path};
+            TableLoadContext builder_load_context{table_path};
             std::map<std::string, std::string> builder_options;
             ScanContextBuilder builder;
             builder.SetPredicate(predicate).SetBucketFilter(bucket);
             ASSERT_OK_AND_ASSIGN(auto context, FinishScanContext(builder, builder_options));
-            ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(builder_load_options,
+            ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(builder_load_context,
                                                               std::move(context), builder_options));
             ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
 
@@ -878,7 +878,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
                 auto lookup_predicate = PredicateBuilder::Equal(
                     0, "rowkey", field_type,
                     Literal(field_type, lookup_key.data(), lookup_key.size()));
-                TableLoadOptions scan_builder_load_options{table_path};
+                TableLoadContext scan_builder_load_context{table_path};
                 std::map<std::string, std::string> scan_builder_options;
                 ScanContextBuilder scan_builder;
                 scan_builder_options[Options::BUCKET] = current_bucket_count;
@@ -886,7 +886,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
                 ASSERT_OK_AND_ASSIGN(auto scan_context,
                                      FinishScanContext(scan_builder, scan_builder_options));
                 ASSERT_OK_AND_ASSIGN(
-                    auto scan, TableScan::Create(scan_builder_load_options, std::move(scan_context),
+                    auto scan, TableScan::Create(scan_builder_load_context, std::move(scan_context),
                                                  scan_builder_options));
                 ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
                 if (EnableSnapshotLiveManifestCache()) {
@@ -894,7 +894,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
                         uint64_t enabled,
                         scan->GetMetrics()->GetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_ENABLED));
                     ASSERT_EQ(enabled, 1);
-                    TableLoadOptions cached_builder_load_options{table_path};
+                    TableLoadContext cached_builder_load_context{table_path};
                     std::map<std::string, std::string> cached_builder_options;
                     ScanContextBuilder cached_builder;
                     cached_builder_options[Options::BUCKET] = current_bucket_count;
@@ -903,7 +903,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
                                          FinishScanContext(cached_builder, cached_builder_options));
                     ASSERT_OK_AND_ASSIGN(
                         auto cached_scan,
-                        TableScan::Create(cached_builder_load_options, std::move(cached_context),
+                        TableScan::Create(cached_builder_load_context, std::move(cached_context),
                                           cached_builder_options));
                     ASSERT_OK_AND_ASSIGN(plan, cached_scan->CreatePlan());
                     ASSERT_OK_AND_ASSIGN(uint64_t hit, cached_scan->GetMetrics()->GetCounter(
@@ -917,14 +917,14 @@ TEST_P(ScanAndReadInteTest, TestWithAppendBucketKeyPointLookup) {
                     ASSERT_TRUE(data_split);
                     ASSERT_EQ(data_split->Bucket(), bucket_ids[lookup_index]);
                 }
-                TableLoadOptions read_builder_load_options{table_path};
+                TableLoadContext read_builder_load_context{table_path};
                 std::map<std::string, std::string> read_builder_options;
                 ReadContextBuilder read_builder;
                 AddReadOptionsForPrefetch(&read_builder, read_builder_options);
                 read_builder.SetPredicate(lookup_predicate).EnablePredicateFilter(true);
                 ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
                 ASSERT_OK_AND_ASSIGN(
-                    auto read, TableRead::Create(read_builder_load_options, std::move(read_context),
+                    auto read, TableRead::Create(read_builder_load_context, std::move(read_context),
                                                  read_builder_options));
                 ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
                 ASSERT_OK_AND_ASSIGN(auto result,
@@ -949,7 +949,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot5) {
     std::string table_path = GetDataDir() + "/" + file_format + "/append_09.db/append_09";
 
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "5";
@@ -957,7 +957,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot5) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 5);
@@ -966,13 +966,13 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot5) {
     ASSERT_EQ(3, splits.size());
 
     // read
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -1009,7 +1009,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot5WithReaderBuildParallelism) {
     auto file_format = FileFormat();
     std::string table_path = GetDataDir() + "/" + file_format + "/append_09.db/append_09";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "5";
@@ -1017,19 +1017,19 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshot5WithReaderBuildParallelism) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     auto splits = result_plan->Splits();
     ASSERT_EQ(3, splits.size());
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -1061,7 +1061,7 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshotWithStreamWithDefaultMode) {
     std::string table_path = GetDataDir() + "/" + file_format + "/append_09.db/append_09";
 
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "1";
@@ -1069,16 +1069,16 @@ TEST_P(ScanAndReadInteTest, TestWithAppendSnapshotWithStreamWithDefaultMode) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     std::vector<std::optional<int64_t>> expected_snapshot_ids = {std::nullopt, 1, 2, 3, 4};
@@ -1120,7 +1120,7 @@ TEST_P(ScanAndReadInteTest, TestJavaPaimon1WithAppendSnapshot1) {
     std::string table_path = GetDataDir() + "/" + file_format + "/append_10.db/append_10";
 
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "1";
@@ -1128,7 +1128,7 @@ TEST_P(ScanAndReadInteTest, TestJavaPaimon1WithAppendSnapshot1) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 1);
@@ -1137,13 +1137,13 @@ TEST_P(ScanAndReadInteTest, TestJavaPaimon1WithAppendSnapshot1) {
     ASSERT_EQ(3, splits.size());
 
     // read
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -1169,7 +1169,7 @@ TEST_P(ScanAndReadInteTest, TestJavaPaimon1WithAppendSnapshotOfNestedType) {
                              "/append_complex_build_in_fieldid.db/"
                              "append_complex_build_in_fieldid/";
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "1";
@@ -1177,7 +1177,7 @@ TEST_P(ScanAndReadInteTest, TestJavaPaimon1WithAppendSnapshotOfNestedType) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 1);
@@ -1203,13 +1203,13 @@ TEST_P(ScanAndReadInteTest, TestJavaPaimon1WithAppendSnapshotOfNestedType) {
     std::shared_ptr<arrow::DataType> arrow_data_type =
         DataField::ConvertDataFieldsToArrowStructType(read_fields);
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -1234,7 +1234,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6) {
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
 
     // normal batch scan case for pk+dv, all data in level 0 is filtered out
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "6";
@@ -1242,15 +1242,15 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -1285,7 +1285,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot1) {
     auto file_format = FileFormat();
     std::string table_path = GetDataDir() + "/" + file_format +
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "1";
@@ -1293,16 +1293,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot1) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -1318,7 +1318,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithPartitionAndBu
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "6";
@@ -1327,16 +1327,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithPartitionAndBu
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -1364,7 +1364,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithPredicate) {
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
     // predicate: f0 != "Alice" (key predicate) and f3 > 18 (value predicate) and all data in level
     // 0
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "6";
@@ -1380,17 +1380,17 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithPredicate) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     read_context_builder.SetPredicate(predicate).EnableLateMaterializing(false);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -1414,7 +1414,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithLateMaterializ
     auto file_format = FileFormat();
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "6";
@@ -1430,17 +1430,17 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithLateMaterializ
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     read_context_builder.SetPredicate(predicate).EnableLateMaterializing(true);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -1464,7 +1464,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot4WithPredicate) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "4";
@@ -1477,7 +1477,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot4WithPredicate) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -1492,23 +1492,23 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvBatchScanSnapshot6WithLimit) {
 
     // normal batch scan case for pk+dv, all data in level 0 is filtered out, set row limits to 6,
     // data in partition 20 is truncated
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder.SetLimit(6);
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -1537,7 +1537,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvStreamFromSnapshot4) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "4";
@@ -1546,16 +1546,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvStreamFromSnapshot4) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     // from an compact snapshot
@@ -1598,7 +1598,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvStreamFromSnapshot5) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "5";
@@ -1607,16 +1607,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvStreamFromSnapshot5) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     // from an append snapshot, first plan is snapshot5 with merge, second plan is snapshot6
@@ -1653,7 +1653,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvStreamFromSnapshot6) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_MODE] = "latest-full";
@@ -1661,16 +1661,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvStreamFromSnapshot6) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     // from an append snapshot, first plan is snapshot6 with merge, level 0 data in base manifest
@@ -1700,7 +1700,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvStreamFromSnapshot1) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "1";
@@ -1709,16 +1709,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvStreamFromSnapshot1) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     // from the first snapshot
@@ -1768,7 +1768,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvStreamFromSnapshot2) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "2";
@@ -1777,16 +1777,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvStreamFromSnapshot2) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     // use from-snapshot mode, first plan is empty, second plan is snapshot 3 with delta files
@@ -1822,16 +1822,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithNestedType) {
     std::string table_path =
         paimon::test::GetDataDir() + file_format + "/pk_table_nested_type.db/pk_table_nested_type/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
@@ -1841,7 +1841,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithNestedType) {
             .Finish());
 
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -1885,22 +1885,22 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanLatestSnapshot) {
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
     // normal batch scan case for pk+mor, use latest snapshot if not specified
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -1941,7 +1941,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot2) {
 
     // normal batch scan case for pk+mor, read snapshot 2 (append snapshot), all data is in level 0
     // with merge read
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "2";
@@ -1949,16 +1949,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot2) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -1995,7 +1995,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithPartitionAndB
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
     // all data not in partition 10, bucket 1 is filtered out
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "5";
@@ -2004,16 +2004,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithPartitionAndB
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -2043,7 +2043,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithPredicate) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "5";
@@ -2070,17 +2070,17 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithPredicate) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     read_context_builder.SetPredicate(predicate).EnableLateMaterializing(false);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -2115,7 +2115,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithLateMateriali
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "5";
@@ -2136,17 +2136,17 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithLateMateriali
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     read_context_builder.SetPredicate(predicate).EnableLateMaterializing(true);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -2172,7 +2172,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot3WithPredicate) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "3";
@@ -2186,7 +2186,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot3WithPredicate) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -2199,7 +2199,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvWithInvalidAggregateBatchScanSnapsho
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
 
-    ASSERT_OK_AND_ASSIGN(TableLoadOptions scan_context_builder_load_options,
+    ASSERT_OK_AND_ASSIGN(TableLoadContext scan_context_builder_load_context,
                          LoadWithMergeEngine(table_path, "aggregation"));
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
@@ -2210,10 +2210,10 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvWithInvalidAggregateBatchScanSnapsho
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options = scan_context_builder_load_options;
+    TableLoadContext read_context_builder_load_context = scan_context_builder_load_context;
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
@@ -2221,7 +2221,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvWithInvalidAggregateBatchScanSnapsho
 
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -2249,7 +2249,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorWithInvalidAggregateBatchScanSnapsh
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    ASSERT_OK_AND_ASSIGN(TableLoadOptions scan_context_builder_load_options,
+    ASSERT_OK_AND_ASSIGN(TableLoadContext scan_context_builder_load_context,
                          LoadWithMergeEngine(table_path, "aggregation"));
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
@@ -2260,10 +2260,10 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorWithInvalidAggregateBatchScanSnapsh
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options = scan_context_builder_load_options;
+    TableLoadContext read_context_builder_load_context = scan_context_builder_load_context;
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
@@ -2271,7 +2271,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorWithInvalidAggregateBatchScanSnapsh
 
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -2286,7 +2286,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithAggregateBatchScanSnapshot3WithPredica
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    ASSERT_OK_AND_ASSIGN(TableLoadOptions scan_context_builder_load_options,
+    ASSERT_OK_AND_ASSIGN(TableLoadContext scan_context_builder_load_context,
                          LoadWithMergeEngine(table_path, "aggregation"));
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
@@ -2301,10 +2301,10 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithAggregateBatchScanSnapshot3WithPredica
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options = scan_context_builder_load_options;
+    TableLoadContext read_context_builder_load_context = scan_context_builder_load_context;
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
@@ -2312,7 +2312,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithAggregateBatchScanSnapshot3WithPredica
 
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -2340,7 +2340,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithPartialUpdateBatchScanSnapshot3WithPre
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    ASSERT_OK_AND_ASSIGN(TableLoadOptions scan_context_builder_load_options,
+    ASSERT_OK_AND_ASSIGN(TableLoadContext scan_context_builder_load_context,
                          LoadWithMergeEngine(table_path, "partial-update"));
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
@@ -2355,10 +2355,10 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithPartialUpdateBatchScanSnapshot3WithPre
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options = scan_context_builder_load_options;
+    TableLoadContext read_context_builder_load_context = scan_context_builder_load_context;
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
@@ -2366,7 +2366,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithPartialUpdateBatchScanSnapshot3WithPre
 
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -2396,23 +2396,23 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorBatchScanSnapshot5WithLimit) {
 
     // in pk mor mode, limit does not take effect, as we do not know the number of records after
     // merging
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder.SetLimit(6);
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -2445,7 +2445,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorStreamFromSnapshot4) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "4";
@@ -2454,16 +2454,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorStreamFromSnapshot4) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     // first plan is snapshot4 (isStreaming=false), second plan is snapshot5
@@ -2499,7 +2499,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorStreamFromSnapshot1) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "1";
@@ -2508,16 +2508,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorStreamFromSnapshot1) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     std::vector<std::optional<int64_t>> expected_snapshot_ids = {1, 2, 4, 5};
@@ -2569,7 +2569,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorStreamFromSnapshot2) {
 
     // use from-snapshot mode, first plan is empty, snapshot 2 in second plan only includes delta
     // files
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "2";
@@ -2578,16 +2578,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorStreamFromSnapshot2) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     std::vector<std::optional<int64_t>> expected_snapshot_ids = {std::nullopt, 2, 4, 5};
@@ -2623,7 +2623,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorStreamFromSnapshot5WithPredicate) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "5";
@@ -2635,17 +2635,17 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorStreamFromSnapshot5WithPredicate) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     read_context_builder.SetPredicate(predicate);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     // first plan is snapshot 5 with empty plan, second plan is snapshot 5 with delta files
@@ -2668,7 +2668,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorStreamPredicateFilter) {
     std::string table_path = paimon::test::GetDataDir() + FileFormat() +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "5";
@@ -2680,17 +2680,17 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorStreamPredicateFilter) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     read_context_builder.SetPredicate(predicate).EnablePredicateFilter(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     std::vector<std::optional<int64_t>> expected_snapshot_ids = {std::nullopt, 5};
@@ -2713,7 +2713,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithFirstRowBatchScanSnapshot5) {
         "/pk_table_scan_and_read_first_row.db/pk_table_scan_and_read_first_row/";
 
     // normal batch scan case for pk+first row, all data in level 0 is filtered out
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "5";
@@ -2721,16 +2721,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithFirstRowBatchScanSnapshot5) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -2763,7 +2763,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithFirstRowStreamFromSnapshot3) {
         paimon::test::GetDataDir() + file_format +
         "/pk_table_scan_and_read_first_row.db/pk_table_scan_and_read_first_row/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "3";
@@ -2772,16 +2772,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithFirstRowStreamFromSnapshot3) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     // from a compact snapshot
@@ -2825,7 +2825,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithFirstRowStreamFromSnapshot5) {
         paimon::test::GetDataDir() + file_format +
         "/pk_table_scan_and_read_first_row.db/pk_table_scan_and_read_first_row/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_MODE] = "latest-full";
@@ -2833,16 +2833,16 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithFirstRowStreamFromSnapshot5) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     // from an append snapshot, first plan is snapshot5 with merge, all level 0 data is merged
@@ -2874,23 +2874,23 @@ TEST_P(ScanAndReadInteTest, TestWithPKWith09VersionDvBatchScanLatestSnapshot) {
     std::string table_path = paimon::test::GetDataDir() + file_format + "/pk_09.db/pk_09/";
 
     // normal batch scan case for pk+dv (09 version)
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder.SetLimit(2);
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -2924,22 +2924,22 @@ TEST_P(ScanAndReadInteTest, TestWithEmptyPartitionValue) {
                             const std::vector<std::map<std::string, std::string>>&
                                 partition_filters,
                             const std::shared_ptr<arrow::ChunkedArray>& expected) {
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder.SetPartitionFilter(partition_filters);
         ASSERT_OK_AND_ASSIGN(auto scan_context,
                              FinishScanContext(scan_context_builder, scan_context_builder_options));
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
                                                                 std::move(scan_context),
                                                                 scan_context_builder_options));
 
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
         ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
                                                                 std::move(read_context),
                                                                 read_context_builder_options));
 
@@ -3001,22 +3001,22 @@ TEST_P(ScanAndReadInteTest, TestWithMultipleEmptyPartitionValue) {
     auto check_result = [&](const std::vector<std::map<std::string, std::string>>&
                                 partition_filters,
                             const std::shared_ptr<arrow::ChunkedArray>& expected) {
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder.SetPartitionFilter(partition_filters);
         ASSERT_OK_AND_ASSIGN(auto scan_context,
                              FinishScanContext(scan_context_builder, scan_context_builder_options));
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
                                                                 std::move(scan_context),
                                                                 scan_context_builder_options));
 
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
         ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
                                                                 std::move(read_context),
                                                                 read_context_builder_options));
 
@@ -3058,7 +3058,7 @@ TEST_P(ScanAndReadInteTest, TestMemoryUse) {
     std::string table_path = paimon::test::GetDataDir() + file_format + "/append_09.db/append_09/";
 
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "1";
@@ -3066,7 +3066,7 @@ TEST_P(ScanAndReadInteTest, TestMemoryUse) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 1);
@@ -3076,14 +3076,14 @@ TEST_P(ScanAndReadInteTest, TestMemoryUse) {
     // read
     std::shared_ptr<MemoryPool> read_pool = GetMemoryPool();
     {
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
         read_context_builder.WithMemoryPool(read_pool);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                              read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
                                                                 std::move(read_context),
                                                                 read_context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
@@ -3169,13 +3169,13 @@ TEST_P(ScanAndReadInteTest, TestPkScanWithPostponeBucket) {
 
     {
         // batch scan
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder.WithStreamingMode(false);
         ASSERT_OK_AND_ASSIGN(auto scan_context,
                              FinishScanContext(scan_context_builder, scan_context_builder_options));
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
                                                                 std::move(scan_context),
                                                                 scan_context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -3184,24 +3184,24 @@ TEST_P(ScanAndReadInteTest, TestPkScanWithPostponeBucket) {
     }
     {
         // stream scan: from snapshot 1
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "1";
         scan_context_builder.WithStreamingMode(true);
         ASSERT_OK_AND_ASSIGN(auto scan_context,
                              FinishScanContext(scan_context_builder, scan_context_builder_options));
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
                                                                 std::move(scan_context),
                                                                 scan_context_builder_options));
 
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                              read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
                                                                 std::move(read_context),
                                                                 read_context_builder_options));
 
@@ -3228,24 +3228,24 @@ TEST_P(ScanAndReadInteTest, TestPkScanWithPostponeBucket) {
     }
     {
         // stream scan: from snapshot 2
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "2";
         scan_context_builder.WithStreamingMode(true);
         ASSERT_OK_AND_ASSIGN(auto scan_context,
                              FinishScanContext(scan_context_builder, scan_context_builder_options));
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
                                                                 std::move(scan_context),
                                                                 scan_context_builder_options));
 
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                              read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
                                                                 std::move(read_context),
                                                                 read_context_builder_options));
 
@@ -3264,7 +3264,7 @@ TEST_P(ScanAndReadInteTest, TestPkScanWithPostponeBucket) {
     }
     {
         // stream scan: from snapshot full
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "1";
@@ -3272,16 +3272,16 @@ TEST_P(ScanAndReadInteTest, TestPkScanWithPostponeBucket) {
         scan_context_builder.WithStreamingMode(true);
         ASSERT_OK_AND_ASSIGN(auto scan_context,
                              FinishScanContext(scan_context_builder, scan_context_builder_options));
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
                                                                 std::move(scan_context),
                                                                 scan_context_builder_options));
 
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                              read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
                                                                 std::move(read_context),
                                                                 read_context_builder_options));
 
@@ -3315,7 +3315,7 @@ TEST_P(ScanAndReadInteTest, TestScanWithPredicateAndReadWithUnorderedFieldForPar
     }
     std::string table_path =
         paimon::test::GetDataDir() + "parquet/parquet_append_table.db/parquet_append_table";
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
 
@@ -3325,20 +3325,20 @@ TEST_P(ScanAndReadInteTest, TestScanWithPredicateAndReadWithUnorderedFieldForPar
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 2);
     ASSERT_EQ(result_plan->Splits().size(), 1);
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     read_context_builder.SetReadFieldNames({"f10", "f8", "f4", "f13"});
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -3375,7 +3375,7 @@ TEST_P(ScanAndReadInteTest, TestPkSchemaEvolutionScanWithRenamedPkPredicate) {
 
     auto predicate = PredicateBuilder::GreaterThan(
         /*field_index=*/2, /*field_name=*/"key_2", FieldType::INT, Literal(500));
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "6";
@@ -3384,7 +3384,7 @@ TEST_P(ScanAndReadInteTest, TestPkSchemaEvolutionScanWithRenamedPkPredicate) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 6);
@@ -3398,14 +3398,14 @@ TEST_P(ScanAndReadInteTest, TestPkSchemaEvolutionScanWithRenamedPkPredicate) {
     }
     ASSERT_EQ(data_file_count, 1);
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     read_context_builder.SetReadFieldNames({"key1", "k", "key_2", "c", "d", "a", "key0", "e"});
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -3438,7 +3438,7 @@ TEST_P(ScanAndReadInteTest, TestAppendTableWithMultipleFileFormat) {
         paimon::test::GetDataDir() +
         "/append_table_with_multiple_file_format.db/append_table_with_multiple_file_format";
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "2";
@@ -3446,7 +3446,7 @@ TEST_P(ScanAndReadInteTest, TestAppendTableWithMultipleFileFormat) {
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 2);
@@ -3454,13 +3454,13 @@ TEST_P(ScanAndReadInteTest, TestAppendTableWithMultipleFileFormat) {
     auto splits = result_plan->Splits();
     ASSERT_EQ(1, splits.size());
     // read
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -3487,13 +3487,13 @@ TEST_P(ScanAndReadInteTest, TestPkDvTableIndexInDataAndNoExternalPath) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_dv_index_in_data_no_external.db/pk_dv_index_in_data_no_external";
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 4);
@@ -3501,13 +3501,13 @@ TEST_P(ScanAndReadInteTest, TestPkDvTableIndexInDataAndNoExternalPath) {
     auto splits = result_plan->Splits();
     ASSERT_EQ(3, splits.size());
     // read
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -3536,13 +3536,13 @@ TEST_P(ScanAndReadInteTest, TestPkDvTableIndexNotInDataAndNoExternalPath) {
         paimon::test::GetDataDir() + file_format +
         "/pk_dv_index_not_in_data_no_external.db/pk_dv_index_not_in_data_no_external";
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 4);
@@ -3550,13 +3550,13 @@ TEST_P(ScanAndReadInteTest, TestPkDvTableIndexNotInDataAndNoExternalPath) {
     auto splits = result_plan->Splits();
     ASSERT_EQ(3, splits.size());
     // read
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -3587,13 +3587,13 @@ TEST_P(ScanAndReadInteTest, TestPkDvTableIndexNotInDataAndWithExternalPath) {
     std::string external_path = paimon::test::GetDataDir() + file_format +
                                 "/pk_dv_index_not_in_data_with_external.db/external";
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 4);
@@ -3603,13 +3603,13 @@ TEST_P(ScanAndReadInteTest, TestPkDvTableIndexNotInDataAndWithExternalPath) {
     AdjustSplitWithExternalPath("FILE:/tmp/external", external_path, /*adjust_index=*/false,
                                 &splits);
     // read
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -3641,13 +3641,13 @@ TEST_P(ScanAndReadInteTest, TestScanAndReadWithDisableIndex) {
                                 Literal(FieldType::STRING, "Alice0", 6));
 
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options["file-index.read.enabled"] = "false";
     ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 1);
@@ -3655,7 +3655,7 @@ TEST_P(ScanAndReadInteTest, TestScanAndReadWithDisableIndex) {
     auto splits = result_plan->Splits();
     ASSERT_EQ(1, splits.size());
     // read
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     read_context_builder_options["file-index.read.enabled"] = "false";
@@ -3663,7 +3663,7 @@ TEST_P(ScanAndReadInteTest, TestScanAndReadWithDisableIndex) {
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -3724,7 +3724,7 @@ TEST(ScanAndReadFileIndexInteTest, TestPkDvEmbeddedBitmapFiltersScanAndRead) {
     // file. Disabling file-index reads verifies that baseline explicitly.
     const std::shared_ptr<Predicate> absent_predicate = PredicateBuilder::Equal(
         /*field_index=*/1, /*field_name=*/"indexed_value", FieldType::INT, Literal(15));
-    TableLoadOptions stats_only_scan_builder_load_options{table_path};
+    TableLoadContext stats_only_scan_builder_load_context{table_path};
     std::map<std::string, std::string> stats_only_scan_builder_options;
     ScanContextBuilder stats_only_scan_builder;
     stats_only_scan_builder_options = options;
@@ -3734,13 +3734,13 @@ TEST(ScanAndReadFileIndexInteTest, TestPkDvEmbeddedBitmapFiltersScanAndRead) {
                          stats_only_scan_builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<TableScan> stats_only_scan,
-        TableScan::Create(stats_only_scan_builder_load_options, std::move(stats_only_scan_context),
+        TableScan::Create(stats_only_scan_builder_load_context, std::move(stats_only_scan_context),
                           stats_only_scan_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> stats_only_plan, stats_only_scan->CreatePlan());
     ASSERT_FALSE(stats_only_plan->Splits().empty());
 
     // The embedded bitmap knows that 15 is absent and eliminates the file during scan planning.
-    TableLoadOptions indexed_scan_builder_load_options{table_path};
+    TableLoadContext indexed_scan_builder_load_context{table_path};
     std::map<std::string, std::string> indexed_scan_builder_options;
     ScanContextBuilder indexed_scan_builder;
     indexed_scan_builder_options = options;
@@ -3749,7 +3749,7 @@ TEST(ScanAndReadFileIndexInteTest, TestPkDvEmbeddedBitmapFiltersScanAndRead) {
                          indexed_scan_builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<TableScan> indexed_scan,
-        TableScan::Create(indexed_scan_builder_load_options, std::move(indexed_scan_context),
+        TableScan::Create(indexed_scan_builder_load_context, std::move(indexed_scan_context),
                           indexed_scan_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> indexed_plan, indexed_scan->CreatePlan());
     ASSERT_TRUE(indexed_plan->Splits().empty());
@@ -3759,7 +3759,7 @@ TEST(ScanAndReadFileIndexInteTest, TestPkDvEmbeddedBitmapFiltersScanAndRead) {
     // the other rows.
     const std::shared_ptr<Predicate> present_predicate = PredicateBuilder::Equal(
         /*field_index=*/1, /*field_name=*/"indexed_value", FieldType::INT, Literal(20));
-    TableLoadOptions retained_scan_builder_load_options{table_path};
+    TableLoadContext retained_scan_builder_load_context{table_path};
     std::map<std::string, std::string> retained_scan_builder_options;
     ScanContextBuilder retained_scan_builder;
     retained_scan_builder_options = options;
@@ -3768,19 +3768,19 @@ TEST(ScanAndReadFileIndexInteTest, TestPkDvEmbeddedBitmapFiltersScanAndRead) {
                          retained_scan_builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<TableScan> retained_scan,
-        TableScan::Create(retained_scan_builder_load_options, std::move(retained_scan_context),
+        TableScan::Create(retained_scan_builder_load_context, std::move(retained_scan_context),
                           retained_scan_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> retained_plan, retained_scan->CreatePlan());
     ASSERT_FALSE(retained_plan->Splits().empty());
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     read_context_builder_options = options;
     read_context_builder.SetPredicate(present_predicate).EnablePredicateFilter(false);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(retained_plan->Splits()));
@@ -3841,7 +3841,7 @@ TEST(ScanAndReadFileIndexInteTest, TestPkDvReconstructsFileIndexPredicateAfterSc
         /*field_index=*/1, /*field_name=*/"renamed_value", FieldType::INT, Literal(15));
 
     // The evolved min/max range is still [10, 30], so statistics alone retain the old file.
-    TableLoadOptions stats_only_scan_builder_load_options{table_path};
+    TableLoadContext stats_only_scan_builder_load_context{table_path};
     std::map<std::string, std::string> stats_only_scan_builder_options;
     ScanContextBuilder stats_only_scan_builder;
     stats_only_scan_builder_options = options;
@@ -3851,13 +3851,13 @@ TEST(ScanAndReadFileIndexInteTest, TestPkDvReconstructsFileIndexPredicateAfterSc
                          stats_only_scan_builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<TableScan> stats_only_scan,
-        TableScan::Create(stats_only_scan_builder_load_options, std::move(stats_only_scan_context),
+        TableScan::Create(stats_only_scan_builder_load_context, std::move(stats_only_scan_context),
                           stats_only_scan_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> stats_only_plan, stats_only_scan->CreatePlan());
     ASSERT_FALSE(stats_only_plan->Splits().empty());
 
     // Reconstructing the predicate to schema-0 lets its embedded bitmap prove that 15 is absent.
-    TableLoadOptions indexed_scan_builder_load_options{table_path};
+    TableLoadContext indexed_scan_builder_load_context{table_path};
     std::map<std::string, std::string> indexed_scan_builder_options;
     ScanContextBuilder indexed_scan_builder;
     indexed_scan_builder_options = options;
@@ -3866,7 +3866,7 @@ TEST(ScanAndReadFileIndexInteTest, TestPkDvReconstructsFileIndexPredicateAfterSc
                          indexed_scan_builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<TableScan> indexed_scan,
-        TableScan::Create(indexed_scan_builder_load_options, std::move(indexed_scan_context),
+        TableScan::Create(indexed_scan_builder_load_context, std::move(indexed_scan_context),
                           indexed_scan_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> indexed_plan, indexed_scan->CreatePlan());
     ASSERT_TRUE(indexed_plan->Splits().empty());
@@ -3880,13 +3880,13 @@ TEST_P(ScanAndReadInteTest, TestPkDvTableIndexInDataAndWithExternalPath) {
     std::string external_path =
         paimon::test::GetDataDir() + file_format + "/pk_dv_index_in_data_with_external.db/external";
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 4);
@@ -3896,13 +3896,13 @@ TEST_P(ScanAndReadInteTest, TestPkDvTableIndexInDataAndWithExternalPath) {
     AdjustSplitWithExternalPath("FILE:/tmp/external", external_path, /*adjust_index=*/true,
                                 &splits);
     // read
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -3930,13 +3930,13 @@ TEST_P(ScanAndReadInteTest, TestTimestampType) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/append_with_multiple_ts_precision_and_timezone.db"
                              "/append_with_multiple_ts_precision_and_timezone/";
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 1);
@@ -3945,13 +3945,13 @@ TEST_P(ScanAndReadInteTest, TestTimestampType) {
     ASSERT_EQ(1, splits.size());
 
     // read
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -3987,13 +3987,13 @@ TEST_P(ScanAndReadInteTest, TestCastTimestampType) {
                              "/append_with_cast_timestamp.db"
                              "/append_with_cast_timestamp/";
     // scan
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 1);
@@ -4002,13 +4002,13 @@ TEST_P(ScanAndReadInteTest, TestCastTimestampType) {
     ASSERT_EQ(1, splits.size());
 
     // read
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -4044,23 +4044,23 @@ TEST_F(ScanAndReadInteTest, TestParquetDictionaryBinaryStoredArrowSchema) {
                                    "/parquet/append_dictionary_binary.db/"
                                    "append_dictionary_binary";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
     ASSERT_EQ(1, plan->SnapshotId().value());
     ASSERT_EQ(1, plan->Splits().size());
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                          table_read->CreateReader(plan->Splits()));
@@ -4130,10 +4130,10 @@ TEST_F(ScanAndReadInteTest, TestLanceJavaCompatibility) {
                      const std::vector<std::string>& projection,
                      const std::shared_ptr<arrow::ChunkedArray>& expected_result,
                      bool exact_filter = false) {
-        TableLoadOptions scan_builder_load_options{table_path};
+        TableLoadContext scan_builder_load_context{table_path};
         std::map<std::string, std::string> scan_builder_options;
         ScanContextBuilder scan_builder;
-        TableLoadOptions read_builder_load_options{table_path};
+        TableLoadContext read_builder_load_context{table_path};
         std::map<std::string, std::string> read_builder_options;
         ReadContextBuilder read_builder;
         if (predicate) {
@@ -4151,14 +4151,14 @@ TEST_F(ScanAndReadInteTest, TestLanceJavaCompatibility) {
 
         ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto scan,
-                             TableScan::Create(scan_builder_load_options, std::move(scan_context),
+                             TableScan::Create(scan_builder_load_context, std::move(scan_context),
                                                scan_builder_options));
         ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
         ASSERT_EQ(plan->SnapshotId(), std::optional<int64_t>(2));
         ASSERT_FALSE(plan->Splits().empty());
         ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto read,
-                             TableRead::Create(read_builder_load_options, std::move(read_context),
+                             TableRead::Create(read_builder_load_context, std::move(read_context),
                                                read_builder_options));
         ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
         ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
@@ -4230,20 +4230,20 @@ TEST_F(ScanAndReadInteTest, TestLancePythonCompatibility) {
     auto check = [&](int64_t snapshot_id, const std::vector<std::string>& projection,
                      const std::shared_ptr<arrow::ChunkedArray>& expected_result) {
         SCOPED_TRACE("snapshot " + std::to_string(snapshot_id));
-        TableLoadOptions scan_builder_load_options{table_path};
+        TableLoadContext scan_builder_load_context{table_path};
         std::map<std::string, std::string> scan_builder_options;
         ScanContextBuilder scan_builder;
         scan_builder_options[Options::SCAN_SNAPSHOT_ID] = std::to_string(snapshot_id);
 
         ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto scan,
-                             TableScan::Create(scan_builder_load_options, std::move(scan_context),
+                             TableScan::Create(scan_builder_load_context, std::move(scan_context),
                                                scan_builder_options));
         ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
         ASSERT_EQ(plan->SnapshotId(), std::optional<int64_t>(snapshot_id));
         ASSERT_FALSE(plan->Splits().empty());
 
-        TableLoadOptions read_builder_load_options{table_path};
+        TableLoadContext read_builder_load_context{table_path};
         std::map<std::string, std::string> read_builder_options;
         ReadContextBuilder read_builder;
         read_builder_options["read.batch-size"] = "1";
@@ -4253,7 +4253,7 @@ TEST_F(ScanAndReadInteTest, TestLancePythonCompatibility) {
         }
         ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto read,
-                             TableRead::Create(read_builder_load_options, std::move(read_context),
+                             TableRead::Create(read_builder_load_context, std::move(read_context),
                                                read_builder_options));
         ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
         ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
@@ -4314,20 +4314,20 @@ TEST_F(ScanAndReadInteTest, TestLanceLtzCompatibility) {
                      const std::vector<std::string>& projection,
                      const std::shared_ptr<arrow::ChunkedArray>& expected_result) {
         SCOPED_TRACE("snapshot " + std::to_string(snapshot_id));
-        TableLoadOptions scan_builder_load_options{table_path};
+        TableLoadContext scan_builder_load_context{table_path};
         std::map<std::string, std::string> scan_builder_options;
         ScanContextBuilder scan_builder;
         scan_builder_options[Options::SCAN_SNAPSHOT_ID] = std::to_string(snapshot_id);
 
         ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto scan,
-                             TableScan::Create(scan_builder_load_options, std::move(scan_context),
+                             TableScan::Create(scan_builder_load_context, std::move(scan_context),
                                                scan_builder_options));
         ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
         ASSERT_EQ(plan->SnapshotId(), std::optional<int64_t>(snapshot_id));
         ASSERT_FALSE(plan->Splits().empty());
 
-        TableLoadOptions read_builder_load_options{table_path};
+        TableLoadContext read_builder_load_context{table_path};
         std::map<std::string, std::string> read_builder_options;
         ReadContextBuilder read_builder;
         read_builder_options["read.batch-size"] = "1";
@@ -4337,7 +4337,7 @@ TEST_F(ScanAndReadInteTest, TestLanceLtzCompatibility) {
         }
         ASSERT_OK_AND_ASSIGN(auto read_context, read_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto read,
-                             TableRead::Create(read_builder_load_options, std::move(read_context),
+                             TableRead::Create(read_builder_load_context, std::move(read_context),
                                                read_builder_options));
         ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(plan->Splits()));
         ASSERT_OK_AND_ASSIGN(auto actual, ReadResultCollector::CollectResult(std::move(reader)));
@@ -4406,10 +4406,10 @@ TEST_F(ScanAndReadInteTest, TestMosaicJavaAndPythonCompatibility) {
     auto check_compatibility = [](const std::string& table_path,
                                   const std::shared_ptr<Predicate>& predicate,
                                   const std::shared_ptr<arrow::ChunkedArray>& expected_result) {
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         if (predicate != nullptr) {
@@ -4420,7 +4420,7 @@ TEST_F(ScanAndReadInteTest, TestMosaicJavaAndPythonCompatibility) {
                              scan_context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<TableScan> table_scan,
-            TableScan::Create(scan_context_builder_load_options, std::move(scan_context),
+            TableScan::Create(scan_context_builder_load_context, std::move(scan_context),
                               scan_context_builder_options));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
 
@@ -4428,7 +4428,7 @@ TEST_F(ScanAndReadInteTest, TestMosaicJavaAndPythonCompatibility) {
                              read_context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<TableRead> table_read,
-            TableRead::Create(read_context_builder_load_options, std::move(read_context),
+            TableRead::Create(read_context_builder_load_context, std::move(read_context),
                               read_context_builder_options));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                              table_read->CreateReader(plan->Splits()));
@@ -4478,20 +4478,20 @@ TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibility) {
 
     const std::string table_name = "append_java_compat";
     const std::string table_path = GetDataDir() + "/vortex/" + table_name + ".db/" + table_name;
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(plan->Splits()));
@@ -4512,24 +4512,24 @@ TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibilityLtzAcrossTimezones) {
     const std::string timezones[] = {"UTC", "Asia/Shanghai"};
     for (const std::string& tz : timezones) {
         TimezoneGuard timezone_guard(tz);
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
                              scan_context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<TableScan> table_scan,
-            TableScan::Create(scan_context_builder_load_options, std::move(scan_context),
+            TableScan::Create(scan_context_builder_load_context, std::move(scan_context),
                               scan_context_builder_options));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                              read_context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<TableRead> table_read,
-            TableRead::Create(read_context_builder_load_options, std::move(read_context),
+            TableRead::Create(read_context_builder_load_context, std::move(read_context),
                               read_context_builder_options));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                              table_read->CreateReader(plan->Splits()));
@@ -4595,20 +4595,20 @@ TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibilityAllTypes) {
 
     const std::string table_name = "all_types_java_compat";
     const std::string table_path = GetDataDir() + "/vortex/" + table_name + ".db/" + table_name;
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(plan->Splits()));
@@ -4624,13 +4624,13 @@ TEST_F(ScanAndReadInteTest, TestAvroWithAppendTable) {
     auto read_data = [](int64_t snapshot_id, const std::string& result_json) {
         std::string table_path = GetDataDir() + "/avro/append_multiple.db/append_multiple";
         // scan
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = std::to_string(snapshot_id);
 
         ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
                                                                 std::move(scan_context),
                                                                 scan_context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -4639,7 +4639,7 @@ TEST_F(ScanAndReadInteTest, TestAvroWithAppendTable) {
         ASSERT_EQ(3, splits.size());
 
         // read
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         read_context_builder_options["test.enable-adaptive-prefetch-strategy"] = "false";
@@ -4647,7 +4647,7 @@ TEST_F(ScanAndReadInteTest, TestAvroWithAppendTable) {
         read_context_builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                              read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
                                                                 std::move(read_context),
                                                                 read_context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
@@ -4709,13 +4709,13 @@ TEST_F(ScanAndReadInteTest, TestAvroWithPkTable) {
         std::string table_path =
             GetDataDir() + "/avro/pk_with_multiple_type.db/pk_with_multiple_type";
         // scan
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = std::to_string(snapshot_id);
 
         ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
                                                                 std::move(scan_context),
                                                                 scan_context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -4725,12 +4725,12 @@ TEST_F(ScanAndReadInteTest, TestAvroWithPkTable) {
         ASSERT_EQ(1, splits.size());
 
         // read
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                              read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
                                                                 std::move(read_context),
                                                                 read_context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
@@ -4791,7 +4791,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKBucketSelectByPredicate) {
     // Historical files use two buckets even when the current option has changed.
     for (const std::string current_bucket_count : {"2", "4", "8", "17"}) {
         SCOPED_TRACE(current_bucket_count);
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "6";
@@ -4802,17 +4802,17 @@ TEST_P(ScanAndReadInteTest, TestWithPKBucketSelectByPredicate) {
         scan_context_builder.SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(auto scan_context,
                              FinishScanContext(scan_context_builder, scan_context_builder_options));
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
                                                                 std::move(scan_context),
                                                                 scan_context_builder_options));
 
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
         read_context_builder.SetPredicate(predicate);
         ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
                                                                 std::move(read_context),
                                                                 read_context_builder_options));
 
@@ -4821,7 +4821,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKBucketSelectByPredicate) {
             ASSERT_OK_AND_ASSIGN(uint64_t enabled, table_scan->GetMetrics()->GetCounter(
                                                        ScanMetrics::LAST_SNAPSHOT_CACHE_ENABLED));
             ASSERT_EQ(enabled, 1);
-            TableLoadOptions cached_builder_load_options{table_path};
+            TableLoadContext cached_builder_load_context{table_path};
             std::map<std::string, std::string> cached_builder_options;
             ScanContextBuilder cached_builder;
             cached_builder_options[Options::SCAN_SNAPSHOT_ID] = "6";
@@ -4829,7 +4829,7 @@ TEST_P(ScanAndReadInteTest, TestWithPKBucketSelectByPredicate) {
             cached_builder.SetPartitionFilter({{{"f1", "10"}}}).SetPredicate(predicate);
             ASSERT_OK_AND_ASSIGN(auto cached_context,
                                  FinishScanContext(cached_builder, cached_builder_options));
-            ASSERT_OK_AND_ASSIGN(auto cached_scan, TableScan::Create(cached_builder_load_options,
+            ASSERT_OK_AND_ASSIGN(auto cached_scan, TableScan::Create(cached_builder_load_context,
                                                                      std::move(cached_context),
                                                                      cached_builder_options));
             ASSERT_OK_AND_ASSIGN(result_plan, cached_scan->CreatePlan());
@@ -4879,26 +4879,26 @@ TEST_P(ScanAndReadInteTest, TestReadNullableMapKey) {
     const std::string table_path =
         paimon::test::GetDataDir() + "orc/nullable_map_key.db/nullable_map_key";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_TRUE(result_plan->SnapshotId());
     ASSERT_EQ(result_plan->SnapshotId().value(), 1);
     ASSERT_EQ(result_plan->Splits().size(), 1);
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     read_context_builder_options[Options::READ_BATCH_SIZE] = "1";
 
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
 
@@ -4931,13 +4931,13 @@ TEST_P(ScanAndReadInteTest, TestCountRowsEmptySplits) {
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     // CreateCountReader with empty splits should return 0 rows.
@@ -4953,38 +4953,38 @@ TEST_P(ScanAndReadInteTest, TestCountRowsConsistencyWithCreateReader) {
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
     // Scan latest snapshot
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
 
     // Method 1: CreateCountReader + iterate batches
-    TableLoadOptions count_context_builder_load_options{table_path};
+    TableLoadContext count_context_builder_load_context{table_path};
     std::map<std::string, std::string> count_context_builder_options;
     ReadContextBuilder count_context_builder;
     AddReadOptionsForPrefetch(&count_context_builder, count_context_builder_options);
     ASSERT_OK_AND_ASSIGN(auto count_read_context, count_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         auto count_table_read,
-        TableRead::Create(count_context_builder_load_options, std::move(count_read_context),
+        TableRead::Create(count_context_builder_load_context, std::move(count_read_context),
                           count_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto count_reader,
                          count_table_read->CreateCountReader(result_plan->Splits()));
     ASSERT_OK_AND_ASSIGN(int64_t count_result, count_reader->CountRows());
 
     // Method 2: CreateReader + iterate batches
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -5001,27 +5001,27 @@ TEST_P(ScanAndReadInteTest, TestCreateCountReaderWithPredicateNotSupported) {
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
     // Create splits from latest snapshot.
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
 
     // Set predicate in read context. CountReader currently does not support predicate pushdown.
     auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT,
                                              Literal(static_cast<int32_t>(0)));
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     read_context_builder.SetPredicate(predicate);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_NOK_WITH_MSG(table_read->CreateCountReader(result_plan->Splits()),
@@ -5034,23 +5034,23 @@ TEST_P(ScanAndReadInteTest, TestCreateCountReaderWithForceKeepDeleteNotSupported
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
     // Create splits from latest snapshot.
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    TableLoadContext scan_context_builder_load_context{table_path};
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(auto scan_context,
                          FinishScanContext(scan_context_builder, scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(scan_context_builder_load_options,
+                         TableScan::Create(scan_context_builder_load_context,
                                            std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     auto* key_value_table_read = dynamic_cast<KeyValueTableRead*>(table_read.get());

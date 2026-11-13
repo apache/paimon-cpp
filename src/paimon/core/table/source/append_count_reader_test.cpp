@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/defs.h"
 #include "paimon/fs/local/local_file_system.h"
@@ -52,7 +52,7 @@ class AppendCountReaderTest : public testing::Test {
  protected:
     Result<std::vector<std::shared_ptr<Split>>> CreateSplits(
         const std::string& table_path, const std::optional<int64_t>& snapshot_id) {
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         if (snapshot_id.has_value()) {
@@ -61,7 +61,7 @@ class AppendCountReaderTest : public testing::Test {
         }
 
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(scan_context_builder_load_context,
                                                                   std::move(scan_context),
                                                                   scan_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto plan, table_scan->CreatePlan());
@@ -138,13 +138,13 @@ TEST_F(AppendCountReaderTest, TestAppendOnlyTableReadCreateCountReaderPredicateN
     auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/3, /*field_name=*/"f3",
                                                    FieldType::DOUBLE, Literal(13.0));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadContext read_context_builder_load_context{table_path};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     read_context_builder.SetPredicate(predicate);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto splits, CreateSplits(table_path, /*snapshot_id=*/5));

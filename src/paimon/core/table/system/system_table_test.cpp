@@ -31,7 +31,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/data/generic_row.h"
 #include "paimon/core/catalog/file_system_catalog.h"
 #include "paimon/core/core_options.h"

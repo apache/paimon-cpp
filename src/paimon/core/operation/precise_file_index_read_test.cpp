@@ -30,7 +30,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/file_index/bitmap/bitmap_file_index.h"
 #include "paimon/common/predicate/leaf_predicate_impl.h"
@@ -146,12 +146,12 @@ class PreciseFileIndexReadTest : public ::testing::Test {
 
     Result<std::unique_ptr<RawFileSplitRead>> CreateSplitRead(
         const std::shared_ptr<ReadContext>& read_context,
-        const TableLoadOptions& read_context_load_options,
+        const TableLoadContext& read_context_load_context,
         const std::map<std::string, std::string>& read_context_options,
         std::shared_ptr<TableSchema> table_schema = nullptr) const {
         if (!table_schema) {
             SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                         read_context_load_options.path);
+                                         read_context_load_context.path);
             PAIMON_ASSIGN_OR_RAISE(table_schema, schema_manager.ReadSchema(0));
         }
         auto options = table_schema->Options();
@@ -161,17 +161,17 @@ class PreciseFileIndexReadTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<InternalReadContext> context,
             InternalReadContext::Create(
-                read_context, table_schema, options, read_context_load_options.file_system,
-                read_context_load_options.path,
-                read_context_load_options.fs_scheme_to_identifier_map,
-                read_context_load_options.catalog, read_context_load_options.identifier,
+                read_context, table_schema, options, read_context_load_context.file_system,
+                read_context_load_context.path,
+                read_context_load_context.fs_scheme_to_identifier_map,
+                read_context_load_context.catalog, read_context_load_context.identifier,
                 read_context_options));
         return std::make_unique<RawFileSplitRead>(nullptr, context, pool_, nullptr);
     }
 
     Result<std::shared_ptr<arrow::ChunkedArray>> ReadWithFileIndex(
         const std::shared_ptr<ReadContext>& read_context,
-        const TableLoadOptions& read_context_load_options,
+        const TableLoadContext& read_context_load_context,
         const std::map<std::string, std::string>& read_context_options,
         const std::shared_ptr<Bytes>& index,
         const RoaringBitmap32& deleted_rows = RoaringBitmap32(),
@@ -180,7 +180,7 @@ class PreciseFileIndexReadTest : public ::testing::Test {
         std::shared_ptr<DeletionVector> deletion_vector = nullptr,
         const std::optional<int64_t>& row_count = std::nullopt) const {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RawFileSplitRead> split_read,
-                               CreateSplitRead(read_context, read_context_load_options,
+                               CreateSplitRead(read_context, read_context_load_context,
                                                read_context_options, std::move(table_schema)));
         auto file = PrepareDataFile();
         file->embedded_index = index;
@@ -220,16 +220,16 @@ class PreciseFileIndexReadTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<Bytes> index,
             MockSearchFileIndex::MakeQueryIndex("f0", statistics_index_type_, matches, pool_));
-        TableLoadOptions builder_load_options;
-        builder_load_options.path = SearchTablePath();
+        TableLoadContext builder_load_context;
+        builder_load_context.path = SearchTablePath();
         std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder;
         builder.SetReadFieldNames({"f0"}).SetPredicate(predicate).EnablePreciseFileIndexEvaluate(
             true);
-        auto context_load_options = builder_load_options;
+        auto context_load_context = builder_load_context;
         auto context_options = builder_options;
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> context, builder.Finish());
-        return ReadWithFileIndex(context, context_load_options, context_options, index);
+        return ReadWithFileIndex(context, context_load_context, context_options, index);
     }
 
     static void CheckSearchResult(const std::shared_ptr<arrow::ChunkedArray>& actual,
@@ -276,18 +276,18 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateNestedAndOrWithPartitionConst
             "f0", statistics_index_type_,
             {{first_query, {{{0, 0.2f}, {1, 0.4f}}, 0.2}}, {second_query, {{{2, 0.6f}}, 0.1}}},
             pool_));
-    TableLoadOptions builder_load_options;
-    builder_load_options.path = SearchTablePath();
+    TableLoadContext builder_load_context;
+    builder_load_context.path = SearchTablePath();
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true);
     builder_options[Options::READ_BATCH_SIZE] = "1";
     builder.SetReadFieldNames({"f0", "f1", "f2", "f3"}).SetPredicate(predicate);
-    auto context_load_options = builder_load_options;
+    auto context_load_context = builder_load_context;
     auto context_options = builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         ReadWithFileIndex(context, context_load_options, context_options, index));
+                         ReadWithFileIndex(context, context_load_context, context_options, index));
     CheckSearchResult(result,
                       {arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
                        arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())},
@@ -320,17 +320,17 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateReordersQueries) {
                                             {{wide_query, {{{0, 0.1f}, {1, 0.2f}, {2, 0.3f}}, 0.9}},
                                              {narrow_query, {{{0, 0.4f}, {2, 0.5f}}, 0.1}}},
                                             pool_));
-    TableLoadOptions builder_load_options;
-    builder_load_options.path = SearchTablePath();
+    TableLoadContext builder_load_context;
+    builder_load_context.path = SearchTablePath();
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true);
     builder.SetReadFieldNames({"f0", "f3"}).SetPredicate(predicate);
-    auto context_load_options = builder_load_options;
+    auto context_load_context = builder_load_context;
     auto context_options = builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         ReadWithFileIndex(context, context_load_options, context_options, index));
+                         ReadWithFileIndex(context, context_load_context, context_options, index));
     CheckSearchResult(result,
                       {arrow::field("f0", arrow::utf8()), arrow::field("f3", arrow::float64())},
                       R"([["Tony",14.1]])");
@@ -476,20 +476,20 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateEmptyRowsShortCircuitExecutio
                              {{empty_query, {{}, std::nullopt}},
                               {all_query, {{{0, 0.1f}, {1, 0.2f}, {2, 0.3f}}, std::nullopt}}},
                              pool_));
-    TableLoadOptions builder_load_options;
-    builder_load_options.path = SearchTablePath();
+    TableLoadContext builder_load_context;
+    builder_load_context.path = SearchTablePath();
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true);
     builder.SetReadFieldNames({"f0"}).SetPredicate(predicate);
-    auto context_load_options = builder_load_options;
+    auto context_load_context = builder_load_context;
     auto context_options = builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
     for (bool all_deleted : {false, true}) {
         statistics_->executions.clear();
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<arrow::ChunkedArray> result,
-            ReadWithFileIndex(context, context_load_options, context_options, index,
+            ReadWithFileIndex(context, context_load_context, context_options, index,
                               all_deleted ? RoaringBitmap32::From({0, 1, 2}) : RoaringBitmap32()));
         ASSERT_TRUE(!result || result->length() == 0);
         ASSERT_EQ(statistics_->executions.size(), all_deleted ? 0 : 1);
@@ -539,19 +539,19 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateIndexedLeafSkipsUnselectedSca
         std::shared_ptr<Bytes> index,
         MockSearchFileIndex::MakeQueryIndex("f0", statistics_index_type_,
                                             {{query, {{{0, 0.25f}, {2, 0.75f}}, 0.1}}}, pool_));
-    TableLoadOptions builder_load_options;
-    builder_load_options.path = SearchTablePath();
+    TableLoadContext builder_load_context;
+    builder_load_context.path = SearchTablePath();
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true);
     // Single-row batches let bitmap selection skip the unselected scalar evaluation batch.
     builder_options[Options::READ_BATCH_SIZE] = "1";
     builder.SetReadFieldNames({"f0", "f3"}).SetPredicate(predicate);
-    auto context_load_options = builder_load_options;
+    auto context_load_context = builder_load_context;
     auto context_options = builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         ReadWithFileIndex(context, context_load_options, context_options, index));
+                         ReadWithFileIndex(context, context_load_context, context_options, index));
     CheckSearchResult(result,
                       {arrow::field("f0", arrow::utf8()), arrow::field("f3", arrow::float64())},
                       R"([["Tony",14.1]])");
@@ -588,18 +588,18 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateRechecksScalarIndexCandidates
         std::shared_ptr<Predicate> predicate,
         PredicateBuilder::And(
             {PredicateBuilder::Equal(1, "f3", FieldType::DOUBLE, Literal(13.1)), text}));
-    TableLoadOptions builder_load_options;
-    builder_load_options.path = SearchTablePath();
+    TableLoadContext builder_load_context;
+    builder_load_context.path = SearchTablePath();
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true);
     builder_options[Options::READ_BATCH_SIZE] = "1";
     builder.SetReadFieldNames({"f0", "f3", "_f0_INDEX_SCORE"}).SetPredicate(predicate);
-    auto context_load_options = builder_load_options;
+    auto context_load_context = builder_load_context;
     auto context_options = builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         ReadWithFileIndex(context, context_load_options, context_options, index));
+                         ReadWithFileIndex(context, context_load_context, context_options, index));
     CheckSearchResult(result,
                       {arrow::field("f0", arrow::utf8()), field,
                        arrow::field("_f0_INDEX_SCORE", arrow::float32())},
@@ -618,19 +618,19 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicatePrechecksSearchBeforeEmptyCan
             PredicateBuilder::Equal(1, "f1", FieldType::INT, Literal(case_id == 0 ? 20 : 10));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
                              PredicateBuilder::And({scalar, text}));
-        TableLoadOptions builder_load_options;
-        builder_load_options.path = SearchTablePath();
+        TableLoadContext builder_load_context;
+        builder_load_context.path = SearchTablePath();
         std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder;
         builder.EnablePreciseFileIndexEvaluate(true);
         builder.SetReadFieldNames({"f0", "f1"}).SetPredicate(predicate);
-        auto context_load_options = builder_load_options;
+        auto context_load_context = builder_load_context;
         auto context_options = builder_options;
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
         const auto deleted = case_id == 1 ? RoaringBitmap32::From({0, 1, 2}) : RoaringBitmap32();
         const std::optional<std::vector<Range>> ranges =
             case_id == 2 ? std::make_optional(std::vector<Range>()) : std::nullopt;
-        ASSERT_NOK_WITH_MSG(ReadWithFileIndex(context, context_load_options, context_options,
+        ASSERT_NOK_WITH_MSG(ReadWithFileIndex(context, context_load_context, context_options,
                                               nullptr, deleted, nullptr, ranges),
                             "has no File Index for search field 'f0'");
     }
@@ -660,8 +660,8 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateRenamedTextAndMissingScalarCo
                          MockSearchFileIndex::MakeQueryIndex(
                              "f0", MockSearchFileIndex::FULL_TEXT_IDENTIFIER,
                              {{query, {{{0, 0.25f}, {1, 0.5f}, {2, 0.75f}}, 0.5}}}, pool_));
-    TableLoadOptions builder_load_options;
-    builder_load_options.path = SearchTablePath();
+    TableLoadContext builder_load_context;
+    builder_load_context.path = SearchTablePath();
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true);
@@ -670,11 +670,11 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateRenamedTextAndMissingScalarCo
         .SetReadFieldNames({"renamed_f0", "new_value", "f3", "_renamed_f0_INDEX_SCORE"})
 
         .SetPredicate(predicate);
-    auto context_load_options = builder_load_options;
+    auto context_load_context = builder_load_context;
     auto context_options = builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                         ReadWithFileIndex(context, context_load_options, context_options, index,
+                         ReadWithFileIndex(context, context_load_context, context_options, index,
                                            RoaringBitmap32(), current));
     CheckSearchResult(
         result,
@@ -686,8 +686,8 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateRenamedTextAndMissingScalarCo
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<Predicate> nonnull,
         PredicateBuilder::And({text, PredicateBuilder::IsNotNull(1, "new_value", FieldType::INT)}));
-    TableLoadOptions nonnull_builder_load_options;
-    nonnull_builder_load_options.path = SearchTablePath();
+    TableLoadContext nonnull_builder_load_context;
+    nonnull_builder_load_context.path = SearchTablePath();
     std::map<std::string, std::string> nonnull_builder_options;
     ReadContextBuilder nonnull_builder;
     nonnull_builder.EnablePreciseFileIndexEvaluate(true);
@@ -696,12 +696,12 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateRenamedTextAndMissingScalarCo
         .SetReadFieldNames({"renamed_f0", "new_value", "f3", "_renamed_f0_INDEX_SCORE"})
 
         .SetPredicate(nonnull);
-    auto nonnull_context_load_options = nonnull_builder_load_options;
+    auto nonnull_context_load_context = nonnull_builder_load_context;
     auto nonnull_context_options = nonnull_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> nonnull_context, nonnull_builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::ChunkedArray> empty,
-        ReadWithFileIndex(nonnull_context, nonnull_context_load_options, nonnull_context_options,
+        ReadWithFileIndex(nonnull_context, nonnull_context_load_context, nonnull_context_options,
                           index, RoaringBitmap32(), current));
     ASSERT_TRUE(!empty || empty->length() == 0);
 }
@@ -729,8 +729,8 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateFullTextAndVectorScoresAfterF
     auto search = std::make_shared<VectorSearch>("f3", 1, std::vector<float>{1.0f}, nullptr,
                                                  nullptr, VectorSearch::DistanceType::EUCLIDEAN,
                                                  std::map<std::string, std::string>{});
-    TableLoadOptions builder_load_options;
-    builder_load_options.path = SearchTablePath();
+    TableLoadContext builder_load_context;
+    builder_load_context.path = SearchTablePath();
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true);
@@ -738,7 +738,7 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateFullTextAndVectorScoresAfterF
     builder.SetReadFieldNames({"_f3_INDEX_SCORE", "f0", "f3", "_f0_INDEX_SCORE"})
         .SetPredicate(predicate)
         .SetVectorSearch(search);
-    auto context_load_options = builder_load_options;
+    auto context_load_context = builder_load_context;
     auto context_options = builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
     for (int32_t case_id : {0, 1, 2}) {
@@ -746,7 +746,7 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateFullTextAndVectorScoresAfterF
         const std::optional<std::vector<Range>> ranges =
             case_id == 2 ? std::make_optional(std::vector<Range>{Range(2, 2)}) : std::nullopt;
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
-                             ReadWithFileIndex(context, context_load_options, context_options,
+                             ReadWithFileIndex(context, context_load_context, context_options,
                                                index, deleted, nullptr, ranges));
         CheckSearchResult(
             result,
@@ -760,8 +760,8 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateFullTextAndVectorScoresAfterF
 TEST_F(PreciseFileIndexReadTest, TestFullTextRootScoresAndLimitAfterScalarDvAndRanges) {
     const std::string query = R"({"match":{"query":"ranked"}})";
     auto search = std::make_shared<FullTextSearch>("f0", query, 1, RoaringBitmap64::From({0, 2}));
-    TableLoadOptions builder_load_options;
-    builder_load_options.path = SearchTablePath();
+    TableLoadContext builder_load_context;
+    builder_load_context.path = SearchTablePath();
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true);
@@ -769,7 +769,7 @@ TEST_F(PreciseFileIndexReadTest, TestFullTextRootScoresAndLimitAfterScalarDvAndR
     builder.SetReadFieldNames({"f0", "f3", "_f0_INDEX_SCORE"})
         .SetFullTextSearch(search)
         .SetPredicate(PredicateBuilder::GreaterThan(1, "f3", FieldType::DOUBLE, Literal(13.5)));
-    auto context_load_options = builder_load_options;
+    auto context_load_context = builder_load_context;
     auto context_options = builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
@@ -779,7 +779,7 @@ TEST_F(PreciseFileIndexReadTest, TestFullTextRootScoresAndLimitAfterScalarDvAndR
             {{query, {{{0, 0.25f}, {1, 0.5f}, {2, 0.75f}}, std::nullopt}}}, pool_));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::ChunkedArray> result,
-        ReadWithFileIndex(context, context_load_options, context_options, index,
+        ReadWithFileIndex(context, context_load_context, context_options, index,
                           RoaringBitmap32::From({0}), nullptr, std::vector<Range>{Range(1, 2)}));
     CheckSearchResult(result,
                       {arrow::field("f0", arrow::utf8()), arrow::field("f3", arrow::float64()),
@@ -804,8 +804,8 @@ TEST_F(PreciseFileIndexReadTest, TestPreciseEvaluationRejectsBitmap64DeletionVec
                          MockSearchFileIndex::Serialize(indexes, pool_));
     for (const std::string& query_type :
          std::vector<std::string>{"none", "scalar", "match", "full-text", "vector"}) {
-        TableLoadOptions builder_load_options;
-        builder_load_options.path = SearchTablePath();
+        TableLoadContext builder_load_context;
+        builder_load_context.path = SearchTablePath();
         std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder;
         builder.SetReadFieldNames({"f0", "f3"}).EnablePreciseFileIndexEvaluate(true);
@@ -824,7 +824,7 @@ TEST_F(PreciseFileIndexReadTest, TestPreciseEvaluationRejectsBitmap64DeletionVec
                 "f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr, nullptr,
                 VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{}));
         }
-        auto context_load_options = builder_load_options;
+        auto context_load_context = builder_load_context;
         auto context_options = builder_options;
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
         for (bool empty_dv : {false, true}) {
@@ -836,7 +836,7 @@ TEST_F(PreciseFileIndexReadTest, TestPreciseEvaluationRejectsBitmap64DeletionVec
                 const std::optional<std::vector<Range>> ranges =
                     empty_candidates ? std::make_optional(std::vector<Range>()) : std::nullopt;
                 ASSERT_NOK_WITH_MSG(
-                    ReadWithFileIndex(context, context_load_options, context_options, index,
+                    ReadWithFileIndex(context, context_load_context, context_options, index,
                                       RoaringBitmap32(), nullptr, ranges, dv),
                     "Precise file-index evaluation requires bitmap32 deletion vectors");
             }
@@ -847,8 +847,8 @@ TEST_F(PreciseFileIndexReadTest, TestPreciseEvaluationRejectsBitmap64DeletionVec
 TEST_F(PreciseFileIndexReadTest, TestPreciseEvaluationRejectsRowsAboveBitmap32Limit) {
     for (const std::string& search_type :
          std::vector<std::string>{"none", "scalar", "match", "full-text", "vector"}) {
-        TableLoadOptions builder_load_options;
-        builder_load_options.path = SearchTablePath();
+        TableLoadContext builder_load_context;
+        builder_load_context.path = SearchTablePath();
         std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder;
         builder.EnablePreciseFileIndexEvaluate(true);
@@ -869,11 +869,11 @@ TEST_F(PreciseFileIndexReadTest, TestPreciseEvaluationRejectsRowsAboveBitmap32Li
                 "f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr, nullptr,
                 VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{}));
         }
-        auto context_load_options = builder_load_options;
+        auto context_load_context = builder_load_context;
         auto context_options = builder_options;
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
         ASSERT_NOK_WITH_MSG(
-            ReadWithFileIndex(context, context_load_options, context_options, /*index=*/nullptr,
+            ReadWithFileIndex(context, context_load_context, context_options, /*index=*/nullptr,
                               RoaringBitmap32(), nullptr,
                               /*row_ranges=*/std::nullopt,
                               /*deletion_vector=*/nullptr, int64_t{RoaringBitmap32::MAX_VALUE} + 1),
@@ -883,8 +883,8 @@ TEST_F(PreciseFileIndexReadTest, TestPreciseEvaluationRejectsRowsAboveBitmap32Li
 
 TEST_F(PreciseFileIndexReadTest, TestPreciseEvaluationAtBitmap32Limit) {
     for (bool has_predicate : {false, true}) {
-        TableLoadOptions builder_load_options;
-        builder_load_options.path = SearchTablePath();
+        TableLoadContext builder_load_context;
+        builder_load_context.path = SearchTablePath();
         std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder;
         builder.SetReadFieldNames({"f0", "f3"}).EnablePreciseFileIndexEvaluate(true);
@@ -892,12 +892,12 @@ TEST_F(PreciseFileIndexReadTest, TestPreciseEvaluationAtBitmap32Limit) {
             builder.SetPredicate(
                 PredicateBuilder::GreaterThan(1, "f3", FieldType::DOUBLE, Literal(13.0)));
         }
-        auto context_load_options = builder_load_options;
+        auto context_load_context = builder_load_context;
         auto context_options = builder_options;
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(
             std::shared_ptr<arrow::ChunkedArray> result,
-            ReadWithFileIndex(context, context_load_options, context_options, /*index=*/nullptr,
+            ReadWithFileIndex(context, context_load_context, context_options, /*index=*/nullptr,
                               RoaringBitmap32(), nullptr, std::vector<Range>{Range(0, 2)},
                               /*deletion_vector=*/nullptr, RoaringBitmap32::MAX_VALUE));
         CheckSearchResult(result,

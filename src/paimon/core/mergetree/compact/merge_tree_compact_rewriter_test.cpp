@@ -21,7 +21,7 @@
 #include "arrow/api.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/core/mergetree/compact/interval_partition.h"
@@ -58,12 +58,12 @@ class MergeTreeCompactRewriterTest : public testing::Test {
     Result<std::vector<std::vector<SortedRun>>> GenerateSortedRuns(
         const std::string& table_path, const std::shared_ptr<TableSchema>& table_schema,
         int32_t bucket, const std::map<std::string, std::string>& partition) const {
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder.SetBucketFilter(bucket).SetPartitionFilter({partition});
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(scan_context_builder_load_context,
                                                                   std::move(scan_context),
                                                                   scan_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto result_plan, table_scan->CreatePlan());

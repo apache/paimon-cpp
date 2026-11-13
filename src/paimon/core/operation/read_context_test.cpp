@@ -24,7 +24,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/catalog_options.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/core/utils/branch_manager.h"

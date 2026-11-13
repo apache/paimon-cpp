@@ -29,7 +29,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/types/data_field.h"
@@ -200,12 +200,12 @@ class RawFileSplitReadTest : public ::testing::Test {
 
     Result<std::shared_ptr<arrow::ChunkedArray>> ReadSearchWithDeletionVector(
         const std::shared_ptr<ReadContext>& read_context,
-        const TableLoadOptions& read_context_load_options,
+        const TableLoadContext& read_context_load_context,
         const std::map<std::string, std::string>& read_context_options,
         const std::string& index_type, const RoaringBitmap32& deleted_rows,
         std::shared_ptr<TableSchema> table_schema) const {
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                     read_context_load_options.path);
+                                     read_context_load_context.path);
         if (!table_schema) {
             PAIMON_ASSIGN_OR_RAISE(table_schema, schema_manager.ReadSchema(0));
         }
@@ -213,9 +213,9 @@ class RawFileSplitReadTest : public ::testing::Test {
             std::unique_ptr<InternalReadContext> internal_context,
             InternalReadContext::Create(
                 read_context, table_schema, table_schema->Options(),
-                read_context_load_options.file_system, read_context_load_options.path,
-                read_context_load_options.fs_scheme_to_identifier_map,
-                read_context_load_options.catalog, read_context_load_options.identifier,
+                read_context_load_context.file_system, read_context_load_context.path,
+                read_context_load_context.fs_scheme_to_identifier_map,
+                read_context_load_context.catalog, read_context_load_context.identifier,
                 read_context_options));
         auto split = std::dynamic_pointer_cast<DataSplitImpl>(PrepareDataSplits().front());
         if (!split) {
@@ -235,7 +235,7 @@ class RawFileSplitReadTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FileStorePathFactory> path_factory,
             FileStorePathFactory::Create(
-                read_context_load_options.path, schema, table_schema->PartitionKeys(),
+                read_context_load_context.path, schema, table_schema->PartitionKeys(),
                 options.GetPartitionDefaultName(), options.GetFileFormat()->Identifier(),
                 options.DataFilePrefix(), options.LegacyPartitionNameEnabled(), external_paths,
                 global_index_external_paths, options.IndexFileInDataFileDir(),
@@ -262,8 +262,8 @@ class RawFileSplitReadTest : public ::testing::Test {
         std::string path = paimon::test::GetDataDir() +
                            "/orc/multi_partition_append_table.db/"
                            "multi_partition_append_table";
-        TableLoadOptions context_builder_load_options;
-        context_builder_load_options.path = path;
+        TableLoadContext context_builder_load_context;
+        context_builder_load_context.path = path;
         std::map<std::string, std::string> context_builder_options;
         ReadContextBuilder context_builder;
         context_builder.SetReadFieldNames(read_schema->field_names());
@@ -272,20 +272,20 @@ class RawFileSplitReadTest : public ::testing::Test {
 
             context_builder.SetPredicate(PredicateBuilder::IsNotNull(0, "f0", FieldType::STRING));
         }
-        auto read_context_load_options = context_builder_load_options;
+        auto read_context_load_context = context_builder_load_context;
         auto read_context_options = context_builder_options;
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
         SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                     read_context_load_options.path);
+                                     read_context_load_context.path);
         ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
 
         ASSERT_OK_AND_ASSIGN(
             auto internal_context,
             InternalReadContext::Create(
                 read_context, table_schema, table_schema->Options(),
-                read_context_load_options.file_system, read_context_load_options.path,
-                read_context_load_options.fs_scheme_to_identifier_map,
-                read_context_load_options.catalog, read_context_load_options.identifier,
+                read_context_load_context.file_system, read_context_load_context.path,
+                read_context_load_context.fs_scheme_to_identifier_map,
+                read_context_load_context.catalog, read_context_load_context.identifier,
                 read_context_options));
         auto data_splits = PrepareDataSplits();
         const auto& core_options = internal_context->GetCoreOptions();
@@ -365,14 +365,14 @@ TEST_F(RawFileSplitReadTest, TestCreateReader) {
 TEST_F(RawFileSplitReadTest, TestCreateReaderUsesExplicitPredicate) {
     const std::string path =
         GetDataDir() + "/orc/multi_partition_append_table.db/multi_partition_append_table";
-    TableLoadOptions builder_load_options;
-    builder_load_options.path = path;
+    TableLoadContext builder_load_context;
+    builder_load_context.path = path;
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder_options[Options::FILE_INDEX_READ_ENABLED] = "false";
     builder.EnablePredicateFilter(true).SetPredicate(
         PredicateBuilder::Equal(0, "f0", FieldType::STRING, Literal(FieldType::STRING, "Bob", 3)));
-    auto read_context_load_options = builder_load_options;
+    auto read_context_load_context = builder_load_context;
     auto read_context_options = builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
     SchemaManager schemas(std::make_shared<LocalFileSystem>(), path);
@@ -380,10 +380,10 @@ TEST_F(RawFileSplitReadTest, TestCreateReaderUsesExplicitPredicate) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
                          InternalReadContext::Create(
                              read_context, table_schema, table_schema->Options(),
-                             read_context_load_options.file_system, read_context_load_options.path,
-                             read_context_load_options.fs_scheme_to_identifier_map,
-                             read_context_load_options.catalog,
-                             read_context_load_options.identifier, read_context_options));
+                             read_context_load_context.file_system, read_context_load_context.path,
+                             read_context_load_context.fs_scheme_to_identifier_map,
+                             read_context_load_context.catalog,
+                             read_context_load_context.identifier, read_context_options));
     const CoreOptions& options = context->GetCoreOptions();
     const auto schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths, options.CreateExternalPaths());
@@ -636,15 +636,15 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
     std::shared_ptr<VectorSearch> vector_search = std::make_shared<VectorSearch>(
         "f3", /*limit=*/2, std::vector<float>{1.0f}, nullptr, nullptr,
         VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
     context_builder.EnablePreciseFileIndexEvaluate(true);
     context_builder.SetReadFieldNames({"_f3_INDEX_SCORE", "f0"})
         .SetVectorSearch(vector_search)
         .WithCache(cache);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
@@ -652,10 +652,10 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(
                              read_context, table_schema, table_schema->Options(),
-                             read_context_load_options.file_system, read_context_load_options.path,
-                             read_context_load_options.fs_scheme_to_identifier_map,
-                             read_context_load_options.catalog,
-                             read_context_load_options.identifier, read_context_options));
+                             read_context_load_context.file_system, read_context_load_context.path,
+                             read_context_load_context.fs_scheme_to_identifier_map,
+                             read_context_load_context.catalog,
+                             read_context_load_context.identifier, read_context_options));
 
     auto data_splits = PrepareDataSplits();
     auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(data_splits.front());
@@ -734,13 +734,13 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
     ASSERT_EQ(cache->GetCount(CacheKind::INDEX_READER), 4);
     ASSERT_EQ(cache->SupplierCallCount(CacheKind::INDEX_READER), 0);
 
-    TableLoadOptions without_score_builder_load_options;
-    without_score_builder_load_options.path = path;
+    TableLoadContext without_score_builder_load_context;
+    without_score_builder_load_context.path = path;
     std::map<std::string, std::string> without_score_builder_options;
     ReadContextBuilder without_score_builder;
     without_score_builder.EnablePreciseFileIndexEvaluate(true);
     without_score_builder.SetReadFieldNames({"f0"}).SetVectorSearch(vector_search);
-    auto without_score_context_load_options = without_score_builder_load_options;
+    auto without_score_context_load_context = without_score_builder_load_context;
     auto without_score_context_options = without_score_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> without_score_context,
                          without_score_builder.Finish());
@@ -748,10 +748,10 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
         auto without_score_internal_context,
         InternalReadContext::Create(
             without_score_context, table_schema, table_schema->Options(),
-            without_score_context_load_options.file_system, without_score_context_load_options.path,
-            without_score_context_load_options.fs_scheme_to_identifier_map,
-            without_score_context_load_options.catalog,
-            without_score_context_load_options.identifier, without_score_context_options));
+            without_score_context_load_context.file_system, without_score_context_load_context.path,
+            without_score_context_load_context.fs_scheme_to_identifier_map,
+            without_score_context_load_context.catalog,
+            without_score_context_load_context.identifier, without_score_context_options));
     auto without_score_split_read = std::make_unique<RawFileSplitRead>(
         path_factory, std::move(without_score_internal_context), pool_, executor);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> without_score_reader,
@@ -776,18 +776,18 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchFiltersDeletionVectorBeforeTopK) {
     std::shared_ptr<VectorSearch> search = std::make_shared<VectorSearch>(
         "f3", /*limit=*/1, std::vector<float>{1.0f}, user_filter, nullptr,
         VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
-    TableLoadOptions builder_load_options;
-    builder_load_options.path = path;
+    TableLoadContext builder_load_context;
+    builder_load_context.path = path;
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true);
     builder.SetReadFieldNames({"_f3_INDEX_SCORE", "f0"}).SetVectorSearch(search);
-    auto read_context_load_options = builder_load_options;
+    auto read_context_load_context = builder_load_context;
     auto read_context_options = builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::ChunkedArray> result,
-        ReadSearchWithDeletionVector(read_context, read_context_load_options, read_context_options,
+        ReadSearchWithDeletionVector(read_context, read_context_load_context, read_context_options,
                                      MockSearchFileIndex::VECTOR_IDENTIFIER,
                                      RoaringBitmap32::From({0}), /*table_schema=*/nullptr));
     std::shared_ptr<arrow::ChunkedArray> expected;
@@ -808,18 +808,18 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchFiltersDeletionVectorBeforeLimit)
     user_filter.Add(2);
     auto search = std::make_shared<FullTextSearch>("f3", R"({"match":{"query":"match"}})",
                                                    /*limit=*/1, user_filter);
-    TableLoadOptions builder_load_options;
-    builder_load_options.path = path;
+    TableLoadContext builder_load_context;
+    builder_load_context.path = path;
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true);
     builder.SetReadFieldNames({"f0"}).SetFullTextSearch(search);
-    auto read_context_load_options = builder_load_options;
+    auto read_context_load_context = builder_load_context;
     auto read_context_options = builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<arrow::ChunkedArray> result,
-        ReadSearchWithDeletionVector(read_context, read_context_load_options, read_context_options,
+        ReadSearchWithDeletionVector(read_context, read_context_load_context, read_context_options,
                                      MockSearchFileIndex::FULL_TEXT_IDENTIFIER,
                                      RoaringBitmap32::From({0}), /*table_schema=*/nullptr));
     std::shared_ptr<arrow::ChunkedArray> expected;
@@ -860,14 +860,14 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchRenamedUnprojectedFieldInOldFile) {
     auto search = std::make_shared<VectorSearch>("renamed_f3", 2, std::vector<float>{1.0f}, nullptr,
                                                  nullptr, VectorSearch::DistanceType::EUCLIDEAN,
                                                  std::map<std::string, std::string>{});
-    TableLoadOptions builder_load_options;
-    builder_load_options.path = path;
+    TableLoadContext builder_load_context;
+    builder_load_context.path = path;
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true);
     builder_options = options;
     builder.SetReadFieldNames({"f0", "_renamed_f3_INDEX_SCORE"}).SetVectorSearch(search);
-    auto context_load_options = builder_load_options;
+    auto context_load_context = builder_load_context;
     auto context_options = builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
 
@@ -880,7 +880,7 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchRenamedUnprojectedFieldInOldFile) {
     for (const auto& [deleted, expected_json] : cases) {
         SCOPED_TRACE(deleted.ToString());
         ASSERT_OK_AND_ASSIGN(auto actual, ReadSearchWithDeletionVector(
-                                              context, context_load_options, context_options,
+                                              context, context_load_context, context_options,
                                               identifier, deleted, current_schema));
         auto expected_result =
             arrow::ipc::internal::json::ArrayFromJSON(expected_type, expected_json);
@@ -897,18 +897,18 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchRenamedUnprojectedFieldInOldFile) {
     // The old file's f3 is field ID 3; the current table's f3 is a different field with ID 4.
     auto missing_search = std::make_shared<VectorSearch>(*search);
     missing_search->field_name = "f3";
-    TableLoadOptions missing_field_builder_load_options;
-    missing_field_builder_load_options.path = path;
+    TableLoadContext missing_field_builder_load_context;
+    missing_field_builder_load_context.path = path;
     std::map<std::string, std::string> missing_field_builder_options;
     ReadContextBuilder missing_field_builder;
     missing_field_builder.EnablePreciseFileIndexEvaluate(true);
     missing_field_builder_options = options;
     missing_field_builder.SetReadFieldNames({"f0"}).SetVectorSearch(missing_search);
-    auto missing_context_load_options = missing_field_builder_load_options;
+    auto missing_context_load_context = missing_field_builder_load_context;
     auto missing_context_options = missing_field_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> missing_context,
                          missing_field_builder.Finish());
-    ASSERT_NOK_WITH_MSG(ReadSearchWithDeletionVector(missing_context, missing_context_load_options,
+    ASSERT_NOK_WITH_MSG(ReadSearchWithDeletionVector(missing_context, missing_context_load_context,
                                                      missing_context_options, identifier,
                                                      RoaringBitmap32(), current_schema),
                         "has no matching field ID");
@@ -942,14 +942,14 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchRenamedUnprojectedFieldInOldFile)
                                              original_schema->PartitionKeys(), {}, options));
     auto search =
         std::make_shared<FullTextSearch>("renamed_f3", R"({"match":{"query":"match"}})", 2);
-    TableLoadOptions builder_load_options;
-    builder_load_options.path = path;
+    TableLoadContext builder_load_context;
+    builder_load_context.path = path;
     std::map<std::string, std::string> builder_options;
     ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true);
     builder_options = options;
     builder.SetReadFieldNames({"f0"}).SetFullTextSearch(search);
-    auto context_load_options = builder_load_options;
+    auto context_load_context = builder_load_context;
     auto context_options = builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
 
@@ -961,7 +961,7 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchRenamedUnprojectedFieldInOldFile)
     for (const auto& [deleted, expected_json] : cases) {
         SCOPED_TRACE(deleted.ToString());
         ASSERT_OK_AND_ASSIGN(auto actual, ReadSearchWithDeletionVector(
-                                              context, context_load_options, context_options,
+                                              context, context_load_context, context_options,
                                               identifier, deleted, current_schema));
         auto expected_result =
             arrow::ipc::internal::json::ArrayFromJSON(expected_type, expected_json);
@@ -978,18 +978,18 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchRenamedUnprojectedFieldInOldFile)
     // The old file's f3 is field ID 3; the current table's f3 is a different field with ID 4.
     auto missing_search = std::make_shared<FullTextSearch>(*search);
     missing_search->field_name = "f3";
-    TableLoadOptions missing_field_builder_load_options;
-    missing_field_builder_load_options.path = path;
+    TableLoadContext missing_field_builder_load_context;
+    missing_field_builder_load_context.path = path;
     std::map<std::string, std::string> missing_field_builder_options;
     ReadContextBuilder missing_field_builder;
     missing_field_builder.EnablePreciseFileIndexEvaluate(true);
     missing_field_builder_options = options;
     missing_field_builder.SetReadFieldNames({"f0"}).SetFullTextSearch(missing_search);
-    auto missing_context_load_options = missing_field_builder_load_options;
+    auto missing_context_load_context = missing_field_builder_load_context;
     auto missing_context_options = missing_field_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> missing_context,
                          missing_field_builder.Finish());
-    ASSERT_NOK_WITH_MSG(ReadSearchWithDeletionVector(missing_context, missing_context_load_options,
+    ASSERT_NOK_WITH_MSG(ReadSearchWithDeletionVector(missing_context, missing_context_load_context,
                                                      missing_context_options, identifier,
                                                      RoaringBitmap32(), current_schema),
                         "has no matching field ID");
@@ -999,24 +999,24 @@ TEST_F(RawFileSplitReadTest, TestEmptyPlan) {
     std::string path = paimon::test::GetDataDir() +
                        "/orc/multi_partition_append_table.db/"
                        "multi_partition_append_table";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                 read_context_load_options.path);
+                                 read_context_load_context.path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
 
     ASSERT_OK_AND_ASSIGN(auto internal_context,
                          InternalReadContext::Create(
                              read_context, table_schema, table_schema->Options(),
-                             read_context_load_options.file_system, read_context_load_options.path,
-                             read_context_load_options.fs_scheme_to_identifier_map,
-                             read_context_load_options.catalog,
-                             read_context_load_options.identifier, read_context_options));
+                             read_context_load_context.file_system, read_context_load_context.path,
+                             read_context_load_context.fs_scheme_to_identifier_map,
+                             read_context_load_context.catalog,
+                             read_context_load_context.identifier, read_context_options));
     const auto& core_options = internal_context->GetCoreOptions();
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
@@ -1059,24 +1059,24 @@ TEST_F(RawFileSplitReadTest, TestEmptyPlan) {
 TEST_F(RawFileSplitReadTest, TestMatch) {
     std::string path = paimon::test::GetDataDir() +
                        "/orc/pk_table_with_total_buckets.db/pk_table_with_total_buckets";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
     context_builder.SetReadFieldNames({"f0", "f1", "f2", "f3"});
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(),
-                                 read_context_load_options.path);
+                                 read_context_load_context.path);
     ASSERT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(0));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> internal_context,
                          InternalReadContext::Create(
                              read_context, table_schema, table_schema->Options(),
-                             read_context_load_options.file_system, read_context_load_options.path,
-                             read_context_load_options.fs_scheme_to_identifier_map,
-                             read_context_load_options.catalog,
-                             read_context_load_options.identifier, read_context_options));
+                             read_context_load_context.file_system, read_context_load_context.path,
+                             read_context_load_context.fs_scheme_to_identifier_map,
+                             read_context_load_context.catalog,
+                             read_context_load_context.identifier, read_context_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor,
                          CreateDefaultExecutor(/*thread_count=*/2));
     auto split_read = std::make_unique<RawFileSplitRead>(

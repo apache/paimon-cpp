@@ -301,7 +301,7 @@ Operational Flow
    passes the objects to ``FileStoreCommit`` for either an Append or PK table.
    For a table of a catalog which owns its versions, such as a REST catalog, it
    passes that catalog and the table identifier to
-   a shared catalog-loaded Table or matching ``TableLoadOptions``.
+   a shared catalog-loaded Table or matching ``TableLoadContext``.
    The writer loads the latest snapshot from the catalog, and the current schema
    from it as well when it writes to the main branch; a write aimed at another
    branch reads the schema published under ``branch/branch-<name>`` instead. On

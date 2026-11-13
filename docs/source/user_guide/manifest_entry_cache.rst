@@ -78,14 +78,14 @@ under
 .. code-block:: cpp
 
    auto cache = std::make_shared<LruCache>(128 * 1024 * 1024);
-   TableLoadOptions load_options{table_path};
+   TableLoadContext load_context{table_path};
    ScanContextBuilder context_builder;
    PAIMON_ASSIGN_OR_RAISE(
        std::unique_ptr<ScanContext> scan_context,
        context_builder.WithCache(cache).Finish());
    PAIMON_ASSIGN_OR_RAISE(
        std::unique_ptr<TableScan> scan,
-       TableScan::Create(load_options, std::move(scan_context),
+       TableScan::Create(load_context, std::move(scan_context),
                          {{Options::SCAN_MANIFEST_ENTRY_CACHE_MAX_SNAPSHOTS, "3"}}));
 
 .. note::

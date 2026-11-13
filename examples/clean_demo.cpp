@@ -26,7 +26,7 @@
 #include "arrow/ipc/api.h"
 #include "paimon/api.h"
 #include "paimon/catalog/catalog.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/orphan_files_cleaner.h"
 
 namespace fs = std::filesystem;
@@ -48,14 +48,14 @@ Status CleanOrphanFiles(const std::string& table_path, int64_t older_than_ms) {
 
 Status DropPartition(const std::string& table_path,
                      const std::vector<std::map<std::string, std::string>>& partitions) {
-    TableLoadOptions commit_context_builder_load_options{table_path};
+    TableLoadContext commit_context_builder_load_context{table_path};
     std::map<std::string, std::string> commit_context_builder_options;
     CommitContextBuilder commit_context_builder(/*commit_user=*/"commit_user_1");
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
                            commit_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<FileStoreCommit> committer,
-        FileStoreCommit::Create(commit_context_builder_load_options, std::move(commit_context),
+        FileStoreCommit::Create(commit_context_builder_load_context, std::move(commit_context),
                                 commit_context_builder_options));
     PAIMON_RETURN_NOT_OK(committer->DropPartition(partitions, /*commit_identifier=*/10));
 
@@ -63,7 +63,7 @@ Status DropPartition(const std::string& table_path,
 }
 
 Status ExpireSnapshot(const std::string& table_path) {
-    TableLoadOptions commit_context_builder_load_options{table_path};
+    TableLoadContext commit_context_builder_load_context{table_path};
     std::map<std::string, std::string> commit_context_builder_options;
     CommitContextBuilder commit_context_builder(/*commit_user=*/"commit_user_1");
     std::map<std::string, std::string> commit_options = {
@@ -76,7 +76,7 @@ Status ExpireSnapshot(const std::string& table_path) {
                            commit_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<FileStoreCommit> committer,
-        FileStoreCommit::Create(commit_context_builder_load_options, std::move(commit_context),
+        FileStoreCommit::Create(commit_context_builder_load_context, std::move(commit_context),
                                 commit_context_builder_options));
     PAIMON_RETURN_NOT_OK(committer->Expire());
 

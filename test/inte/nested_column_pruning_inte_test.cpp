@@ -29,7 +29,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/path_util.h"
@@ -93,7 +93,7 @@ class NestedColumnPruningInteTest : public ::testing::Test,
                           const std::shared_ptr<arrow::Schema>& expected_schema,
                           const std::string& expected_json,
                           const std::shared_ptr<Predicate>& predicate = nullptr) const {
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder_options[Options::SCAN_MODE] = StartupMode::LatestFull().ToString();
@@ -102,7 +102,7 @@ class NestedColumnPruningInteTest : public ::testing::Test,
             scan_context_builder.SetPredicate(predicate);
         }
         ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
                                                                 std::move(scan_context),
                                                                 scan_context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
@@ -110,7 +110,7 @@ class NestedColumnPruningInteTest : public ::testing::Test,
 
         auto c_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*expected_schema, c_schema.get()).ok());
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         read_context_builder.SetReadSchema(std::move(c_schema));
@@ -118,7 +118,7 @@ class NestedColumnPruningInteTest : public ::testing::Test,
             read_context_builder.SetPredicate(predicate);
         }
         ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
                                                                 std::move(read_context),
                                                                 read_context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
@@ -360,13 +360,13 @@ TEST_P(NestedColumnPruningInteTest, QueryStructSubFieldsAllNonExistent) {
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_schema.get()).ok());
 
-    TableLoadOptions read_context_builder_load_options{table_path_};
+    TableLoadContext read_context_builder_load_context{table_path_};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     read_context_builder_options = options;
     read_context_builder.SetReadSchema(std::move(c_schema));
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableRead::Create(read_context_builder_load_options,
+    ASSERT_NOK_WITH_MSG(TableRead::Create(read_context_builder_load_context,
                                           std::move(read_context), read_context_builder_options),
                         "does not support schema evolution inside struct");
 }
@@ -426,13 +426,13 @@ TEST_P(NestedColumnPruningInteTest, QueryStructSubFieldsWithNonExistentField) {
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_schema.get()).ok());
 
-    TableLoadOptions read_context_builder_load_options{table_path_};
+    TableLoadContext read_context_builder_load_context{table_path_};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     read_context_builder_options = options;
     read_context_builder.SetReadSchema(std::move(c_schema));
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableRead::Create(read_context_builder_load_options,
+    ASSERT_NOK_WITH_MSG(TableRead::Create(read_context_builder_load_context,
                                           std::move(read_context), read_context_builder_options),
                         "does not support schema evolution inside struct");
 }
@@ -509,14 +509,14 @@ TEST_P(NestedColumnPruningInteTest, QueryStructSubFieldsWithTypeMismatchShouldFa
                          helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
     ASSERT_FALSE(data_splits.empty());
 
-    TableLoadOptions read_context_builder_load_options{table_path_};
+    TableLoadContext read_context_builder_load_context{table_path_};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     read_context_builder_options = options;
 
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
 
     ASSERT_NOK_WITH_MSG(table_read->CreateReader(data_splits),
@@ -604,14 +604,14 @@ TEST_P(NestedColumnPruningInteTest,
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_schema.get()).ok());
 
-    TableLoadOptions read_context_builder_load_options{table_path_};
+    TableLoadContext read_context_builder_load_context{table_path_};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     read_context_builder_options = options;
     read_context_builder.SetReadSchema(std::move(c_schema));
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto data_splits,
                          helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
@@ -794,14 +794,14 @@ TEST_P(NestedColumnPruningInteTest, PruneNestedStructWithSpecialFields) {
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_schema.get()).ok());
 
-    TableLoadOptions read_context_builder_load_options{table_path_};
+    TableLoadContext read_context_builder_load_context{table_path_};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     read_context_builder_options = options;
     read_context_builder.SetReadSchema(std::move(c_schema));
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -1211,7 +1211,7 @@ TEST_P(NestedColumnPruningInteTest, NestedStructMapSelectedKeysWithPredicate) {
     ASSERT_OK_AND_ASSIGN(
         auto helper, TestHelper::Create(test_dir_, table_schema, /*partition_keys=*/{},
                                         /*primary_keys=*/{}, options, /*is_streaming_mode=*/false));
-    TableLoadOptions write_context_builder_load_options{table_path_};
+    TableLoadContext write_context_builder_load_context{table_path_};
     std::map<std::string, std::string> write_context_builder_options;
     WriteContextBuilder write_context_builder("commit_user_1");
     write_context_builder_options = options;
@@ -1219,7 +1219,7 @@ TEST_P(NestedColumnPruningInteTest, NestedStructMapSelectedKeysWithPredicate) {
                          write_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         auto file_store_write,
-        FileStoreWrite::Create(write_context_builder_load_options, std::move(write_context),
+        FileStoreWrite::Create(write_context_builder_load_context, std::move(write_context),
                                write_context_builder_options));
 
     auto write_one_row = [&](const std::string& data) -> Status {
@@ -1240,13 +1240,13 @@ TEST_P(NestedColumnPruningInteTest, NestedStructMapSelectedKeysWithPredicate) {
                                                          /*commit_identifier=*/0));
     ASSERT_OK(file_store_write->Close());
 
-    TableLoadOptions commit_context_builder_load_options{table_path_};
+    TableLoadContext commit_context_builder_load_context{table_path_};
     std::map<std::string, std::string> commit_context_builder_options;
     CommitContextBuilder commit_context_builder("commit_user_1");
     commit_context_builder_options = options;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
                          commit_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(commit_context_builder_load_options,
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(commit_context_builder_load_context,
                                                               std::move(commit_context),
                                                               commit_context_builder_options));
     ASSERT_OK(commit->Commit(commit_msgs, /*commit_identifier=*/0));
@@ -1353,14 +1353,14 @@ TEST_P(NestedColumnPruningInteTest, MapSelectedKeysWithOrcDictionaryEncodedMap) 
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_schema.get()).ok());
 
-    TableLoadOptions read_context_builder_load_options{table_path_};
+    TableLoadContext read_context_builder_load_context{table_path_};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     read_context_builder_options = options;
     read_context_builder.SetReadSchema(std::move(c_schema));
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
     ASSERT_OK_AND_ASSIGN(auto read_result,
@@ -1513,14 +1513,14 @@ TEST_P(NestedColumnPruningInteTest, PruneListStructSubFields) {
     auto c_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_schema.get()).ok());
 
-    TableLoadOptions read_context_builder_load_options{table_path_};
+    TableLoadContext read_context_builder_load_context{table_path_};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     read_context_builder_options = options;
     read_context_builder.SetReadSchema(std::move(c_schema));
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     auto create_reader_result = table_read->CreateReader(data_splits);
     ASSERT_NOK_WITH_MSG(create_reader_result, "partial projection inside list");

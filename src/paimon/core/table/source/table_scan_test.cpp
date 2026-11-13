@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/defs.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/metrics.h"
@@ -61,13 +61,13 @@ TEST(TableScanTest, TestDefaultMetricsSnapshot) {
 TEST(TableScanTest, TestNoSnapshot) {
     std::string path = paimon::test::GetDataDir() +
                        "/orc/append_table_with_nested_type.db/append_table_with_nested_type/";
-    TableLoadOptions builder_load_options{path};
+    TableLoadContext builder_load_context{path};
     std::map<std::string, std::string> builder_options;
     ScanContextBuilder builder;
     builder_options[Options::FILE_FORMAT] = "orc";
 
     ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(builder_load_options,
+    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(builder_load_context,
                                                             std::move(context), builder_options));
     ASSERT_OK_AND_ASSIGN(auto plan, table_scan->CreatePlan());
     ASSERT_FALSE(plan->SnapshotId());
@@ -76,14 +76,14 @@ TEST(TableScanTest, TestNoSnapshot) {
 
 TEST(TableScanTest, TestNonExistTable) {
     std::string path = paimon::test::GetDataDir() + "/non-exist.db/non-exist/";
-    TableLoadOptions builder_load_options{path};
+    TableLoadContext builder_load_context{path};
     std::map<std::string, std::string> builder_options;
     ScanContextBuilder builder;
     builder_options[Options::FILE_FORMAT] = "orc";
 
     ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
     ASSERT_NOK_WITH_MSG(
-        TableScan::Create(builder_load_options, std::move(context), builder_options),
+        TableScan::Create(builder_load_context, std::move(context), builder_options),
         "not found latest schema");
 }
 
@@ -91,7 +91,7 @@ TEST(TableScanTest, TestStreamingSnapshotsRemoved) {
     auto dir = UniqueTestDirectory::Create("local");
     ASSERT_TRUE(dir);
     ASSERT_TRUE(TestUtil::CopyDirectory(GetDataDir() + "/orc/append_09.db/append_09", dir->Str()));
-    TableLoadOptions builder_load_options{dir->Str()};
+    TableLoadContext builder_load_context{dir->Str()};
     std::map<std::string, std::string> builder_options;
     ScanContextBuilder builder;
     builder_options[Options::FILE_FORMAT] = "orc";
@@ -100,7 +100,7 @@ TEST(TableScanTest, TestStreamingSnapshotsRemoved) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<TableScan> table_scan,
-        TableScan::Create(builder_load_options, std::move(context), builder_options));
+        TableScan::Create(builder_load_context, std::move(context), builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> initial_plan, table_scan->CreatePlan());
     ASSERT_TRUE(initial_plan->Splits().empty());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> waiting_plan, table_scan->CreatePlan());
@@ -116,7 +116,7 @@ TEST(TableScanTest, TestStreamingNextSnapshotBoundary) {
     std::string path = GetDataDir() + "/orc/append_09.db/append_09";
     for (const std::string next_snapshot_id : {"6", "7"}) {
         SCOPED_TRACE(next_snapshot_id);
-        TableLoadOptions builder_load_options{path};
+        TableLoadContext builder_load_context{path};
         std::map<std::string, std::string> builder_options;
         ScanContextBuilder builder;
         builder_options[Options::FILE_FORMAT] = "orc";
@@ -128,7 +128,7 @@ TEST(TableScanTest, TestStreamingNextSnapshotBoundary) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<TableScan> table_scan,
-            TableScan::Create(builder_load_options, std::move(context), builder_options));
+            TableScan::Create(builder_load_context, std::move(context), builder_options));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> initial_plan, table_scan->CreatePlan());
         ASSERT_TRUE(initial_plan->Splits().empty());
 
@@ -149,13 +149,13 @@ TEST(TableScanTest, TestStreamingNextSnapshotBoundary) {
 TEST(TableScanTest, TestPkSchemaEvolutionScan) {
     std::string path =
         paimon::test::GetDataDir() + "/orc/pk_table_with_alter_table.db/pk_table_with_alter_table/";
-    TableLoadOptions builder_load_options{path};
+    TableLoadContext builder_load_context{path};
     std::map<std::string, std::string> builder_options;
     ScanContextBuilder builder;
     builder_options[Options::FILE_FORMAT] = "orc";
 
     ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(builder_load_options,
+    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(builder_load_context,
                                                             std::move(context), builder_options));
     ASSERT_OK_AND_ASSIGN(auto plan, table_scan->CreatePlan());
     ASSERT_TRUE(plan->SnapshotId());
@@ -186,7 +186,7 @@ TEST(TableScanTest, TestPkSchemaEvolutionScan) {
 TEST(TableScanTest, TestReadOptimizedPrimaryKeyStreamingScanUnsupported) {
     std::string path = paimon::test::GetDataDir() +
                        "/orc/pk_table_with_alter_table.db/pk_table_with_alter_table$ro";
-    TableLoadOptions builder_load_options{path};
+    TableLoadContext builder_load_context{path};
     std::map<std::string, std::string> builder_options;
     ScanContextBuilder builder;
     builder_options[Options::FILE_FORMAT] = "orc";
@@ -195,7 +195,7 @@ TEST(TableScanTest, TestReadOptimizedPrimaryKeyStreamingScanUnsupported) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
 
     ASSERT_NOK_WITH_MSG(
-        TableScan::Create(builder_load_options, std::move(context), builder_options),
+        TableScan::Create(builder_load_context, std::move(context), builder_options),
         "read-optimized system table does not support streaming scan for primary "
         "key table");
 }

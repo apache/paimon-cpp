@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/schema/schema_manager.h"
@@ -52,7 +52,7 @@ class PKCountReaderTest : public testing::Test {
  protected:
     Result<std::vector<std::shared_ptr<Split>>> CreateSplits(
         const std::string& table_path, const std::optional<int64_t>& snapshot_id) {
-        TableLoadOptions scan_context_builder_load_options{table_path};
+        TableLoadContext scan_context_builder_load_context{table_path};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         if (snapshot_id.has_value()) {
@@ -61,7 +61,7 @@ class PKCountReaderTest : public testing::Test {
         }
 
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(scan_context_builder_load_options,
+        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(scan_context_builder_load_context,
                                                                   std::move(scan_context),
                                                                   scan_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto plan, table_scan->CreatePlan());
@@ -75,7 +75,7 @@ class PKCountReaderTest : public testing::Test {
 
     Result<std::shared_ptr<InternalReadContext>> CreateInternalContext(
         const std::string& table_path) {
-        TableLoadOptions read_context_builder_load_options{table_path};
+        TableLoadContext read_context_builder_load_context{table_path};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context,
@@ -87,11 +87,11 @@ class PKCountReaderTest : public testing::Test {
             auto internal_context,
             InternalReadContext::Create(
                 read_context, table_schema, table_schema->Options(),
-                read_context_builder_load_options.file_system,
-                read_context_builder_load_options.path,
-                read_context_builder_load_options.fs_scheme_to_identifier_map,
-                read_context_builder_load_options.catalog,
-                read_context_builder_load_options.identifier, read_context_builder_options));
+                read_context_builder_load_context.file_system,
+                read_context_builder_load_context.path,
+                read_context_builder_load_context.fs_scheme_to_identifier_map,
+                read_context_builder_load_context.catalog,
+                read_context_builder_load_context.identifier, read_context_builder_options));
         return std::shared_ptr<InternalReadContext>(std::move(internal_context));
     }
 

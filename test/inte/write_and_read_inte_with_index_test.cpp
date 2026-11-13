@@ -35,7 +35,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "arrow/util/string_builder.h"
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/file_index/bitmap/bitmap_file_index_factory.h"
@@ -143,7 +143,7 @@ class WriteAndReadInteWithIndexTest
                      const std::vector<std::shared_ptr<Split>> splits,
                      const std::shared_ptr<Predicate>& predicate,
                      const std::shared_ptr<arrow::ChunkedArray>& expected_array) const {
-        TableLoadOptions context_builder_load_options{table_path};
+        TableLoadContext context_builder_load_context{table_path};
         std::map<std::string, std::string> context_builder_options;
         ReadContextBuilder context_builder;
         context_builder_options["read.batch-size"] = "2";
@@ -154,7 +154,7 @@ class WriteAndReadInteWithIndexTest
         }
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto table_read,
-                             TableRead::Create(context_builder_load_options,
+                             TableRead::Create(context_builder_load_context,
                                                std::move(read_context), context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(splits));
 
@@ -1169,7 +1169,7 @@ class WriteAndReadInteWithIndexTest
         for (const auto& field : fields) {
             field_names.push_back(field->name());
         }
-        TableLoadOptions builder_load_options{path};
+        TableLoadContext builder_load_context{path};
         std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder;
         builder_options["read.batch-size"] = "1";
@@ -1188,7 +1188,7 @@ class WriteAndReadInteWithIndexTest
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<TableRead> read,
-            TableRead::Create(builder_load_options, std::move(context), builder_options));
+            TableRead::Create(builder_load_context, std::move(context), builder_options));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(split));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
                              ReadResultCollector::CollectResult(std::move(reader)));
@@ -1287,7 +1287,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestSimple) {
                                                                          &expected_array);
     ASSERT_TRUE(array_status.ok());
 
-    TableLoadOptions context_builder_load_options{path};
+    TableLoadContext context_builder_load_context{path};
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
     context_builder_options["read.batch-size"] = "2";
@@ -1301,7 +1301,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestSimple) {
     }
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(context_builder_load_options, std::move(read_context),
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
                                            context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(split));
     ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(batch_reader.get()));
@@ -1366,7 +1366,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestReadWithLimits) {
     auto predicate =
         PredicateBuilder::NotEqual(/*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
                                    Literal(FieldType::STRING, "Alice", 5));
-    TableLoadOptions context_builder_load_options{path};
+    TableLoadContext context_builder_load_context{path};
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
     context_builder_options[Options::FILE_FORMAT] = "orc";
@@ -1381,7 +1381,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestReadWithLimits) {
     }
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(context_builder_load_options, std::move(read_context),
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
                                            context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(split));
     // simulate read limits, only read 3 batches
@@ -1656,7 +1656,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
         /*field_index=*/0, /*field_name=*/"f0", FieldType::STRING,
         Literal(FieldType::STRING, literal_str.data(), literal_str.size()));
 
-    TableLoadOptions context_builder_load_options{path};
+    TableLoadContext context_builder_load_context{path};
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
     context_builder_options["read.batch-size"] = "2";
@@ -1668,7 +1668,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestBitmapIndexWithLateMaterializing) {
     }
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(context_builder_load_options, std::move(read_context),
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
                                            context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader,
                          table_read->CreateReader(std::vector<std::shared_ptr<Split>>{split}));
@@ -2346,7 +2346,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestWithAlterTable) {
         auto predicate =
             PredicateBuilder::In(/*field_index=*/0, /*field_name=*/"f1", FieldType::BIGINT,
                                  {Literal(10l), Literal(int64_t{2147483648})});
-        TableLoadOptions builder_load_options{path};
+        TableLoadContext builder_load_context{path};
         std::map<std::string, std::string> builder_options;
         ReadContextBuilder builder;
         builder_options["read.batch-size"] = "2";
@@ -2362,7 +2362,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestWithAlterTable) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(
             std::unique_ptr<TableRead> read,
-            TableRead::Create(builder_load_options, std::move(context), builder_options));
+            TableRead::Create(builder_load_context, std::move(context), builder_options));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(split));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
                              ReadResultCollector::CollectResult(std::move(reader)));
@@ -3199,7 +3199,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestWithIOException) {
     for (size_t i = 0; i < 200; i++) {
         ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
         io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
-        TableLoadOptions context_builder_load_options{path};
+        TableLoadContext context_builder_load_context{path};
         std::map<std::string, std::string> context_builder_options;
         ReadContextBuilder context_builder;
         context_builder_options["read.batch-size"] = "2";
@@ -3210,7 +3210,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestWithIOException) {
         }
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         Result<std::unique_ptr<TableRead>> table_read = TableRead::Create(
-            context_builder_load_options, std::move(read_context), context_builder_options);
+            context_builder_load_context, std::move(read_context), context_builder_options);
         CHECK_HOOK_STATUS(table_read.status(), i);
         Result<std::unique_ptr<BatchReader>> batch_reader = table_read.value()->CreateReader(split);
         CHECK_HOOK_STATUS(batch_reader.status(), i);

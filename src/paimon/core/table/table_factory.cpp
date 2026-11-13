@@ -52,7 +52,7 @@
 namespace paimon {
 namespace {
 
-Status CheckCatalogTable(const TableLoadOptions& load, const std::shared_ptr<Table>& table) {
+Status CheckCatalogTable(const TableLoadContext& load, const std::shared_ptr<Table>& table) {
     if (load.table_id && load.table_id != table->CatalogUuid()) {
         return Status::Invalid("the expected table id does not match the catalog table id");
     }
@@ -75,7 +75,7 @@ Status CheckCatalogTable(const TableLoadOptions& load, const std::shared_ptr<Tab
 }  // namespace
 
 Result<std::shared_ptr<Table>> TableFactory::Create(
-    const TableLoadOptions& load, const std::map<std::string, std::string>& overrides,
+    const TableLoadContext& load, const std::map<std::string, std::string>& overrides,
     const char* operation) {
     if (load.catalog == nullptr && load.identifier) {
         return Status::Invalid("a table identifier requires a non-null catalog");
@@ -263,75 +263,75 @@ Result<std::shared_ptr<Table>> TableFactory::Create(
 }
 
 Result<std::unique_ptr<TableRead>> TableRead::Create(
-    const TableLoadOptions& load_options, std::unique_ptr<ReadContext> context,
+    const TableLoadContext& load_context, std::unique_ptr<ReadContext> context,
     const std::map<std::string, std::string>& dynamic_options) {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
-    if (load_options.table_id && !load_options.catalog) {
+    if (load_context.table_id && !load_context.catalog) {
         return Status::Invalid("a table id requires a catalog or an external REST commit request");
     }
     if (context->GetRealtimeContext()) {
         PAIMON_ASSIGN_OR_RAISE(std::string branch,
-                               BranchManager::ResolveBranch(load_options.identifier,
+                               BranchManager::ResolveBranch(load_context.identifier,
                                                             dynamic_options, std::nullopt, "read"));
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(branch));
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table,
-                           TableFactory::Create(load_options, dynamic_options, "read"));
+                           TableFactory::Create(load_context, dynamic_options, "read"));
     PAIMON_ASSIGN_OR_RAISE(table, table->Copy(dynamic_options));
     return table->NewRead(std::move(context));
 }
 
 Result<std::unique_ptr<TableScan>> TableScan::Create(
-    const TableLoadOptions& load_options, std::unique_ptr<ScanContext> context,
+    const TableLoadContext& load_context, std::unique_ptr<ScanContext> context,
     const std::map<std::string, std::string>& dynamic_options) {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
-    if (load_options.table_id && !load_options.catalog) {
+    if (load_context.table_id && !load_context.catalog) {
         return Status::Invalid("a table id requires a catalog or an external REST commit request");
     }
     if (context->GetRealtimeContext()) {
         PAIMON_ASSIGN_OR_RAISE(std::string branch,
-                               BranchManager::ResolveBranch(load_options.identifier,
+                               BranchManager::ResolveBranch(load_context.identifier,
                                                             dynamic_options, std::nullopt, "scan"));
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(branch));
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table,
-                           TableFactory::Create(load_options, dynamic_options, "scan"));
+                           TableFactory::Create(load_context, dynamic_options, "scan"));
     PAIMON_ASSIGN_OR_RAISE(table, table->Copy(dynamic_options));
     return table->NewScan(std::move(context));
 }
 
 Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(
-    const TableLoadOptions& load_options, std::unique_ptr<WriteContext> context,
+    const TableLoadContext& load_context, std::unique_ptr<WriteContext> context,
     const std::map<std::string, std::string>& dynamic_options) {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "write"));
-    if (load_options.table_id && !load_options.catalog) {
+    if (load_context.table_id && !load_context.catalog) {
         return Status::Invalid("a table id requires a catalog or an external REST commit request");
     }
     if (context->GetRealtimeContext()) {
         PAIMON_ASSIGN_OR_RAISE(std::string branch, BranchManager::ResolveBranch(
-                                                       load_options.identifier, dynamic_options,
+                                                       load_context.identifier, dynamic_options,
                                                        std::nullopt, "write"));
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(branch));
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table,
-                           TableFactory::Create(load_options, dynamic_options, "write"));
+                           TableFactory::Create(load_context, dynamic_options, "write"));
     PAIMON_ASSIGN_OR_RAISE(table, table->Copy(dynamic_options));
     return table->NewWrite(std::move(context));
 }
 
 Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
-    const TableLoadOptions& load_options, std::unique_ptr<CommitContext> context,
+    const TableLoadContext& load_context, std::unique_ptr<CommitContext> context,
     const std::map<std::string, std::string>& dynamic_options) {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "commit"));
-    if (load_options.catalog && context->UseRESTCatalogCommit()) {
+    if (load_context.catalog && context->UseRESTCatalogCommit()) {
         return Status::Invalid(
             "a commit cannot both use a catalog and build an external REST request");
     }
-    if (load_options.table_id && !load_options.catalog && !context->UseRESTCatalogCommit()) {
+    if (load_context.table_id && !load_context.catalog && !context->UseRESTCatalogCommit()) {
         return Status::Invalid("a table id requires a catalog or an external REST commit request");
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table,
-                           TableFactory::Create(load_options, dynamic_options, "commit"));
+                           TableFactory::Create(load_context, dynamic_options, "commit"));
     PAIMON_ASSIGN_OR_RAISE(table, table->Copy(dynamic_options));
     return table->NewCommit(std::move(context));
 }

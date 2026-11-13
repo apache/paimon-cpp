@@ -21,7 +21,7 @@
 #include <cstdint>
 
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"

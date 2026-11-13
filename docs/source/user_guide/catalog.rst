@@ -156,23 +156,24 @@ bound schema without metadata I/O; reload through the catalog to refresh it.
 Branch or type options that contradict a loaded managed table are rejected.
 See the :ref:`Table API <cpp-api-catalog>`.
 
-The static factories instead take ``TableLoadOptions``, an operation Context and
-an optional dynamic options map. Loading parameters are independent of the
-Context; finishing a Context performs no table metadata I/O:
+The static factories instead take ``TableLoadContext``, an operation Context and
+an optional dynamic options map. ``TableLoadContext`` holds the table identity,
+storage binding and supplied metadata. Operation Contexts hold execution settings;
+finishing an operation Context performs no table metadata I/O:
 
 .. code-block:: cpp
 
-   paimon::TableLoadOptions load_options;
-   load_options.catalog = shared_catalog;
-   load_options.identifier.emplace("db", "tbl");
+   paimon::TableLoadContext load_context;
+   load_context.catalog = shared_catalog;
+   load_context.identifier.emplace("db", "tbl");
    // Optional expected UUID, validated against the catalog during loading.
-   load_options.table_id = table->CatalogUuid();
+   load_context.table_id = table->CatalogUuid();
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> context,
                           paimon::CommitContextBuilder("commit-user").Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreCommit> commit,
-                          paimon::FileStoreCommit::Create(load_options, std::move(context)));
+                          paimon::FileStoreCommit::Create(load_context, std::move(context)));
 
-For file-system loading, set ``TableLoadOptions::path``. Optional fields specify
+For file-system loading, set ``TableLoadContext::path``. Optional fields specify
 an explicit file system, URI scheme routing or a serialized Paimon table schema.
 The serialized table schema is separate from the Arrow projection in
 ``ReadContextBuilder::SetReadSchema()``. Set the branch through the identifier
@@ -191,11 +192,11 @@ under the table path. Recreating the writer restores offsets from the catalog's
 current snapshot.
 
 Table loading uses ``Catalog::GetTableFileSystem`` for per-table credentials.
-An explicit ``TableLoadOptions::file_system`` or
+An explicit ``TableLoadContext::file_system`` or
 ``fs_scheme_to_identifier_map`` controls file-system resolution instead.
 Loaded format tables create operators directly with their ``New*()`` methods.
 
-A file system passed in ``TableLoadOptions::file_system`` is used exactly as it is: neither the
+A file system passed in ``TableLoadContext::file_system`` is used exactly as it is: neither the
 built-in file systems nor the table's own credentials are involved, so a custom
 one has to authenticate its own accesses. Draw credentials that expire from a
 ``CredentialProvider`` you build with ``CredentialProviderFactory``: hold the
@@ -209,9 +210,9 @@ returns credentials that are still valid and reloads them before they expire.
                                                                  "oss://bucket/tbl", options));
    // MyFileSystem merges provider->GetCredentials() over its own options per access.
    auto my_fs = std::make_shared<MyFileSystem>(provider);
-   load_options.catalog = shared_catalog;
-   load_options.identifier.emplace("db", "tbl");
-   load_options.file_system = my_fs;
+   load_context.catalog = shared_catalog;
+   load_context.identifier.emplace("db", "tbl");
+   load_context.file_system = my_fs;
 
 The snapshot being committed carries a uuid generated on the client, and the
 commit names the snapshot it is based on by that snapshot's uuid, so the server
@@ -290,7 +291,7 @@ file-system lookup; other catalog errors propagate to the caller.
 
 Load the table before preparing changes so its retained ``CatalogUuid()`` lets
 the server reject commits to a dropped and recreated table. Static commit
-loading accepts the expected UUID through ``TableLoadOptions::table_id``.
+loading accepts the expected UUID through ``TableLoadContext::table_id``.
 ``Table::Uuid()`` can fall back to the table name and must not supply this id.
 An unset table id is sent as null and subject to server validation. Each commit
 attempt to the main branch reloads the catalog's current schema id for the new
@@ -358,7 +359,7 @@ metadata I/O. The loaded table retains its schema, location, identifier, catalog
 services and per-table file system. That file system signs metadata and data
 accesses with the table's credentials and refreshes them as they expire.
 
-Static factories take ``TableLoadOptions`` separately. Its explicit ``file_system``
+Static factories take ``TableLoadContext`` separately. Its explicit ``file_system``
 takes precedence over the catalog's file system. Without one, the catalog supplies
 its per-table credentials, or its catalog-level file system when it issues none.
 Use ``NewScan`` and ``NewRead`` on a loaded format table too; its storage binding
@@ -380,7 +381,7 @@ any of these sets it:
   branch read, which ``TableScan::Create`` and ``TableRead::Create`` load as Java
   loads the table of that branch.
 
-A schema handed in through ``TableLoadOptions::table_schema_json`` for the main branch does not decide it
+A schema handed in through ``TableLoadContext::table_schema_json`` for the main branch does not decide it
 alone: unless the catalog already enabled the option, the latest schema under the
 table path is checked too, so a cache taken before the option was turned on still
 applies the rules.
@@ -551,7 +552,7 @@ These examples use ``shared_catalog`` from `Reading through the catalog`_.
    using namespace paimon;
 
    // Plan with the columns and the filter the read uses.
-   TableLoadOptions scan_load{table_path};
+   TableLoadContext scan_load{table_path};
    scan_load.catalog = shared_catalog;
    scan_load.identifier.emplace("db", "tbl");
    ScanContextBuilder scan_builder;
@@ -563,7 +564,7 @@ These examples use ``shared_catalog`` from `Reading through the catalog`_.
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, scan->CreatePlan());
 
    // A worker without the catalog tells the read that the table enables query auth.
-   TableLoadOptions read_load{table_path};
+   TableLoadContext read_load{table_path};
    ReadContextBuilder read_builder;
    read_builder.SetReadFieldNames({"name", "phone"})
        .SetPredicate(predicate)
@@ -577,13 +578,13 @@ These examples use ``shared_catalog`` from `Reading through the catalog`_.
 The read does not take the branch from the splits or from
 ``query-auth.enabled``: a worker reading a branch names it itself, as the scan
 did. As for a scan, a branch named by the dynamic ``branch`` option is
-carried into the identifier supplied in ``TableLoadOptions``, so the catalog
+carried into the identifier supplied in ``TableLoadContext``, so the catalog
 hands out the credentials of that branch.
 
 .. code-block:: cpp
 
    // Plan branch "dev"; Identifier("db", "tbl", "dev") names it as well.
-   TableLoadOptions dev_load{table_path};
+   TableLoadContext dev_load{table_path};
    dev_load.catalog = shared_catalog;
    dev_load.identifier.emplace("db", "tbl", "dev");
    ScanContextBuilder dev_scan_builder;
@@ -595,7 +596,7 @@ hands out the credentials of that branch.
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> dev_plan, dev_scan->CreatePlan());
 
    // The worker reads the same branch.
-   TableLoadOptions dev_read_load{table_path};
+   TableLoadContext dev_read_load{table_path};
    ReadContextBuilder dev_read_builder;
    dev_read_builder.SetReadFieldNames({"name", "phone"});
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> dev_read_context,
@@ -621,7 +622,7 @@ This library creates no branch: one has to exist, with its schema published unde
 
 Naming the branch
 ^^^^^^^^^^^^^^^^^
-A branch is addressed by ``TableLoadOptions::identifier`` or the loaded table identifier, which
+A branch is addressed by ``TableLoadContext::identifier`` or the loaded table identifier, which
 ``paimon::Identifier("db", "tbl", "dev")`` builds as ``tbl$branch_dev``, so that
 the catalog answers for the branch: the snapshot it loads is the branch's, and
 the commit request is addressed to that branch by that identifier rather than by
@@ -680,7 +681,7 @@ from a store Paimon has no client for — reach a file system through a
 ``REGISTER_PAIMON_FACTORY``. Build a provider with
 ``CredentialProviderFactory::Get``, wrap it in a ``FileSystem`` of your own that
 calls ``CredentialProvider::GetCredentials`` as it signs each access, and pass
-that file system in through ``Catalog::Create`` or ``TableLoadOptions::file_system``.
+that file system in through ``Catalog::Create`` or ``TableLoadContext::file_system``.
 A file system passed this way is used as-is, so the credentials are reloaded as
 they expire without it being rebuilt.
 

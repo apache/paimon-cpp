@@ -31,7 +31,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/path_util.h"
@@ -116,7 +116,7 @@ class MergeTreeCompactManagerFactoryWriteTest : public ::testing::Test {
                                                   table_options,
                                                   /*ignore_if_exists=*/false));
 
-        TableLoadOptions context_builder_load_options{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
+        TableLoadContext context_builder_load_context{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
         std::map<std::string, std::string> context_builder_options;
         WriteContextBuilder context_builder("test");
         if (!context_options.empty()) {
@@ -128,7 +128,7 @@ class MergeTreeCompactManagerFactoryWriteTest : public ::testing::Test {
 
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context,
                                context_builder.Finish());
-        return FileStoreWrite::Create(context_builder_load_options, std::move(write_context),
+        return FileStoreWrite::Create(context_builder_load_context, std::move(write_context),
                                       context_builder_options);
     }
 

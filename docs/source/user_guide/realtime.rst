@@ -291,14 +291,14 @@ and an input ``batch`` built as described above.
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContext> realtime,
                           RealtimeContext::Create());
 
-   TableLoadOptions load_options{table_path};
+   TableLoadContext load_context{table_path};
    WriteContextBuilder write_builder(commit_user);
    write_builder.WithStreamingMode(true)
        .WithRealtimeContext(realtime);
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context,
                           write_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreWrite> writer,
-                          FileStoreWrite::Create(load_options, std::move(write_context), options));
+                          FileStoreWrite::Create(load_context, std::move(write_context), options));
    PAIMON_RETURN_NOT_OK(writer->Write(std::move(batch)));
 
 To query before preparing or committing:
@@ -310,7 +310,7 @@ To query before preparing or committing:
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
                           scan_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan,
-                          TableScan::Create(load_options, std::move(scan_context), options));
+                          TableScan::Create(load_context, std::move(scan_context), options));
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, scan->CreatePlan());
 
    ReadContextBuilder read_builder;
@@ -318,7 +318,7 @@ To query before preparing or committing:
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                           read_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read,
-                          TableRead::Create(load_options, std::move(read_context), options));
+                          TableRead::Create(load_context, std::move(read_context), options));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
                           read->CreateReader(plan->Splits()));
    // Consume NextBatch() or NextBatchWithBitmap(), then Close() the reader.
@@ -340,7 +340,7 @@ Checkpoint with progress-aware APIs:
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
                           commit_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> commit,
-                          FileStoreCommit::Create(load_options, std::move(commit_context), options));
+                          FileStoreCommit::Create(load_context, std::move(commit_context), options));
    PAIMON_ASSIGN_OR_RAISE(
        int64_t snapshot_id,
        commit->CommitWithProgress(progress, checkpoint_id, /*watermark=*/std::nullopt));
@@ -374,7 +374,7 @@ coordinating checkpoints. Snapshot conflicts are retried internally against
 the latest snapshot; commit identifiers must follow the streaming commit
 protocol. With a version-managed catalog, configure the writer and committer
 from the same catalog-loaded Table, or use the same catalog and identifier in
-``TableLoadOptions``.
+``TableLoadContext``.
 
 Read Views and Consistency
 --------------------------

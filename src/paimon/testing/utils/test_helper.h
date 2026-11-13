@@ -32,7 +32,7 @@
 #include "fmt/format.h"
 #include "paimon/api.h"
 #include "paimon/catalog/catalog.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/types/data_field.h"
@@ -91,7 +91,7 @@ class TestHelper {
         PAIMON_ASSIGN_OR_RAISE(auto file_system,
                                FileSystemFactory::Get(file_system_identifier, table_path, options));
         std::string commit_user = "commit_user";
-        TableLoadOptions context_builder_load_options{table_path};
+        TableLoadContext context_builder_load_context{table_path};
         std::map<std::string, std::string> context_builder_options;
         WriteContextBuilder context_builder(commit_user);
         if (!temp_directory.empty()) {
@@ -103,9 +103,9 @@ class TestHelper {
             context_builder.WithStreamingMode(is_streaming_mode).WithWriteId(12345).Finish());
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<FileStoreWrite> write,
-            FileStoreWrite::Create(context_builder_load_options, std::move(write_context),
+            FileStoreWrite::Create(context_builder_load_context, std::move(write_context),
                                    context_builder_options));
-        TableLoadOptions commit_context_builder_load_options{table_path};
+        TableLoadContext commit_context_builder_load_context{table_path};
         std::map<std::string, std::string> commit_context_builder_options;
         CommitContextBuilder commit_context_builder(commit_user);
         commit_context_builder_options = options;
@@ -113,7 +113,7 @@ class TestHelper {
                                commit_context_builder.IgnoreEmptyCommit(false).Finish());
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<FileStoreCommit> commit,
-            FileStoreCommit::Create(commit_context_builder_load_options, std::move(commit_context),
+            FileStoreCommit::Create(commit_context_builder_load_context, std::move(commit_context),
                                     commit_context_builder_options));
         return std::unique_ptr<TestHelper>(new TestHelper(std::move(file_system), std::move(write),
                                                           std::move(commit), commit_user,
@@ -164,7 +164,7 @@ class TestHelper {
     Result<std::vector<std::shared_ptr<Split>>> NewScan(StartupMode startup_mode,
                                                         std::optional<int64_t> snapshot_id,
                                                         bool is_streaming = true) {
-        TableLoadOptions scan_context_builder_load_options{table_path_};
+        TableLoadContext scan_context_builder_load_context{table_path_};
         std::map<std::string, std::string> scan_context_builder_options;
         ScanContextBuilder scan_context_builder;
         scan_context_builder_options = options_;
@@ -176,7 +176,7 @@ class TestHelper {
         }
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(
-            scan_, TableScan::Create(scan_context_builder_load_options, std::move(scan_context),
+            scan_, TableScan::Create(scan_context_builder_load_context, std::move(scan_context),
                                      scan_context_builder_options));
         return Scan();
     }
@@ -288,7 +288,7 @@ class TestHelper {
     Result<std::shared_ptr<arrow::ChunkedArray>> ReadResult(
         const std::vector<std::shared_ptr<Split>>& splits,
         std::unique_ptr<::ArrowSchema> read_schema) {
-        TableLoadOptions read_context_builder_load_options{table_path_};
+        TableLoadContext read_context_builder_load_context{table_path_};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         read_context_builder_options = options_;
@@ -298,7 +298,7 @@ class TestHelper {
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                                read_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(read_context_builder_load_options,
+        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(read_context_builder_load_context,
                                                                   std::move(read_context),
                                                                   read_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));
@@ -319,14 +319,14 @@ class TestHelper {
     Result<bool> ReadAndCheckResult(const std::shared_ptr<arrow::DataType>& data_type,
                                     const std::vector<std::shared_ptr<Split>>& splits,
                                     const std::string& expected_result) {
-        TableLoadOptions read_context_builder_load_options{table_path_};
+        TableLoadContext read_context_builder_load_context{table_path_};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         read_context_builder_options = options_;
 
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                                read_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(read_context_builder_load_options,
+        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(read_context_builder_load_context,
                                                                   std::move(read_context),
                                                                   read_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(splits));

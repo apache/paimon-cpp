@@ -19,7 +19,7 @@
 #include "paimon/scan_context.h"
 
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"

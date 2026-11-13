@@ -24,7 +24,7 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
@@ -416,14 +416,14 @@ TEST_P(AppendCompactionInteTest, TestAppendTableStreamWriteFullCompactionWithMap
         auto c_schema = std::make_unique<ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*read_schema, c_schema.get()).ok());
 
-        TableLoadOptions read_context_builder_load_options{
+        TableLoadContext read_context_builder_load_context{
             PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
         std::map<std::string, std::string> read_context_builder_options;
         ReadContextBuilder read_context_builder;
         read_context_builder_options = options;
         read_context_builder.SetReadSchema(std::move(c_schema));
         ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_options,
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
                                                                 std::move(read_context),
                                                                 read_context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
@@ -1045,7 +1045,7 @@ TEST_P(AppendCompactionInteTest, TestAppendTableCompactionDictionaryPassthrough)
     auto predicate = PredicateBuilder::Equal(
         /*field_index=*/1, /*field_name=*/"s", FieldType::STRING,
         Literal(FieldType::STRING, indexed_value.data(), indexed_value.size()));
-    TableLoadOptions read_context_builder_load_options{
+    TableLoadContext read_context_builder_load_context{
         PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
@@ -1053,7 +1053,7 @@ TEST_P(AppendCompactionInteTest, TestAppendTableCompactionDictionaryPassthrough)
     read_context_builder.SetPredicate(predicate);
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
-                         TableRead::Create(read_context_builder_load_options,
+                         TableRead::Create(read_context_builder_load_context,
                                            std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
     ASSERT_OK_AND_ASSIGN(auto filtered, ReadResultCollector::CollectResult(batch_reader.get()));

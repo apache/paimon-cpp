@@ -27,7 +27,7 @@
 #include "paimon/api.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/table.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 
 arrow::Result<std::shared_ptr<arrow::StructArray>> PrepareData(const arrow::FieldVector& fields) {
     arrow::StringBuilder f0_builder;

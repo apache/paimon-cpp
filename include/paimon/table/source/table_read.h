@@ -22,7 +22,7 @@
 #include <memory>
 #include <vector>
 
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/executor.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
@@ -45,12 +45,12 @@ class PAIMON_EXPORT TableRead {
 
     /// Create an instance of `TableRead`.
     ///
-    /// @param load_options Table identity, metadata and file-system loading parameters.
+    /// @param load_context Table identity, metadata and file-system loading parameters.
     /// @param dynamic_options Overrides merged on top of the table options.
     /// @param context A unique pointer to the `ReadContext` used for read operations.
     /// @return A Result containing a unique pointer to the `TableRead` instance.
     static Result<std::unique_ptr<TableRead>> Create(
-        const TableLoadOptions& load_options, std::unique_ptr<ReadContext> context,
+        const TableLoadContext& load_context, std::unique_ptr<ReadContext> context,
         const std::map<std::string, std::string>& dynamic_options = {});
 
     /// Creates a `BatchReader` instance for reading data.

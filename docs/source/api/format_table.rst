@@ -35,7 +35,7 @@ and :cpp:class:`paimon::FileStoreCommit`. See :doc:`../user_guide/format_table`.
 Contexts
 ========
 
-Static entry points load the table through :cpp:struct:`paimon::TableLoadOptions`.
+Static entry points load the table through :cpp:struct:`paimon::TableLoadContext`.
 Operation Contexts provide execution settings; dynamic options are a separate
 argument. A caller holding a loaded ``FormatTable`` creates operators directly
 with its ``NewScan()``, ``NewRead()``, ``NewWrite()`` or ``NewCommit()`` methods.

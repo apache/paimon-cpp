@@ -22,7 +22,7 @@
 #include <memory>
 #include <string>
 
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/result.h"
 
 namespace paimon {
@@ -35,7 +35,7 @@ class TableFactory {
     ~TableFactory() = delete;
 
     static Result<std::shared_ptr<Table>> Create(
-        const TableLoadOptions& load_options,
+        const TableLoadContext& load_context,
         const std::map<std::string, std::string>& dynamic_options, const char* operation);
 };
 }  // namespace paimon

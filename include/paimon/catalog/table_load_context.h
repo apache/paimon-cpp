@@ -30,9 +30,9 @@ namespace paimon {
 class Catalog;
 class FileSystem;
 
-/// Parameters used only while loading a table for a static operator factory.
+/// Context used only while loading a table for a static operator factory.
 /// A catalog requires an identifier; a path is required for file-system loading.
-struct PAIMON_EXPORT TableLoadOptions {
+struct PAIMON_EXPORT TableLoadContext {
     /// Optional for catalog loads; otherwise the native table or system-table path.
     std::string path = {};
     /// Explicit storage binding, taking precedence over the catalog's per-table file system.

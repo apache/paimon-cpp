@@ -25,7 +25,7 @@
 #include <string>
 #include <vector>
 
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/commit_message.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
@@ -49,13 +49,13 @@ class PAIMON_EXPORT FileStoreWrite {
  public:
     /// Create an instance of `FileStoreWrite`.
     ///
-    /// @param load_options Table identity, metadata and file-system loading parameters.
+    /// @param load_context Table identity, metadata and file-system loading parameters.
     /// @param dynamic_options Overrides merged on top of the table options.
     /// @param context A unique pointer to the `WriteContext` used for write operations.
     ///
     /// @return A Result containing a unique pointer to the `FileStoreWrite` instance.
     static Result<std::unique_ptr<FileStoreWrite>> Create(
-        const TableLoadOptions& load_options, std::unique_ptr<WriteContext> context,
+        const TableLoadContext& load_context, std::unique_ptr<WriteContext> context,
         const std::map<std::string, std::string>& dynamic_options = {});
 
     virtual ~FileStoreWrite() = default;

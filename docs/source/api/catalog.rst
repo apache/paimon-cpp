@@ -37,7 +37,7 @@ Interface
 .. doxygenclass:: paimon::Table
    :members:
 
-.. doxygenstruct:: paimon::TableLoadOptions
+.. doxygenstruct:: paimon::TableLoadContext
    :members:
 
 .. doxygenstruct:: paimon::CatalogOptions

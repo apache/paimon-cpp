@@ -33,7 +33,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
@@ -321,7 +321,7 @@ class BucketedPrimaryKeyIndexMaintainerTest : public ::testing::TestWithParam<st
 
     Result<std::unique_ptr<FileStoreWrite>> CreateWriter(bool with_temp_directory = true,
                                                          bool write_buffer_spillable = true) const {
-        TableLoadOptions builder_load_options{table_path_};
+        TableLoadContext builder_load_context{table_path_};
         std::map<std::string, std::string> builder_options;
         WriteContextBuilder builder(kCommitUser);
         std::map<std::string, std::string> writer_options = options_;
@@ -332,7 +332,7 @@ class BucketedPrimaryKeyIndexMaintainerTest : public ::testing::TestWithParam<st
             builder.WithTempDirectory(directory_->Str());
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> context, builder.Finish());
-        return FileStoreWrite::Create(builder_load_options, std::move(context), builder_options);
+        return FileStoreWrite::Create(builder_load_context, std::move(context), builder_options);
     }
 
     Result<std::vector<std::shared_ptr<CommitMessage>>> WriteAndPrepare(
@@ -358,7 +358,7 @@ class BucketedPrimaryKeyIndexMaintainerTest : public ::testing::TestWithParam<st
 
     Status Commit(const std::vector<std::shared_ptr<CommitMessage>>& messages,
                   int64_t commit_identifier) const {
-        TableLoadOptions builder_load_options{table_path_};
+        TableLoadContext builder_load_context{table_path_};
         std::map<std::string, std::string> builder_options;
         CommitContextBuilder builder(kCommitUser);
         builder_options = options_;
@@ -366,7 +366,7 @@ class BucketedPrimaryKeyIndexMaintainerTest : public ::testing::TestWithParam<st
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context, builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<FileStoreCommit> commit,
-            FileStoreCommit::Create(builder_load_options, std::move(context), builder_options));
+            FileStoreCommit::Create(builder_load_context, std::move(context), builder_options));
         return commit->Commit(messages, commit_identifier);
     }
 
@@ -462,14 +462,14 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, BuildsRestoresAndReplacesCompacted
     std::shared_ptr<Predicate> value_predicate = PredicateBuilder::Equal(
         /*field_index=*/1, "value", FieldType::STRING,
         Literal(FieldType::STRING, indexed_value.data(), indexed_value.size()));
-    TableLoadOptions scan_builder_load_options{table_path_};
+    TableLoadContext scan_builder_load_context{table_path_};
     std::map<std::string, std::string> scan_builder_options;
     ScanContextBuilder scan_builder;
     scan_builder_options[Options::GLOBAL_INDEX_ENABLED] = "true";
     scan_builder.SetPredicate(value_predicate);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                         TableScan::Create(scan_builder_load_options, std::move(scan_context),
+                         TableScan::Create(scan_builder_load_context, std::move(scan_context),
                                            scan_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
     int32_t indexed_split_count = 0;
@@ -484,7 +484,7 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, BuildsRestoresAndReplacesCompacted
     ASSERT_GT(indexed_split_count, 0);
     ASSERT_EQ(0, data_split_count);
 
-    TableLoadOptions read_builder_load_options{table_path_};
+    TableLoadContext read_builder_load_context{table_path_};
     std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder;
     // The source build above keeps lazy decoding enabled. Disable it only for the final data-row
@@ -495,7 +495,7 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, BuildsRestoresAndReplacesCompacted
         .EnablePredicateFilter(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(read_builder_load_options, std::move(read_context),
+                         TableRead::Create(read_builder_load_context, std::move(read_context),
                                            read_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(plan->Splits()));
@@ -701,14 +701,14 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, ContinuesCompactionWhenIndexBuildF
     std::shared_ptr<Predicate> value_predicate = PredicateBuilder::Equal(
         /*field_index=*/1, "value", FieldType::STRING,
         Literal(FieldType::STRING, indexed_value.data(), indexed_value.size()));
-    TableLoadOptions scan_builder_load_options{table_path_};
+    TableLoadContext scan_builder_load_context{table_path_};
     std::map<std::string, std::string> scan_builder_options;
     ScanContextBuilder scan_builder;
     scan_builder_options[Options::GLOBAL_INDEX_ENABLED] = "true";
     scan_builder.SetPredicate(value_predicate);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                         TableScan::Create(scan_builder_load_options, std::move(scan_context),
+                         TableScan::Create(scan_builder_load_context, std::move(scan_context),
                                            scan_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
     int32_t indexed_split_count = 0;
@@ -723,7 +723,7 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, ContinuesCompactionWhenIndexBuildF
     ASSERT_EQ(0, indexed_split_count);
     ASSERT_GT(data_split_count, 0);
 
-    TableLoadOptions read_builder_load_options{table_path_};
+    TableLoadContext read_builder_load_context{table_path_};
     std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder;
     read_builder_options["orc.read.enable-lazy-decoding"] = "false";
@@ -732,7 +732,7 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, ContinuesCompactionWhenIndexBuildF
         .EnablePredicateFilter(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(read_builder_load_options, std::move(read_context),
+                         TableRead::Create(read_builder_load_context, std::move(read_context),
                                            read_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(plan->Splits()));
@@ -785,7 +785,7 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, DeletesPayloadAfterLastDefinitionI
         PathUtil::JoinPath(table_path_, "schema/schema-1"), schema_json,
         /*overwrite=*/false));
 
-    TableLoadOptions builder_load_options{table_path_};
+    TableLoadContext builder_load_context{table_path_};
     std::map<std::string, std::string> builder_options;
     WriteContextBuilder builder(kCommitUser);
     builder_options = evolved_options;
@@ -793,7 +793,7 @@ TEST_P(BucketedPrimaryKeyIndexMaintainerTest, DeletesPayloadAfterLastDefinitionI
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<FileStoreWrite> writer,
-        FileStoreWrite::Create(builder_load_options, std::move(context), builder_options));
+        FileStoreWrite::Create(builder_load_context, std::move(context), builder_options));
     ASSERT_OK(writer->Compact(/*partition=*/{}, /*bucket=*/0, /*full_compaction=*/true));
     ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> cleanup_messages,
                          writer->PrepareCommit(/*wait_compaction=*/true,

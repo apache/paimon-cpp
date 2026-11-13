@@ -24,7 +24,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"

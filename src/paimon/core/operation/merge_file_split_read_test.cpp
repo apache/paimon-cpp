@@ -31,7 +31,7 @@
 #include "arrow/c/abi.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/reader/concat_batch_reader.h"
@@ -93,17 +93,17 @@ class MergeFileSplitReadTest : public ::testing::Test,
 
     std::shared_ptr<InternalReadContext> CreateInternalReadContext(
         const std::shared_ptr<ReadContext>& read_context,
-        const TableLoadOptions& read_context_load_options,
+        const TableLoadContext& read_context_load_context,
         const std::map<std::string, std::string>& read_context_options, int32_t schema_id = 0) {
-        SchemaManager schema_manager(fs_, read_context_load_options.path);
+        SchemaManager schema_manager(fs_, read_context_load_context.path);
         EXPECT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(schema_id));
         EXPECT_OK_AND_ASSIGN(
             auto context, InternalReadContext::Create(
                               read_context, table_schema, read_context_options,
-                              read_context_load_options.file_system, read_context_load_options.path,
-                              read_context_load_options.fs_scheme_to_identifier_map,
-                              read_context_load_options.catalog,
-                              read_context_load_options.identifier, read_context_options));
+                              read_context_load_context.file_system, read_context_load_context.path,
+                              read_context_load_context.fs_scheme_to_identifier_map,
+                              read_context_load_context.catalog,
+                              read_context_load_context.identifier, read_context_options));
         return context;
     }
 
@@ -618,8 +618,8 @@ TEST_F(MergeFileSplitReadTest, TestGenerateKeyPredicates2) {
 TEST_P(MergeFileSplitReadTest, TestSimple) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
 
@@ -637,12 +637,12 @@ TEST_P(MergeFileSplitReadTest, TestSimple) {
                                {Options::IGNORE_DELETE, "true"}};
 
     AddOptions(&context_builder, context_builder_options);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
     auto internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
 
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<MergeFileSplitRead> split_read,
@@ -691,8 +691,8 @@ TEST_P(MergeFileSplitReadTest, TestSimple) {
 TEST_P(MergeFileSplitReadTest, TestRealtimeReadConcatenatesOrderedDiskSections) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
     std::vector<DataField> raw_read_fields = {DataField(0, arrow::field("k0", arrow::int32())),
@@ -708,11 +708,11 @@ TEST_P(MergeFileSplitReadTest, TestRealtimeReadConcatenatesOrderedDiskSections) 
                                {Options::MERGE_ENGINE, "deduplicate"}};
 
     AddOptions(&context_builder, context_builder_options);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     std::shared_ptr<InternalReadContext> internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<MergeFileSplitRead> split_read,
                          CreateMergeFileSplitRead(internal_context));
 
@@ -765,8 +765,8 @@ TEST_P(MergeFileSplitReadTest, TestRealtimeReadConcatenatesOrderedDiskSections) 
 TEST_P(MergeFileSplitReadTest, TestLookUp) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
 
@@ -785,12 +785,12 @@ TEST_P(MergeFileSplitReadTest, TestLookUp) {
                                {Options::FORCE_LOOKUP, "true"}};
 
     AddOptions(&context_builder, context_builder_options);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
     auto internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
 
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -820,8 +820,8 @@ TEST_P(MergeFileSplitReadTest, TestLookUp) {
 TEST_P(MergeFileSplitReadTest, TestReadWithLimits) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
     context_builder_options = {{Options::SEQUENCE_FIELD, "s0,s1"},
@@ -830,12 +830,12 @@ TEST_P(MergeFileSplitReadTest, TestReadWithLimits) {
                                {Options::READ_BATCH_SIZE, "1"}};
 
     AddOptions(&context_builder, context_builder_options);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
     auto internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
 
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
@@ -853,8 +853,8 @@ TEST_P(MergeFileSplitReadTest, TestReadWithLimits) {
 TEST_P(MergeFileSplitReadTest, TestDeduplicateMergeEngineWithDeleteMsg) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_partial_update.db/pk_table_partial_update";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
 
@@ -870,12 +870,12 @@ TEST_P(MergeFileSplitReadTest, TestDeduplicateMergeEngineWithDeleteMsg) {
     context_builder_options = {{Options::MERGE_ENGINE, "deduplicate"}};
 
     AddOptions(&context_builder, context_builder_options);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
     auto internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit2()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -900,8 +900,8 @@ TEST_P(MergeFileSplitReadTest, TestDeduplicateMergeEngineWithDeleteMsg) {
 TEST_P(MergeFileSplitReadTest, TestReadWithPredicate) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
 
@@ -936,12 +936,12 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicate) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate_result,
                          PredicateBuilder::And({less_than, greater_or_equal, greater_than}));
     context_builder.SetPredicate(predicate_result);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
     auto internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -970,8 +970,8 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicate) {
 TEST_P(MergeFileSplitReadTest, TestReadWithPredicateAndLateMaterializing) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
 
@@ -1001,12 +1001,12 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicateAndLateMaterializing) {
                          PredicateBuilder::And({greater_or_equal, greater_than}));
     context_builder.SetPredicate(predicate_result);
     context_builder.EnablePredicateFilter(true).EnableLateMaterializing(true);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
     auto internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -1034,8 +1034,8 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicateAndLateMaterializing) {
 TEST_P(MergeFileSplitReadTest, TestReadWithAlterTable) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
 
@@ -1058,11 +1058,11 @@ TEST_P(MergeFileSplitReadTest, TestReadWithAlterTable) {
 
     AddOptions(&context_builder, context_builder_options);
 
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
-    auto internal_context = CreateInternalReadContext(read_context, read_context_load_options,
+    auto internal_context = CreateInternalReadContext(read_context, read_context_load_context,
                                                       read_context_options, /*schema_id=*/7);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
@@ -1093,8 +1093,8 @@ TEST_P(MergeFileSplitReadTest, TestReadWithAlterTable) {
 TEST_P(MergeFileSplitReadTest, TestReadWithAlterTableWithReverseSequence) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
 
@@ -1114,11 +1114,11 @@ TEST_P(MergeFileSplitReadTest, TestReadWithAlterTableWithReverseSequence) {
 
     AddOptions(&context_builder, context_builder_options);
 
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
-    auto internal_context = CreateInternalReadContext(read_context, read_context_load_options,
+    auto internal_context = CreateInternalReadContext(read_context, read_context_load_context,
                                                       read_context_options, /*schema_id=*/7);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
@@ -1149,8 +1149,8 @@ TEST_P(MergeFileSplitReadTest, TestReadWithAlterTableWithReverseSequence) {
 TEST_P(MergeFileSplitReadTest, TestAggregateMergeEngine) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
 
@@ -1170,11 +1170,11 @@ TEST_P(MergeFileSplitReadTest, TestAggregateMergeEngine) {
                                {Options::IGNORE_DELETE, "true"}};
 
     AddOptions(&context_builder, context_builder_options);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     auto internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -1204,8 +1204,8 @@ TEST_P(MergeFileSplitReadTest, TestAggregateMergeEngine) {
 TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngine) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
 
@@ -1224,11 +1224,11 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngine) {
                                {Options::IGNORE_DELETE, "true"}};
 
     AddOptions(&context_builder, context_builder_options);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     auto internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -1258,8 +1258,8 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngine) {
 TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithIgnoreDelete) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_partial_update.db/pk_table_partial_update";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
 
@@ -1276,11 +1276,11 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithIgnoreDelete) {
                                {Options::IGNORE_DELETE, "true"}};
 
     AddOptions(&context_builder, context_builder_options);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     auto internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit2()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -1305,8 +1305,8 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithIgnoreDelete) {
 TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithRemoveRecordOnDelete) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_partial_update.db/pk_table_partial_update";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
 
@@ -1323,11 +1323,11 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithRemoveRecordOnDel
                                {Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE, "true"}};
 
     AddOptions(&context_builder, context_builder_options);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     auto internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit2()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -1352,8 +1352,8 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithRemoveRecordOnDel
 TEST_P(MergeFileSplitReadTest, TestEmptyPlan) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_partial_update.db/pk_table_partial_update";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
 
@@ -1370,11 +1370,11 @@ TEST_P(MergeFileSplitReadTest, TestEmptyPlan) {
                                {Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE, "true"}};
 
     AddOptions(&context_builder, context_builder_options);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     auto internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
     std::vector<std::shared_ptr<DataSplit>> empty_data_split;
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, empty_data_split));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> read_result,
@@ -1392,8 +1392,8 @@ TEST_P(MergeFileSplitReadTest, TestIOException) {
                                               DataField(6, arrow::field("v0", arrow::float64())),
                                               DataField(7, arrow::field("v1", arrow::boolean()))};
 
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
     auto read_schema = DataField::ConvertDataFieldsToArrowSchema(raw_read_fields);
@@ -1405,12 +1405,12 @@ TEST_P(MergeFileSplitReadTest, TestIOException) {
                                {Options::IGNORE_DELETE, "true"}};
 
     AddOptions(&context_builder, context_builder_options);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
     auto internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
 
     auto fields_with_row_kind = read_schema->fields();
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -1450,8 +1450,8 @@ TEST_P(MergeFileSplitReadTest, TestIOException) {
 
 TEST_P(MergeFileSplitReadTest, Test09VersionWithoutInlineFieldId) {
     std::string path = paimon::test::GetDataDir() + "/orc/pk_09.db/pk_09";
-    TableLoadOptions context_builder_load_options;
-    context_builder_load_options.path = path;
+    TableLoadContext context_builder_load_context;
+    context_builder_load_context.path = path;
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
     std::vector<DataField> raw_read_fields = {DataField(3, arrow::field("f3", arrow::float64())),
@@ -1466,7 +1466,7 @@ TEST_P(MergeFileSplitReadTest, Test09VersionWithoutInlineFieldId) {
                                {"orc.read.enable-metrics", "true"}};
 
     AddOptions(&context_builder, context_builder_options);
-    auto read_context_load_options = context_builder_load_options;
+    auto read_context_load_context = context_builder_load_context;
     auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     auto meta1 = std::make_shared<DataFileMeta>(
@@ -1512,7 +1512,7 @@ TEST_P(MergeFileSplitReadTest, Test09VersionWithoutInlineFieldId) {
     ASSERT_OK_AND_ASSIGN(auto data_split,
                          builder.WithSnapshot(5).IsStreaming(false).RawConvertible(false).Build());
     auto internal_context =
-        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
+        CreateInternalReadContext(read_context, read_context_load_context, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, {data_split}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
                          ReadResultCollector::CollectResult(batch_reader.get()));

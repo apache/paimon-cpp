@@ -30,7 +30,7 @@
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/cache/cache.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/data/serializer/binary_row_serializer.h"
@@ -600,7 +600,7 @@ TEST(AppendOnlyFileStoreScanTest, TestReconstructPredicateWithNonCastedFields) {
 TEST(AppendOnlyFileStoreScanTest, TestReadPartitionEntries) {
     TimezoneGuard guard("Asia/Shanghai");
     std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09/";
-    TableLoadOptions context_builder_load_options{table_path};
+    TableLoadContext context_builder_load_context{table_path};
     std::map<std::string, std::string> context_builder_options;
     ScanContextBuilder context_builder;
     context_builder_options[Options::FILE_FORMAT] = "orc";
@@ -610,7 +610,7 @@ TEST(AppendOnlyFileStoreScanTest, TestReadPartitionEntries) {
 
     auto pool = GetDefaultPool();
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(context_builder_load_options, std::move(scan_context),
+                         TableScan::Create(context_builder_load_context, std::move(scan_context),
                                            context_builder_options));
     auto typed_table_scan = dynamic_cast<AbstractTableScan*>(table_scan.get());
     ASSERT_TRUE(typed_table_scan);
@@ -651,7 +651,7 @@ TEST(AppendOnlyFileStoreScanTest, TestReadPartitionEntries) {
 TEST(AppendOnlyFileStoreScanTest, TestScanDurationMetric) {
     TimezoneGuard guard("Asia/Shanghai");
     std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09/";
-    TableLoadOptions context_builder_load_options{table_path};
+    TableLoadContext context_builder_load_context{table_path};
     std::map<std::string, std::string> context_builder_options;
     ScanContextBuilder context_builder;
     context_builder_options[Options::FILE_FORMAT] = "orc";
@@ -660,7 +660,7 @@ TEST(AppendOnlyFileStoreScanTest, TestScanDurationMetric) {
     ASSERT_OK_AND_ASSIGN(auto scan_context, context_builder.Finish());
 
     ASSERT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(context_builder_load_options, std::move(scan_context),
+                         TableScan::Create(context_builder_load_context, std::move(scan_context),
                                            context_builder_options));
     auto typed_table_scan = dynamic_cast<AbstractTableScan*>(table_scan.get());
     ASSERT_TRUE(typed_table_scan);
@@ -757,7 +757,7 @@ std::shared_ptr<FileStoreScan> BuildScan(const std::string& table_path,
                                          const std::shared_ptr<Predicate>& predicate = nullptr,
                                          bool manifest_entry_lazy_decode_enabled = true,
                                          int32_t max_snapshots = 8) {
-    TableLoadOptions context_builder_load_options{table_path};
+    TableLoadContext context_builder_load_context{table_path};
     std::map<std::string, std::string> context_builder_options;
     ScanContextBuilder context_builder;
     context_builder_options[Options::FILE_FORMAT] = "orc";
@@ -776,7 +776,7 @@ std::shared_ptr<FileStoreScan> BuildScan(const std::string& table_path,
     }
     EXPECT_OK_AND_ASSIGN(auto scan_context, context_builder.Finish());
     EXPECT_OK_AND_ASSIGN(auto table_scan,
-                         TableScan::Create(context_builder_load_options, std::move(scan_context),
+                         TableScan::Create(context_builder_load_context, std::move(scan_context),
                                            context_builder_options));
     auto typed_table_scan = dynamic_cast<AbstractTableScan*>(table_scan.get());
     EXPECT_TRUE(typed_table_scan);

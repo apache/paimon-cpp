@@ -49,7 +49,7 @@ carry a format-table handle, its identity. Conflicting contexts are rejected
 before creating an operator, including for overwrite commits.
 
 Static ``TableScan::Create``, ``TableRead::Create``, ``FileStoreWrite::Create``
-and ``FileStoreCommit::Create`` load tables through ``TableLoadOptions``. They
+and ``FileStoreCommit::Create`` load tables through ``TableLoadContext``. They
 read the schema from the table path or ``table_schema_json`` and dispatch by its
 type. Operation Contexts contain execution settings; dynamic options are a
 separate final argument.
@@ -126,7 +126,7 @@ A setting the format path cannot act on is refused by name rather than quietly d
 * ``WriteContextBuilder::WithWriteId()``, which prefixes a postpone-bucket writer's files so one
   compaction reader can put them back in order; a format table has no buckets.
 * ``CommitContextBuilder::IgnoreEmptyCommit(false)``, ``UseRESTCatalogCommit(true)``,
-  ``TableLoadOptions::table_id`` and ``AppendCommitCheckConflict(true)``. Keeping an empty
+  ``TableLoadContext::table_id`` and ``AppendCommitCheckConflict(true)``. Keeping an empty
   commit means writing a snapshot that adds no files, a REST commit sends that snapshot to
   a catalog, a table id names the table in that request, and the conflict check reads the
   manifests of concurrent commits - none of which exist here. Each is refused only when set away from its default, so an

@@ -30,7 +30,7 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
-#include "paimon/catalog/table_load_options.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -101,7 +101,7 @@ Result<std::map<std::string, std::string>> PinToSnapshot(const std::string& root
 /// `FilteredRowIdReader` reads with the table that the search loaded, so that a column renamed or
 /// replaced since then cannot point the filter at another field.
 Result<std::unique_ptr<TableRead>> CreateReadWithSchema(
-    const TableLoadOptions& load, std::unique_ptr<ReadContext> read_context,
+    const TableLoadContext& load, std::unique_ptr<ReadContext> read_context,
     const std::shared_ptr<TableSchema>& table_schema,
     const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool,
     const std::shared_ptr<Executor>& executor) {
@@ -169,7 +169,7 @@ Result<RoaringBitmap64> FilteredRowIdReader::MatchingRowIds(const RoaringBitmap6
 
     // Unlike the read, the scan may load the latest schema, as it selects files by partition and
     // row id alone.
-    TableLoadOptions scan_builder_load{root_path_};
+    TableLoadContext scan_builder_load{root_path_};
     std::map<std::string, std::string> scan_builder_options;
     ScanContextBuilder scan_builder;
     scan_builder_options = pinned_options;
@@ -207,7 +207,7 @@ Result<RoaringBitmap64> FilteredRowIdReader::MatchingRowIds(const RoaringBitmap6
                            PredicateUtils::CreatePickedFieldFilter(
                                filter_, ObjectUtils::CreateIdentifierToIndexMap(read_fields)));
 
-    TableLoadOptions read_builder_load{root_path_};
+    TableLoadContext read_builder_load{root_path_};
     std::map<std::string, std::string> read_builder_options;
     ReadContextBuilder read_builder;
     read_builder_options = pinned_options;
