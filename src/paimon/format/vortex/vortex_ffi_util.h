@@ -32,13 +32,26 @@ namespace paimon::vortex {
 /// out-parameter.
 Status VortexFfiError(const std::string& operation, vx_error* error);
 
+/// Stateless deleter bound to a Vortex C release function.
+template <typename T, auto FreeFn>
+struct VxDeleter {
+    void operator()(T* ptr) const noexcept {
+        FreeFn(ptr);
+    }
+};
+
+template <typename T, auto FreeFn>
+using VxUniquePtr = std::unique_ptr<T, VxDeleter<T, FreeFn>>;
+
 // Owning RAII aliases for the Vortex C handles; each frees its handle on scope exit. The element
 // type matches the constness returned by the corresponding constructor function.
-using VxSessionPtr = std::unique_ptr<vx_session, decltype(&vx_session_free)>;
-using VxDataSourcePtr = std::unique_ptr<const vx_data_source, decltype(&vx_data_source_free)>;
-using VxScanPtr = std::unique_ptr<vx_scan, decltype(&vx_scan_free)>;
-using VxPartitionPtr = std::unique_ptr<vx_partition, decltype(&vx_partition_free)>;
-using VxDtypePtr = std::unique_ptr<const vx_dtype, decltype(&vx_dtype_free)>;
-using VxArrayPtr = std::unique_ptr<const vx_array, decltype(&vx_array_free)>;
+using VxSessionPtr = VxUniquePtr<vx_session, vx_session_free>;
+using VxDataSourcePtr = VxUniquePtr<const vx_data_source, vx_data_source_free>;
+using VxScanPtr = VxUniquePtr<vx_scan, vx_scan_free>;
+using VxPartitionPtr = VxUniquePtr<vx_partition, vx_partition_free>;
+using VxDtypePtr = VxUniquePtr<const vx_dtype, vx_dtype_free>;
+using VxArrayPtr = VxUniquePtr<const vx_array, vx_array_free>;
+using VxExpressionPtr = VxUniquePtr<vx_expression, vx_expression_free>;
+using VxScalarPtr = VxUniquePtr<vx_scalar, vx_scalar_free>;
 
 }  // namespace paimon::vortex

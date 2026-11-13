@@ -1,9 +1,500 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 diff --git a/vortex-ffi/src/lib.rs b/vortex-ffi/src/lib.rs
+index f4ce314c07373fa5b89f9225da1e6162ce956443..af526729ba3672eb1d507e54ebf14c750c83f8e1 100644
 --- a/vortex-ffi/src/lib.rs
 +++ b/vortex-ffi/src/lib.rs
-@@ -8,4 +8,5 @@
+@@ -6,6 +6,7 @@
+ //! Native interface to Vortex arrays, types, files and streams.
+
  mod array;
 +mod callback_io;
  mod array_iterator;
  mod binary;
  mod data_source;
+diff --git a/vortex-ffi/src/scan.rs b/vortex-ffi/src/scan.rs
+index 921c4f506211b299751f38645fdbde6155c9ad86..8c4560d2d5c88b8479a4a8b47b692924860d415b 100644
+--- a/vortex-ffi/src/scan.rs
++++ b/vortex-ffi/src/scan.rs
+@@ -25,8 +25,11 @@ use vortex::buffer::Buffer;
+ use vortex::error::VortexResult;
+ use vortex::error::vortex_bail;
+ use vortex::error::vortex_ensure;
++use vortex::expr::merge;
++use vortex::expr::pack;
+ use vortex::expr::root;
+ use vortex::io::runtime::BlockingRuntime;
++use vortex::layout::layouts::row_idx::row_idx;
+ use vortex::layout::scan::arrow::RecordBatchIteratorAdapter;
+ use vortex::scan::DataSourceScan;
+ use vortex::scan::Partition;
+@@ -112,6 +115,9 @@ pub struct vx_scan_options {
+     pub limit: u64,
+     /// If true, return in storage order.
+     pub ordered: bool,
++    /// If true, append a `_row_idx` UInt64 column carrying each returned row's original physical
++    /// row index, stable across `filter` and `selection`. The host strips it before use.
++    pub include_row_idx: bool,
+ }
+
+ #[repr(C)]
+@@ -180,7 +186,14 @@ fn scan_request(opts: *const vx_scan_options) -> VortexResult<ScanRequest> {
+     let limit = (opts.limit != 0).then_some(opts.limit);
+
+     Ok(ScanRequest {
+-        projection,
++        // paimon-cpp: when include_row_idx is set, append a hidden `_row_idx` column so the host can
++        // recover each surviving row's original physical index after `filter`/`selection` drop rows.
++        // row_idx() is substituted with the real index array during the scan; the host strips it.
++        projection: if opts.include_row_idx {
++            merge([projection, pack([("_row_idx", row_idx())], false.into())])
++        } else {
++            projection
++        },
+         filter,
+         row_range,
+         selection,
+@@ -353,7 +366,9 @@ pub unsafe extern "C-unwind" fn vx_partition_scan_arrow(
+         let array_stream = partition.execute()?;
+         let dtype = array_stream.dtype();
+
+-        let schema = dtype.to_arrow_schema()?;
++        // paimon-cpp: export standard (non-view) string/binary types so the C++ reader skips its
++        // per-row view->standard rebuild; execute_arrow casts to this target internally.
++        let schema = crate::callback_io::normalize_arrow_schema_views(dtype.to_arrow_schema()?);
+         let schema = Arc::new(schema);
+         let target = Field::new_struct("", schema.fields().clone(), false);
+
+diff --git a/vortex-ffi/src/dtype.rs b/vortex-ffi/src/dtype.rs
+index c74fa71b6edf43710d446a6e97a5ca936428ad67..d06a40f63b6c53fd359c0eecfeae9cd352c60bd7 100644
+--- a/vortex-ffi/src/dtype.rs
++++ b/vortex-ffi/src/dtype.rs
+@@ -344,7 +344,10 @@ pub unsafe extern "C-unwind" fn vx_dtype_to_arrow_schema(
+ ) -> c_int {
+     try_or(err, 1, || {
+         let dtype = vx_dtype::as_ref(dtype);
+-        let arrow_schema = dtype.to_arrow_schema()?;
++        // paimon-cpp: report standard (non-view) string/binary types so the exported schema matches
++        // the data that vx_partition_scan_arrow now produces (see callback_io normalize).
++        let arrow_schema =
++            crate::callback_io::normalize_arrow_schema_views(dtype.to_arrow_schema()?);
+         let arrow_schema = FFI_ArrowSchema::try_from(&arrow_schema)?;
+         unsafe { ptr::write(schema, arrow_schema) };
+         Ok(0)
+diff --git a/vortex-ffi/cinclude/vortex.h b/vortex-ffi/cinclude/vortex.h
+index 26c7b409cd982abce17fbb41a131814b7613018c..75da718b9ae99bdf4420893374af862ddb501782 100644
+--- a/vortex-ffi/cinclude/vortex.h
++++ b/vortex-ffi/cinclude/vortex.h
+@@ -622,6 +622,11 @@ typedef struct {
+      * If true, return in storage order.
+      */
+     bool ordered;
++    /**
++     * If true, append a `_row_idx` UInt64 column carrying each returned row's original physical
++     * row index, stable across filter and selection. The host strips it before use.
++     */
++    bool include_row_idx;
+ } vx_scan_options;
+
+ #ifdef __cplusplus
+diff --git a/vortex-ffi/Cargo.toml b/vortex-ffi/Cargo.toml
+index 6407f97fe46303f6dc9bd6b7f1f0f44392f5e534..80b62d2b5b8446bbac6379ac2384fd23c216e241 100644
+--- a/vortex-ffi/Cargo.toml
++++ b/vortex-ffi/Cargo.toml
+@@ -25,6 +25,7 @@ arrow-schema = { workspace = true }
+ async-fs = { workspace = true }
+ futures = { workspace = true }
+ itertools = { workspace = true }
++jiff = { workspace = true }
+ mimalloc = { workspace = true, optional = true }
+ object_store = { workspace = true, features = ["aws", "azure", "gcp"] }
+ paste = { workspace = true }
+diff --git a/Cargo.lock b/Cargo.lock
+index fd66ecc567062fe122290bdb541bb3fa4420babe..55a0bdc4ad1c9ccaf85d19946f01465c25ef76a8 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -9747,6 +9747,7 @@ dependencies = [
+  "cbindgen",
+  "futures",
+  "itertools 0.14.0",
++ "jiff",
+  "mimalloc",
+  "object_store 0.13.2",
+  "paste",
+diff --git a/vortex-array/src/executor.rs b/vortex-array/src/executor.rs
+index d6070ac1a4db34380f8aca8b463e8d513f5d1757..72159ee38465ede1d09489c0074d666908f0e4d5 100644
+--- a/vortex-array/src/executor.rs
++++ b/vortex-array/src/executor.rs
+@@ -26,7 +26,6 @@ use vortex_error::VortexResult;
+ use vortex_error::vortex_bail;
+ use vortex_error::vortex_ensure;
+ use vortex_error::vortex_panic;
+-use vortex_session::Ref;
+ use vortex_session::SessionExt;
+ use vortex_session::VortexSession;
+
+@@ -424,14 +423,9 @@ impl Executable for ArrayRef {
+             }
+         }
+
+-        let tmp_session = ctx.session().clone();
+-        let kernels = tmp_session.get_opt::<ArrayKernels>();
+-
+         for (slot_idx, slot) in array.slots().iter().enumerate() {
+             let Some(child) = slot else { continue };
+-            if let Some(executed_parent) =
+-                execute_parent_for_child(&array, child, slot_idx, kernels.as_ref(), ctx)?
+-            {
++            if let Some(executed_parent) = execute_parent_for_child(&array, child, slot_idx, ctx)? {
+                 ctx.log(format_args!(
+                     "execute_parent: slot[{}]({}) rewrote {} -> {}",
+                     slot_idx,
+@@ -542,13 +536,15 @@ fn execute_parent_for_child(
+     parent: &ArrayRef,
+     child: &ArrayRef,
+     slot_idx: usize,
+-    kernels: Option<&Ref<ArrayKernels>>,
+     ctx: &mut ExecutionCtx,
+ ) -> VortexResult<Option<ArrayRef>> {
+-    if let Some(kernels) = kernels
+-        && let Some(plugins) =
+-            kernels.find_execute_parent(parent.encoding_id(), child.encoding_id())
+-    {
++    // Session refs hold a DashMap shard lock. Release it before invoking kernels or encodings,
++    // which may lazily initialize another session variable on the same shard.
++    let plugins = ctx
++        .session()
++        .get_opt::<ArrayKernels>()
++        .and_then(|kernels| kernels.find_execute_parent(parent.encoding_id(), child.encoding_id()));
++    if let Some(plugins) = plugins {
+         for plugin in plugins.as_ref() {
+             if let Some(result) = plugin(child, parent, slot_idx, ctx)? {
+                 return Ok(Some(result));
+@@ -561,14 +557,9 @@ fn execute_parent_for_child(
+
+ /// Try execute_parent on each occupied slot of the array.
+ fn try_execute_parent(array: &ArrayRef, ctx: &mut ExecutionCtx) -> VortexResult<Option<ArrayRef>> {
+-    let tmp_session = ctx.session().clone();
+-    let kernels = tmp_session.get_opt::<ArrayKernels>();
+-
+     for (slot_idx, slot) in array.slots().iter().enumerate() {
+         let Some(child) = slot else { continue };
+-        if let Some(executed_parent) =
+-            execute_parent_for_child(array, child, slot_idx, kernels.as_ref(), ctx)?
+-        {
++        if let Some(executed_parent) = execute_parent_for_child(array, child, slot_idx, ctx)? {
+             ctx.log(format_args!(
+                 "execute_parent: slot[{}]({}) rewrote {} -> {}",
+                 slot_idx,
+diff --git a/vortex-buffer/src/trusted_len.rs b/vortex-buffer/src/trusted_len.rs
+index 13cf25d0546428dfc719e077b696d352242a0b9e..f8ce4fc04d68085c5aba75494e98a447f13826b4 100644
+--- a/vortex-buffer/src/trusted_len.rs
++++ b/vortex-buffer/src/trusted_len.rs
+@@ -32,6 +32,11 @@ impl<I: Iterator> Iterator for TrustedLenAdapter<I> {
+
+     #[inline]
+     fn next(&mut self) -> Option<Self::Item> {
++        #[cfg(not(debug_assertions))]
++        {
++            self.inner.next()
++        }
++        #[cfg(debug_assertions)]
+         match self.inner.next() {
+             None => {
+                 #[cfg(debug_assertions)]
+diff --git a/vortex-array/src/arrow/executor/list.rs b/vortex-array/src/arrow/executor/list.rs
+index e8bf95e14cdd3faed26d9fcc464da8276b523001..a002d7926eded2941863f94968329345e9d075eb 100644
+--- a/vortex-array/src/arrow/executor/list.rs
++++ b/vortex-array/src/arrow/executor/list.rs
+@@ -12,26 +12,33 @@ use vortex_buffer::BufferMut;
+ use vortex_error::VortexExpect;
+ use vortex_error::VortexResult;
+ use vortex_error::vortex_ensure;
++use vortex_error::vortex_err;
+
+ use crate::ArrayRef;
+ use crate::Canonical;
+ use crate::ExecutionCtx;
++use crate::IntoArray;
+ use crate::arrays::Chunked;
++use crate::arrays::ChunkedArray;
+ use crate::arrays::List;
+ use crate::arrays::ListArray;
+ use crate::arrays::ListView;
+ use crate::arrays::ListViewArray;
++use crate::arrays::PrimitiveArray;
+ use crate::arrays::chunked::ChunkedArrayExt;
+ use crate::arrays::list::ListArrayExt;
+ use crate::arrays::listview::ListViewArrayExt;
+ use crate::arrays::listview::ListViewDataParts;
+ use crate::arrays::listview::ListViewRebuildMode;
++use crate::arrays::listview::list_view_from_list;
+ use crate::arrow::executor::validity::to_arrow_null_buffer;
+ use crate::arrow::session::ArrowSessionExt;
+ use crate::builtins::ArrayBuiltins;
+ use crate::dtype::DType;
+ use crate::dtype::NativePType;
+ use crate::dtype::Nullability;
++use crate::dtype::PType;
++use crate::validity::Validity;
+
+ #[allow(rustdoc::broken_intra_doc_links)]
+ /// Convert a Vortex VarBinArray into an Arrow [`GenericListArray`](arrow_array:array::GenericListArray).
+@@ -42,7 +49,15 @@ pub(super) fn to_arrow_list<O: OffsetSizeTrait + NativePType>(
+ ) -> VortexResult<ArrowArrayRef> {
+     // If the Vortex array is already in List format, we can directly convert it.
+     if let Some(array) = array.as_opt::<List>() {
+-        return list_to_list::<O>(&array.into_owned(), elements_field, ctx);
++        let array = array.into_owned();
++        // NULL list slots may own non-empty child ranges. They are not logically referenced
++        // and must not be expanded even when they lie between two valid lists.
++        let array = if array.validity()?.execute_no_nulls(array.len(), ctx)? {
++            array
++        } else {
++            compact_list_view_elements(&list_view_from_list(array, ctx)?, ctx)?
++        };
++        return list_to_list::<O>(&array, elements_field, ctx);
+     }
+
+     // Converting each chunk individually, then using the fast concat logic from arrow
+@@ -56,30 +71,16 @@ pub(super) fn to_arrow_list<O: OffsetSizeTrait + NativePType>(
+         return Ok(arrow_select::concat::concat(&refs)?);
+     }
+
+-    // If the Vortex array is a ListViewArray, rebuild to ZCTL if needed and convert.
++    // If the Vortex array is a ListViewArray, select only its referenced elements.
+     let array = match array.try_downcast::<ListView>() {
+-        Ok(array) => {
+-            let zctl = if array.is_zero_copy_to_list() {
+-                array
+-            } else {
+-                array.rebuild(ListViewRebuildMode::MakeZeroCopyToList, ctx)?
+-            };
+-            return list_view_zctl::<O>(zctl, elements_field, ctx);
+-        }
++        Ok(array) => return list_view_to_list::<O>(array, elements_field, ctx),
+         Err(a) => a,
+     };
+
+-    // Otherwise, we execute the array to become a ListViewArray, then rebuild to ZCTL.
+-    // Note: arrow_cast::cast supports ListView → List (apache/arrow-rs#8735), but it
+-    // unconditionally uses take. Our rebuild uses a heuristic that picks list-by-list
+-    // for large lists, which avoids materializing a large index buffer.
++    // Otherwise, execute to ListView but keep shared children lazy until the referenced ranges
++    // have been selected. Rebuilding non-ZCTL views first can canonicalize unreferenced children.
+     let list_view = array.execute::<ListViewArray>(ctx)?;
+-    let zctl = if list_view.is_zero_copy_to_list() {
+-        list_view
+-    } else {
+-        list_view.rebuild(ListViewRebuildMode::MakeZeroCopyToList, ctx)?
+-    };
+-    list_view_zctl::<O>(zctl, elements_field, ctx)
++    list_view_to_list::<O>(list_view, elements_field, ctx)
+ }
+
+ #[allow(rustdoc::broken_intra_doc_links)]
+@@ -89,6 +90,11 @@ fn list_to_list<O: OffsetSizeTrait + NativePType>(
+     elements_field: &FieldRef,
+     ctx: &mut ExecutionCtx,
+ ) -> VortexResult<ArrowArrayRef> {
++    // Slicing a Vortex List retains its complete elements array. Trim before exporting children
++    // so a bounded parent batch cannot materialize unreferenced string/binary values. Resetting
++    // before narrowing offsets also avoids overflow from a large unused leading prefix.
++    let array = array.reset_offsets(false, ctx)?;
++
+     // We must cast the offsets to the required offset type.
+     let offsets = array
+         .offsets()
+@@ -119,16 +125,22 @@ fn list_to_list<O: OffsetSizeTrait + NativePType>(
+     )))
+ }
+
+-fn list_view_zctl<O: OffsetSizeTrait + NativePType>(
++fn list_view_to_list<O: OffsetSizeTrait + NativePType>(
+     array: ListViewArray,
+     elements_field: &FieldRef,
+     ctx: &mut ExecutionCtx,
+ ) -> VortexResult<ArrowArrayRef> {
+-    assert!(array.is_zero_copy_to_list());
++    if !array.is_zero_copy_to_list() || !array.validity()?.execute_no_nulls(array.len(), ctx)? {
++        return list_to_list::<O>(
++            &compact_list_view_elements(&array, ctx)?,
++            elements_field,
++            ctx,
++        );
++    }
+
+     if array.is_empty() {
+         let elements = ctx.session().clone().arrow().execute_arrow(
+-            array.elements().clone(),
++            array.elements().slice(0..0)?,
+             Some(elements_field.as_ref()),
+             ctx,
+         )?;
+@@ -140,6 +152,10 @@ fn list_view_zctl<O: OffsetSizeTrait + NativePType>(
+         )));
+     }
+
++    // ZCTL views have contiguous referenced elements, but a sliced view can still retain the
++    // complete native chunk. Trim and rebase before converting children or narrowing offsets.
++    let array = array.rebuild(ListViewRebuildMode::TrimElements, ctx)?;
++
+     let ListViewDataParts {
+         elements,
+         offsets,
+@@ -200,6 +216,59 @@ fn list_view_zctl<O: OffsetSizeTrait + NativePType>(
+     )))
+ }
+
++// Assemble only referenced slices in output order. In particular, a take of arbitrary encoded
++// children may execute the entire values array before selecting indices; a ListView rebuild may
++// do the same. Keeping the ranges as chunks lets recursive Arrow export materialize each slice.
++fn compact_list_view_elements(
++    array: &ListViewArray,
++    ctx: &mut ExecutionCtx,
++) -> VortexResult<ListArray> {
++    let validity = array.validity()?;
++    let valid = validity.execute_mask(array.len(), ctx)?;
++    let offsets = array
++        .offsets()
++        .cast(DType::Primitive(PType::U64, Nullability::NonNullable))?
++        .execute::<PrimitiveArray>(ctx)?
++        .to_buffer::<u64>();
++    let sizes = array
++        .sizes()
++        .cast(DType::Primitive(PType::U64, Nullability::NonNullable))?
++        .execute::<PrimitiveArray>(ctx)?
++        .to_buffer::<u64>();
++
++    let mut chunks = Vec::with_capacity(array.len());
++    let mut list_offsets = BufferMut::<u64>::with_capacity(array.len() + 1);
++    let mut n_elements = 0u64;
++    list_offsets.push(n_elements);
++    for index in 0..array.len() {
++        if valid.value(index) && sizes[index] != 0 {
++            let start = usize::try_from(offsets[index])
++                .map_err(|error| vortex_err!("List offset out of range: {error}"))?;
++            let size = usize::try_from(sizes[index])
++                .map_err(|error| vortex_err!("List size out of range: {error}"))?;
++            let end = start
++                .checked_add(size)
++                .ok_or_else(|| vortex_err!("List element range overflow"))?;
++            n_elements = n_elements
++                .checked_add(sizes[index])
++                .ok_or_else(|| vortex_err!("List output element count overflow"))?;
++            chunks.push(array.elements().slice(start..end)?);
++        }
++        list_offsets.push(n_elements);
++    }
++
++    let elements = if chunks.is_empty() {
++        Canonical::empty(array.elements().dtype()).into_array()
++    } else {
++        ChunkedArray::try_new(chunks, array.elements().dtype().clone())?.into_array()
++    };
++    ListArray::try_new(
++        elements,
++        PrimitiveArray::new(list_offsets.freeze(), Validity::NonNullable).into_array(),
++        validity,
++    )
++}
++
+ #[cfg(test)]
+ mod tests {
+     use std::sync::Arc;
+diff --git a/vortex-layout/src/layouts/dict/reader.rs b/vortex-layout/src/layouts/dict/reader.rs
+index 002b4b1e9029a2fa0cf2b7044fe7ee2db062bb82..e9cd0e843443951a8022223db86c5f8935cae496 100644
+--- a/vortex-layout/src/layouts/dict/reader.rs
++++ b/vortex-layout/src/layouts/dict/reader.rs
+@@ -45,8 +45,8 @@ pub struct DictReader {
+     values_len: usize,
+     /// Cached dict values array
+     values_array: OnceLock<SharedArrayFuture>,
+-    /// Cache of expression evaluation results on the values array by expression
+-    values_evals: DashMap<Expression, SharedArrayFuture>,
++    /// Expression results are only cached for filtering, not payload projection.
++    values_evals: OnceLock<DashMap<Expression, SharedArrayFuture>>,
+
+     values: LayoutReaderRef,
+     codes: LayoutReaderRef,
+@@ -135,12 +135,13 @@ impl DictReader {
+         // shouldn't.
+         // TODO(joe): fixme
+
++        let values_evals = self.values_evals.get_or_init(DashMap::default);
+         // Check cache first with read-only lock
+-        if let Some(fut) = self.values_evals.get(&expr) {
++        if let Some(fut) = values_evals.get(&expr) {
+             return fut.clone();
+         }
+
+-        self.values_evals
++        values_evals
+             .entry(expr.clone())
+             .or_insert_with(|| {
+                 self.values_array_uncanonical()
+diff --git a/vortex-ffi/src/session.rs b/vortex-ffi/src/session.rs
+index 2af3d99744475fcbe94b060f3700cb75c417c946..305262ec98fb4f87677bcc68eb2dcc23cf74ac52 100644
+--- a/vortex-ffi/src/session.rs
++++ b/vortex-ffi/src/session.rs
+@@ -1,7 +1,10 @@
+ // SPDX-License-Identifier: Apache-2.0
+ // SPDX-FileCopyrightText: Copyright the Vortex contributors
+
++use std::sync::LazyLock;
++
+ use vortex::VortexSessionDefault;
++use vortex::array::arrow::ArrowSessionExt;
+ use vortex::error::VortexResult;
+ use vortex::error::vortex_ensure;
+ use vortex::io::runtime::BlockingRuntime;
+@@ -17,6 +20,34 @@ box_wrapper!(
+     vx_session
+ );
+
++// This session is private to the Paimon callback reader. Public/configurable
++// sessions must remain fresh: VortexSession::clone shares mutable SessionVars.
++// Single-file callback opens keep file metadata, caches and execution contexts
++// outside this default session. Initialize the only lazy read-path registry
++// before publishing it, and never configure/register against these handles.
++static PAIMON_READ_SESSION: LazyLock<VortexSession> = LazyLock::new(|| {
++    let session = VortexSession::default().with_handle(RUNTIME.handle());
++    drop(session.arrow());
++    session
++});
++
++/// Create an owned handle to Paimon's shared default callback-reader session.
++///
++/// This private integration entry point does not change the isolation of
++/// [`vx_session_new`] or [`vx_session_new_with`]. Free the owned handle with
++/// [`vx_session_free`]; other reader handles remain valid.
++///
++/// # Safety
++///
++/// The handle is only for Paimon's fixed-runtime, single-file callback read and
++/// Arrow export paths. The caller must not configure it, register plugins, change
++/// session variables/allocators/runtime, or pass it to a writer or multi-file
++/// source. Those operations require a fresh [`vx_session_new`] session.
++#[unsafe(no_mangle)]
++pub unsafe extern "C-unwind" fn vx_paimon_read_session_new() -> *mut vx_session {
++    vx_session::new(PAIMON_READ_SESSION.clone())
++}
++
+ /// Create an FFI session from a configured default session.
+ pub fn vx_session_new_with(
+     configure: impl FnOnce(VortexSession) -> VortexSession,
