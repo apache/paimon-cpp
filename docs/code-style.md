@@ -21,6 +21,10 @@
 
 This document defines the coding conventions for the Paimon C++ project. All pull requests are expected to follow these rules. Automated tooling (clang-format, clang-tidy, cpplint, pre-commit) enforces many of them.
 
+For design and testing decisions, see the [Development Guidelines](development-guidelines.md).
+For setup, validation commands, and the pull request checklist, see the
+[Contributing Guide](../CONTRIBUTING.md).
+
 ---
 
 ## Language Standard
@@ -75,6 +79,18 @@ Formatting is based on **Google C++ Style** with the following overrides (define
 | `AccessModifierOffset` | -3 |
 | `AllowShortFunctionsOnASingleLine` | Empty |
 
+### Control Flow Braces
+
+Use braces for every `if` and `else` body, even when it contains only one statement:
+
+```cpp
+if (rows.empty()) {
+    return Status::OK();
+} else {
+    return WriteRows(rows);
+}
+```
+
 ---
 
 ## Naming Conventions
@@ -93,11 +109,34 @@ Formatting is based on **Google C++ Style** with the following overrides (define
 
 ---
 
+## Function Declarations and Parameter Order
+
+- Write parameter names in function declarations so readers can understand each argument.
+- Put input parameters before output parameters.
+- Use non-const pointers (`T*`) for output and input/output parameters. Do not use non-const
+  references (`T&`) for these parameters. Document whether `nullptr` is allowed.
+- When adding a business parameter, put it before trailing context parameters such as `pool`
+  and `executor`, while keeping output parameters last. Keep the order consistent across related
+  interfaces and their implementations.
+
+```cpp
+Status ReadOffsets(const std::string& path, int64_t limit, MemoryPool* pool,
+                   std::vector<int64_t>* offsets);
+```
+
+Choose parameter types according to the [ownership conventions](#smart-pointers--memory).
+For when to introduce defaults and overloads, see the
+[Development Guidelines](development-guidelines.md#default-arguments-and-overloads).
+
+---
+
 ## File Layout
 
 ### License Header
 
-Every file **must** start with the Apache 2.0 license header.
+Project-authored source and documentation files **must** start with the Apache 2.0 license header.
+For copied or adapted external code, follow the
+[attribution requirements](../CONTRIBUTING.md#external-code-attribution).
 
 ```cpp
 /*
@@ -204,6 +243,20 @@ class TableScan {
 - All fallible initialization goes in `Create()`, **after** construction.
 - If construction cannot fail (POD, data-only classes), a public constructor is fine.
 
+### Member Initialization
+
+- Give default-constructible structs and classes an explicit initial state. Initialize scalar
+  members in their declarations or in every constructor that can create the object.
+- A default value must represent a meaningful state. Require business-critical inputs through a
+  constructor or `Create()` rather than supplying a placeholder solely to allow default construction.
+
+```cpp
+struct ReadRange {
+    int64_t offset = 0;
+    int64_t length = 0;
+};
+```
+
 ### Utility Classes
 
 Static-only utility classes delete their constructors and deconstructors:
@@ -236,6 +289,26 @@ virtual ~ClassName() = default;
 - **No raw `new` / `delete`** except inside factory `Create()` methods that call a private constructor.
 - Use `std::optional<T>` for optional values.
 - Use `ScopeGuard` (in `src/paimon/common/utils/`) for RAII cleanup.
+
+### Parameter Types and Ownership
+
+Express whether an argument is borrowed, transferred, or shared:
+
+| Relationship | Parameter convention |
+|--------------|----------------------|
+| Borrow a required input object | A reference, usually `const T&` for read-only access |
+| Borrow an optional input object | A pointer, usually `const T*` for read-only access; document `nullptr` |
+| Transfer sole ownership | `std::unique_ptr<T>` by value |
+| Retain shared ownership | `std::shared_ptr<T>` by value |
+
+Match established pointer or reference conventions in the interface when borrowing input parameters,
+and document whether a pointer may be null. A borrowed argument must remain alive for the entire use,
+including asynchronous work. Do not introduce a `shared_ptr` merely to pass a borrowed object.
+
+Pass complex objects by `const T&` when only reading them. Accept them by value when the function
+needs a deliberate copy or consumes the value, moving it into retained storage when appropriate.
+Avoid redundant conversions and temporary ownership wrappers; use the required target type
+directly when a project macro already performs the move or conversion.
 
 ### Checked Class-Pointer Casts
 
@@ -284,8 +357,13 @@ cast for those cases.
 
 - Use `///` (Doxygen) for classes and public methods.
 - Use `@param` and `@return` for parameters and return values.
+- Explain non-obvious boolean meanings, map keys and values, units, null or empty return values,
+  and ownership or lifetime requirements in the interface contract.
+- Explain the reason for a surprising implementation or workaround, including any constraint
+  that a future change must preserve.
 - Do **not** comment obvious code.
-- Inline comments go **above** the line, not at the end.
+- Explanatory comments go **above** the line, not at the end. Use the parameter labels below
+  when a comment needs to identify an argument at a call site.
 
 ```cpp
 /// Create a scan plan from the current snapshot.
@@ -293,6 +371,15 @@ cast for those cases.
 /// @param snapshot_id The snapshot to scan.
 /// @return A Plan on success, or an error Status.
 Result<std::shared_ptr<Plan>> CreatePlan(int64_t snapshot_id);
+```
+
+### Call-Site Parameter Labels
+
+When a literal or sentinel argument is unclear at the call site, use `/*parameter_name=*/`
+immediately before it. Match the name in the declaration:
+
+```cpp
+CreateReader(path, /*enable_prefetch=*/true, pool);
 ```
 
 ### TODO Comments
@@ -409,7 +496,7 @@ Before writing new helper code, check whether the project already provides what 
 | `GatedAsyncInputStream` | `InputStream` wrapper holding `ReadAsync` callbacks until `ReleaseAll()`, so a test can observe a cache while its fetches are in flight |
 | `BuildTestSnapshot()` | Build a `Snapshot` from an id and optional uuid, filling in every other field |
 | `VariantTestData` | Build variant test data, including an Arrow `StructArray` batch |
-| `testharness.h` | Test macros: `ASSERT_OK`, `ASSERT_NOK`, `ASSERT_NOK_WITH_MSG`, `ASSERT_RAISES` |
+| `testharness.h` | Status and Result assertion macros; see [Testing](#testing) |
 
 ### Mock Objects (`src/paimon/testing/mock/`)
 
@@ -437,42 +524,34 @@ Before writing new helper code, check whether the project already provides what 
 - Test files live **next to** the source file they test, named `*_test.cpp`.
 - Use **Google Test** (`gtest`).
 - Test classes go in `namespace paimon::test`.
-- Use project test macros: `ASSERT_OK`, `ASSERT_NOK`, `ASSERT_NOK_WITH_MSG`.
+- Name suites after the component or behavior under test, and test cases after the scenario and
+  expected behavior. For example, `ReadAheadCacheTest.EmptyReadDoesNotFetch` describes what fails.
+- Use the macros from `paimon/testing/utils/testharness.h` for `Status` and `Result<T>` checks:
+
+  | Macro | Purpose |
+  |-------|---------|
+  | `ASSERT_OK(expr)` | Require successful `Status` or `Result<T>` |
+  | `ASSERT_OK_AND_ASSIGN(lhs, rexpr)` | Require success and extract a `Result<T>` value |
+  | `ASSERT_NOK(expr)` | Require failure when the reason is not relevant to the test |
+  | `ASSERT_NOK_WITH_MSG(expr, message)` | Require failure with the expected message substring |
+
+- For error cases, check the specific failure reason, normally with `ASSERT_NOK_WITH_MSG`, so
+  an unrelated error does not make the test pass. Check the status code too when it is part of
+  the contract being tested.
 - **Prefer `ASSERT_*` over `EXPECT_*`** — `ASSERT_*` stops the test immediately on failure, preventing cascading errors.
-  - **Exception**: In non-void helper functions, use `EXPECT_*` because `ASSERT_*` expands to `return;` which is incompatible with non-void return types.
+  - **Exception**: `ASSERT_*` cannot return from a non-void helper. Use `EXPECT_*` only when it is
+    safe to continue, or return `Status` / `Result<T>` and assert success in the test. Do not
+    access a failed `Result<T>` after a nonfatal assertion.
+
+For test coverage and asynchronous or sanitizer regressions, see
+[Effective Regression Tests](development-guidelines.md#effective-regression-tests).
 
 ---
 
 ## Tooling
 
-### Pre-commit Hooks (Recommended)
-
-The easiest way to stay compliant is to install [pre-commit](https://pre-commit.com/):
-
-```bash
-pip install pre-commit
-pre-commit install
-```
-
-This installs Git hooks that automatically run on every commit:
-
-| Hook | What it checks |
-|------|----------------|
-| `clang-format` | C++ formatting (`.clang-format`) |
-| `cpplint` | Google C++ lint rules |
-| `cmake-format` | CMake file formatting (`.cmake-format.py`) |
-| `codespell` | Spelling errors |
-| `trailing-whitespace` | Trailing whitespace |
-| `end-of-file-fixer` | Missing newline at end of file |
-| `check-added-large-files` | Files > 5 MB |
-| `check-yaml` | YAML syntax |
-| `sphinx-lint` (alias `docs`) | reStructuredText syntax under `docs/source/` |
-
-To run all hooks on all files manually:
-
-```bash
-pre-commit run --all-files
-```
+See [Development Setup](../CONTRIBUTING.md#development-setup) for installing and running pre-commit
+hooks. The sections below describe the static analysis conventions.
 
 ### clang-tidy
 
@@ -484,36 +563,3 @@ Static analysis is configured in `.clang-tidy`. Key enabled check groups:
 - `modernize-*` — C++ modernization suggestions, except `modernize-return-braced-init-list`, `modernize-avoid-c-arrays`, `modernize-use-trailing-return-type`, `modernize-use-nodiscard` and `modernize-pass-by-value`.
 - `clang-analyzer-*` — Clang static analyzer, except the `clang-analyzer-alpha*` checkers and `clang-analyzer-cplusplus.NewDeleteLeaks`.
 - `clang-diagnostic-*` — Compiler diagnostics, except `clang-diagnostic-global-constructors` and `clang-diagnostic-sign-compare`.
-
-### Building & Testing
-
-```bash
-# Configure (from project root)
-mkdir -p build && cd build
-cmake ../ \
-    -DCMAKE_BUILD_TYPE=debug \
-    -DPAIMON_BUILD_TESTS=ON
-
-# Build
-make -j$(nproc)
-
-# Run a specific test suite
-./debug/paimon-core-test --gtest_filter="CoreOptionsTest*"
-```
-
----
-
-## Pull Request Checklist
-
-Before submitting a PR, please verify:
-
-- [ ] Code compiles without warnings under `-Wall` (enabled by default in the build system).
-- [ ] `pre-commit run --all-files` passes (or individual tools: clang-format, cpplint, codespell).
-- [ ] New / modified public APIs are marked with `PAIMON_EXPORT`.
-- [ ] Every new file has the Apache 2.0 license header.
-- [ ] Error handling uses `Status` / `Result<T>` — no exceptions.
-- [ ] New utility code checks for existing helpers before reinventing.
-- [ ] Tests are added or updated for the changed functionality.
-- [ ] `ASSERT_*` is preferred over `EXPECT_*` in tests.
-- [ ] No raw `new` / `delete` outside factory methods.
-- [ ] PR description follows the [template](../.github/PULL_REQUEST_TEMPLATE.md).
