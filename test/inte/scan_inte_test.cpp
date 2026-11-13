@@ -1896,7 +1896,7 @@ TEST_P(ScanInteTest, TestScanPKWithInvalidOptions) {
                          FinishScanContext(context_builder, context_builder_options));
     ASSERT_NOK_WITH_MSG(TableScan::Create(context_builder_load_options, std::move(scan_context),
                                           context_builder_options),
-                        "do not support pk table bucket=-1 in scan process");
+                        "Cannot change bucket from or to -1 dynamically");
 }
 
 TEST_P(ScanInteTest, TestReadWithNoSnapshot) {

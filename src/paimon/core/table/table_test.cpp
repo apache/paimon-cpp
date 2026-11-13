@@ -88,6 +88,8 @@
 #include "paimon/table/source/table_scan.h"
 #include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/mock/mock_file_system.h"
+#include "paimon/testing/utils/binary_row_generator.h"
+#include "paimon/testing/utils/data_generator.h"
 #include "paimon/testing/utils/deletion_vector_test_helper.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/test_helper.h"
@@ -172,6 +174,119 @@ TEST(TableTest, TestCopyRetainsBindingsAndMergesOptionsIndependently) {
     scan.reset();
     second.reset();
     ASSERT_TRUE(weak_catalog.expired());
+}
+
+TEST(TableTest, TestCopyRejectsBucketKeyChangesWithoutLosingRows) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto pool = GetDefaultPool();
+    const std::map<std::string, std::string> options = {
+        {Options::BUCKET, "2"}, {Options::BUCKET_KEY, "a"}, {Options::FILE_FORMAT, "parquet"}};
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir->Str(),
+                           arrow::schema({arrow::field("a", arrow::int32(), false),
+                                          arrow::field("b", arrow::int32(), false)}),
+                           {}, {"a", "b"}, options, false));
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> schema,
+                         helper->LatestSchema());
+    ASSERT_TRUE(schema);
+    const auto original_options = schema.value()->Options();
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStoreTable> table,
+        FileStoreTable::Create(dir->GetFileSystem(), dir->Str() + "/foo.db/bar", schema.value(),
+                               Identifier("foo", "bar"), "", "main"));
+    DataGenerator generator(schema.value(), pool);
+    // Under the default hash, a=0 belongs to bucket 1 while b=1 belongs to bucket 0.
+    auto row =
+        BinaryRowGenerator::GenerateRow(RowKind::Insert(), {int32_t{0}, int32_t{1}}, pool.get());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<RecordBatch>> batches,
+                         generator.SplitArrayByPartitionAndBucket({row}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batches), 0, std::nullopt));
+    ASSERT_NOK_WITH_MSG(table->Copy({{Options::BUCKET_KEY, "b"}}), "immutable option 'bucket-key'");
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Table> copied,
+        table->Copy({{Options::BUCKET_KEY, "a"}, {Options::READ_BATCH_SIZE, "1"}}));
+    ASSERT_NOK_WITH_MSG(copied->Copy({{Options::BUCKET_KEY, "b"}}),
+                        "immutable option 'bucket-key'");
+    ASSERT_EQ(schema.value()->Options(), original_options);
+    auto predicate = PredicateBuilder::Equal(1, "b", FieldType::INT, Literal(int32_t{1}));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context,
+                         ScanContextBuilder().SetPredicate(predicate).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, copied->NewScan(std::move(context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+    ASSERT_FALSE(plan->Splits().empty());
+
+    // A static factory must validate against the persisted schema, before merging overrides.
+    TableLoadOptions load{table->GetRootPath()};
+    const std::map<std::string, std::string> invalid = {{Options::BUCKET_KEY, "b"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, ScanContextBuilder().Finish());
+    ASSERT_NOK_WITH_MSG(TableScan::Create(load, std::move(scan_context), invalid), "bucket-key");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, ReadContextBuilder().Finish());
+    ASSERT_NOK_WITH_MSG(TableRead::Create(load, std::move(read_context), invalid), "bucket-key");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
+                         WriteContextBuilder("writer").Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(load, std::move(write_context), invalid),
+                        "bucket-key");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                         CommitContextBuilder("writer").Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(load, std::move(commit_context), invalid),
+                        "bucket-key");
+}
+
+TEST(TableTest, TestCopyNormalizesSchemaKeysAndRetainsPath) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> schema,
+        TableSchema::Create(7,
+                            arrow::schema({arrow::field("a", arrow::int32(), false),
+                                           arrow::field("b", arrow::int32(), false)}),
+                            {"a"}, {"a", "b"}, {{Options::BUCKET, "2"}}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileStoreTable> table,
+                         FileStoreTable::Create(dir->GetFileSystem(), dir->Str(), schema,
+                                                Identifier("db", "tbl"), "uuid", "main"));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied,
+                         table->Copy({{"primary-key", " a, , b "},
+                                      {"partition", "a, "},
+                                      {"type", "TABLE"},
+                                      {"path", "another/table"},
+                                      {Options::READ_BATCH_SIZE, "32"}}));
+    auto copied_schema = checked_pointer_cast<TableSchema>(copied->GetSchema());
+    ASSERT_EQ(copied_schema->Id(), 7);
+    ASSERT_EQ(copied_schema->Options().count("primary-key"), 0u);
+    ASSERT_EQ(copied_schema->Options().count("partition"), 0u);
+    ASSERT_EQ(copied_schema->Options().count("type"), 0u);
+    ASSERT_EQ(copied_schema->Options().at("path"), table->GetRootPath());
+    ASSERT_EQ(copied_schema->Options().at(Options::READ_BATCH_SIZE), "32");
+    ASSERT_NOK_WITH_MSG(copied->Copy({{"primary-key", "b,a"}}), "primary-key");
+    ASSERT_NOK_WITH_MSG(copied->Copy({{"partition", "b"}}), "partition");
+    ASSERT_EQ(schema->Options().count(Options::READ_BATCH_SIZE), 0u);
+}
+
+TEST(TableTest, TestSystemTableCopiesPreserveManagedOptionRules) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    SchemaManager manager(dir->GetFileSystem(), dir->Str());
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> schema,
+        manager.CreateTable(arrow::schema({arrow::field("a", arrow::int32(), false),
+                                           arrow::field("b", arrow::int32(), false)}),
+                            {}, {"a", "b"}, {{Options::BUCKET, "2"}, {Options::BUCKET_KEY, "a"}}));
+    for (const std::string kind : {"ro", "audit_log", "binlog"}) {
+        SCOPED_TRACE(kind);
+        TableLoadOptions load{dir->Str() + "$" + kind};
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, TableFactory::Create(load, {}, "read"));
+        ASSERT_NOK_WITH_MSG(table->Copy({{Options::BUCKET_KEY, "b"}}), "bucket-key");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied,
+                             table->Copy({{Options::IGNORE_DELETE, "true"}}));
+        ASSERT_NOK_WITH_MSG(copied->Copy({{Options::IGNORE_DELETE, "false"}}), "ignore-delete");
+        ASSERT_OK(table->Copy({{Options::IGNORE_DELETE, "false"}}));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, ScanContextBuilder().Finish());
+        ASSERT_NOK_WITH_MSG(
+            TableScan::Create(load, std::move(context), {{Options::BUCKET_KEY, "b"}}),
+            "bucket-key");
+    }
 }
 
 TEST(TableTest, TestGetTableWithUnknownDatabase) {
@@ -2495,7 +2610,7 @@ TEST(TableTest, TestOperationOptionsDoNotMutateTheLoadedTable) {
                                                    table->Copy(invalid_context_builder_options));
                             return configured->NewScan(std::move(invalid_context));
                         })(),
-                        "bucket=0");
+                        "Cannot change bucket from or to -1 dynamically");
     ASSERT_EQ(options, schema->Options());
     std::map<std::string, std::string> context_builder_27781_options;
     ScanContextBuilder context_builder_27781;
@@ -3531,6 +3646,69 @@ TEST(TableTest, TestPreloadedSchemaIsIndependentOfReadProjection) {
     ASSERT_EQ(table->GetSchema()->FieldNames(), (std::vector<std::string>{"id", "value"}));
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
                          table->NewRead(std::move(context)));
+}
+
+TEST(TableTest, TestCatalogOnlyLoadsRetainTheResolvedBranchSchema) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> remote_schema,
+        TableSchema::Create(7, arrow::schema({arrow::field("remote", arrow::int32())}), {}, {},
+                            {}));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> main_schema,
+        TableSchema::Create(0, arrow::schema({arrow::field("main_only", arrow::int32())}), {}, {},
+                            {}));
+    for (const std::string branch : {"main", "dev"}) {
+        for (bool stale_disk_schema : {false, true}) {
+            SCOPED_TRACE(branch);
+            SCOPED_TRACE(stale_disk_schema);
+            const std::string path =
+                dir->Str() + "/" + branch + (stale_disk_schema ? "-stale" : "-empty");
+            Identifier identifier("db", "tbl", branch);
+            if (stale_disk_schema) {
+                SchemaManager manager(fs, path, branch);
+                ASSERT_OK(manager.CreateTable(arrow::schema({arrow::field("stale", arrow::utf8())}),
+                                              {}, {}, {}));
+            }
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<FileStoreTable> original,
+                FileStoreTable::Create(fs, path, remote_schema, identifier, "uuid", branch));
+            auto catalog = std::make_shared<MockVersionManagedCatalog>();
+            catalog->SetTable(original);
+            catalog->SetTableLocation(path);
+            TableLoadOptions load;
+            load.catalog = catalog;
+            load.identifier.emplace(identifier);
+            load.table_id = "uuid";
+            if (branch != "main") {
+                // A main schema supplied for fallback must not replace the catalog's branch schema.
+                ASSERT_OK_AND_ASSIGN(load.table_schema_json, main_schema->GetJsonSchema());
+            }
+            for (const char* operation : {"read", "scan", "write", "commit"}) {
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> loaded,
+                                     TableFactory::Create(load, {}, operation));
+                ASSERT_EQ(checked_pointer_cast<TableSchema>(loaded->GetSchema())->Id(), 7);
+                ASSERT_EQ(loaded->GetSchema()->FieldNames(), (std::vector<std::string>{"remote"}));
+                ASSERT_EQ(loaded->GetRootPath(), path);
+                ASSERT_EQ(loaded->GetFileSystem(), fs);
+                ASSERT_EQ(loaded->CatalogUuid(), original->CatalogUuid());
+            }
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                                 ReadContextBuilder().SetReadFieldNames({"remote"}).Finish());
+            ASSERT_OK(TableRead::Create(load, std::move(read_context)));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                                 ScanContextBuilder().Finish());
+            ASSERT_OK(TableScan::Create(load, std::move(scan_context)));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
+                                 WriteContextBuilder("writer").Finish());
+            ASSERT_OK(FileStoreWrite::Create(load, std::move(write_context)));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                                 CommitContextBuilder("writer").Finish());
+            ASSERT_OK(FileStoreCommit::Create(load, std::move(commit_context)));
+        }
+    }
 }
 
 TEST(TableTest, TestLoadOptionsValidateExpectedCatalogUuid) {

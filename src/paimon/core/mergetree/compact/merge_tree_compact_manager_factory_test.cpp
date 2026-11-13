@@ -357,13 +357,15 @@ TEST_F(MergeTreeCompactManagerFactoryWriteTest,
 
 TEST_F(MergeTreeCompactManagerFactoryWriteTest,
        TestWriteShouldFailWhenFirstRowWithDeletionVectors) {
-    ASSERT_OK_AND_ASSIGN(
-        auto file_store_write,
-        CreateSingleStringFileStoreWrite({{"bucket", "1"}, {Options::MERGE_ENGINE, "first-row"}},
-                                         /*with_io_manager=*/false,
-                                         {{Options::BUCKET, "1"},
-                                          {Options::MERGE_ENGINE, "first-row"},
-                                          {Options::DELETION_VECTORS_ENABLED, "true"}}));
+    // Permit the runtime DV change so this test reaches the first-row writer's own validation.
+    ASSERT_OK_AND_ASSIGN(auto file_store_write, CreateSingleStringFileStoreWrite(
+                                                    {{"bucket", "1"},
+                                                     {Options::MERGE_ENGINE, "first-row"},
+                                                     {"deletion-vectors.modifiable", "true"}},
+                                                    /*with_io_manager=*/false,
+                                                    {{Options::BUCKET, "1"},
+                                                     {Options::MERGE_ENGINE, "first-row"},
+                                                     {Options::DELETION_VECTORS_ENABLED, "true"}}));
 
     ASSERT_NOK_WITH_MSG(WriteSingleStringRow(file_store_write.get(), /*bucket=*/0, "k1"),
                         "First row merge engine does not need deletion vectors because there "

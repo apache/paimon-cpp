@@ -43,6 +43,7 @@
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/factories/io_hook.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/linked_hash_map.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -273,10 +274,25 @@ class FileStoreCommitImplTest : public testing::Test {
         return catalog;
     }
 
+    // These tests create a fresh temporary table before committing fixture messages. Declare
+    // layout options in its schema instead of changing them through a runtime commit option.
+    Status ConfigureTableOptions(const std::map<std::string, std::string>& options) {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<TableSchema> schema,
+            checked_pointer_cast<TableSchema>(table_schema_)->MergeOptions(options));
+        PAIMON_ASSIGN_OR_RAISE(std::string json, schema->GetJsonSchema());
+        SchemaManager manager(file_system_, table_path_);
+        PAIMON_RETURN_NOT_OK(
+            file_system_->WriteFile(manager.ToSchemaPath(schema->Id()), json, true));
+        table_schema_ = std::move(schema);
+        return Status::OK();
+    }
+
     std::shared_ptr<Schema> TableSchemaWithId(int64_t schema_id) const {
         EXPECT_OK_AND_ASSIGN(
             std::unique_ptr<TableSchema> evolved,
-            TableSchema::Create(schema_id, arrow::schema(fields_), {"f1"}, {}, {}));
+            TableSchema::Create(schema_id, arrow::schema(fields_), {"f1"}, {},
+                                checked_pointer_cast<TableSchema>(table_schema_)->Options()));
         return std::shared_ptr<Schema>(std::move(evolved));
     }
 
@@ -1765,6 +1781,7 @@ TEST_F(FileStoreCommitImplTest, TestAGivenFileSystemWinsOverTheCatalogs) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestRealtimeCommitIsIdempotentThroughTheCatalog) {
+    ASSERT_OK(ConfigureTableOptions({{Options::BUCKET, "2"}}));
     ASSERT_OK(PrepareFirstCommitMessageFiles());
     auto catalog = CreateCatalog();
     catalog->CheckBaseSnapshotUuid();
@@ -1793,6 +1810,7 @@ TEST_F(FileStoreCommitImplTest, TestRealtimeCommitIsIdempotentThroughTheCatalog)
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitRestoresAlreadyCommittedRealtimeSnapshot) {
+    ASSERT_OK(ConfigureTableOptions({{Options::BUCKET, "2"}}));
     ASSERT_OK(PrepareFirstCommitMessageFiles());
     auto catalog = CreateCatalog();
     catalog->CheckBaseSnapshotUuid();
@@ -1831,6 +1849,7 @@ TEST_F(FileStoreCommitImplTest, TestCommitRestoresAlreadyCommittedRealtimeSnapsh
 }
 
 TEST_F(FileStoreCommitImplTest, TestRealtimeCommitReportsAnUnpublishedHistory) {
+    ASSERT_OK(ConfigureTableOptions({{Options::BUCKET, "2"}}));
     ASSERT_OK(PrepareFirstCommitMessageFiles());
     auto catalog = CreateCatalog();
     catalog->SetHeldSnapshot(BuildTestSnapshot(7, "snapshot-uuid-7"));
@@ -1893,6 +1912,8 @@ TEST_F(FileStoreCommitImplTest, TestRowIdSchemaPreCheckPassesOnAPublishedSchema)
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitRefusesARowIdCheckMissingItsSchema) {
+    ASSERT_OK(ConfigureTableOptions(
+        {{Options::DATA_EVOLUTION_ENABLED, "true"}, {Options::ROW_TRACKING_ENABLED, "true"}}));
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     std::shared_ptr<MockVersionManagedCatalog> catalog = CreateCatalogServingSchemaId(7);
@@ -1915,6 +1936,8 @@ TEST_F(FileStoreCommitImplTest, TestCommitRefusesARowIdCheckMissingItsSchema) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestRowIdChecksUseCatalogLatestAndPublishedHistory) {
+    ASSERT_OK(ConfigureTableOptions(
+        {{Options::DATA_EVOLUTION_ENABLED, "true"}, {Options::ROW_TRACKING_ENABLED, "true"}}));
     std::shared_ptr<MockVersionManagedCatalog> catalog = CreateCatalogServingSchemaId(7);
     catalog->CheckBaseSnapshotUuid();
     CatalogCommitSpec spec;
@@ -1954,6 +1977,8 @@ TEST_F(FileStoreCommitImplTest, TestRowIdChecksUseCatalogLatestAndPublishedHisto
 }
 
 TEST_F(FileStoreCommitImplTest, TestRowIdConflictChecksSnapshotBoundsAndHistory) {
+    ASSERT_OK(ConfigureTableOptions(
+        {{Options::DATA_EVOLUTION_ENABLED, "true"}, {Options::ROW_TRACKING_ENABLED, "true"}}));
     CatalogCommitSpec spec;
     spec.catalog = CreateCatalog();
     spec.options = {{Options::DATA_EVOLUTION_ENABLED, "true"},
@@ -2196,6 +2221,7 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithConflictSnapshotAndRetryOnce) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestRealtimeCommitRebasesAfterSnapshotConflict) {
+    ASSERT_OK(ConfigureTableOptions({{Options::BUCKET, "2"}}));
     const std::vector<std::string> data_files = {
         "/f1=10/bucket-0/data-51a45441-6037-4af3-b67b-5cefd75dc6f2-0.orc",
         "/f1=10/bucket-1/data-6828284c-e707-49b5-af6b-69be79af120c-0.orc",
@@ -3856,6 +3882,7 @@ TEST_F(FileStoreCommitImplTest, TestCreateManifestCommittable) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCollectChanges) {
+    ASSERT_OK(ConfigureTableOptions({{Options::BUCKET, "10"}}));
     TableLoadOptions context_builder_load_options{table_path_};
     std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder("commit_user_1");
@@ -4239,6 +4266,8 @@ TEST_F(FileStoreCommitImplTest, TestCommitWithIndexFiles) {
 }
 
 TEST_F(FileStoreCommitImplTest, TestCommitWithGlobalIndexFilesChecksConflicts) {
+    ASSERT_OK(ConfigureTableOptions(
+        {{Options::DATA_EVOLUTION_ENABLED, "true"}, {Options::ROW_TRACKING_ENABLED, "true"}}));
     TableLoadOptions context_builder_load_options{table_path_};
     std::map<std::string, std::string> context_builder_options;
     CommitContextBuilder context_builder("commit_user_1");

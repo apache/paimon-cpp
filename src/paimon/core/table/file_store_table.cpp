@@ -322,6 +322,11 @@ Result<std::shared_ptr<Table>> FileStoreTable::Copy(
     PAIMON_ASSIGN_OR_RAISE(OptionsMap options, ResolveOptionMap(dynamic_options));
     PAIMON_ASSIGN_OR_RAISE([[maybe_unused]] bool query_auth,
                            SchemaValidation::QueryAuthReadEnabled(options_, dynamic_options));
+    // Static factories have already resolved some options. Validate against the loaded schema,
+    // before those overrides, so that both entry points enforce the same immutability rules.
+    PAIMON_ASSIGN_OR_RAISE(options, SchemaValidation::MergeDynamicOptions(
+                                        *checked_pointer_cast<TableSchema>(schema_), options));
+    options["path"] = root_path_;
     auto explicit_options = dynamic_options_;
     for (const auto& [key, value] : dynamic_options) {
         explicit_options[key] = value;

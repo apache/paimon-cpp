@@ -247,7 +247,7 @@ Result<std::shared_ptr<FileStoreTable>> SystemTable::CreateDataTable(
 }
 
 Result<std::map<std::string, std::string>> SystemTable::CopyOptions(
-    const std::map<std::string, std::string>& bound_options,
+    const TableSchema& table_schema, const std::map<std::string, std::string>& bound_options,
     const std::map<std::string, std::string>& overrides) {
     auto options = bound_options;
     for (const auto& [key, value] : overrides) {
@@ -266,7 +266,7 @@ Result<std::map<std::string, std::string>> SystemTable::CopyOptions(
     if (type != bound_type) {
         return Status::Invalid("copy type contradicts the loaded table");
     }
-    return options;
+    return SchemaValidation::MergeDynamicOptions(table_schema, options);
 }
 
 Result<std::unique_ptr<FileStoreWrite>> SystemTable::NewWrite(

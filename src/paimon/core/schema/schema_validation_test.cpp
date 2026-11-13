@@ -2158,4 +2158,88 @@ TEST(SchemaValidationTest, TestMapSharedShreddingRejectsPostponeBucketMode) {
                         "MAP shared-shredding currently does not support postpone bucket mode.");
 }
 
+TEST(SchemaValidationTest, TestCopyImmutableOptions) {
+    const std::map<std::string, std::pair<std::string, std::string>> changes = {
+        {"bucket-key", {"a", "b"}},
+        {"bucket-function.type", {"default", "mod"}},
+        {"bucket-function.provider", {"original", "other"}},
+        {"merge-engine", {"deduplicate", "partial-update"}},
+        {"row-tracking.enabled", {"false", "true"}},
+        {"data-evolution.enabled", {"false", "true"}},
+        {"sequence.snapshot-ordering", {"false", "true"}},
+        {"blob-field", {"a", "b"}},
+        {"primary-key.nullable", {"false", "true"}},
+        {"force-lookup", {"false", "true"}}};
+    auto arrow_schema = arrow::schema(
+        {arrow::field("a", arrow::int32(), false), arrow::field("b", arrow::int32(), false)});
+    for (const auto& [key, values] : changes) {
+        SCOPED_TRACE(key);
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TableSchema> schema,
+            TableSchema::Create(0, arrow_schema, {}, {"a", "b"}, {{key, values.first}}));
+        ASSERT_OK_AND_ASSIGN(auto unchanged,
+                             SchemaValidation::MergeDynamicOptions(*schema, {{key, values.first}}));
+        ASSERT_EQ(unchanged, schema->Options());
+        ASSERT_NOK_WITH_MSG(SchemaValidation::MergeDynamicOptions(*schema, {{key, values.second}}),
+                            "immutable option");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> unset,
+                             TableSchema::Create(0, arrow_schema, {}, {"a", "b"}, {}));
+        // Like Java, explicitly setting an immutable default is a change when it was absent.
+        ASSERT_NOK_WITH_MSG(SchemaValidation::MergeDynamicOptions(*unset, {{key, values.first}}),
+                            "immutable option");
+    }
+}
+
+TEST(SchemaValidationTest, TestCopyConditionalOptionChanges) {
+    using OptionsMap = std::map<std::string, std::string>;
+    struct TestCase {
+        OptionsMap old_options;
+        OptionsMap dynamic_options;
+        bool allowed;
+    };
+    const std::vector<TestCase> cases = {
+        {{{"bucket", "2"}}, {{"bucket", "4"}}, true},
+        {{{"bucket", "2"}}, {{"bucket", "-1"}}, false},
+        {{{"bucket", "-1"}}, {{"bucket", "2"}}, false},
+        {{}, {{"bucket", "2"}}, false},
+        {{{"bucket", "-1"}}, {{"bucket", "-1"}}, true},
+        {{{"bucket", "2"}}, {{"bucket", "invalid"}}, false},
+        {{}, {{"deletion-vectors.enabled", "false"}}, true},
+        {{}, {{"deletion-vectors.enabled", "true"}}, false},
+        {{{"deletion-vectors.enabled", "true"}}, {{"deletion-vectors.enabled", "false"}}, false},
+        {{},
+         {{"deletion-vectors.enabled", "true"}, {"deletion-vectors.modifiable", "true"}},
+         false},
+        {{{"deletion-vectors.modifiable", "true"}}, {{"deletion-vectors.enabled", "true"}}, true},
+        {{{"deletion-vectors.modifiable", "true"}, {"deletion-vectors.enabled", "true"}},
+         {{"deletion-vectors.enabled", "false"}},
+         true},
+        {{}, {{"ignore-delete", "true"}}, true},
+        {{{"ignore-delete", "true"}}, {{"ignore-delete", "false"}}, false},
+        {{}, {{"ignore-update-before", "true"}}, true},
+        {{{"ignore-update-before", "true"}}, {{"ignore-update-before", "false"}}, false},
+        {{}, {{"data-evolution.nested-field.enabled", "true"}}, true},
+        {{{"data-evolution.nested-field.enabled", "true"}},
+         {{"data-evolution.nested-field.enabled", "false"}},
+         false},
+        {{}, {{"clustering.columns", "a"}}, true},
+        {{{"pk-clustering-override", "false"}}, {{"clustering.columns", "a"}}, false},
+        {{{"pk-clustering-override", "true"}, {"clustering.columns", "a"}},
+         {{"clustering.columns", "a"}},
+         true},
+        {{{"query-auth.enabled", "true"}}, {{"query-auth.enabled", "false"}}, false},
+    };
+    auto arrow_schema = arrow::schema({arrow::field("a", arrow::int32(), false)});
+    for (size_t i = 0; i < cases.size(); ++i) {
+        SCOPED_TRACE(i);
+        const auto& test_case = cases[i];
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TableSchema> schema,
+            TableSchema::Create(0, arrow_schema, {}, {"a"}, test_case.old_options));
+        auto result = SchemaValidation::MergeDynamicOptions(*schema, test_case.dynamic_options);
+        ASSERT_EQ(result.ok(), test_case.allowed) << result.status().ToString();
+        ASSERT_EQ(schema->Options(), test_case.old_options);
+    }
+}
+
 }  // namespace paimon::test

@@ -47,6 +47,8 @@
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/io/data_file_meta.h"
+#include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/deletion_file.h"
 #include "paimon/core/table/source/key_value_table_read.h"
@@ -85,6 +87,24 @@ using ScanAndReadParam = std::tuple<std::string, bool, bool>;
 class ScanAndReadInteTest : public testing::Test,
                             public ::testing::WithParamInterface<ScanAndReadParam> {
  public:
+    // Reuse the fixture's records with a schema declaring the engine under test. Merge engines
+    // are immutable runtime options, so both operators must load that schema from the start.
+    Result<TableLoadOptions> LoadWithMergeEngine(const std::string& path,
+                                                 const std::string& merge_engine) const {
+        SchemaManager manager(std::make_shared<LocalFileSystem>(), path);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
+                               manager.Latest());
+        if (!latest) {
+            return Status::Invalid("test fixture has no schema");
+        }
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<TableSchema> schema,
+            latest.value()->MergeOptions({{Options::MERGE_ENGINE, merge_engine}}));
+        TableLoadOptions load{path};
+        PAIMON_ASSIGN_OR_RAISE(load.table_schema_json, schema->GetJsonSchema());
+        return load;
+    }
+
     void CheckStreamScanResult(
         const std::unique_ptr<TableScan>& table_scan, const std::unique_ptr<TableRead>& table_read,
         const std::vector<std::optional<int64_t>>& expected_snapshot_ids,
@@ -2179,11 +2199,11 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvWithInvalidAggregateBatchScanSnapsho
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    ASSERT_OK_AND_ASSIGN(TableLoadOptions scan_context_builder_load_options,
+                         LoadWithMergeEngine(table_path, "aggregation"));
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "3";
-    scan_context_builder_options[Options::MERGE_ENGINE] = "aggregation";
     scan_context_builder_options["fields.f3.aggregate-function"] = "rbm32";
 
     scan_context_builder.SetBucketFilter(1).SetPartitionFilter({{{"f1", "10"}}});
@@ -2193,11 +2213,10 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithDvWithInvalidAggregateBatchScanSnapsho
                          TableScan::Create(scan_context_builder_load_options,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadOptions read_context_builder_load_options = scan_context_builder_load_options;
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
-    read_context_builder_options[Options::MERGE_ENGINE] = "aggregation";
     read_context_builder_options["fields.f3.aggregate-function"] = "rbm32";
 
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
@@ -2230,11 +2249,11 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorWithInvalidAggregateBatchScanSnapsh
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    ASSERT_OK_AND_ASSIGN(TableLoadOptions scan_context_builder_load_options,
+                         LoadWithMergeEngine(table_path, "aggregation"));
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "3";
-    scan_context_builder_options[Options::MERGE_ENGINE] = "aggregation";
     scan_context_builder_options["fields.f3.aggregate-function"] = "rbm32";
 
     scan_context_builder.SetBucketFilter(1).SetPartitionFilter({{{"f1", "10"}}});
@@ -2244,11 +2263,10 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorWithInvalidAggregateBatchScanSnapsh
                          TableScan::Create(scan_context_builder_load_options,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadOptions read_context_builder_load_options = scan_context_builder_load_options;
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
-    read_context_builder_options[Options::MERGE_ENGINE] = "aggregation";
     read_context_builder_options["fields.f3.aggregate-function"] = "rbm32";
 
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
@@ -2268,11 +2286,11 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithAggregateBatchScanSnapshot3WithPredica
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    ASSERT_OK_AND_ASSIGN(TableLoadOptions scan_context_builder_load_options,
+                         LoadWithMergeEngine(table_path, "aggregation"));
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "3";
-    scan_context_builder_options[Options::MERGE_ENGINE] = "aggregation";
     scan_context_builder_options["fields.f3.aggregate-function"] = "sum";
 
     scan_context_builder.SetBucketFilter(1).SetPartitionFilter({{{"f1", "10"}}});
@@ -2286,11 +2304,10 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithAggregateBatchScanSnapshot3WithPredica
                          TableScan::Create(scan_context_builder_load_options,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadOptions read_context_builder_load_options = scan_context_builder_load_options;
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
-    read_context_builder_options[Options::MERGE_ENGINE] = "aggregation";
     read_context_builder_options["fields.f3.aggregate-function"] = "sum";
 
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
@@ -2323,11 +2340,11 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithPartialUpdateBatchScanSnapshot3WithPre
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_mor.db/pk_table_scan_and_read_mor/";
 
-    TableLoadOptions scan_context_builder_load_options{table_path};
+    ASSERT_OK_AND_ASSIGN(TableLoadOptions scan_context_builder_load_options,
+                         LoadWithMergeEngine(table_path, "partial-update"));
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] = "3";
-    scan_context_builder_options[Options::MERGE_ENGINE] = "partial-update";
     scan_context_builder_options[Options::IGNORE_DELETE] = "true";
 
     scan_context_builder.SetBucketFilter(1).SetPartitionFilter({{{"f1", "10"}}});
@@ -2341,11 +2358,10 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithPartialUpdateBatchScanSnapshot3WithPre
                          TableScan::Create(scan_context_builder_load_options,
                                            std::move(scan_context), scan_context_builder_options));
 
-    TableLoadOptions read_context_builder_load_options{table_path};
+    TableLoadOptions read_context_builder_load_options = scan_context_builder_load_options;
     std::map<std::string, std::string> read_context_builder_options;
     ReadContextBuilder read_context_builder;
     AddReadOptionsForPrefetch(&read_context_builder, read_context_builder_options);
-    read_context_builder_options[Options::MERGE_ENGINE] = "partial-update";
     read_context_builder_options[Options::IGNORE_DELETE] = "true";
 
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());

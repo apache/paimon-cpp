@@ -436,7 +436,7 @@ TEST(FileStoreWriteTest, TestCreateAppendTableWithInvalidBucket) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
     ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(context_builder_load_options,
                                                std::move(write_context), context_builder_options),
-                        "not support bucket -2 in append table");
+                        "Cannot change bucket from or to -1 dynamically");
 }
 
 TEST(FileStoreWriteTest, TestCreateAppendTableWithInvalidWriteType) {
@@ -460,7 +460,6 @@ TEST(FileStoreWriteTest, TestCreateAppendTableWithInvalidWriteType) {
     TableLoadOptions context_builder_load_options{PathUtil::JoinPath(dir->Str(), "foo.db/bar")};
     std::map<std::string, std::string> context_builder_options;
     WriteContextBuilder context_builder("commit_user_1");
-    context_builder_options[Options::BUCKET] = "-1";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
                          context_builder.WithWriteSchema({"field_non_exist"}).Finish());
     ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(context_builder_load_options,

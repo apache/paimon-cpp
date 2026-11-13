@@ -1203,7 +1203,7 @@ TEST_F(RestCatalogTest, SystemTableSchema) {
 }
 
 TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RestCatalog> catalog, CreateRestCatalog());
     ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
     ASSERT_OK(CreateSampleTable(catalog.get(), Identifier("db1", "t1")));
 
@@ -1240,6 +1240,13 @@ TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
     ASSERT_EQ((std::vector<std::string>{"b0"}), schema->FieldNames());
     ASSERT_EQ(3, schema->Id());
     ASSERT_EQ("b1", schema->Options().at(Options::BRANCH));
+
+    TableLoadOptions load;
+    load.catalog = catalog;
+    load.identifier.emplace(branch_identifier);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                         ReadContextBuilder().SetReadFieldNames({"b0"}).Finish());
+    ASSERT_OK(TableRead::Create(load, std::move(read_context)));
 
     // the default branch is addressed as the bare table: "t1$branch_main" resolves to
     // "t1" and carries no branch option

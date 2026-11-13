@@ -92,7 +92,7 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
 
     /// Applies options without changing the view's table type or branch.
     static Result<std::map<std::string, std::string>> CopyOptions(
-        const std::map<std::string, std::string>& bound_options,
+        const TableSchema& table_schema, const std::map<std::string, std::string>& bound_options,
         const std::map<std::string, std::string>& overrides);
 
     /// Builds the data table using this view's data schema and options.

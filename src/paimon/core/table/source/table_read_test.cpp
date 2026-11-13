@@ -413,6 +413,15 @@ TEST(TableReadTest, TestPreciseScalarEvaluationRejectsUnsupportedTableModes) {
         } else {
             builder_options[Options::DATA_EVOLUTION_ENABLED] = "true";
         }
+        // Declare the unsupported mode in the loaded schema, rather than changing an immutable
+        // layout option dynamically, so the test reaches precise-evaluation validation.
+        SchemaManager manager(std::make_shared<LocalFileSystem>(), path);
+        ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> latest, manager.Latest());
+        ASSERT_TRUE(latest);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                             latest.value()->MergeOptions(builder_options));
+        ASSERT_OK_AND_ASSIGN(builder_load_options.table_schema_json, schema->GetJsonSchema());
+        builder_options.clear();
         ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
         const std::string expected_error =
             primary_key ? "Precise file-index evaluation on primary-key tables requires "
@@ -476,7 +485,7 @@ TEST(TableReadTest, TestCreateAppendOnlyTableRead) {
 }
 
 TEST(TableReadTest, TestMergeOptions) {
-    std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
+    std::string path = paimon::test::GetDataDir() + "orc/append_09.db/append_09";
     TableLoadOptions context_builder_load_options{path};
     std::map<std::string, std::string> context_builder_options;
     ReadContextBuilder context_builder;
@@ -486,8 +495,6 @@ TEST(TableReadTest, TestMergeOptions) {
     context_builder_options["orc.read.enable-lazy-decoding"] = "true";
 
     context_builder_options["bucket"] = "10";
-
-    context_builder_options["bucket-key"] = "f3";
 
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read,
@@ -500,9 +507,13 @@ TEST(TableReadTest, TestMergeOptions) {
     ASSERT_TRUE(typed_split_read);
     const auto& core_options = typed_split_read->options_;
     std::map<std::string, std::string> expected_options = {
-        {"read.batch-size", "2"},   {"orc.read.enable-lazy-decoding", "true"},
-        {"bucket", "10"},           {"bucket-key", "f3"},
-        {"manifest.format", "orc"}, {"file.format", "orc"}};
+        {"read.batch-size", "2"},
+        {"orc.read.enable-lazy-decoding", "true"},
+        {"bucket", "10"},
+        {"bucket-key", "f2"},
+        {"manifest.format", "orc"},
+        {"file.format", "orc"},
+        {"path", path}};
     ASSERT_EQ(expected_options, core_options.ToMap());
 }
 
@@ -536,6 +547,7 @@ TEST(TableReadTest, TestDependencyReadWithoutCatalogUsesReadOptions) {
         auto dependency_context = internal_context->CreateDependencyCatalogContext();
 
         auto expected_options = table_options;
+        expected_options["path"] = builder_load_options.path;
         expected_options[read_via_option] = explicit_header ? "read-view" : "table-view";
         ASSERT_EQ(dependency_context->root_path, "warehouse");
         ASSERT_EQ(dependency_context->options, expected_options);

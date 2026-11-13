@@ -227,6 +227,108 @@ Status CheckOptionsConflict(const std::map<std::string, std::string>& options,
 
 }  // namespace
 
+Result<std::map<std::string, std::string>> SchemaValidation::MergeDynamicOptions(
+    const TableSchema& schema, const std::map<std::string, std::string>& dynamic_options) {
+    // Java CoreOptions.IMMUTABLE_OPTIONS. Keep even options not interpreted by this reader:
+    // schemas written by another engine may contain them, and Copy must preserve their layout.
+    static const std::unordered_set<std::string> kImmutableOptions = {
+        "type",
+        "bucket-key",
+        "bucket-function.type",
+        "bucket-function.provider",
+        "data-file.path-directory",
+        "merge-engine",
+        "sequence.snapshot-ordering",
+        "aggregation.remove-record-on-delete",
+        "partial-update.remove-record-on-delete",
+        "partial-update.remove-record-on-sequence-group",
+        "rowkind.field",
+        "primary-key",
+        "primary-key.nullable",
+        "partition",
+        "dynamic-bucket.initial-buckets",
+        "force-lookup",
+        "row-tracking.enabled",
+        "data-evolution.enabled",
+        "index-file-in-data-file-dir",
+        "blob-field",
+        "video-frame-field",
+        "blob-descriptor-field",
+        "blob-view-field",
+        "pk-clustering-override"};
+    const auto& old_options = schema.Options();
+    PAIMON_ASSIGN_OR_RAISE([[maybe_unused]] bool query_auth,
+                           QueryAuthReadEnabled(old_options, dynamic_options));
+    auto options = old_options;
+    for (const auto& [key, value] : dynamic_options) {
+        auto old = old_options.find(key);
+        if (old != old_options.end() && old->second == value) {
+            continue;
+        }
+        if (key == Options::TYPE &&
+            StringUtils::ToLowerCase(value) ==
+                StringUtils::ToLowerCase(old == old_options.end() ? "table" : old->second)) {
+            continue;
+        }
+        if (old == old_options.end() && (key == "primary-key" || key == "partition")) {
+            std::vector<std::string> keys;
+            for (auto field : StringUtils::Split(value, ",")) {
+                StringUtils::Trim(&field);
+                if (!field.empty()) {
+                    keys.push_back(std::move(field));
+                }
+            }
+            if (keys == (key == "primary-key" ? schema.PrimaryKeys() : schema.PartitionKeys())) {
+                continue;
+            }
+        }
+        if (kImmutableOptions.count(key)) {
+            return Status::Invalid(
+                fmt::format("Cannot change immutable option '{}' dynamically", key));
+        }
+        if (key == Options::BUCKET) {
+            PAIMON_ASSIGN_OR_RAISE(int32_t old_bucket,
+                                   OptionsUtils::GetValueFromMap<int32_t>(old_options, key, -1));
+            PAIMON_ASSIGN_OR_RAISE(int32_t new_bucket,
+                                   OptionsUtils::GetValueFromMap<int32_t>(dynamic_options, key));
+            if (old_bucket == -1 || new_bucket == -1) {
+                return Status::Invalid("Cannot change bucket from or to -1 dynamically");
+            }
+        }
+        if (key == Options::DELETION_VECTORS_ENABLED) {
+            PAIMON_ASSIGN_OR_RAISE(bool modifiable,
+                                   OptionsUtils::GetValueFromMap<bool>(
+                                       old_options, "deletion-vectors.modifiable", false));
+            PAIMON_ASSIGN_OR_RAISE(bool old_enabled,
+                                   OptionsUtils::GetValueFromMap<bool>(old_options, key, false));
+            PAIMON_ASSIGN_OR_RAISE(bool new_enabled,
+                                   OptionsUtils::GetValueFromMap<bool>(dynamic_options, key));
+            if (!modifiable && old_enabled != new_enabled) {
+                return Status::Invalid(
+                    "Cannot change deletion vectors mode unless deletion-vectors.modifiable "
+                    "was already enabled");
+            }
+        }
+        if (key == Options::IGNORE_DELETE || key == "ignore-update-before" ||
+            key == "data-evolution.nested-field.enabled") {
+            PAIMON_ASSIGN_OR_RAISE(bool old_enabled,
+                                   OptionsUtils::GetValueFromMap<bool>(old_options, key, false));
+            PAIMON_ASSIGN_OR_RAISE(bool new_enabled,
+                                   OptionsUtils::GetValueFromMap<bool>(dynamic_options, key));
+            if (old_enabled && !new_enabled) {
+                return Status::Invalid(
+                    fmt::format("Cannot disable table option '{}' dynamically", key));
+            }
+        }
+        if (key == "clustering.columns" && old_options.count(Options::PK_CLUSTERING_OVERRIDE)) {
+            return Status::Invalid(
+                "Cannot change clustering.columns when pk-clustering-override is set");
+        }
+        options[key] = value;
+    }
+    return options;
+}
+
 bool SchemaValidation::IsComplexType(const std::shared_ptr<arrow::Field>& field) {
     arrow::Type::type arrow_type_id = field->type()->id();
     return (arrow_type_id == arrow::Type::TIMESTAMP || arrow_type_id == arrow::Type::DECIMAL128 ||

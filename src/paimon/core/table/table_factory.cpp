@@ -126,6 +126,7 @@ Result<std::shared_ptr<Table>> TableFactory::Create(
     std::optional<std::string> table_id = load.table_id;
     std::optional<std::string> schema_json = load.table_schema_json;
     std::shared_ptr<FileSystem> file_system = load.file_system;
+    std::shared_ptr<TableSchema> catalog_schema;
     // A catalog-only load obtains identity, schema and location from one table generation.
     if (load.catalog && (path.empty() || load.table_id)) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table, load.catalog->GetTable(*identifier));
@@ -135,8 +136,10 @@ Result<std::shared_ptr<Table>> TableFactory::Create(
         }
         if (path.empty()) {
             path = table->GetRootPath();
-            if (!schema_json) {
-                PAIMON_ASSIGN_OR_RAISE(schema_json, table->GetSchema()->GetJsonSchema());
+            if (!schema_json || !BranchManager::IsMainBranch(branch)) {
+                // The catalog has resolved this branch's schema. table_schema_json is a
+                // main-only input and must not discard it or substitute another branch's schema.
+                catalog_schema = std::dynamic_pointer_cast<TableSchema>(table->GetSchema());
             }
         }
         if (!file_system && fs_scheme_map.empty()) {
@@ -158,7 +161,8 @@ Result<std::shared_ptr<Table>> TableFactory::Create(
     if (load.catalog && !file_system && fs_scheme_map.empty()) {
         PAIMON_ASSIGN_OR_RAISE(file_system, load.catalog->GetTableFileSystem(*identifier));
     }
-    if (writing && load.catalog && BranchManager::IsMainBranch(branch) && !schema_json) {
+    if (writing && load.catalog && BranchManager::IsMainBranch(branch) && !schema_json &&
+        !catalog_schema) {
         PAIMON_ASSIGN_OR_RAISE(Identifier identifier,
                                CatalogUtils::BranchIdentifier(*load.identifier, branch));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> schema,
@@ -185,12 +189,15 @@ Result<std::shared_ptr<Table>> TableFactory::Create(
                                             fs_scheme_map, schema_json));
         return std::shared_ptr<Table>(std::move(table));
     }
-    std::shared_ptr<TableSchema> schema;
+    std::shared_ptr<TableSchema> schema = catalog_schema;
     const std::string metadata_branch = branch;
     auto schema_manager = std::make_shared<SchemaManager>(temporary.GetFileSystem(), path, branch);
-    Result<std::shared_ptr<FormatTable>> format_result =
-        FormatTableLoader::TryLoad(temporary.GetFileSystem(), path, branch, dynamic_options,
-                                   schema_json, schema_manager.get(), &schema);
+    Result<std::shared_ptr<FormatTable>> format_result = std::shared_ptr<FormatTable>();
+    if (!schema) {
+        format_result =
+            FormatTableLoader::TryLoad(temporary.GetFileSystem(), path, branch, dynamic_options,
+                                       schema_json, schema_manager.get(), &schema);
+    }
     if (load.catalog && BranchManager::IsMainBranch(branch) &&
         (!format_result.ok() || format_result.value() != nullptr || !schema)) {
         // An external format table may have real data under `schema`, including file names
@@ -220,10 +227,11 @@ Result<std::shared_ptr<Table>> TableFactory::Create(
         return Status::Invalid(fmt::format("not found latest schema in branch {}", branch));
     }
     if (!writing) {
-        PAIMON_ASSIGN_OR_RAISE(dynamic_options, CatalogUtils::ResolveQueryAuthReadOptions(
-                                                    load.catalog, identifier, dynamic_options,
-                                                    branch, temporary.GetFileSystem(), path,
-                                                    schema_json.has_value(), operation));
+        PAIMON_ASSIGN_OR_RAISE(
+            dynamic_options,
+            CatalogUtils::ResolveQueryAuthReadOptions(
+                load.catalog, identifier, dynamic_options, branch, temporary.GetFileSystem(), path,
+                schema_json.has_value() || catalog_schema, operation));
     }
     auto merged = schema->Options();
     for (const auto& [key, value] : dynamic_options) {

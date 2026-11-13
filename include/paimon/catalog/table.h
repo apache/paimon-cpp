@@ -85,6 +85,8 @@ class PAIMON_EXPORT Table {
     /// Returns an independent table with dynamic options applied to its bound configuration.
     /// The original table is unchanged. Type, location, branch, catalog identity and storage
     /// bindings are retained; load another table to select a different branch.
+    /// Managed tables reject changes to immutable schema options (such as bucket-key), and
+    /// validate conditional option changes using the original table's configuration.
     virtual Result<std::shared_ptr<Table>> Copy(
         const std::map<std::string, std::string>& dynamic_options) const = 0;
 

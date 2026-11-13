@@ -140,9 +140,11 @@ Result<std::unique_ptr<TableRead>> ReadOptimizedSystemTable::NewRead(
 Result<std::shared_ptr<Table>> ReadOptimizedSystemTable::Copy(
     const std::map<std::string, std::string>& dynamic_options) const {
     using OptionsMap = std::map<std::string, std::string>;
-    PAIMON_ASSIGN_OR_RAISE(OptionsMap options, CopyOptions(options_, dynamic_options));
+    PAIMON_ASSIGN_OR_RAISE(OptionsMap options,
+                           CopyOptions(*table_schema_, options_, dynamic_options));
     auto table = std::make_shared<ReadOptimizedSystemTable>(*this);
     table->options_ = std::move(options);
+    PAIMON_ASSIGN_OR_RAISE(table->table_schema_, table_schema_->Copy(table->options_));
     PAIMON_RETURN_NOT_OK(table->AdoptOwnSchema());
     return std::shared_ptr<Table>(std::move(table));
 }

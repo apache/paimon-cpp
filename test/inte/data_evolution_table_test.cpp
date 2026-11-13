@@ -2283,7 +2283,7 @@ TEST_P(DedicatedVectorTableTest, TestDedicatedVectorStore) {
     ASSERT_NOK_WITH_MSG(FileStoreWrite::Create(invalid_builder_load_options,
                                                std::move(invalid_context), invalid_builder_options)
                             .status(),
-                        "requires row-tracking.enabled and data-evolution.enabled");
+                        "Cannot change immutable option 'data-evolution.enabled' dynamically");
 }
 
 TEST_P(DedicatedVectorTableTest, TestIndependentVectorRolling) {
