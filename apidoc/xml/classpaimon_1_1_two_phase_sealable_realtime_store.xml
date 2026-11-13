@@ -1,0 +1,123 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_two_phase_sealable_realtime_store" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::TwoPhaseSealableRealtimeStore</compoundname>
+    <basecompoundref refid="classpaimon_1_1_realtime_store" prot="public" virt="non-virtual">paimon::RealtimeStore</basecompoundref>
+    <includes refid="realtime__store_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_two_phase_sealable_realtime_store_1a4c84c353950d5db667927a1ff2f28fcc" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::TwoPhaseSealableRealtimeStore::~TwoPhaseSealableRealtimeStore</definition>
+        <argsstring>() override=default</argsstring>
+        <name>~TwoPhaseSealableRealtimeStore</name>
+        <qualifiedname>paimon::TwoPhaseSealableRealtimeStore::~TwoPhaseSealableRealtimeStore</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="222" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_two_phase_sealable_realtime_store_1a193a544c88ad8ea74636580cfffa032d" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_segment_handle" kindref="compound">RealtimeSegmentHandle</ref> &gt; &gt; &gt;</type>
+        <definition>virtual Result&lt; std::optional&lt; std::shared_ptr&lt; RealtimeSegmentHandle &gt; &gt; &gt; paimon::TwoPhaseSealableRealtimeStore::FreezeBuildingSegment</definition>
+        <argsstring>()=0</argsstring>
+        <name>FreezeBuildingSegment</name>
+        <qualifiedname>paimon::TwoPhaseSealableRealtimeStore::FreezeBuildingSegment</qualifiedname>
+        <briefdescription>
+<para>Freezes the building segment without spill I/O. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="226" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_two_phase_sealable_realtime_store_1a02eb82d99718cb1824a616d04e6fe03d" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_segment_handle" kindref="compound">RealtimeSegmentHandle</ref> &gt; &gt;</type>
+        <definition>virtual Result&lt; std::shared_ptr&lt; RealtimeSegmentHandle &gt; &gt; paimon::TwoPhaseSealableRealtimeStore::SpillFrozenSegment</definition>
+        <argsstring>(const std::shared_ptr&lt; RealtimeSegmentHandle &gt; &amp;segment)=0</argsstring>
+        <name>SpillFrozenSegment</name>
+        <qualifiedname>paimon::TwoPhaseSealableRealtimeStore::SpillFrozenSegment</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_segment_handle" kindref="compound">RealtimeSegmentHandle</ref> &gt; &amp;</type>
+          <declname>segment</declname>
+        </param>
+        <briefdescription>
+<para>Spills a frozen segment when enabled and returns its commit handle. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="229" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_two_phase_sealable_realtime_store_1a3075762893f92fe1a1c378e04c323821" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_read_view" kindref="compound">RealtimeReadView</ref> &gt; &gt;</type>
+        <definition>virtual Result&lt; std::shared_ptr&lt; RealtimeReadView &gt; &gt; paimon::TwoPhaseSealableRealtimeStore::RetireCommittedSegments</definition>
+        <argsstring>(int64_t committed_end_offset)=0</argsstring>
+        <name>RetireCommittedSegments</name>
+        <qualifiedname>paimon::TwoPhaseSealableRealtimeStore::RetireCommittedSegments</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>committed_end_offset</declname>
+        </param>
+        <briefdescription>
+<para>Advances the committed offset without destroying retired storage. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>The returned view owns exactly the segments removed in this operation, including concurrent spill replacements. The caller releases it after unlocking its write mutex, so cleanup never runs under that mutex. This operation must not perform I/O. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="236" column="20"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Optional capability for <computeroutput><ref refid="classpaimon_1_1_realtime_store" kindref="compound">RealtimeStore</ref></computeroutput> implementations to separate segment freezing from spill I/O. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="2">
+        <label>paimon::RealtimeStore</label>
+        <link refid="classpaimon_1_1_realtime_store"/>
+      </node>
+      <node id="1">
+        <label>paimon::TwoPhaseSealableRealtimeStore</label>
+        <link refid="classpaimon_1_1_two_phase_sealable_realtime_store"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="2">
+        <label>paimon::RealtimeStore</label>
+        <link refid="classpaimon_1_1_realtime_store"/>
+      </node>
+      <node id="1">
+        <label>paimon::TwoPhaseSealableRealtimeStore</label>
+        <link refid="classpaimon_1_1_two_phase_sealable_realtime_store"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" line="220" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/realtime_store.h" bodystart="220" bodyend="238"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_realtime_store_1aa5a673a8c86508d9e26491e85bae04ed" prot="public" virt="pure-virtual"><scope>paimon::TwoPhaseSealableRealtimeStore</scope><name>AcquireReadView</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1a296f08ee48cd9327d342fc729a50e0c5" prot="public" virt="pure-virtual"><scope>paimon::TwoPhaseSealableRealtimeStore</scope><name>AdvanceCommittedOffset</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1abba5bc330040db71a131a465452934f6" prot="public" virt="pure-virtual"><scope>paimon::TwoPhaseSealableRealtimeStore</scope><name>CreateCommitReaders</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1a02739fd9a5f3f83032e5656048f566ce" prot="public" virt="pure-virtual"><scope>paimon::TwoPhaseSealableRealtimeStore</scope><name>CreateQueryReaders</name></member>
+      <member refid="classpaimon_1_1_two_phase_sealable_realtime_store_1a193a544c88ad8ea74636580cfffa032d" prot="public" virt="pure-virtual"><scope>paimon::TwoPhaseSealableRealtimeStore</scope><name>FreezeBuildingSegment</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1aa4787598951b6f2ff5097201f4899050" prot="public" virt="pure-virtual"><scope>paimon::TwoPhaseSealableRealtimeStore</scope><name>GetDataUsage</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1abd597b708a08da280a92206a4b6a4a86" prot="public" virt="pure-virtual"><scope>paimon::TwoPhaseSealableRealtimeStore</scope><name>GetMemoryUsage</name></member>
+      <member refid="classpaimon_1_1_two_phase_sealable_realtime_store_1a3075762893f92fe1a1c378e04c323821" prot="public" virt="pure-virtual"><scope>paimon::TwoPhaseSealableRealtimeStore</scope><name>RetireCommittedSegments</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1afdddb3cb41e8bfb019f1100cd94fefa8" prot="public" virt="pure-virtual"><scope>paimon::TwoPhaseSealableRealtimeStore</scope><name>SealForCommit</name></member>
+      <member refid="classpaimon_1_1_two_phase_sealable_realtime_store_1a02eb82d99718cb1824a616d04e6fe03d" prot="public" virt="pure-virtual"><scope>paimon::TwoPhaseSealableRealtimeStore</scope><name>SpillFrozenSegment</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1ac580d83434337989542746cfc99e30fa" prot="public" virt="pure-virtual"><scope>paimon::TwoPhaseSealableRealtimeStore</scope><name>Write</name></member>
+      <member refid="classpaimon_1_1_realtime_store_1a48da46987f625c78da466e28f5857ebd" prot="public" virt="virtual"><scope>paimon::TwoPhaseSealableRealtimeStore</scope><name>~RealtimeStore</name></member>
+      <member refid="classpaimon_1_1_two_phase_sealable_realtime_store_1a4c84c353950d5db667927a1ff2f28fcc" prot="public" virt="non-virtual"><scope>paimon::TwoPhaseSealableRealtimeStore</scope><name>~TwoPhaseSealableRealtimeStore</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

@@ -1,0 +1,147 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_object_cache_value" kind="class" language="C++" prot="public" final="yes">
+    <compoundname>paimon::ObjectCacheValue</compoundname>
+    <basecompoundref refid="classpaimon_1_1_typed_cache_value" prot="public" virt="non-virtual">paimon::TypedCacheValue&lt; T &gt;</basecompoundref>
+    <includes refid="cache_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h</includes>
+    <templateparamlist>
+      <param>
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">typename</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">T</ref></type>
+      </param>
+    </templateparamlist>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_object_cache_value_1a89a899c42fdea6785eff57176d30f6c2" prot="private" static="no" mutable="no">
+        <type>std::shared_ptr&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">T</ref> &gt;</type>
+        <definition>std::shared_ptr&lt;T&gt; paimon::ObjectCacheValue&lt; T &gt;::value_</definition>
+        <argsstring></argsstring>
+        <name>value_</name>
+        <qualifiedname>paimon::ObjectCacheValue::value_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" line="178" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" bodystart="178" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_object_cache_value_1a1edf0bfa93fe05cdc34ee25595dfb074" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type></type>
+        <definition>paimon::ObjectCacheValue&lt; T &gt;::ObjectCacheValue</definition>
+        <argsstring>(std::shared_ptr&lt; T &gt; value, CacheCallback callback, int64_t memory_usage)</argsstring>
+        <name>ObjectCacheValue</name>
+        <qualifiedname>paimon::ObjectCacheValue::ObjectCacheValue</qualifiedname>
+        <param>
+          <type>std::shared_ptr&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">T</ref> &gt;</type>
+          <declname>value</declname>
+        </param>
+        <param>
+          <type><ref refid="namespacepaimon_1a9964a294431d6d8c0d6ac26a7a8fc7df" kindref="member">CacheCallback</ref></type>
+          <declname>callback</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>memory_usage</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" line="164" column="5" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" bodystart="164" bodyend="166"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_object_cache_value_1ad2ce75ce2117aff10319841b9c6e5271" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::ObjectCacheValue&lt; T &gt;::operator==</definition>
+        <argsstring>(const CacheValue &amp;other) const override</argsstring>
+        <name>operator==</name>
+        <qualifiedname>paimon::ObjectCacheValue::operator==</qualifiedname>
+        <reimplements refid="classpaimon_1_1_cache_value_1ac30d36cdc76e711fae23e2f0dcad60bd">operator==</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_cache_value" kindref="compound">CacheValue</ref> &amp;</type>
+          <declname>other</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" line="168" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" bodystart="168" bodyend="171"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="private-func">
+      <memberdef kind="function" id="classpaimon_1_1_object_cache_value_1a56e4418b7f95ba9a9597fcfbf22dac45" prot="private" static="no" const="no" explicit="no" inline="yes" virt="virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">T</ref> *</type>
+        <definition>T * paimon::ObjectCacheValue&lt; T &gt;::GetValuePointer</definition>
+        <argsstring>() override</argsstring>
+        <name>GetValuePointer</name>
+        <qualifiedname>paimon::ObjectCacheValue::GetValuePointer</qualifiedname>
+        <reimplements refid="classpaimon_1_1_typed_cache_value_1aeb34f962bcbfc730ca7e6a8704a64a25">GetValuePointer</reimplements>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" line="174" column="7" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" bodystart="174" bodyend="176"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="3">
+        <label>paimon::CacheValue</label>
+        <link refid="classpaimon_1_1_cache_value"/>
+      </node>
+      <node id="1">
+        <label>paimon::ObjectCacheValue&lt; T &gt;</label>
+        <link refid="classpaimon_1_1_object_cache_value"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="2">
+        <label>paimon::TypedCacheValue&lt; T &gt;</label>
+        <link refid="classpaimon_1_1_typed_cache_value"/>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="3">
+        <label>paimon::CacheValue</label>
+        <link refid="classpaimon_1_1_cache_value"/>
+      </node>
+      <node id="1">
+        <label>paimon::ObjectCacheValue&lt; T &gt;</label>
+        <link refid="classpaimon_1_1_object_cache_value"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="2">
+        <label>paimon::TypedCacheValue&lt; T &gt;</label>
+        <link refid="classpaimon_1_1_typed_cache_value"/>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" line="162" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" bodystart="162" bodyend="179"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_typed_cache_value_1a5eb118a0e960ac151491646a382aa6a8" prot="protected" virt="non-virtual"><scope>paimon::ObjectCacheValue</scope><name>CacheValue</name></member>
+      <member refid="classpaimon_1_1_cache_value_1a13a8fbb7000759dd5e3d18fb8e35a62b" prot="private" virt="non-virtual"><scope>paimon::ObjectCacheValue</scope><name>callback_</name></member>
+      <member refid="classpaimon_1_1_cache_value_1a4a7f49afc7c4b1945d6e5e138f7d30d1" prot="public" virt="non-virtual"><scope>paimon::ObjectCacheValue</scope><name>Get</name></member>
+      <member refid="classpaimon_1_1_cache_value_1a73f30d146cf7477c870311fd53ab1ec9" prot="public" virt="non-virtual"><scope>paimon::ObjectCacheValue</scope><name>GetMemoryUsage</name></member>
+      <member refid="classpaimon_1_1_object_cache_value_1a56e4418b7f95ba9a9597fcfbf22dac45" prot="private" virt="virtual"><scope>paimon::ObjectCacheValue</scope><name>GetValuePointer</name></member>
+      <member refid="classpaimon_1_1_cache_value_1aba68d9df808f363028017eb93dd8de5e" prot="private" virt="non-virtual"><scope>paimon::ObjectCacheValue</scope><name>memory_usage_</name></member>
+      <member refid="classpaimon_1_1_object_cache_value_1a1edf0bfa93fe05cdc34ee25595dfb074" prot="public" virt="non-virtual"><scope>paimon::ObjectCacheValue</scope><name>ObjectCacheValue</name></member>
+      <member refid="classpaimon_1_1_cache_value_1aa72715705a5cef8c7582ab2ae43d6fc3" prot="public" virt="non-virtual"><scope>paimon::ObjectCacheValue</scope><name>OnEvict</name></member>
+      <member refid="classpaimon_1_1_object_cache_value_1ad2ce75ce2117aff10319841b9c6e5271" prot="public" virt="virtual"><scope>paimon::ObjectCacheValue</scope><name>operator==</name></member>
+      <member refid="classpaimon_1_1_object_cache_value_1a89a899c42fdea6785eff57176d30f6c2" prot="private" virt="non-virtual"><scope>paimon::ObjectCacheValue</scope><name>value_</name></member>
+      <member refid="classpaimon_1_1_cache_value_1a1e1a1be6891303894ce0ea0cb4e35e7f" prot="public" virt="virtual"><scope>paimon::ObjectCacheValue</scope><name>~CacheValue</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

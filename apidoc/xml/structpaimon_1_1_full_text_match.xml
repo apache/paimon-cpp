@@ -1,0 +1,116 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structpaimon_1_1_full_text_match" kind="struct" language="C++" prot="public">
+    <compoundname>paimon::FullTextMatch</compoundname>
+    <includes refid="full__text__match_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_match.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structpaimon_1_1_full_text_match_1a0da794214b3bdc0e532dcf74bfa6accc" prot="public" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string paimon::FullTextMatch::field_name</definition>
+        <argsstring></argsstring>
+        <name>field_name</name>
+        <qualifiedname>paimon::FullTextMatch::field_name</qualifiedname>
+        <briefdescription>
+<para><ref refid="classpaimon_1_1_table" kindref="compound">Table</ref> column containing the indexed text. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_match.h" line="43" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_match.h" bodystart="43" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_full_text_match_1ad579f7c453ac114725443c7e5ff5b274" prot="public" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string paimon::FullTextMatch::query</definition>
+        <argsstring></argsstring>
+        <name>query</name>
+        <qualifiedname>paimon::FullTextMatch::query</qualifiedname>
+        <briefdescription>
+<para>JSON DSL query with the same syntax and analyzer semantics as <computeroutput><ref refid="structpaimon_1_1_full_text_search_1ae1182ec479b2c34eeace57ddf98b183e" kindref="member">FullTextSearch::query</ref></computeroutput>. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_match.h" line="45" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_match.h" bodystart="45" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_full_text_match_1a39c4fda1d345563cd811f2686f0457ba" prot="public" static="no" mutable="no">
+        <type>std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt;</type>
+        <definition>std::optional&lt;RoaringBitmap64&gt; paimon::FullTextMatch::include_row_ids</definition>
+        <argsstring></argsstring>
+        <name>include_row_ids</name>
+        <qualifiedname>paimon::FullTextMatch::include_row_ids</qualifiedname>
+        <briefdescription>
+<para>Optional eligible row ids. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>File readers use file-local physical row positions; An empty set matches no rows. If not set, all rows are searched. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_match.h" line="48" column="19" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_match.h" bodystart="48" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="structpaimon_1_1_full_text_match_1aacffde54ed364c087955bbee10523217" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type></type>
+        <definition>paimon::FullTextMatch::FullTextMatch</definition>
+        <argsstring>(const std::string &amp;_field_name, const std::string &amp;_query, std::optional&lt; RoaringBitmap64 &gt; _include_row_ids=std::nullopt)</argsstring>
+        <name>FullTextMatch</name>
+        <qualifiedname>paimon::FullTextMatch::FullTextMatch</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>_field_name</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>_query</declname>
+        </param>
+        <param>
+          <type>std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt;</type>
+          <declname>_include_row_ids</declname>
+          <defval>std::nullopt</defval>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_match.h" line="33" column="5" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_match.h" bodystart="33" bodyend="35"/>
+      </memberdef>
+      <memberdef kind="function" id="structpaimon_1_1_full_text_match_1a9025deb5b7b0758f3748f6ca2be184d8" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::FullTextMatch::operator==</definition>
+        <argsstring>(const FullTextMatch &amp;other) const</argsstring>
+        <name>operator==</name>
+        <qualifiedname>paimon::FullTextMatch::operator==</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="structpaimon_1_1_full_text_match" kindref="compound">FullTextMatch</ref> &amp;</type>
+          <declname>other</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_match.h" line="37" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_match.h" bodystart="37" bodyend="40"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>A full-text condition returning every matching row without TopK truncation. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>Project <computeroutput>_&lt;field&gt;_INDEX_SCORE</computeroutput> in the read schema to return its scores. </para>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_match.h" line="32" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/predicate/full_text_match.h" bodystart="32" bodyend="49"/>
+    <listofallmembers>
+      <member refid="structpaimon_1_1_full_text_match_1a0da794214b3bdc0e532dcf74bfa6accc" prot="public" virt="non-virtual"><scope>paimon::FullTextMatch</scope><name>field_name</name></member>
+      <member refid="structpaimon_1_1_full_text_match_1aacffde54ed364c087955bbee10523217" prot="public" virt="non-virtual"><scope>paimon::FullTextMatch</scope><name>FullTextMatch</name></member>
+      <member refid="structpaimon_1_1_full_text_match_1a39c4fda1d345563cd811f2686f0457ba" prot="public" virt="non-virtual"><scope>paimon::FullTextMatch</scope><name>include_row_ids</name></member>
+      <member refid="structpaimon_1_1_full_text_match_1a9025deb5b7b0758f3748f6ca2be184d8" prot="public" virt="non-virtual"><scope>paimon::FullTextMatch</scope><name>operator==</name></member>
+      <member refid="structpaimon_1_1_full_text_match_1ad579f7c453ac114725443c7e5ff5b274" prot="public" virt="non-virtual"><scope>paimon::FullTextMatch</scope><name>query</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

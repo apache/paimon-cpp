@@ -1,0 +1,285 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_offset_output_stream" kind="class" language="C++" prot="public">
+    <compoundname>paimon::OffsetOutputStream</compoundname>
+    <basecompoundref refid="classpaimon_1_1_output_stream" prot="public" virt="non-virtual">paimon::OutputStream</basecompoundref>
+    <includes refid="offset__output__stream_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h</includes>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_offset_output_stream_1adb12831523b039865b2d26460aa4bc8c" prot="private" static="no" mutable="no">
+        <type><ref refid="classpaimon_1_1_output_stream" kindref="compound">OutputStream</ref> *</type>
+        <definition>OutputStream* paimon::OffsetOutputStream::output_</definition>
+        <argsstring></argsstring>
+        <name>output_</name>
+        <qualifiedname>paimon::OffsetOutputStream::output_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" line="52" column="18" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" bodystart="52" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_offset_output_stream_1a17190067926def9fac6f4aae52e9479b" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>const int64_t paimon::OffsetOutputStream::start_</definition>
+        <argsstring></argsstring>
+        <name>start_</name>
+        <qualifiedname>paimon::OffsetOutputStream::start_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" line="53" column="19" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" bodystart="53" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-static-func">
+      <memberdef kind="function" id="classpaimon_1_1_offset_output_stream_1adc568b12cef5d210dc0dba72ceb71d87" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::unique_ptr&lt; <ref refid="classpaimon_1_1_offset_output_stream" kindref="compound">OffsetOutputStream</ref> &gt; &gt;</type>
+        <definition>static Result&lt; std::unique_ptr&lt; OffsetOutputStream &gt; &gt; paimon::OffsetOutputStream::Create</definition>
+        <argsstring>(OutputStream *output)</argsstring>
+        <name>Create</name>
+        <qualifiedname>paimon::OffsetOutputStream::Create</qualifiedname>
+        <param>
+          <type><ref refid="classpaimon_1_1_output_stream" kindref="compound">OutputStream</ref> *</type>
+          <declname>output</declname>
+        </param>
+        <briefdescription>
+<para>Creates a relative-position view over a non-null borrowed stream. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" line="38" column="19"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_offset_output_stream_1ac22e24b0595b0b40d59df304702eabc3" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::OffsetOutputStream::~OffsetOutputStream</definition>
+        <argsstring>() override=default</argsstring>
+        <name>~OffsetOutputStream</name>
+        <qualifiedname>paimon::OffsetOutputStream::~OffsetOutputStream</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" line="39" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_offset_output_stream_1af87a08d4dc8408e8f260573bfa0beb2a" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref> &gt;</type>
+        <definition>Result&lt; int64_t &gt; paimon::OffsetOutputStream::Write</definition>
+        <argsstring>(const char *buffer, int64_t size) override</argsstring>
+        <name>Write</name>
+        <qualifiedname>paimon::OffsetOutputStream::Write</qualifiedname>
+        <reimplements refid="classpaimon_1_1_output_stream_1a37d2c57cd9a4b9881a69327329507605">Write</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref> *</type>
+          <declname>buffer</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>size</declname>
+        </param>
+        <briefdescription>
+<para>Write data to the output stream. </para>
+        </briefdescription>
+        <detaileddescription>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>buffer</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Pointer to the data buffer to write. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>size</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Number of bytes to write from the buffer. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+<simplesect kind="return"><para><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref> containing the actual number of bytes written on success, or an error status on failure. </para>
+</simplesect>
+<simplesect kind="note"><para>The stream position advances by the number of bytes actually written. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" line="41" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_offset_output_stream_1a616fcdaa810e430e60ed11b6c36bf280" prot="public" static="no" const="yes" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref> &gt;</type>
+        <definition>Result&lt; int64_t &gt; paimon::OffsetOutputStream::GetPos</definition>
+        <argsstring>() const override</argsstring>
+        <name>GetPos</name>
+        <qualifiedname>paimon::OffsetOutputStream::GetPos</qualifiedname>
+        <reimplements refid="classpaimon_1_1_output_stream_1acf3de015741596ae7d44bade71df9b89">GetPos</reimplements>
+        <briefdescription>
+<para>Get the write position. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" line="42" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_offset_output_stream_1a589b3a91f2e2ac9c16207be5b7e46680" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref> &gt;</type>
+        <definition>Result&lt; int64_t &gt; paimon::OffsetOutputStream::GetUnderlyingPos</definition>
+        <argsstring>() const</argsstring>
+        <name>GetUnderlyingPos</name>
+        <qualifiedname>paimon::OffsetOutputStream::GetUnderlyingPos</qualifiedname>
+        <briefdescription>
+<para>Returns the current position of the innermost stream, unwrapping nested OffsetOutputStreams. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" line="44" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_offset_output_stream_1af6bbee005cb92b99986af816e6867a0d" prot="public" static="no" const="yes" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::string &gt;</type>
+        <definition>Result&lt; std::string &gt; paimon::OffsetOutputStream::GetUri</definition>
+        <argsstring>() const override</argsstring>
+        <name>GetUri</name>
+        <qualifiedname>paimon::OffsetOutputStream::GetUri</qualifiedname>
+        <reimplements refid="classpaimon_1_1_output_stream_1af8d3717c83bb3b7c3a664167c3f43261">GetUri</reimplements>
+        <briefdescription>
+<para>Get the uri of the output stream. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" line="45" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_offset_output_stream_1abc36c19a7d4518a323bfe0e76d2e4eeb" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref></type>
+        <definition>Status paimon::OffsetOutputStream::Flush</definition>
+        <argsstring>() override</argsstring>
+        <name>Flush</name>
+        <qualifiedname>paimon::OffsetOutputStream::Flush</qualifiedname>
+        <reimplements refid="classpaimon_1_1_output_stream_1abe7934a91049e5026eae1a8288c2e42f">Flush</reimplements>
+        <briefdescription>
+<para>Flush pending data to the disk. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" line="46" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_offset_output_stream_1a888a3ffc2a3f6728d4fd289b02231f2a" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref></type>
+        <definition>Status paimon::OffsetOutputStream::Close</definition>
+        <argsstring>() override</argsstring>
+        <name>Close</name>
+        <qualifiedname>paimon::OffsetOutputStream::Close</qualifiedname>
+        <reimplements refid="classpaimon_1_1_stream_1a1c12b3f1e8618ad95e980aa6ea79912a">Close</reimplements>
+        <briefdescription>
+<para>Close the stream. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" line="47" column="12"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="private-func">
+      <memberdef kind="function" id="classpaimon_1_1_offset_output_stream_1a9a7f0d1723b1827926b029eaeb8f4b74" prot="private" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::OffsetOutputStream::OffsetOutputStream</definition>
+        <argsstring>(OutputStream *output, int64_t start)</argsstring>
+        <name>OffsetOutputStream</name>
+        <qualifiedname>paimon::OffsetOutputStream::OffsetOutputStream</qualifiedname>
+        <param>
+          <type><ref refid="classpaimon_1_1_output_stream" kindref="compound">OutputStream</ref> *</type>
+          <declname>output</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>start</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" line="50" column="5"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>A borrowed output view reporting positions relative to the wrapped stream&apos;s position at creation. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>Flush forwards to the wrapped stream; Close leaves it open. The wrapped stream must outlive this view. </para>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="1">
+        <label>paimon::OffsetOutputStream</label>
+        <link refid="classpaimon_1_1_offset_output_stream"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="2">
+        <label>paimon::OutputStream</label>
+        <link refid="classpaimon_1_1_output_stream"/>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="3">
+        <label>paimon::Stream</label>
+        <link refid="classpaimon_1_1_stream"/>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="1">
+        <label>paimon::OffsetOutputStream</label>
+        <link refid="classpaimon_1_1_offset_output_stream"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+        <childnode refid="2" relation="usage">
+          <edgelabel>output_</edgelabel>
+        </childnode>
+      </node>
+      <node id="2">
+        <label>paimon::OutputStream</label>
+        <link refid="classpaimon_1_1_output_stream"/>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="3">
+        <label>paimon::Stream</label>
+        <link refid="classpaimon_1_1_stream"/>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" line="35" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/io/offset_output_stream.h" bodystart="35" bodyend="54"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_offset_output_stream_1a888a3ffc2a3f6728d4fd289b02231f2a" prot="public" virt="virtual"><scope>paimon::OffsetOutputStream</scope><name>Close</name></member>
+      <member refid="classpaimon_1_1_offset_output_stream_1adc568b12cef5d210dc0dba72ceb71d87" prot="public" virt="non-virtual"><scope>paimon::OffsetOutputStream</scope><name>Create</name></member>
+      <member refid="classpaimon_1_1_offset_output_stream_1abc36c19a7d4518a323bfe0e76d2e4eeb" prot="public" virt="virtual"><scope>paimon::OffsetOutputStream</scope><name>Flush</name></member>
+      <member refid="classpaimon_1_1_offset_output_stream_1a616fcdaa810e430e60ed11b6c36bf280" prot="public" virt="virtual"><scope>paimon::OffsetOutputStream</scope><name>GetPos</name></member>
+      <member refid="classpaimon_1_1_offset_output_stream_1a589b3a91f2e2ac9c16207be5b7e46680" prot="public" virt="non-virtual"><scope>paimon::OffsetOutputStream</scope><name>GetUnderlyingPos</name></member>
+      <member refid="classpaimon_1_1_offset_output_stream_1af6bbee005cb92b99986af816e6867a0d" prot="public" virt="virtual"><scope>paimon::OffsetOutputStream</scope><name>GetUri</name></member>
+      <member refid="classpaimon_1_1_offset_output_stream_1a9a7f0d1723b1827926b029eaeb8f4b74" prot="private" virt="non-virtual"><scope>paimon::OffsetOutputStream</scope><name>OffsetOutputStream</name></member>
+      <member refid="classpaimon_1_1_offset_output_stream_1adb12831523b039865b2d26460aa4bc8c" prot="private" virt="non-virtual"><scope>paimon::OffsetOutputStream</scope><name>output_</name></member>
+      <member refid="classpaimon_1_1_output_stream_1a550aead391c3dff769bbeeea330bb4c2" prot="public" virt="non-virtual"><scope>paimon::OffsetOutputStream</scope><name>OutputStream</name></member>
+      <member refid="classpaimon_1_1_offset_output_stream_1a17190067926def9fac6f4aae52e9479b" prot="private" virt="non-virtual"><scope>paimon::OffsetOutputStream</scope><name>start_</name></member>
+      <member refid="classpaimon_1_1_offset_output_stream_1af87a08d4dc8408e8f260573bfa0beb2a" prot="public" virt="virtual"><scope>paimon::OffsetOutputStream</scope><name>Write</name></member>
+      <member refid="classpaimon_1_1_offset_output_stream_1ac22e24b0595b0b40d59df304702eabc3" prot="public" virt="non-virtual"><scope>paimon::OffsetOutputStream</scope><name>~OffsetOutputStream</name></member>
+      <member refid="classpaimon_1_1_stream_1aff0ae0a9c78f8fb31da85ef1607748d9" prot="public" virt="virtual"><scope>paimon::OffsetOutputStream</scope><name>~Stream</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

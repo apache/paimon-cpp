@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="dir_d34876a3325f2fbf848f43f264cf378f" kind="dir">
+    <compoundname>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index</compoundname>
+    <innerfile refid="realtime__index_8h">realtime_index.h</innerfile>
+    <innerfile refid="realtime__index__factory_8h">realtime_index_factory.h</innerfile>
+    <innerfile refid="realtime__index__reader_8h">realtime_index_reader.h</innerfile>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/"/>
+  </compounddef>
+</doxygen>

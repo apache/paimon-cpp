@@ -1,0 +1,140 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_basic_file_status" kind="class" language="C++" prot="public">
+    <compoundname>paimon::BasicFileStatus</compoundname>
+    <includes refid="file__system_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h</includes>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_basic_file_status_1a7c2f9697cd89b642a4a897cea52888b4" prot="private" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string paimon::BasicFileStatus::path_</definition>
+        <argsstring></argsstring>
+        <name>path_</name>
+        <qualifiedname>paimon::BasicFileStatus::path_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="163" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="163" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_basic_file_status_1a7ebdcedba76e32a5e2f49bff02643362" prot="private" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::BasicFileStatus::is_dir_</definition>
+        <argsstring></argsstring>
+        <name>is_dir_</name>
+        <qualifiedname>paimon::BasicFileStatus::is_dir_</qualifiedname>
+        <initializer>= <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">false</ref></initializer>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="164" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="164" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_basic_file_status_1a025f1e86f33d5122302d1ad2953d6514" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::BasicFileStatus::BasicFileStatus</definition>
+        <argsstring>()=default</argsstring>
+        <name>BasicFileStatus</name>
+        <qualifiedname>paimon::BasicFileStatus::BasicFileStatus</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="145" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_basic_file_status_1a02ff58a99da9984af2d6264f5090ab87" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type></type>
+        <definition>paimon::BasicFileStatus::BasicFileStatus</definition>
+        <argsstring>(std::string path, bool is_dir)</argsstring>
+        <name>BasicFileStatus</name>
+        <qualifiedname>paimon::BasicFileStatus::BasicFileStatus</qualifiedname>
+        <param>
+          <type>std::string</type>
+          <declname>path</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+          <declname>is_dir</declname>
+        </param>
+        <briefdescription>
+<para>Create a basic file status from caller-supplied metadata. </para>
+        </briefdescription>
+        <detaileddescription>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>path</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>The path of the file or directory. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>is_dir</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Whether the path represents a directory. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="150" column="5" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="150" bodyend="150"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_basic_file_status_1a964a7e09d49d4e8f93e96c04e74bc3c0" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::BasicFileStatus::IsDir</definition>
+        <argsstring>() const</argsstring>
+        <name>IsDir</name>
+        <qualifiedname>paimon::BasicFileStatus::IsDir</qualifiedname>
+        <briefdescription>
+<para>Check if this entry represents a directory. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="153" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="153" bodyend="155"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_basic_file_status_1a6d7b09091087fb936235ffc3d9aa8d7b" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type>std::string</type>
+        <definition>std::string paimon::BasicFileStatus::GetPath</definition>
+        <argsstring>() const</argsstring>
+        <name>GetPath</name>
+        <qualifiedname>paimon::BasicFileStatus::GetPath</qualifiedname>
+        <briefdescription>
+<para>Get the path of this file or directory. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="158" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="158" bodyend="160"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Basic file status information. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>This class provides fundamental file system metadata for files and directories. It serves as a lightweight value type for basic file operations that only require path information and directory status. It can be copied and stored cheaply. </para>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" line="143" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/fs/file_system.h" bodystart="143" bodyend="165"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_basic_file_status_1a025f1e86f33d5122302d1ad2953d6514" prot="public" virt="non-virtual"><scope>paimon::BasicFileStatus</scope><name>BasicFileStatus</name></member>
+      <member refid="classpaimon_1_1_basic_file_status_1a02ff58a99da9984af2d6264f5090ab87" prot="public" virt="non-virtual"><scope>paimon::BasicFileStatus</scope><name>BasicFileStatus</name></member>
+      <member refid="classpaimon_1_1_basic_file_status_1a6d7b09091087fb936235ffc3d9aa8d7b" prot="public" virt="non-virtual"><scope>paimon::BasicFileStatus</scope><name>GetPath</name></member>
+      <member refid="classpaimon_1_1_basic_file_status_1a7ebdcedba76e32a5e2f49bff02643362" prot="private" virt="non-virtual"><scope>paimon::BasicFileStatus</scope><name>is_dir_</name></member>
+      <member refid="classpaimon_1_1_basic_file_status_1a964a7e09d49d4e8f93e96c04e74bc3c0" prot="public" virt="non-virtual"><scope>paimon::BasicFileStatus</scope><name>IsDir</name></member>
+      <member refid="classpaimon_1_1_basic_file_status_1a7c2f9697cd89b642a4a897cea52888b4" prot="private" virt="non-virtual"><scope>paimon::BasicFileStatus</scope><name>path_</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

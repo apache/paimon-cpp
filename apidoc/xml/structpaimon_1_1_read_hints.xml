@@ -1,0 +1,52 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structpaimon_1_1_read_hints" kind="struct" language="C++" prot="public">
+    <compoundname>paimon::ReadHints</compoundname>
+    <includes refid="read__hints_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/read_hints.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structpaimon_1_1_read_hints_1adc73b08d68e296280358dc578a930dc5" prot="public" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::ReadHints::prefetch_enabled</definition>
+        <argsstring></argsstring>
+        <name>prefetch_enabled</name>
+        <qualifiedname>paimon::ReadHints::prefetch_enabled</qualifiedname>
+        <initializer>= <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">false</ref></initializer>
+        <briefdescription>
+<para>Whether framework-level prefetch is enabled for this read. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/read_hints.h" line="30" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/read_hints.h" bodystart="30" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_read_hints_1a7c251ec41f6d11284fab3c1b567538ca" prot="public" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::ReadHints::read_ahead_cache_enabled</definition>
+        <argsstring></argsstring>
+        <name>read_ahead_cache_enabled</name>
+        <qualifiedname>paimon::ReadHints::read_ahead_cache_enabled</qualifiedname>
+        <initializer>= <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">false</ref></initializer>
+        <briefdescription>
+<para>Whether the shared read-ahead cache is enabled for this read. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/read_hints.h" line="32" column="10" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/read_hints.h" bodystart="32" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Runtime state of the framework read path, passed to format layers via <computeroutput><ref refid="classpaimon_1_1_reader_builder_1a9210e4d8b69174bc5d494b9773b96f37" kindref="member">ReaderBuilder::WithReadHints</ref></computeroutput> so each format can adapt its internal behavior (e.g. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>whether parquet enables its own pre-buffering). </para>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/read_hints.h" line="28" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/format/read_hints.h" bodystart="28" bodyend="33"/>
+    <listofallmembers>
+      <member refid="structpaimon_1_1_read_hints_1adc73b08d68e296280358dc578a930dc5" prot="public" virt="non-virtual"><scope>paimon::ReadHints</scope><name>prefetch_enabled</name></member>
+      <member refid="structpaimon_1_1_read_hints_1a7c251ec41f6d11284fab3c1b567538ca" prot="public" virt="non-virtual"><scope>paimon::ReadHints</scope><name>read_ahead_cache_enabled</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

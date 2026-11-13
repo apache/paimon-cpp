@@ -1,0 +1,139 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_realtime_index_factory" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::RealtimeIndexFactory</compoundname>
+    <basecompoundref refid="classpaimon_1_1_factory" prot="public" virt="non-virtual">paimon::Factory</basecompoundref>
+    <includes refid="realtime__index__factory_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_factory.h</includes>
+    <sectiondef kind="public-static-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_realtime_index_factory_1ae594eed59052f06a68e169c0ef46fda5" prot="public" static="yes" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">char</ref></type>
+        <definition>const char paimon::RealtimeIndexFactory::REALTIME_INDEX_IDENTIFIER_SUFFIX[]</definition>
+        <argsstring>[]</argsstring>
+        <name>REALTIME_INDEX_IDENTIFIER_SUFFIX</name>
+        <qualifiedname>paimon::RealtimeIndexFactory::REALTIME_INDEX_IDENTIFIER_SUFFIX</qualifiedname>
+        <briefdescription>
+<para>Registry suffix for real-time index plugins. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_factory.h" line="42" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_factory.h" bodystart="42" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_factory_1af3d0a413e5717c2a0c93cc05d8f37211" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::RealtimeIndexFactory::~RealtimeIndexFactory</definition>
+        <argsstring>() override=default</argsstring>
+        <name>~RealtimeIndexFactory</name>
+        <qualifiedname>paimon::RealtimeIndexFactory::~RealtimeIndexFactory</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_factory.h" line="39" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_factory_1a19171ef8f135b4008ff40567c4ead2d5" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_index" kindref="compound">RealtimeIndex</ref> &gt; &gt;</type>
+        <definition>virtual Result&lt; std::shared_ptr&lt; RealtimeIndex &gt; &gt; paimon::RealtimeIndexFactory::Create</definition>
+        <argsstring>(::ArrowSchema *write_schema, const std::map&lt; std::string, std::string &gt; &amp;options, const std::shared_ptr&lt; MemoryPool &gt; &amp;pool) const =0</argsstring>
+        <name>Create</name>
+        <qualifiedname>paimon::RealtimeIndexFactory::Create</qualifiedname>
+        <param>
+          <type><ref refid="struct_arrow_schema" kindref="compound">::ArrowSchema</ref> *</type>
+          <declname>write_schema</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::map&lt; std::string, std::string &gt; &amp;</type>
+          <declname>options</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_memory_pool" kindref="compound">MemoryPool</ref> &gt; &amp;</type>
+          <declname>pool</declname>
+        </param>
+        <briefdescription>
+<para>Creates a new field index; consumes the [_REALTIME_OFFSET, field] schema. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_factory.h" line="50" column="20"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-static-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_factory_1a0d3124f41a383392b51958ff1f89c848" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_index" kindref="compound">RealtimeIndex</ref> &gt; &gt;</type>
+        <definition>static Result&lt; std::shared_ptr&lt; RealtimeIndex &gt; &gt; paimon::RealtimeIndexFactory::Get</definition>
+        <argsstring>(const std::string &amp;identifier, ::ArrowSchema *write_schema, const std::map&lt; std::string, std::string &gt; &amp;options, const std::shared_ptr&lt; MemoryPool &gt; &amp;pool)</argsstring>
+        <name>Get</name>
+        <qualifiedname>paimon::RealtimeIndexFactory::Get</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>identifier</declname>
+        </param>
+        <param>
+          <type><ref refid="struct_arrow_schema" kindref="compound">::ArrowSchema</ref> *</type>
+          <declname>write_schema</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::map&lt; std::string, std::string &gt; &amp;</type>
+          <declname>options</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_memory_pool" kindref="compound">MemoryPool</ref> &gt; &amp;</type>
+          <declname>pool</declname>
+        </param>
+        <briefdescription>
+<para>Resolves identifier + &quot;-realtime&quot; and consumes the [_REALTIME_OFFSET, field] schema. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_factory.h" line="45" column="19"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para><ref refid="classpaimon_1_1_factory" kindref="compound">Factory</ref> for field indexes configured by realtime.index.&lt;identifier&gt;.columns. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="2">
+        <label>paimon::Factory</label>
+        <link refid="classpaimon_1_1_factory"/>
+      </node>
+      <node id="1">
+        <label>paimon::RealtimeIndexFactory</label>
+        <link refid="classpaimon_1_1_realtime_index_factory"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="2">
+        <label>paimon::Factory</label>
+        <link refid="classpaimon_1_1_factory"/>
+      </node>
+      <node id="1">
+        <label>paimon::RealtimeIndexFactory</label>
+        <link refid="classpaimon_1_1_realtime_index_factory"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_factory.h" line="37" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_factory.h" bodystart="37" bodyend="53"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_realtime_index_factory_1a19171ef8f135b4008ff40567c4ead2d5" prot="public" virt="pure-virtual"><scope>paimon::RealtimeIndexFactory</scope><name>Create</name></member>
+      <member refid="classpaimon_1_1_realtime_index_factory_1a0d3124f41a383392b51958ff1f89c848" prot="public" virt="non-virtual"><scope>paimon::RealtimeIndexFactory</scope><name>Get</name></member>
+      <member refid="classpaimon_1_1_factory_1ac808cd0782a47c534bc16b3b5e3b0edd" prot="public" virt="pure-virtual"><scope>paimon::RealtimeIndexFactory</scope><name>Identifier</name></member>
+      <member refid="classpaimon_1_1_realtime_index_factory_1ae594eed59052f06a68e169c0ef46fda5" prot="public" virt="non-virtual"><scope>paimon::RealtimeIndexFactory</scope><name>REALTIME_INDEX_IDENTIFIER_SUFFIX</name></member>
+      <member refid="classpaimon_1_1_factory_1a9dd9931db9fb33c829b1401d2b2b80ad" prot="public" virt="virtual"><scope>paimon::RealtimeIndexFactory</scope><name>~Factory</name></member>
+      <member refid="classpaimon_1_1_realtime_index_factory_1af3d0a413e5717c2a0c93cc05d8f37211" prot="public" virt="non-virtual"><scope>paimon::RealtimeIndexFactory</scope><name>~RealtimeIndexFactory</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

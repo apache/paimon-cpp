@@ -1,0 +1,136 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_index_full_text_search_split" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::IndexFullTextSearchSplit</compoundname>
+    <basecompoundref refid="classpaimon_1_1_full_text_search_split" prot="public" virt="non-virtual">paimon::FullTextSearchSplit</basecompoundref>
+    <includes refid="full__text__search__split_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_index_full_text_search_split_1a79ed5352d17b785241d73e873079487d" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>virtual int64_t paimon::IndexFullTextSearchSplit::SnapshotId</definition>
+        <argsstring>() const =0</argsstring>
+        <name>SnapshotId</name>
+        <qualifiedname>paimon::IndexFullTextSearchSplit::SnapshotId</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para><simplesect kind="return"><para>The id of the snapshot the split was planned from. The read ranks only the rows live in this snapshot. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="69" column="21"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_index_full_text_search_split_1a46891fae78315b863baa1cd1f13bd08a" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+        <definition>virtual const std::string &amp; paimon::IndexFullTextSearchSplit::ColumnName</definition>
+        <argsstring>() const =0</argsstring>
+        <name>ColumnName</name>
+        <qualifiedname>paimon::IndexFullTextSearchSplit::ColumnName</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para><simplesect kind="return"><para>The name of the searched table column. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="72" column="31"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_index_full_text_search_split_1aa98eb23ed721c52532875006ae521d35" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>virtual int64_t paimon::IndexFullTextSearchSplit::RowRangeStart</definition>
+        <argsstring>() const =0</argsstring>
+        <name>RowRangeStart</name>
+        <qualifiedname>paimon::IndexFullTextSearchSplit::RowRangeStart</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para><simplesect kind="return"><para>The first global row id of the index shard. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="75" column="21"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_index_full_text_search_split_1aa2aeaa4dcc6647e87edf4323ff0a45f2" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>virtual int64_t paimon::IndexFullTextSearchSplit::RowRangeEnd</definition>
+        <argsstring>() const =0</argsstring>
+        <name>RowRangeEnd</name>
+        <qualifiedname>paimon::IndexFullTextSearchSplit::RowRangeEnd</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para><simplesect kind="return"><para>The last global row id of the index shard, inclusive. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="78" column="21"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_index_full_text_search_split_1ab57522de54946f96bf51094d5e3b68a4" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::vector&lt; <ref refid="structpaimon_1_1_range" kindref="compound">Range</ref> &gt; &amp;</type>
+        <definition>virtual const std::vector&lt; Range &gt; &amp; paimon::IndexFullTextSearchSplit::SearchRowRanges</definition>
+        <argsstring>() const =0</argsstring>
+        <name>SearchRowRanges</name>
+        <qualifiedname>paimon::IndexFullTextSearchSplit::SearchRowRanges</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para><simplesect kind="return"><para>The sorted, disjoint global row id ranges that this split ranks. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="81" column="31"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>A split that searches the full-text index files of one index shard, aligned with Java <computeroutput>org.apache.paimon.table.source.IndexFullTextSearchSplit</computeroutput>. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>When index shards overlap, the scan gives each row to one shard, so a split may rank only some rows of its shard: <computeroutput><ref refid="classpaimon_1_1_index_full_text_search_split_1ab57522de54946f96bf51094d5e3b68a4" kindref="member">SearchRowRanges()</ref></computeroutput> lie within [<computeroutput><ref refid="classpaimon_1_1_index_full_text_search_split_1aa98eb23ed721c52532875006ae521d35" kindref="member">RowRangeStart()</ref></computeroutput>, <computeroutput><ref refid="classpaimon_1_1_index_full_text_search_split_1aa2aeaa4dcc6647e87edf4323ff0a45f2" kindref="member">RowRangeEnd()</ref></computeroutput>], the physical range of the shard, which maps the shard-local row ids of the index to global ones. </para>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="2">
+        <label>paimon::FullTextSearchSplit</label>
+        <link refid="classpaimon_1_1_full_text_search_split"/>
+      </node>
+      <node id="1">
+        <label>paimon::IndexFullTextSearchSplit</label>
+        <link refid="classpaimon_1_1_index_full_text_search_split"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="2">
+        <label>paimon::FullTextSearchSplit</label>
+        <link refid="classpaimon_1_1_full_text_search_split"/>
+      </node>
+      <node id="1">
+        <label>paimon::IndexFullTextSearchSplit</label>
+        <link refid="classpaimon_1_1_index_full_text_search_split"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="65" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" bodystart="65" bodyend="82"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_index_full_text_search_split_1a46891fae78315b863baa1cd1f13bd08a" prot="public" virt="pure-virtual"><scope>paimon::IndexFullTextSearchSplit</scope><name>ColumnName</name></member>
+      <member refid="classpaimon_1_1_full_text_search_split_1abc4f9b6e60e2d8f29886a387c803caa4" prot="public" virt="non-virtual"><scope>paimon::IndexFullTextSearchSplit</scope><name>Deserialize</name></member>
+      <member refid="classpaimon_1_1_index_full_text_search_split_1aa2aeaa4dcc6647e87edf4323ff0a45f2" prot="public" virt="pure-virtual"><scope>paimon::IndexFullTextSearchSplit</scope><name>RowRangeEnd</name></member>
+      <member refid="classpaimon_1_1_index_full_text_search_split_1aa98eb23ed721c52532875006ae521d35" prot="public" virt="pure-virtual"><scope>paimon::IndexFullTextSearchSplit</scope><name>RowRangeStart</name></member>
+      <member refid="classpaimon_1_1_index_full_text_search_split_1ab57522de54946f96bf51094d5e3b68a4" prot="public" virt="pure-virtual"><scope>paimon::IndexFullTextSearchSplit</scope><name>SearchRowRanges</name></member>
+      <member refid="classpaimon_1_1_full_text_search_split_1ad0e0afebe837af0b6a01ac4341fbec55" prot="public" virt="non-virtual"><scope>paimon::IndexFullTextSearchSplit</scope><name>Serialize</name></member>
+      <member refid="classpaimon_1_1_index_full_text_search_split_1a79ed5352d17b785241d73e873079487d" prot="public" virt="pure-virtual"><scope>paimon::IndexFullTextSearchSplit</scope><name>SnapshotId</name></member>
+      <member refid="classpaimon_1_1_full_text_search_split_1a664da20e34736ebbb9b3a803c30b4b45" prot="public" virt="virtual"><scope>paimon::IndexFullTextSearchSplit</scope><name>~FullTextSearchSplit</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>
