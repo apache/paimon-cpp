@@ -34,11 +34,13 @@
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
 #include "arrow/c/abi.h"
+#include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "arrow/util/key_value_metadata.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/factories/io_hook.h"
@@ -51,6 +53,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/catalog/file_system_catalog.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_source.h"
 #include "paimon/core/snapshot.h"
@@ -926,6 +929,49 @@ TEST(SystemTableReadInteTest, TestReadMetadataSystemTablesAtPinnedSnapshot) {
                         "snapshot 3 does not exist");
     ASSERT_NOK_WITH_MSG(ReadSystemTable(table_path + "$manifests", missing_options),
                         "snapshot 3 does not exist");
+
+    FileSystemCatalog catalog(dir->GetFileSystem(), dir->Str(), {});
+    for (const std::string kind : {"files", "manifests"}) {
+        SCOPED_TRACE(kind);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                             catalog.GetTable(Identifier("foo", "bar$" + kind)));
+        const auto bound_schema = table->GetSchema();
+        auto create_reader = [&table](const std::map<std::string, std::string>& read_options)
+            -> Result<std::unique_ptr<BatchReader>> {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<ScanContext> scan_context,
+                ScanContextBuilder("unused_path").SetOptions(read_options).Finish());
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan,
+                                   table->NewScan(std::move(scan_context)));
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, scan->CreatePlan());
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<ReadContext> read_context,
+                ReadContextBuilder("unused_path").SetOptions(read_options).Finish());
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read,
+                                   table->NewRead(std::move(read_context)));
+            return read->CreateReader(plan->Splits());
+        };
+
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> pinned_reader,
+                             create_reader(pinned_options));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> latest_reader, create_reader({}));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> missing_reader,
+                             create_reader(missing_options));
+        ASSERT_NOK_WITH_MSG(ReadResultCollector::CollectResult(std::move(missing_reader)),
+                            "snapshot 3 does not exist");
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> pinned,
+                             ReadResultCollector::CollectResult(std::move(pinned_reader)));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> latest,
+                             ReadResultCollector::CollectResult(std::move(latest_reader)));
+        ASSERT_TRUE(pinned->Equals(kind == "files" ? pinned_files : pinned_manifests));
+        ASSERT_TRUE(latest->Equals(kind == "files" ? latest_files : latest_manifests));
+        ASSERT_EQ(bound_schema, table->GetSchema());
+        for (const auto& overrides :
+             {std::map<std::string, std::string>{{Options::BRANCH, "dev"}},
+              std::map<std::string, std::string>{{Options::TYPE, "format-table"}}}) {
+            ASSERT_NOK_WITH_MSG(create_reader(overrides), "contradicts the loaded table");
+        }
+    }
 }
 
 TEST(SystemTableReadInteTest, TestReadOptimizedSystemTable) {
@@ -1727,6 +1773,121 @@ TEST(SystemTableReadInteTest, TestReadAuditLogSystemTableWithSequenceNumber) {
     AssertStructArrayEqualsJson(array, R"([
         ["+I", 0, "a", 1]
     ])");
+}
+
+TEST(SystemTableReadInteTest, TestChangelogSequenceNumberCannotBeDisabledByReadOptions) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
+                                       arrow::field("v", arrow::int32())};
+    const std::map<std::string, std::string> options = {
+        {Options::FILE_SYSTEM, "local"},
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         TestHelper::Create(dir->Str(), arrow::schema(fields), {}, {"pk"}, options,
+                                            /*is_streaming_mode=*/true));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["a", 1]])", {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+    FileSystemCatalog catalog(dir->GetFileSystem(), dir->Str(), {});
+    const std::map<std::string, std::string> read_options = {
+        {Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "false"}};
+    for (const std::string kind : {"audit_log", "binlog"}) {
+        SCOPED_TRACE(kind);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                             catalog.GetTable(Identifier("foo", "bar$" + kind)));
+        for (bool direct : {false, true}) {
+            SCOPED_TRACE(direct);
+            const std::string path = table->GetRootPath() + "$" + kind;
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                                 ScanContextBuilder(path).SetOptions(read_options).Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                                 direct ? table->NewScan(std::move(scan_context))
+                                        : TableScan::Create(std::move(scan_context)));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                                 ReadContextBuilder(path).SetOptions(read_options).Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                                 direct ? table->NewRead(std::move(read_context))
+                                        : TableRead::Create(std::move(read_context)));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                                 read->CreateReader(plan->Splits()));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                                 ReadResultCollector::CollectResult(std::move(reader)));
+            auto array = SingleStructChunk(result);
+            ASSERT_EQ((std::vector<std::string>{"rowkind", "_SEQUENCE_NUMBER", "pk", "v"}),
+                      StructFieldNames(array));
+            AssertStructArrayEqualsJson(array, kind == "audit_log" ? R"([["+I", 0, "a", 1]])"
+                                                                   : R"([["+I", 0, ["a"], [1]]])");
+        }
+    }
+}
+
+TEST(SystemTableReadInteTest, TestLoadedChangelogHonorsDynamicSequenceNumber) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
+                                       arrow::field("v", arrow::int32())};
+    const std::map<std::string, std::string> options = {
+        {Options::FILE_SYSTEM, "local"},
+        {Options::FILE_FORMAT, "parquet"},
+        {Options::BUCKET, "1"},
+        {Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED, "false"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         TestHelper::Create(dir->Str(), arrow::schema(fields), {}, {"pk"}, options,
+                                            /*is_streaming_mode=*/true));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([["a", 1]])", {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+    FileSystemCatalog catalog(dir->GetFileSystem(), dir->Str(), {});
+    const std::map<std::string, std::string> read_options = {
+        {Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED, "false"},
+        {Options::TABLE_READ_SEQUENCE_NUMBER_ENABLED, "true"}};
+    for (const std::string kind : {"audit_log", "binlog"}) {
+        SCOPED_TRACE(kind);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                             catalog.GetTable(Identifier("foo", "bar$" + kind)));
+        for (bool direct : {false, true}) {
+            SCOPED_TRACE(direct);
+            const std::string path = table->GetRootPath() + "$" + kind;
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                                 ScanContextBuilder(path).SetOptions(read_options).Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                                 direct ? table->NewScan(std::move(scan_context))
+                                        : TableScan::Create(std::move(scan_context)));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                                 ReadContextBuilder(path).SetOptions(read_options).Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                                 direct ? table->NewRead(std::move(read_context))
+                                        : TableRead::Create(std::move(read_context)));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                                 read->CreateReader(plan->Splits()));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                                 ReadResultCollector::CollectResult(std::move(reader)));
+            auto array = SingleStructChunk(result);
+            ASSERT_EQ((std::vector<std::string>{"rowkind", "_SEQUENCE_NUMBER", "pk", "v"}),
+                      StructFieldNames(array));
+            AssertStructArrayEqualsJson(array, kind == "audit_log" ? R"([["+I", 0, "a", 1]])"
+                                                                   : R"([["+I", 0, ["a"], [1]]])");
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> reloaded,
+                             catalog.GetTable(Identifier("foo", "bar$" + kind)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> bound_schema,
+                             table->GetSchema()->GetArrowSchema());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> fresh_schema,
+                             reloaded->GetSchema()->GetArrowSchema());
+        auto bound = arrow::ImportSchema(bound_schema.get());
+        auto fresh = arrow::ImportSchema(fresh_schema.get());
+        ASSERT_TRUE(bound.ok()) << bound.status().ToString();
+        ASSERT_TRUE(fresh.ok()) << fresh.status().ToString();
+        ASSERT_TRUE(bound.ValueOrDie()->Equals(fresh.ValueOrDie()));
+        ASSERT_EQ(3, bound.ValueOrDie()->num_fields());
+    }
 }
 
 TEST(SystemTableReadInteTest, TestReadBinlogSystemTable) {
@@ -4290,18 +4451,18 @@ Result<std::shared_ptr<arrow::ChunkedArray>> ReadGlobalSystemTable(
 
     ScanContextBuilder scan_context_builder(sys_path);
     scan_context_builder.SetOptions(options);
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScanContext> scan_context,
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
                            scan_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
-                           system_table->NewScan(scan_context));
+                           system_table->NewScan(std::move(scan_context)));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
 
     ReadContextBuilder read_context_builder(sys_path);
     read_context_builder.SetOptions(options);
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context,
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                            read_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                           system_table->NewRead(read_context));
+                           system_table->NewRead(std::move(read_context)));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                            table_read->CreateReader(plan->Splits()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,

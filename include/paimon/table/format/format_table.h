@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table.h"
 #include "paimon/result.h"
 #include "paimon/schema/schema.h"
 #include "paimon/status.h"
@@ -53,7 +54,7 @@ class FileSystem;
 /// every context builder has, which is how a table whose schema lives in a metastore is reached.
 ///
 /// See `docs/source/user_guide/format_table.rst` for what is not supported yet.
-class PAIMON_EXPORT FormatTable {
+class PAIMON_EXPORT FormatTable : public Table {
  public:
     /// Formats a format table's files can be in.
     enum class Format {
@@ -115,11 +116,18 @@ class PAIMON_EXPORT FormatTable {
         const std::shared_ptr<FormatTable>& table,
         const std::map<std::string, std::string>& dynamic_options);
 
-    ~FormatTable();
+    ~FormatTable() override;
+
+    Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
+    Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
+    Result<std::unique_ptr<FileStoreWrite>> NewWrite(
+        std::unique_ptr<WriteContext> context) const override;
+    Result<std::unique_ptr<FileStoreCommit>> NewCommit(
+        std::unique_ptr<CommitContext> context) const override;
 
     /// Directory the data files live in.
     const std::string& Location() const {
-        return location_;
+        return root_path_;
     }
 
     /// Format of every data file in the directory.
@@ -156,16 +164,16 @@ class PAIMON_EXPORT FormatTable {
     }
 
     /// A name to identify this table.
-    std::string Name() const {
+    std::string Name() const override {
         return identifier_.GetObjectName();
     }
 
     /// Full name of the table, database.tableName.
-    std::string FullName() const;
+    std::string FullName() const override;
 
     /// Schema of the table, including its partition fields.
-    std::shared_ptr<DataSchema> LatestSchema() const {
-        return schema_;
+    std::shared_ptr<DataSchema> GetSchema() const {
+        return std::static_pointer_cast<DataSchema>(schema_);
     }
 
     /// Schema of the table as an arrow schema, including its partition fields.
@@ -186,16 +194,16 @@ class PAIMON_EXPORT FormatTable {
     }
 
  private:
+    Status CheckWriteContext(const std::string& path,
+                             const std::shared_ptr<FormatTable>& context_table) const;
+    Result<std::shared_ptr<FormatTable>> ForContext(
+        const std::map<std::string, std::string>& options) const;
     FormatTable(const std::shared_ptr<FileSystem>& file_system, const std::string& location,
                 const Identifier& identifier, const std::shared_ptr<DataSchema>& schema,
                 const std::map<std::string, std::string>& options, Format format,
                 const std::string& file_compression, const std::string& partition_default_name,
                 bool partition_only_value_in_path, bool location_carries_paimon_metadata);
 
-    std::shared_ptr<FileSystem> file_system_;
-    std::string location_;
-    Identifier identifier_;
-    std::shared_ptr<DataSchema> schema_;
     std::map<std::string, std::string> options_;
     Format format_;
     std::string file_compression_;

@@ -54,7 +54,9 @@
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/manifest/manifest_list.h"
+#include "paimon/core/options/table_type.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/stats/simple_stats_evolution.h"
@@ -196,6 +198,36 @@ MetadataSystemTableContext CreateMetadataContext(std::shared_ptr<FileSystem> fs,
 
 Result<CoreOptions> CreateCoreOptions(const MetadataSystemTableContext& context) {
     return CoreOptions::FromMap(context.options, context.fs);
+}
+
+Result<MetadataSystemTableContext> WithReadOptions(
+    const MetadataSystemTableContext& context,
+    const std::map<std::string, std::string>& overrides) {
+    auto branch = overrides.find(Options::BRANCH);
+    if (branch != overrides.end() &&
+        BranchManager::NormalizeBranch(branch->second) != context.branch) {
+        return Status::Invalid("context branch contradicts the loaded table");
+    }
+    MetadataSystemTableContext merged = context;
+    for (const auto& [key, value] : overrides) {
+        merged.options[key] = value;
+    }
+    PAIMON_ASSIGN_OR_RAISE(TableType type, TableTypeDefine::FromOptions(merged.options));
+    PAIMON_ASSIGN_OR_RAISE(TableType bound_type, TableTypeDefine::FromOptions(context.options));
+    if (type != bound_type) {
+        return Status::Invalid("context type contradicts the loaded table");
+    }
+    merged.options[Options::BRANCH] = context.branch;
+    PAIMON_RETURN_NOT_OK(SchemaValidation::RejectQueryAuth(*context.table_schema, merged.options,
+                                                           "System table statistics"));
+    // A held schema remains stable, but a newly enabled policy must also protect statistics.
+    SchemaManager manager(context.fs, context.table_path, context.branch);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest, manager.Latest());
+    if (latest) {
+        PAIMON_RETURN_NOT_OK(
+            SchemaValidation::RejectQueryAuth(**latest, merged.options, "System table statistics"));
+    }
+    return merged;
 }
 
 Result<std::shared_ptr<FileStorePathFactory>> CreatePathFactory(
@@ -516,13 +548,11 @@ Result<std::shared_ptr<InternalArray>> WriteColsValue(
 
 }  // namespace
 
-OptionsSystemTable::OptionsSystemTable(std::string table_path,
+OptionsSystemTable::OptionsSystemTable(const std::shared_ptr<FileSystem>& fs,
+                                       std::string table_path,
                                        std::shared_ptr<TableSchema> table_schema)
-    : InMemorySystemTable(std::move(table_path)), table_schema_(std::move(table_schema)) {}
-
-std::string OptionsSystemTable::Name() const {
-    return kName;
-}
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName)),
+      table_schema_(std::move(table_schema)) {}
 
 Result<std::shared_ptr<arrow::Schema>> OptionsSystemTable::ArrowSchema() const {
     return arrow::schema({arrow::field("key", arrow::utf8(), /*nullable=*/false),
@@ -544,12 +574,9 @@ Result<std::vector<GenericRow>> OptionsSystemTable::BuildRows() const {
 
 SnapshotsSystemTable::SnapshotsSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                            std::string branch)
-    : InMemorySystemTable(table_path),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName),
+                          branch),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch))) {}
-
-std::string SnapshotsSystemTable::Name() const {
-    return kName;
-}
 
 Result<std::shared_ptr<arrow::Schema>> SnapshotsSystemTable::ArrowSchema() const {
     return arrow::schema({
@@ -606,12 +633,9 @@ Result<std::vector<GenericRow>> SnapshotsSystemTable::BuildRows() const {
 
 SchemasSystemTable::SchemasSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                        std::string branch)
-    : InMemorySystemTable(table_path),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName),
+                          branch),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch))) {}
-
-std::string SchemasSystemTable::Name() const {
-    return kName;
-}
 
 Result<std::shared_ptr<arrow::Schema>> SchemasSystemTable::ArrowSchema() const {
     return arrow::schema({
@@ -662,12 +686,9 @@ Result<std::vector<GenericRow>> SchemasSystemTable::BuildRows() const {
 
 TagsSystemTable::TagsSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                  std::string branch)
-    : InMemorySystemTable(table_path),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName),
+                          branch),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch))) {}
-
-std::string TagsSystemTable::Name() const {
-    return kName;
-}
 
 Result<std::shared_ptr<arrow::Schema>> TagsSystemTable::ArrowSchema() const {
     return arrow::schema({
@@ -712,12 +733,9 @@ Result<std::vector<GenericRow>> TagsSystemTable::BuildRows() const {
 
 BranchesSystemTable::BranchesSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                          std::string branch)
-    : InMemorySystemTable(table_path),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName),
+                          branch),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch))) {}
-
-std::string BranchesSystemTable::Name() const {
-    return kName;
-}
 
 Result<std::shared_ptr<arrow::Schema>> BranchesSystemTable::ArrowSchema() const {
     return arrow::schema({
@@ -751,12 +769,9 @@ Result<std::vector<GenericRow>> BranchesSystemTable::BuildRows() const {
 
 ConsumersSystemTable::ConsumersSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                            std::string branch)
-    : InMemorySystemTable(table_path),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName),
+                          branch),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch))) {}
-
-std::string ConsumersSystemTable::Name() const {
-    return kName;
-}
 
 Result<std::shared_ptr<arrow::Schema>> ConsumersSystemTable::ArrowSchema() const {
     return arrow::schema({
@@ -786,13 +801,10 @@ ManifestsSystemTable::ManifestsSystemTable(std::shared_ptr<FileSystem> fs, std::
                                            std::string branch,
                                            std::shared_ptr<TableSchema> table_schema,
                                            std::map<std::string, std::string> options)
-    : InMemorySystemTable(table_path),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName),
+                          branch),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch),
                                      std::move(table_schema), std::move(options))) {}
-
-std::string ManifestsSystemTable::Name() const {
-    return kName;
-}
 
 Result<std::shared_ptr<arrow::Schema>> ManifestsSystemTable::ArrowSchema() const {
     return arrow::schema({
@@ -806,6 +818,14 @@ Result<std::shared_ptr<arrow::Schema>> ManifestsSystemTable::ArrowSchema() const
         arrow::field("min_row_id", arrow::int64(), /*nullable=*/true),
         arrow::field("max_row_id", arrow::int64(), /*nullable=*/true),
     });
+}
+
+Result<std::shared_ptr<const InMemorySystemTable>> ManifestsSystemTable::ForRead(
+    const std::map<std::string, std::string>& options) const {
+    PAIMON_ASSIGN_OR_RAISE(MetadataSystemTableContext context, WithReadOptions(context_, options));
+    auto table = std::make_shared<ManifestsSystemTable>(*this);
+    table->context_ = std::move(context);
+    return std::shared_ptr<const InMemorySystemTable>(std::move(table));
 }
 
 Result<std::vector<GenericRow>> ManifestsSystemTable::BuildRows() const {
@@ -856,13 +876,10 @@ Result<std::vector<GenericRow>> ManifestsSystemTable::BuildRows() const {
 FilesSystemTable::FilesSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                    std::string branch, std::shared_ptr<TableSchema> table_schema,
                                    std::map<std::string, std::string> options)
-    : InMemorySystemTable(table_path),
+    : InMemorySystemTable(fs, table_path, ComposeName(PathUtil::GetName(table_path), kName),
+                          branch),
       context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch),
                                      std::move(table_schema), std::move(options))) {}
-
-std::string FilesSystemTable::Name() const {
-    return kName;
-}
 
 Result<std::shared_ptr<arrow::Schema>> FilesSystemTable::ArrowSchema() const {
     return arrow::schema({
@@ -888,6 +905,14 @@ Result<std::shared_ptr<arrow::Schema>> FilesSystemTable::ArrowSchema() const {
         arrow::field("first_row_id", arrow::int64(), /*nullable=*/true),
         arrow::field("write_cols", arrow::list(arrow::utf8()), /*nullable=*/true),
     });
+}
+
+Result<std::shared_ptr<const InMemorySystemTable>> FilesSystemTable::ForRead(
+    const std::map<std::string, std::string>& options) const {
+    PAIMON_ASSIGN_OR_RAISE(MetadataSystemTableContext context, WithReadOptions(context_, options));
+    auto table = std::make_shared<FilesSystemTable>(*this);
+    table->context_ = std::move(context);
+    return std::shared_ptr<const InMemorySystemTable>(std::move(table));
 }
 
 Result<std::vector<GenericRow>> FilesSystemTable::BuildRows() const {

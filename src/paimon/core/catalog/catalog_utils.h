@@ -18,7 +18,9 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "paimon/catalog/identifier.h"
@@ -28,6 +30,7 @@
 namespace paimon {
 
 class Catalog;
+class FileSystem;
 class FormatTable;
 class Schema;
 
@@ -38,6 +41,8 @@ class CatalogUtils {
     CatalogUtils() = delete;
     ~CatalogUtils() = delete;
 
+    /// Derives an identifier for a table loaded directly from a path.
+    static Identifier IdentifierFromPath(const std::string& path, const std::string& branch);
     /// Returns whether `db_name` is the reserved system database "sys".
     static bool IsSystemDatabase(const std::string& db_name);
 
@@ -76,6 +81,13 @@ class CatalogUtils {
     static Status CheckPathIsTableLocation(const Identifier& identifier,
                                            const Result<std::string>& location,
                                            const std::string& path, const std::string& operation);
+
+    /// Preserves current query-auth settings when a caller supplies a cached schema.
+    static Result<std::map<std::string, std::string>> ResolveQueryAuthReadOptions(
+        const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& identifier,
+        const std::map<std::string, std::string>& options, const std::string& branch,
+        const std::shared_ptr<FileSystem>& file_system, const std::string& path,
+        bool has_specific_table_schema, const std::string& operation);
 
     /// Fails when `db_name` cannot be used as a single path component, which is required to
     /// keep the database path under the warehouse.

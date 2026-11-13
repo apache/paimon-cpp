@@ -34,6 +34,7 @@
 #include "paimon/core/manifest/index_manifest_file.h"
 #include "paimon/core/manifest/manifest_file.h"
 #include "paimon/core/manifest/manifest_list.h"
+#include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/index_file_path_factories.h"
@@ -45,6 +46,17 @@ namespace paimon {
 
 FileStore::FileStore(std::string root_path, CoreOptions options)
     : root_path_(std::move(root_path)), options_(std::move(options)) {}
+
+std::string FileStore::CurrentBranch() const {
+    return BranchManager::NormalizeBranch(options_.GetBranch());
+}
+
+std::shared_ptr<SchemaManager> FileStore::GetSchemaManager() const {
+    return std::make_shared<SchemaManager>(options_.GetFileSystem(), root_path_, CurrentBranch());
+}
+std::shared_ptr<SnapshotManager> FileStore::GetSnapshotManager() const {
+    return std::make_shared<SnapshotManager>(options_.GetFileSystem(), root_path_, CurrentBranch());
+}
 
 Result<std::shared_ptr<FileStorePathFactory>> FileStore::NewPathFactory(
     const std::shared_ptr<arrow::Schema>& arrow_schema,

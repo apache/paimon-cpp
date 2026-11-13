@@ -19,7 +19,9 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,27 +30,35 @@
 
 namespace paimon {
 
+class FileSystem;
+
 /// Base class for system tables whose result can be materialized as a single in-memory
 /// RecordBatch.
 ///
 /// It provides the common singleton split scan and one-shot batch reader.
 class InMemorySystemTable : public SystemTable {
  public:
-    explicit InMemorySystemTable(std::string table_path);
+    InMemorySystemTable(const std::shared_ptr<FileSystem>& fs, std::string table_path,
+                        std::string name, std::optional<std::string> branch = std::nullopt);
 
     Result<std::unique_ptr<TableScan>> NewScan(
-        const std::shared_ptr<ScanContext>& context) const override;
-    Result<std::unique_ptr<TableRead>> NewRead(
-        const std::shared_ptr<ReadContext>& context) const override;
+        std::unique_ptr<ScanContext> /*context*/) const override;
+    Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
     virtual Result<std::vector<GenericRow>> BuildRows() const = 0;
 
  protected:
+    Status CheckBranch(const std::map<std::string, std::string>& options) const;
+
+    /// Creates an independent read view when dynamic options affect materialized rows.
+    virtual Result<std::shared_ptr<const InMemorySystemTable>> ForRead(
+        const std::map<std::string, std::string>& options) const;
+
     const std::string& TablePath() const {
-        return table_path_;
+        return GetRootPath();
     }
 
  private:
-    std::string table_path_;
+    const std::optional<std::string> branch_;
 };
 
 }  // namespace paimon

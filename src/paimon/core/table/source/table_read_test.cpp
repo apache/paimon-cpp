@@ -39,10 +39,12 @@
 #include "paimon/core/operation/abstract_split_read.h"
 #include "paimon/core/operation/split_read.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/source/append_only_table_read.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/key_value_table_read.h"
 #include "paimon/defs.h"
+#include "paimon/fs/local/local_file_system.h"
 #include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
@@ -137,30 +139,51 @@ TEST(TableReadTest, TestFullTextMatchReadEntryAndScoreValidation) {
     auto scalar = PredicateBuilder::Equal(/*field_index=*/1, "f1", FieldType::INT, Literal(1));
     ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::Or({scalar, full_text}));
     const std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
-    ReadContextBuilder builder(table_path);
-    builder.EnablePreciseFileIndexEvaluate(true)
-        .SetReadFieldNames({"f0", "f1"})
-        .SetPredicate(predicate);
-    ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
-    ASSERT_OK(TableRead::Create(std::move(context)));
+    auto fs = std::make_shared<LocalFileSystem>();
+    SchemaManager manager(fs, table_path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema, manager.ReadSchema(0));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStoreTable> table,
+        FileStoreTable::Create(fs, table_path, schema, Identifier("append_09.db", "append_09"), "",
+                               "main"));
+    for (bool table_entry : {false, true}) {
+        ReadContextBuilder builder(table_path);
+        builder.EnablePreciseFileIndexEvaluate(true)
+            .SetReadFieldNames({"f0", "f1"})
+            .SetPredicate(predicate);
+        ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+        ASSERT_OK(table_entry ? table->NewRead(std::move(context))
+                              : TableRead::Create(std::move(context)));
 
-    builder.EnablePreciseFileIndexEvaluate(true)
-        .SetReadFieldNames({"f0", "f1", "_f0_INDEX_SCORE"})
-        .SetPredicate(predicate);
-    ASSERT_OK_AND_ASSIGN(context, builder.Finish());
-    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(context)),
-                        "Score-producing FullTextMatch cannot appear under OR");
+        builder.EnablePreciseFileIndexEvaluate(true)
+            .SetReadFieldNames({"f0", "f1", "_f0_INDEX_SCORE"})
+            .SetPredicate(predicate);
+        ASSERT_OK_AND_ASSIGN(context, builder.Finish());
+        ASSERT_NOK_WITH_MSG(table_entry ? table->NewRead(std::move(context))
+                                        : TableRead::Create(std::move(context)),
+                            "Score-producing FullTextMatch cannot appear under OR");
+    }
 }
 
 TEST(TableReadTest, TestPerFieldScoreReadEntry) {
     const std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
     auto search =
         std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"apple"}})", /*limit=*/1);
-    ReadContextBuilder builder(path);
-    builder.EnablePreciseFileIndexEvaluate(true).SetFullTextSearch(search).SetReadFieldNames(
-        {"f1", "_f0_INDEX_SCORE"});
-    ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
-    ASSERT_OK(TableRead::Create(std::move(context)));
+    auto fs = std::make_shared<LocalFileSystem>();
+    SchemaManager manager(fs, path);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema, manager.ReadSchema(0));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStoreTable> table,
+        FileStoreTable::Create(fs, path, schema, Identifier("append_09.db", "append_09"), "",
+                               "main"));
+    for (bool table_entry : {false, true}) {
+        ReadContextBuilder builder(path);
+        builder.EnablePreciseFileIndexEvaluate(true).SetFullTextSearch(search).SetReadFieldNames(
+            {"f1", "_f0_INDEX_SCORE"});
+        ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+        ASSERT_OK(table_entry ? table->NewRead(std::move(context))
+                              : TableRead::Create(std::move(context)));
+    }
 }
 
 TEST(TableReadTest, TestMixedFilePredicateProducesScoresThroughPublicReadEntry) {

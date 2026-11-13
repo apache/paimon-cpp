@@ -54,18 +54,21 @@ class AuditLogSystemTable : public SystemTable {
  public:
     static constexpr const char* kName = "audit_log";
 
+    /// @param data_table_name Logical table name, including any branch suffix.
     AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
-                        std::shared_ptr<TableSchema> table_schema,
+                        std::shared_ptr<TableSchema> table_schema, std::string data_table_name,
                         std::map<std::string, std::string> options);
 
-    std::string Name() const override;
     Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
-    Result<std::unique_ptr<TableScan>> NewScan(
-        const std::shared_ptr<ScanContext>& context) const override;
-    Result<std::unique_ptr<TableRead>> NewRead(
-        const std::shared_ptr<ReadContext>& context) const override;
+    Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
+    Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
 
  protected:
+    /// Constructor for derived changelog views with a different system-table name.
+    AuditLogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
+                        std::shared_ptr<TableSchema> table_schema,
+                        std::map<std::string, std::string> options, std::string name);
+
     Result<std::unique_ptr<TableRead>> NewChangelogRead(
         const std::shared_ptr<ReadContext>& context,
         std::shared_ptr<const ChangelogBatchConverter> converter) const;
@@ -77,8 +80,11 @@ class AuditLogSystemTable : public SystemTable {
     Result<std::unique_ptr<ReadContext>> CreateDataReadContext(
         const std::shared_ptr<ReadContext>& context,
         const std::map<std::string, std::string>& read_options) const;
-    Result<std::shared_ptr<arrow::Schema>> BaseReadSchema() const;
-    Result<std::map<std::string, std::string>> ReadOptions() const;
+    virtual Result<std::shared_ptr<arrow::Schema>> ChangelogSchema(
+        bool include_sequence_number) const;
+    Result<std::shared_ptr<arrow::Schema>> BaseReadSchema(bool include_sequence_number) const;
+    Result<std::map<std::string, std::string>> ReadOptions(
+        const std::map<std::string, std::string>& overrides) const;
 
     std::shared_ptr<FileSystem> fs_;
     std::string table_path_;

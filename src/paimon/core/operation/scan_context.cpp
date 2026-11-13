@@ -18,6 +18,7 @@
 
 #include "paimon/scan_context.h"
 
+#include <map>
 #include <utility>
 
 #include "paimon/catalog/catalog.h"
@@ -277,20 +278,26 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
     if (impl_->catalog_ != nullptr && !BranchManager::IsMainBranch(branch)) {
         PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(branch));
     }
-    if (branch != BranchManager::DEFAULT_MAIN_BRANCH) {
-        impl_->options_[Options::BRANCH] = branch;
-    }
+    std::map<std::string, std::string> options = impl_->options_;
+    std::optional<std::string> named_branch;
     if (impl_->identifier_) {
-        PAIMON_ASSIGN_OR_RAISE(
-            Identifier branch_identifier,
-            CatalogUtils::ResolvedBranchIdentifier(impl_->identifier_.value(), branch));
-        impl_->identifier_.emplace(std::move(branch_identifier));
+        PAIMON_ASSIGN_OR_RAISE(named_branch, impl_->identifier_->GetBranchName());
     }
-    if (impl_->catalog_ != nullptr && impl_->specific_file_system_ == nullptr) {
-        // A catalog issuing per-table temporary credentials only hands them out through
-        // GetTableFileSystem, so the scan uses the credentials of this table.
-        PAIMON_ASSIGN_OR_RAISE(impl_->specific_file_system_,
-                               impl_->catalog_->GetTableFileSystem(impl_->identifier_.value()));
+    if (named_branch || options.count(Options::BRANCH) != 0 ||
+        (system_table_path && system_table_path->branch)) {
+        options[Options::BRANCH] = branch;
+    }
+    std::optional<Identifier> identifier = impl_->identifier_;
+    if (identifier) {
+        PAIMON_ASSIGN_OR_RAISE(Identifier branch_identifier,
+                               CatalogUtils::ResolvedBranchIdentifier(identifier.value(), branch));
+        identifier.emplace(std::move(branch_identifier));
+    }
+    // Keep derived credentials local so a failed Finish() cannot bind a later retry to a table.
+    std::shared_ptr<FileSystem> file_system = impl_->specific_file_system_;
+    if (impl_->catalog_ != nullptr && file_system == nullptr) {
+        PAIMON_ASSIGN_OR_RAISE(file_system,
+                               impl_->catalog_->GetTableFileSystem(identifier.value()));
     }
     std::shared_ptr<Executor> executor =
         impl_->executor_ ? impl_->executor_ : CreateDefaultExecutor();
@@ -299,8 +306,8 @@ Result<std::unique_ptr<ScanContext>> ScanContextBuilder::Finish() {
         std::make_shared<ScanFilter>(impl_->predicates_, impl_->partition_filters_,
                                      impl_->bucket_filter_),
         impl_->global_index_result_, impl_->realtime_context_, impl_->memory_pool_, executor,
-        impl_->specific_file_system_, impl_->table_schema_, impl_->options_, impl_->cache_,
-        impl_->format_table_, impl_->catalog_, impl_->identifier_, impl_->read_field_names_);
+        file_system, impl_->table_schema_, options, impl_->cache_, impl_->format_table_,
+        impl_->catalog_, identifier, impl_->read_field_names_);
     impl_->Reset();
     return ctx;
 }

@@ -33,6 +33,20 @@
 
 namespace paimon::test {
 
+TEST(WriteContextTest, TestFailedFinishDoesNotRetainImplicitBranchOption) {
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    WriteContextBuilder builder("table_root_path", "user");
+    builder.WithCatalog(catalog, Identifier("db", "tbl"))
+        .WithBranch("dev")
+        .AddOption("custom.option", "value");
+    ASSERT_NOK_WITH_MSG(builder.Finish(), "addresses a branch by the table identifier");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> context,
+                         builder.WithBranch("main").Finish());
+    ASSERT_EQ("main", context->GetBranch());
+    ASSERT_EQ("main", context->GetOptions().at(Options::BRANCH));
+    ASSERT_EQ("value", context->GetOptions().at("custom.option"));
+}
+
 TEST(WriteContextTest, TestDefaultValue) {
     WriteContextBuilder builder("table_root_path", "commit_user_1");
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
@@ -110,9 +124,16 @@ TEST(WriteContextTest, TestCatalogAddressesBranchByIdentifier) {
                   .Finish());
 
     WriteContextBuilder upper_main_builder("table_root_path", "commit_user_1");
-    ASSERT_NOK_WITH_MSG(
-        upper_main_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_MAIN")).Finish(),
-        "a catalog names branch 'MAIN' as it names the main branch");
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<WriteContext> upper_main_context,
+        upper_main_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_MAIN")).Finish());
+    ASSERT_EQ("main", upper_main_context->GetBranch());
+
+    WriteContextBuilder upper_main_option_builder("table_root_path", "commit_user_1");
+    ASSERT_NOK_WITH_MSG(upper_main_option_builder.WithCatalog(catalog, Identifier("db1", "t1"))
+                            .AddOption(Options::BRANCH, "MAIN")
+                            .Finish(),
+                        "a catalog names branch 'MAIN' as it names the main branch");
 
     WriteContextBuilder constructed_builder("table_root_path", "commit_user_1");
     ASSERT_OK_AND_ASSIGN(
@@ -187,7 +208,8 @@ TEST(WriteContextTest, TestSetContent) {
     ASSERT_EQ(ctx->GetWriteSchema(), write_schema);
     ASSERT_EQ(ctx->GetFileSystemSchemeToIdentifierMap(), fs_scheme_to_identifier_map);
     ASSERT_EQ(ctx->GetSpecificFileSystem(), file_system);
-    std::map<std::string, std::string> expected_options = {{"key", "value"}};
+    std::map<std::string, std::string> expected_options = {{"key", "value"},
+                                                           {Options::BRANCH, "test_branch"}};
     ASSERT_EQ(expected_options, ctx->GetOptions());
 }
 

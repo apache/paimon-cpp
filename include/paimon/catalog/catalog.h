@@ -48,7 +48,7 @@ class Tag;
 class Identifier;
 /// This interface is responsible for reading and writing metadata such as database/table from a
 /// paimon catalog.
-class PAIMON_EXPORT Catalog {
+class PAIMON_EXPORT Catalog : public std::enable_shared_from_this<Catalog> {
  public:
     static const char SYSTEM_DATABASE_NAME[];
     static const char SYSTEM_TABLE_SPLITTER[];
@@ -146,7 +146,12 @@ class PAIMON_EXPORT Catalog {
     virtual Status RenameTable(const Identifier& from_table, const Identifier& to_table,
                                bool ignore_if_not_exists) = 0;
 
-    /// Gets a table.
+    /// Gets a managed, format or read-only system table.
+    ///
+    /// Global system tables (sys.*) retain the catalog for deferred reads. Before loading one,
+    /// transfer the unique_ptr returned by Create() into a std::shared_ptr<Catalog>.
+    /// GetTable() returns Invalid otherwise, even when TableExists() returns true.
+    /// LoadTableSchema() does not require shared ownership.
     ///
     /// @param identifier Identifier of the table to get.
     /// @return A result containing the table, or an error status.
@@ -249,11 +254,8 @@ class PAIMON_EXPORT Catalog {
 
     /// Gets a format table: a directory of data files laid out like a standard Hive table.
     ///
-    /// A format table carries no snapshots and no manifests, so it is loaded through its own
-    /// method rather than `GetTable()`. Reading and writing it go through the same `TableScan`,
-    /// `TableRead`, `FileStoreWrite` and `FileStoreCommit` entry points every other table uses:
-    /// hand the table back to `ScanContextBuilder`, `ReadContextBuilder`, `WriteContextBuilder` or
-    /// `CommitContextBuilder`, each of which takes one.
+    /// Returns the concrete format-table interface. `GetTable()` also loads format tables
+    /// through the common Table interface. Legacy context builders accept this typed handle.
     ///
     /// @param identifier Identifier of the table to get.
     /// @return A result containing the format table, or an error status if the table does not

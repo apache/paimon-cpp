@@ -56,8 +56,10 @@
 #include "paimon/file_store_write.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/read_context.h"
 #include "paimon/record_batch.h"
 #include "paimon/scan_context.h"
@@ -644,6 +646,40 @@ TEST(FormatTableTest, TestCreateReadsOptions) {
     ASSERT_EQ(table->FullName(), "db.tbl");
 }
 
+TEST(FormatTableTest, TestReadRejectsSearchForDirectAndStaticEntrypoints) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
+                         CreateTable(dir->GetFileSystem(), dir->Str(), {}));
+    const std::shared_ptr<Table> loaded_table = table;
+    for (bool vector_search : {false, true}) {
+        for (int32_t entrypoint : {0, 1, 2}) {
+            SCOPED_TRACE(vector_search);
+            SCOPED_TRACE(entrypoint);
+            ReadContextBuilder builder =
+                entrypoint == 2 ? ReadContextBuilder(table) : ReadContextBuilder(dir->Str());
+            builder.EnablePreciseFileIndexEvaluate(true);
+            if (vector_search) {
+                builder.SetVectorSearch(std::make_shared<VectorSearch>(
+                    "embedding", 3, std::vector<float>{1.0f, 2.0f}, nullptr, nullptr,
+                    VectorSearch::DistanceType::COSINE, std::map<std::string, std::string>{}));
+            } else {
+                builder.SetFullTextSearch(
+                    std::make_shared<FullTextSearch>("name", R"({"match":{"query":"paimon"}})", 3));
+            }
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+            auto read = entrypoint == 0 ? loaded_table->NewRead(std::move(context))
+                                        : TableRead::Create(std::move(context));
+            ASSERT_NOK_WITH_MSG(read,
+                                "Precise file-index evaluation is not supported for format tables");
+            ASSERT_TRUE(read.status().IsNotImplemented());
+        }
+    }
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
+                         ReadContextBuilder(dir->Str()).Finish());
+    ASSERT_OK(loaded_table->NewRead(std::move(context)));
+}
+
 TEST(FormatTableTest, TestFileCompressionComesFromCoreOptions) {
     // The resolution order itself is `CoreOptionsTest.TestFormatTableFileCompression`'s business;
     // what matters here is that the table asks for it rather than resolving compression again.
@@ -752,11 +788,10 @@ TEST(FormatTableTest, TestCatalogManagedPartitionsAreRejected) {
     // And the same refusal when it arrives at the call rather than in the schema. Validating the
     // schema's own options alone would let this one through and then drop it, leaving a caller
     // who asked for catalog-managed partitions with a scan that read the directories anyway.
-    Result<std::shared_ptr<FormatTable>> dynamic_table =
-        FormatTable::Create(off_dir->GetFileSystem(), off_dir->Str(), Identifier("db", "tbl"),
-                            off_table->LatestSchema(),
-                            /*location_carries_paimon_metadata=*/true,
-                            {{Options::METASTORE_PARTITIONED_TABLE, "true"}});
+    Result<std::shared_ptr<FormatTable>> dynamic_table = FormatTable::Create(
+        off_dir->GetFileSystem(), off_dir->Str(), Identifier("db", "tbl"), off_table->GetSchema(),
+        /*location_carries_paimon_metadata=*/true,
+        {{Options::METASTORE_PARTITIONED_TABLE, "true"}});
     ASSERT_FALSE(dynamic_table.ok());
     ASSERT_TRUE(dynamic_table.status().IsNotImplemented()) << dynamic_table.status().ToString();
 }
@@ -2758,7 +2793,7 @@ TEST(FormatTableTest, TestTheGenericEntryPointsReachAFormatTable) {
                         "a format table sends no commit table request");
 
     auto format_catalog = std::make_shared<MockVersionManagedCatalog>();
-    format_catalog->SetTableSchema(table->LatestSchema());
+    format_catalog->SetTableSchema(table->GetSchema());
     CommitContextBuilder catalog_builder(dir->Str(), "test-user");
     catalog_builder.WithCatalog(format_catalog, Identifier("db", "fmt"));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> catalog_context, catalog_builder.Finish());
@@ -5136,6 +5171,84 @@ TEST(FormatTableTest, TestWriteRejectsWrongPartitionSpec) {
     ASSERT_FALSE(status.ok());
     ASSERT_TRUE(status.IsInvalid());
     ASSERT_OK(write->Abort());
+}
+
+TEST(FormatTableTest, LoadedTableRejectsAnotherTablesWriteAndCommitContext) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> first,
+                         CreateTable(fs, dir->Str() + "/a", {"dt"}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> second,
+                         CreateTable(fs, dir->Str() + "/b", {"dt"}));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         MakeBatch({1}, {"alice"}, "p", {{"dt", "p"}}));
+    ASSERT_OK(WriteAndCommit(first, std::move(batch)));
+    std::vector<FileStatus> before;
+    ASSERT_OK(fs->ListFileStatus(first->Location() + "/dt=p", &before));
+    before.erase(std::remove_if(before.begin(), before.end(),
+                                [](const FileStatus& file) { return file.IsDir(); }),
+                 before.end());
+    ASSERT_FALSE(before.empty());
+    for (bool typed : {false, true}) {
+        std::unique_ptr<CommitContext> commit_context;
+        std::unique_ptr<WriteContext> write_context;
+        if (typed) {
+            ASSERT_OK_AND_ASSIGN(commit_context, CommitContextBuilder(second).Finish());
+            ASSERT_OK_AND_ASSIGN(write_context, WriteContextBuilder(second).Finish());
+        } else {
+            ASSERT_OK_AND_ASSIGN(commit_context,
+                                 CommitContextBuilder(second->Location(), "user").Finish());
+            ASSERT_OK_AND_ASSIGN(write_context,
+                                 WriteContextBuilder(second->Location(), "user").Finish());
+        }
+        ASSERT_NOK_WITH_MSG(first->NewCommit(std::move(commit_context)),
+                            "context path contradicts");
+        ASSERT_NOK_WITH_MSG(first->NewWrite(std::move(write_context)), "context path contradicts");
+        for (const auto& file : before) {
+            ASSERT_OK_AND_ASSIGN(bool exists, fs->Exists(file.GetPath()));
+            ASSERT_TRUE(exists);
+        }
+    }
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FormatTable> other_identity,
+        FormatTable::Create(fs, first->Location(), Identifier("other_db", "tbl"), {}));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> wrong_identity,
+                         CommitContextBuilder(other_identity).Finish());
+    ASSERT_NOK_WITH_MSG(first->NewCommit(std::move(wrong_identity)),
+                        "context identity contradicts");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> valid,
+                         CommitContextBuilder(first).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         first->NewCommit(std::move(valid)));
+    ASSERT_OK(commit->Overwrite({{"dt", "p"}}, {}, BATCH_WRITE_COMMIT_IDENTIFIER));
+    for (const auto& file : before) {
+        ASSERT_OK_AND_ASSIGN(bool exists, fs->Exists(file.GetPath()));
+        ASSERT_FALSE(exists);
+    }
+}
+
+TEST(FormatTableTest, LoadedWriteContextsRequireSameStorageBindingAndAcceptMainAlias) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table, CreateTable(fs, dir->Str(), {"dt"}));
+    auto other_fs = std::make_shared<CallOrderFileSystem>(fs);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> other,
+                         FormatTable::Create(other_fs, dir->Str(), Identifier("db", "tbl"), {}));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write, WriteContextBuilder(other).Finish());
+    ASSERT_NOK_WITH_MSG(table->NewWrite(std::move(write)), "context filesystem contradicts");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit,
+                         CommitContextBuilder(other).Finish());
+    ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(commit)), "context filesystem contradicts");
+    ASSERT_TRUE(other_fs->Calls().empty());
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FormatTable> alias,
+        FormatTable::Create(fs, dir->Str(), Identifier("db", "tbl$branch_MAIN"), {}));
+    ASSERT_OK_AND_ASSIGN(write, WriteContextBuilder(alias).Finish());
+    ASSERT_OK(table->NewWrite(std::move(write)));
+    ASSERT_OK_AND_ASSIGN(commit, CommitContextBuilder(alias).Finish());
+    ASSERT_OK(table->NewCommit(std::move(commit)));
 }
 
 }  // namespace paimon::test

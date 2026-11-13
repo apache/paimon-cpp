@@ -77,11 +77,11 @@ TEST(SystemTableTest, TestChangelogArrowSchemaReturnsInvalidOptions) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
     ASSERT_NOK_WITH_MSG(audit_log.ArrowSchema(),
                         "Invalid Config [table-read.sequence-number.enabled: invalid]");
 
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
     ASSERT_NOK_WITH_MSG(binlog.ArrowSchema(),
                         "Invalid Config [table-read.sequence-number.enabled: invalid]");
 }
@@ -92,7 +92,7 @@ TEST(SystemTableTest, TestBinlogArrowSchemaWithSequenceNumber) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Schema> schema, binlog.ArrowSchema());
 
     ASSERT_EQ(schema->field_names(),
@@ -219,7 +219,7 @@ TEST(SystemTableTest, TestReadOptimizedSystemTableRegistration) {
                          SystemTableLoader::Load(ReadOptimizedSystemTable::kName, /*fs=*/nullptr,
                                                  "/tmp/table", table_schema,
                                                  /*dynamic_options=*/{}));
-    ASSERT_EQ(system_table->Name(), ReadOptimizedSystemTable::kName);
+    ASSERT_EQ(system_table->Name(), "table$ro");
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Schema> arrow_schema, system_table->ArrowSchema());
     ASSERT_EQ(arrow_schema->field_names(), (std::vector<std::string>{"pk", "v"}));
@@ -247,9 +247,10 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          CreateTableSchemaForTest(options));
 
-    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, options);
-    ReadOptimizedSystemTable read_optimized("/tmp/table", table_schema, options);
+    AuditLogSystemTable audit_log(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    BinlogSystemTable binlog(/*fs=*/nullptr, "/tmp/table", table_schema, "table", options);
+    ReadOptimizedSystemTable read_optimized(/*fs=*/nullptr, "/tmp/table", table_schema, "table",
+                                            options);
 
     for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
         ReadContextBuilder builder("/tmp/table");
@@ -266,13 +267,14 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
         // ChangelogTableRead that wraps it is local to audit_log_system_table.cpp, so a test cannot
         // name the type to reach the read underneath it. EXPECT rather than ASSERT, because the
         // three chains are independent and one broken chain must not hide another.
-        ASSERT_OK_AND_ASSIGN(auto audit_log_options, audit_log.ReadOptions());
+        ASSERT_OK_AND_ASSIGN(auto audit_log_options,
+                             audit_log.ReadOptions(caller_context->GetOptions()));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> audit_log_context,
                              audit_log.CreateDataReadContext(caller_context, audit_log_options));
         EXPECT_EQ(level, audit_log_context->GetWarmupLevel())
             << "$audit_log dropped the caller's WarmupLevel";
 
-        ASSERT_OK_AND_ASSIGN(auto binlog_options, binlog.ReadOptions());
+        ASSERT_OK_AND_ASSIGN(auto binlog_options, binlog.ReadOptions(caller_context->GetOptions()));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> binlog_context,
                              binlog.CreateDataReadContext(caller_context, binlog_options));
         EXPECT_EQ(level, binlog_context->GetWarmupLevel())

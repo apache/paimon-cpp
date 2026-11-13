@@ -41,6 +41,29 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
+TEST(ReadContextTest, TestFailedFinishDoesNotRetainImplicitBranchOption) {
+    for (bool explicit_option : {false, true}) {
+        SCOPED_TRACE(explicit_option);
+        ReadContextBuilder builder("table_root_path");
+        builder.WithBranch("dev").EnablePrefetch(true).SetPrefetchMaxParallelNum(0).AddOption(
+            "custom.option", "value");
+        if (explicit_option) {
+            builder.AddOption(Options::BRANCH, "dev");
+        }
+        ASSERT_NOK_WITH_MSG(builder.Finish(), "prefetch max parallel num should be greater than 0");
+        builder.WithBranch("main").SetPrefetchMaxParallelNum(1);
+        auto retried = builder.Finish();
+        if (explicit_option) {
+            ASSERT_NOK_WITH_MSG(retried, "but both 'dev' and 'main' were named");
+        } else {
+            ASSERT_OK(retried);
+            ASSERT_EQ("main", retried.value()->GetBranch());
+            ASSERT_EQ("main", retried.value()->GetOptions().at(Options::BRANCH));
+            ASSERT_EQ("value", retried.value()->GetOptions().at("custom.option"));
+        }
+    }
+}
+
 TEST(ReadContextTest, TestWithCatalogResolvesTableFileSystem) {
     // WithCatalog is a shorthand for WithFileSystem(catalog->GetTableFileSystem(identifier)); it
     // resolves the per-table file system when Finish() builds the context, which also keeps the
@@ -82,10 +105,6 @@ TEST(ReadContextTest, TestWithCatalogResolvesTheBranch) {
                                 .WithBranch(branch)
                                 .Finish(),
                             message);
-        ASSERT_NOK_WITH_MSG(ReadContextBuilder("table_root_path")
-                                .WithCatalog(catalog, Identifier("db1", "t1$branch_" + branch))
-                                .Finish(),
-                            message);
     }
     ASSERT_NOK_WITH_MSG(ReadContextBuilder("table_root_path")
                             .WithCatalog(catalog, Identifier("db1", "t1"))
@@ -117,6 +136,17 @@ TEST(ReadContextTest, TestWithCatalogResolvesTheBranch) {
     ASSERT_EQ(std::vector<Identifier>(
                   {Identifier("db1", "t1$branch_dev"), Identifier("db1", "t1$branch_dev")}),
               catalog->TableFileSystemRequests());
+    for (const std::string branch : {"MAIN", "Main"}) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
+                             ReadContextBuilder("table_root_path")
+                                 .WithCatalog(catalog, Identifier("db1", "t1$branch_" + branch))
+                                 .Finish());
+        ASSERT_EQ("main", context->GetBranch());
+        ASSERT_OK_AND_ASSIGN(std::string resolved_branch,
+                             context->GetIdentifier()->GetBranchNameOrDefault());
+        ASSERT_EQ("main", resolved_branch);
+        ASSERT_EQ(context->GetIdentifier().value(), catalog->TableFileSystemRequests().back());
+    }
 }
 
 TEST(ReadContextTest, TestSystemTablePathResolvesBranchBeforeCatalogRequest) {
@@ -286,7 +316,8 @@ TEST(ReadContextTest, TestSetContent) {
     ASSERT_EQ(128U, ctx->GetCacheConfig().GetHoleSizeLimit());
     ASSERT_EQ(2048U, ctx->GetCacheConfig().GetPreBufferLimit());
     ASSERT_TRUE(ctx->GetFileSystemSchemeToIdentifierMap().empty());
-    std::map<std::string, std::string> expected_options = {{"key", "value"}};
+    std::map<std::string, std::string> expected_options = {{"key", "value"},
+                                                           {Options::BRANCH, "rt"}};
     ASSERT_EQ(expected_options, ctx->GetOptions());
     ASSERT_EQ(ctx->GetSpecificFileSystem(), fs);
     ASSERT_TRUE(ctx->GetCache());

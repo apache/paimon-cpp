@@ -31,6 +31,7 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/utils/context_utils.h"
 #include "paimon/defs.h"
 #include "paimon/read_context.h"
 #include "paimon/table/source/table_read.h"
@@ -72,21 +73,18 @@ std::shared_ptr<const ChangelogBatchConverter> CreateBinlogBatchConverter() {
 
 BinlogSystemTable::BinlogSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
                                      std::shared_ptr<TableSchema> table_schema,
+                                     std::string data_table_name,
                                      std::map<std::string, std::string> options)
     : AuditLogSystemTable(std::move(fs), std::move(table_path), std::move(table_schema),
-                          std::move(options)) {}
+                          std::move(options), ComposeName(data_table_name, kName)) {}
 
-std::string BinlogSystemTable::Name() const {
-    return kName;
-}
-
-Result<std::shared_ptr<arrow::Schema>> BinlogSystemTable::ArrowSchema() const {
+Result<std::shared_ptr<arrow::Schema>> BinlogSystemTable::ChangelogSchema(
+    bool include_sequence_number) const {
     std::shared_ptr<arrow::Field> rowkind_field =
         DataField::ConvertDataFieldToArrowField(SpecialFields::RowKind());
     rowkind_field = rowkind_field->WithNullable(false);
     arrow::FieldVector fields = {rowkind_field};
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options_));
-    if (core_options.TableReadSequenceNumberEnabled()) {
+    if (include_sequence_number) {
         fields.push_back(DataField::ConvertDataFieldToArrowField(SpecialFields::SequenceNumber()));
     }
     for (const auto& field : table_schema_->Fields()) {
@@ -98,7 +96,10 @@ Result<std::shared_ptr<arrow::Schema>> BinlogSystemTable::ArrowSchema() const {
 }
 
 Result<std::unique_ptr<TableRead>> BinlogSystemTable::NewRead(
-    const std::shared_ptr<ReadContext>& context) const {
+    std::unique_ptr<ReadContext> ctx) const {
+    const std::shared_ptr<ReadContext> context = std::move(ctx);
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
+    PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
     return NewChangelogRead(context, CreateBinlogBatchConverter());
 }
 

@@ -175,9 +175,15 @@ TEST(CommitContextTest, TestCatalogAddressesBranchByIdentifier) {
                         "name branch 'dev' there as 't1$branch_dev'");
 
     CommitContextBuilder upper_main_builder("table_root_path", "commit_user_1");
-    ASSERT_NOK_WITH_MSG(
-        upper_main_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_MAIN")).Finish(),
-        "a catalog names branch 'MAIN' as it names the main branch");
+    ASSERT_OK(upper_main_builder.WithCatalog(catalog, Identifier("db1", "t1$branch_MAIN"))
+                  .AddOption(Options::BRANCH, "main")
+                  .Finish());
+
+    CommitContextBuilder upper_main_option_builder("table_root_path", "commit_user_1");
+    ASSERT_NOK_WITH_MSG(upper_main_option_builder.WithCatalog(catalog, Identifier("db1", "t1"))
+                            .AddOption(Options::BRANCH, "MAIN")
+                            .Finish(),
+                        "a catalog names branch 'MAIN' as it names the main branch");
 
     CommitContextBuilder splitter_builder("table_root_path", "commit_user_1");
     ASSERT_NOK_WITH_MSG(splitter_builder.WithCatalog(catalog, Identifier("db1", "t1"))

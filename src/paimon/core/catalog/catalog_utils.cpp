@@ -27,7 +27,11 @@
 #include "paimon/catalog/catalog.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
+#include "paimon/core/catalog/query_auth_catalog.h"
 #include "paimon/core/options/table_type.h"
+#include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/schema_validation.h"
+#include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/defs.h"
 #include "paimon/result.h"
@@ -204,6 +208,110 @@ Result<std::shared_ptr<FormatTable>> CatalogUtils::LoadFormatTableInTwoRequests(
     }
     return FormatTable::Create(catalog.GetFileSystem(), location, identifier, data_schema,
                                location_carries_paimon_metadata, /*dynamic_options=*/{});
+}
+
+Identifier CatalogUtils::IdentifierFromPath(const std::string& table_path,
+                                            const std::string& branch) {
+    const std::string name = PathUtil::GetName(table_path);
+    const std::string parent = PathUtil::GetName(PathUtil::GetParentDirPath(table_path));
+    const std::string suffix = Catalog::DB_SUFFIX;
+    if (StringUtils::EndsWith(parent, suffix)) {
+        return Identifier(parent.substr(0, parent.size() - suffix.size()), name, branch);
+    }
+    return Identifier(Identifier::kUnknownDatabase, name, branch);
+}
+
+/// Returns `options` with `query-auth.enabled` turned on when the current settings of `branch`
+/// enable it: the options of the schema the catalog holds for that branch, as Java loads the table
+/// of the branch it reads, or, when the caller hands in a cached schema, those of the latest schema
+/// of the branch under `path`, so a stale cache cannot skip the rules. A system table path naming
+/// a branch, as `tbl$branch_dev$files`, reads that branch, so its settings are the ones looked up.
+/// @param operation The operation reading `path`, as "scan", named in the error messages.
+Result<std::map<std::string, std::string>> CatalogUtils::ResolveQueryAuthReadOptions(
+    const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& identifier,
+    const std::map<std::string, std::string>& options, const std::string& branch,
+    const std::shared_ptr<FileSystem>& file_system, const std::string& path,
+    bool has_specific_table_schema, const std::string& operation) {
+    PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
+                           SystemTableLoader::TryParsePath(path));
+    std::string read_branch = branch;
+    std::string table_path = path;
+    if (system_table_path && !system_table_path->is_global) {
+        table_path = system_table_path->table_path;
+        if (system_table_path->branch) {
+            // Resolved as `SystemTableLoader::LoadFromPath()` resolves the branch it loads.
+            std::map<std::string, std::string> named_branch;
+            if (!BranchManager::IsMainBranch(branch)) {
+                named_branch[Options::BRANCH] = branch;
+            }
+            PAIMON_ASSIGN_OR_RAISE(read_branch,
+                                   BranchManager::ResolveBranch(
+                                       /*identifier=*/std::nullopt, named_branch,
+                                       system_table_path->branch, "system table read"));
+        }
+    }
+    bool enabled = false;
+    if (catalog != nullptr) {
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(read_branch));
+        if (!identifier) {
+            return Status::Invalid("a catalog read requires a table identifier");
+        }
+        if (CatalogUtils::IsSystemDatabase(identifier.value().GetDatabaseName())) {
+            // Only a global system table has no data table policy to load from the catalog.
+            if (!system_table_path || !system_table_path->is_global) {
+                return Status::Invalid(fmt::format(
+                    "Catalog identifier {} names a global system table, but the {} targets {}. "
+                    "Use the identifier of the data table being read.",
+                    identifier.value().ToString(), operation, path));
+            }
+        } else {
+            PAIMON_ASSIGN_OR_RAISE(Identifier table_identifier,
+                                   CatalogUtils::BranchIdentifier(identifier.value(), read_branch));
+            // A catalog that serves query auth hands the location back with the schema, so the
+            // two cannot come from different generations of a recreated table.
+            const QueryAuthCatalog* auth_catalog = AsQueryAuthCatalog(catalog);
+            std::shared_ptr<Schema> schema;
+            std::optional<std::string> location;
+            if (auth_catalog != nullptr) {
+                PAIMON_ASSIGN_OR_RAISE(schema, auth_catalog->LoadTableSchemaAndLocation(
+                                                   table_identifier, &location.emplace()));
+            } else {
+                PAIMON_ASSIGN_OR_RAISE(schema, catalog->LoadTableSchema(table_identifier));
+            }
+            std::shared_ptr<DataSchema> data_schema = std::dynamic_pointer_cast<DataSchema>(schema);
+            if (data_schema == nullptr) {
+                return Status::Invalid(
+                    fmt::format("the catalog did not hand back a data table schema for {}",
+                                table_identifier.ToString()));
+            }
+            PAIMON_ASSIGN_OR_RAISE(
+                enabled, SchemaValidation::QueryAuthReadEnabled(data_schema->Options(), options));
+            // An enabled setting needs no check here: the query auth scan checks the location and
+            // the read takes only its splits. A disabled one would leave another table unguarded.
+            if (!enabled) {
+                PAIMON_RETURN_NOT_OK(CatalogUtils::CheckPathIsTableLocation(
+                    table_identifier,
+                    location ? Result<std::string>(location.value())
+                             : catalog->GetTableLocation(table_identifier),
+                    table_path, operation));
+            }
+        }
+    }
+    if (!enabled && has_specific_table_schema && !system_table_path) {
+        SchemaManager schema_manager(file_system, path, read_branch);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
+                               schema_manager.Latest());
+        if (latest_schema) {
+            PAIMON_ASSIGN_OR_RAISE(enabled, SchemaValidation::QueryAuthReadEnabled(
+                                                latest_schema.value()->Options(), options));
+        }
+    }
+    if (!enabled) {
+        return options;
+    }
+    std::map<std::string, std::string> read_options = options;
+    read_options[Options::QUERY_AUTH_ENABLED] = "true";
+    return read_options;
 }
 
 }  // namespace paimon

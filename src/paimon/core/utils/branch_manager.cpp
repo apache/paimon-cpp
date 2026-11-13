@@ -41,6 +41,9 @@ Result<std::string> BranchManager::ResolveBranch(const std::optional<Identifier>
     std::optional<std::string> identifier_branch;
     if (identifier) {
         PAIMON_ASSIGN_OR_RAISE(identifier_branch, identifier.value().GetBranchName());
+        if (identifier_branch) {
+            PAIMON_ASSIGN_OR_RAISE(identifier_branch, identifier.value().GetBranchNameOrDefault());
+        }
     }
     auto option_iter = options.find(Options::BRANCH);
     std::optional<std::string> option_branch =

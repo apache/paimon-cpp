@@ -29,8 +29,11 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/io/generic_row_to_arrow_array_converter.h"
 #include "paimon/core/table/system/system_table_scan.h"
+#include "paimon/core/utils/branch_manager.h"
+#include "paimon/core/utils/context_utils.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/read_context.h"
+#include "paimon/scan_context.h"
 #include "paimon/status.h"
 #include "paimon/table/source/table_read.h"
 
@@ -104,19 +107,42 @@ class InMemorySystemTableRead : public TableRead {
 
 }  // namespace
 
-InMemorySystemTable::InMemorySystemTable(std::string table_path)
-    : table_path_(std::move(table_path)) {}
+InMemorySystemTable::InMemorySystemTable(const std::shared_ptr<FileSystem>& fs,
+                                         std::string table_path, std::string name,
+                                         std::optional<std::string> branch)
+    : SystemTable(fs, table_path, std::move(name)), branch_(std::move(branch)) {}
+
+Status InMemorySystemTable::CheckBranch(const std::map<std::string, std::string>& options) const {
+    auto branch = options.find(Options::BRANCH);
+    if (branch_ && branch != options.end() &&
+        BranchManager::NormalizeBranch(branch->second) !=
+            BranchManager::NormalizeBranch(*branch_)) {
+        return Status::Invalid("context branch contradicts the loaded table");
+    }
+    return Status::OK();
+}
 
 Result<std::unique_ptr<TableScan>> InMemorySystemTable::NewScan(
-    const std::shared_ptr<ScanContext>& /*context*/) const {
-    return std::make_unique<SystemTableScan>(table_path_);
+    std::unique_ptr<ScanContext> context) const {
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
+    PAIMON_RETURN_NOT_OK(CheckBranch(context->GetOptions()));
+    return std::make_unique<SystemTableScan>(GetRootPath());
 }
 
 Result<std::unique_ptr<TableRead>> InMemorySystemTable::NewRead(
-    const std::shared_ptr<ReadContext>& context) const {
-    return std::make_unique<InMemorySystemTableRead>(
-        checked_pointer_cast<const InMemorySystemTable>(shared_from_this()),
-        context->GetMemoryPool());
+    std::unique_ptr<ReadContext> ctx) const {
+    const std::shared_ptr<ReadContext> context = std::move(ctx);
+    PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
+    PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
+    PAIMON_RETURN_NOT_OK(CheckBranch(context->GetOptions()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const InMemorySystemTable> table,
+                           ForRead(context->GetOptions()));
+    return std::make_unique<InMemorySystemTableRead>(std::move(table), context->GetMemoryPool());
+}
+
+Result<std::shared_ptr<const InMemorySystemTable>> InMemorySystemTable::ForRead(
+    const std::map<std::string, std::string>& /*options*/) const {
+    return checked_pointer_cast<const InMemorySystemTable>(shared_from_this());
 }
 
 }  // namespace paimon

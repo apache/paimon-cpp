@@ -82,10 +82,6 @@ TEST(ScanContextTest, TestWithCatalogResolvesTheBranch) {
                                 .AddOption(Options::BRANCH, branch)
                                 .Finish(),
                             message);
-        ASSERT_NOK_WITH_MSG(ScanContextBuilder("table_root_path")
-                                .WithCatalog(catalog, Identifier("db1", "t1$branch_" + branch))
-                                .Finish(),
-                            message);
     }
     ASSERT_NOK_WITH_MSG(ScanContextBuilder("table_root_path")
                             .WithCatalog(catalog, Identifier("db1", "t1"))
@@ -134,6 +130,17 @@ TEST(ScanContextTest, TestWithCatalogResolvesTheBranch) {
                                        Identifier("db1", "t1$branch_dev$files"),
                                        Identifier("sys", "tables"), Identifier("db1", "t1")}),
               catalog->TableFileSystemRequests());
+    for (const std::string branch : {"MAIN", "Main"}) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context,
+                             ScanContextBuilder("table_root_path")
+                                 .WithCatalog(catalog, Identifier("db1", "t1$branch_" + branch))
+                                 .Finish());
+        ASSERT_EQ("main", context->GetOptions().at(Options::BRANCH));
+        ASSERT_OK_AND_ASSIGN(std::string resolved_branch,
+                             context->GetIdentifier()->GetBranchNameOrDefault());
+        ASSERT_EQ("main", resolved_branch);
+        ASSERT_EQ(context->GetIdentifier().value(), catalog->TableFileSystemRequests().back());
+    }
 }
 
 TEST(ScanContextTest, TestSystemTablePathResolvesBranchBeforeCatalogRequest) {
@@ -269,6 +276,22 @@ TEST(ScanContextTest, TestDefaultExecutorIsCreatedPerContext) {
     ASSERT_OK_AND_ASSIGN(auto reset_ctx, first_builder.Finish());
     ASSERT_TRUE(reset_ctx->GetExecutor());
     ASSERT_NE(executor, reset_ctx->GetExecutor());
+}
+
+TEST(ScanContextTest, FailedBranchValidationDoesNotRetainTableCredentials) {
+    auto first_fs = std::make_shared<MockFileSystem>();
+    auto second_fs = std::make_shared<MockFileSystem>();
+    auto catalog = std::make_shared<MockVersionManagedCatalog>();
+    catalog->SetTableFileSystem(first_fs);
+    ScanContextBuilder builder("table_b");
+    builder.WithCatalog(catalog, Identifier("db", "a", "dev"))
+        .SetOptions({{Options::BRANCH, "main"}});
+    ASSERT_NOK(builder.Finish());
+    catalog->SetTableFileSystem(second_fs);
+    builder.WithCatalog(catalog, Identifier("db", "b"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
+    ASSERT_EQ(second_fs, context->GetSpecificFileSystem());
+    ASSERT_EQ(Identifier("db", "b"), catalog->TableFileSystemRequests().back());
 }
 
 }  // namespace paimon::test
