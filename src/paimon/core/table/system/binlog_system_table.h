@@ -34,7 +34,7 @@ std::shared_ptr<const ChangelogBatchConverter> CreateBinlogBatchConverter();
 /// System table for `T$binlog`, exposing changelog records with list-wrapped data columns.
 class BinlogSystemTable : public AuditLogSystemTable {
  public:
-    Result<std::shared_ptr<Table>> Copy(
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     static constexpr const char* kName = "binlog";

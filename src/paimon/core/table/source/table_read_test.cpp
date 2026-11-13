@@ -179,7 +179,8 @@ TEST(TableReadTest, TestFullTextMatchReadEntryAndScoreValidation) {
         auto context_options = builder_options;
         ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
         ASSERT_OK(table_entry ? ([&]() -> Result<std::unique_ptr<TableRead>> {
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured, table->Copy(context_options));
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
+                                   table->CopyWithoutTimeTravel(context_options));
             return configured->NewRead(std::move(context));
         })()
                               : TableRead::Create(context_load_context, std::move(context),
@@ -201,14 +202,15 @@ TEST(TableReadTest, TestFullTextMatchReadEntryAndScoreValidation) {
         }
         context_options = builder_options;
         ASSERT_OK_AND_ASSIGN(context, builder.Finish());
-        ASSERT_NOK_WITH_MSG(table_entry ? ([&]() -> Result<std::unique_ptr<TableRead>> {
-                                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                                       table->Copy(context_options));
-                                return configured->NewRead(std::move(context));
-                            })()
-                                        : TableRead::Create(context_load_context,
-                                                            std::move(context), context_options),
-                            "Score-producing FullTextMatch cannot appear under OR");
+        ASSERT_NOK_WITH_MSG(
+            table_entry
+                ? ([&]() -> Result<std::unique_ptr<TableRead>> {
+                      PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
+                                             table->CopyWithoutTimeTravel(context_options));
+                      return configured->NewRead(std::move(context));
+                  })()
+                : TableRead::Create(context_load_context, std::move(context), context_options),
+            "Score-producing FullTextMatch cannot appear under OR");
     }
 }
 
@@ -231,7 +233,8 @@ TEST(TableReadTest, TestPerFieldScoreReadEntry) {
             {"f1", "_f0_INDEX_SCORE"});
         ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
         ASSERT_OK(table_entry ? ([&]() -> Result<std::unique_ptr<TableRead>> {
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured, table->Copy(builder_options));
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
+                                   table->CopyWithoutTimeTravel(builder_options));
             return configured->NewRead(std::move(context));
         })()
                               : TableRead::Create(builder_load_context, std::move(context),
@@ -391,7 +394,7 @@ TEST(TableReadTest, TestPreciseEvaluationRejectsSystemAndFormatTables) {
         ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
         ASSERT_NOK_WITH_MSG(loaded_table
                                 ? format_table->NewRead(std::move(context))
-                                : TableRead::Create(builder_load_context, std::move(context)),
+                                : TableRead::Create(builder_load_context, std::move(context), {}),
                             "Precise file-index evaluation is not supported for format tables");
     }
 }

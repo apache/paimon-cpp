@@ -53,7 +53,7 @@ In a function returning ``Status`` or ``Result``, use the ordinary scan API:
     ScanContextBuilder builder;
     builder.WithMemoryPool(pool);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context, builder.Finish());
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan, TableScan::Create(load_context, std::move(context)));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan, TableScan::Create(load_context, std::move(context), {}));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, scan->CreatePlan());
 
 * The pool controls only allocations routed through it, not all planning memory

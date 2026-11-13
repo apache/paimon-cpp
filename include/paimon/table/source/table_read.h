@@ -51,7 +51,7 @@ class PAIMON_EXPORT TableRead {
     /// @return A Result containing a unique pointer to the `TableRead` instance.
     static Result<std::unique_ptr<TableRead>> Create(
         const TableLoadContext& load_context, std::unique_ptr<ReadContext> context,
-        const std::map<std::string, std::string>& dynamic_options = {});
+        const std::map<std::string, std::string>& dynamic_options);
 
     /// Creates a `BatchReader` instance for reading data.
     ///

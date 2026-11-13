@@ -277,7 +277,7 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table,
                            TableFactory::Create(load_context, dynamic_options, "read"));
-    PAIMON_ASSIGN_OR_RAISE(table, table->Copy(dynamic_options));
+    PAIMON_ASSIGN_OR_RAISE(table, table->CopyWithoutTimeTravel(dynamic_options));
     return table->NewRead(std::move(context));
 }
 
@@ -296,7 +296,7 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table,
                            TableFactory::Create(load_context, dynamic_options, "scan"));
-    PAIMON_ASSIGN_OR_RAISE(table, table->Copy(dynamic_options));
+    PAIMON_ASSIGN_OR_RAISE(table, table->CopyWithoutTimeTravel(dynamic_options));
     return table->NewScan(std::move(context));
 }
 
@@ -315,7 +315,7 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table,
                            TableFactory::Create(load_context, dynamic_options, "write"));
-    PAIMON_ASSIGN_OR_RAISE(table, table->Copy(dynamic_options));
+    PAIMON_ASSIGN_OR_RAISE(table, table->CopyWithoutTimeTravel(dynamic_options));
     return table->NewWrite(std::move(context));
 }
 
@@ -332,7 +332,7 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table,
                            TableFactory::Create(load_context, dynamic_options, "commit"));
-    PAIMON_ASSIGN_OR_RAISE(table, table->Copy(dynamic_options));
+    PAIMON_ASSIGN_OR_RAISE(table, table->CopyWithoutTimeTravel(dynamic_options));
     return table->NewCommit(std::move(context));
 }
 

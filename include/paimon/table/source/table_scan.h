@@ -45,7 +45,7 @@ class PAIMON_EXPORT TableScan {
     /// @return A Result containing a unique pointer to the `TableScan` instance.
     static Result<std::unique_ptr<TableScan>> Create(
         const TableLoadContext& load_context, std::unique_ptr<ScanContext> context,
-        const std::map<std::string, std::string>& dynamic_options = {});
+        const std::map<std::string, std::string>& dynamic_options);
 
     virtual ~TableScan() = default;
 

@@ -87,7 +87,8 @@ class PAIMON_EXPORT Table {
     /// bindings are retained; load another table to select a different branch.
     /// Managed tables reject changes to immutable schema options (such as bucket-key), and
     /// validate conditional option changes using the original table's configuration.
-    virtual Result<std::shared_ptr<Table>> Copy(
+    /// Keeps the bound schema; snapshot/time options do not load a historical table schema.
+    virtual Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
         const std::map<std::string, std::string>& dynamic_options) const = 0;
 
     /// Creates a scan using this table's schema and options.

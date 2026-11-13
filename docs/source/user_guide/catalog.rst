@@ -148,7 +148,7 @@ its data-format plugin; the plugin is resolved when creating an operator that
 uses the format.
 
 ``NewCommit()``, ``NewWrite()``, ``NewRead()`` and ``NewScan()`` take an operation
-Context containing execution settings. Apply dynamic options with ``Table::Copy()``
+Context containing execution settings. Apply dynamic options with ``Table::CopyWithoutTimeTravel()``
 before creating operators; the original table remains unchanged. Operators use
 the copy's bound type, path, schema, options, file system and catalog services.
 ``GetSchema()`` returns the
@@ -157,9 +157,13 @@ Branch or type options that contradict a loaded managed table are rejected.
 See the :ref:`Table API <cpp-api-catalog>`.
 
 The static factories instead take ``TableLoadContext``, an operation Context and
-an optional dynamic options map. ``TableLoadContext`` holds the table identity,
+an explicit dynamic options map (pass ``{}`` when no overrides are needed).
+``TableLoadContext`` holds the table identity,
 storage binding and supplied metadata. Operation Contexts hold execution settings;
-finishing an operation Context performs no table metadata I/O:
+finishing an operation Context performs no table metadata I/O.
+``CopyWithoutTimeTravel`` preserves the bound table schema, matching Java's
+``copyWithoutTimeTravel``. It does not resolve a historical schema from snapshot
+or timestamp options:
 
 .. code-block:: cpp
 
@@ -171,7 +175,7 @@ finishing an operation Context performs no table metadata I/O:
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> context,
                           paimon::CommitContextBuilder("commit-user").Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreCommit> commit,
-                          paimon::FileStoreCommit::Create(load_context, std::move(context)));
+                          paimon::FileStoreCommit::Create(load_context, std::move(context), {}));
 
 For file-system loading, set ``TableLoadContext::path``. Optional fields specify
 an explicit file system, URI scheme routing or a serialized Paimon table schema.
@@ -243,7 +247,7 @@ keep it across recovery.
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> context,
                           paimon::CommitContextBuilder("writer-1").Finish());
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> commit_table,
-                          table->Copy(
+                          table->CopyWithoutTimeTravel(
                               {{paimon::Options::REST_COMMIT_ACQUIRE_LOCK, "true"}}));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreCommit> commit,
                           commit_table->NewCommit(std::move(context)));
@@ -560,7 +564,7 @@ These examples use ``shared_catalog`` from `Reading through the catalog`_.
        .SetPredicate(predicate);
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan,
-                          TableScan::Create(scan_load, std::move(scan_context)));
+                          TableScan::Create(scan_load, std::move(scan_context), {}));
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, scan->CreatePlan());
 
    // A worker without the catalog tells the read that the table enables query auth.
@@ -592,7 +596,7 @@ hands out the credentials of that branch.
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> dev_scan_context,
                           dev_scan_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> dev_scan,
-                          TableScan::Create(dev_load, std::move(dev_scan_context)));
+                          TableScan::Create(dev_load, std::move(dev_scan_context), {}));
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> dev_plan, dev_scan->CreatePlan());
 
    // The worker reads the same branch.

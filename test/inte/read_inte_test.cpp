@@ -996,7 +996,7 @@ TEST(SystemTableReadInteTest, TestReadMetadataSystemTablesAtPinnedSnapshot) {
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
                                    scan_context_builder_0.Finish());
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table_1,
-                                   table->Copy(scan_context_builder_0_options));
+                                   table->CopyWithoutTimeTravel(scan_context_builder_0_options));
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan,
                                    configured_table_1->NewScan(std::move(scan_context)));
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, scan->CreatePlan());
@@ -1005,8 +1005,9 @@ TEST(SystemTableReadInteTest, TestReadMetadataSystemTablesAtPinnedSnapshot) {
             read_context_builder_48503_options = read_options;
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                                    read_context_builder_48503.Finish());
-            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table_2,
-                                   table->Copy(read_context_builder_48503_options));
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<Table> configured_table_2,
+                table->CopyWithoutTimeTravel(read_context_builder_48503_options));
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read,
                                    configured_table_2->NewRead(std::move(read_context)));
             return read->CreateReader(plan->Splits());
@@ -1893,16 +1894,17 @@ TEST(SystemTableReadInteTest, TestChangelogSequenceNumberCannotBeDisabledByReadO
             scan_context_builder_48980_options = read_options;
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
                                  scan_context_builder_48980.Finish());
-            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
-                                 direct ? ([&]() -> Result<std::unique_ptr<TableScan>> {
-                                     PAIMON_ASSIGN_OR_RAISE(
-                                         std::shared_ptr<Table> configured,
-                                         table->Copy(scan_context_builder_48980_options));
-                                     return configured->NewScan(std::move(scan_context));
-                                 })()
-                                        : TableScan::Create(scan_context_builder_48980_load_context,
-                                                            std::move(scan_context),
-                                                            scan_context_builder_48980_options));
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<TableScan> scan,
+                direct ? ([&]() -> Result<std::unique_ptr<TableScan>> {
+                    PAIMON_ASSIGN_OR_RAISE(
+                        std::shared_ptr<Table> configured,
+                        table->CopyWithoutTimeTravel(scan_context_builder_48980_options));
+                    return configured->NewScan(std::move(scan_context));
+                })()
+                       : TableScan::Create(scan_context_builder_48980_load_context,
+                                           std::move(scan_context),
+                                           scan_context_builder_48980_options));
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
             TableLoadContext read_context_builder_93839_load_context{path};
             std::map<std::string, std::string> read_context_builder_93839_options;
@@ -1910,16 +1912,17 @@ TEST(SystemTableReadInteTest, TestChangelogSequenceNumberCannotBeDisabledByReadO
             read_context_builder_93839_options = read_options;
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                                  read_context_builder_93839.Finish());
-            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
-                                 direct ? ([&]() -> Result<std::unique_ptr<TableRead>> {
-                                     PAIMON_ASSIGN_OR_RAISE(
-                                         std::shared_ptr<Table> configured,
-                                         table->Copy(read_context_builder_93839_options));
-                                     return configured->NewRead(std::move(read_context));
-                                 })()
-                                        : TableRead::Create(read_context_builder_93839_load_context,
-                                                            std::move(read_context),
-                                                            read_context_builder_93839_options));
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<TableRead> read,
+                direct ? ([&]() -> Result<std::unique_ptr<TableRead>> {
+                    PAIMON_ASSIGN_OR_RAISE(
+                        std::shared_ptr<Table> configured,
+                        table->CopyWithoutTimeTravel(read_context_builder_93839_options));
+                    return configured->NewRead(std::move(read_context));
+                })()
+                       : TableRead::Create(read_context_builder_93839_load_context,
+                                           std::move(read_context),
+                                           read_context_builder_93839_options));
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                                  read->CreateReader(plan->Splits()));
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
@@ -1958,7 +1961,8 @@ TEST(SystemTableReadInteTest, TestCopiedChangelogHonorsDynamicSequenceNumber) {
         SCOPED_TRACE(kind);
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
                              catalog.GetTable(Identifier("foo", "bar$" + kind)));
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured, table->Copy(read_options));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured,
+                             table->CopyWithoutTimeTravel(read_options));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> copied_schema,
                              configured->GetSchema()->GetArrowSchema());
         auto copied = arrow::ImportSchema(copied_schema.get());
@@ -4716,7 +4720,7 @@ Result<std::shared_ptr<arrow::ChunkedArray>> ReadGlobalSystemTable(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
                            scan_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table_7,
-                           system_table->Copy(scan_context_builder_options));
+                           system_table->CopyWithoutTimeTravel(scan_context_builder_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
                            configured_table_7->NewScan(std::move(scan_context)));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
@@ -4728,7 +4732,7 @@ Result<std::shared_ptr<arrow::ChunkedArray>> ReadGlobalSystemTable(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                            read_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table_8,
-                           system_table->Copy(read_context_builder_options));
+                           system_table->CopyWithoutTimeTravel(read_context_builder_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
                            configured_table_8->NewRead(std::move(read_context)));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,

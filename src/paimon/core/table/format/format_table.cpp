@@ -320,7 +320,7 @@ Result<std::unique_ptr<FileStoreCommit>> NewFormatTableCommit(
     return std::unique_ptr<FileStoreCommit>(std::move(format_commit));
 }
 }  // namespace
-Result<std::shared_ptr<Table>> FormatTable::Copy(
+Result<std::shared_ptr<Table>> FormatTable::CopyWithoutTimeTravel(
     const std::map<std::string, std::string>& options) const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FormatTable> table,
                            Copy(std::make_shared<FormatTable>(*this), options));

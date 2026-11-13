@@ -52,7 +52,7 @@ std::unique_ptr<BatchReader> CreateChangelogBatchReader(
 /// System table for `T$audit_log`, exposing row-level changelog records with rowkind.
 class AuditLogSystemTable : public SystemTable {
  public:
-    Result<std::shared_ptr<Table>> Copy(
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     static constexpr const char* kName = "audit_log";

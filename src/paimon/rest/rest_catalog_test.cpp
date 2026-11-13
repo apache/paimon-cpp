@@ -895,7 +895,7 @@ TEST_F(RestCatalogTest, GlobalSystemTableRetainsFactoryCatalog) {
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_1,
-                         table->Copy(scan_context_builder_options));
+                         table->CopyWithoutTimeTravel(scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
                          configured_table_1->NewScan(std::move(scan_context)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
@@ -903,7 +903,7 @@ TEST_F(RestCatalogTest, GlobalSystemTableRetainsFactoryCatalog) {
     ReadContextBuilder read_context_builder;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_2,
-                         table->Copy(read_context_builder_options));
+                         table->CopyWithoutTimeTravel(read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
                          configured_table_2->NewRead(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
@@ -1246,7 +1246,7 @@ TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
     load.identifier.emplace(branch_identifier);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                          ReadContextBuilder().SetReadFieldNames({"b0"}).Finish());
-    ASSERT_OK(TableRead::Create(load, std::move(read_context)));
+    ASSERT_OK(TableRead::Create(load, std::move(read_context), {}));
 
     // the default branch is addressed as the bare table: "t1$branch_main" resolves to
     // "t1" and carries no branch option

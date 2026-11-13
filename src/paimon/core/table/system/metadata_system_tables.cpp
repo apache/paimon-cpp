@@ -1004,49 +1004,49 @@ Result<std::vector<GenericRow>> FilesSystemTable::BuildRows() const {
     return rows;
 }
 
-Result<std::shared_ptr<Table>> OptionsSystemTable::Copy(
+Result<std::shared_ptr<Table>> OptionsSystemTable::CopyWithoutTimeTravel(
     const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
     auto table = std::make_shared<OptionsSystemTable>(*this);
     return std::shared_ptr<Table>(std::move(table));
 }
 
-Result<std::shared_ptr<Table>> SnapshotsSystemTable::Copy(
+Result<std::shared_ptr<Table>> SnapshotsSystemTable::CopyWithoutTimeTravel(
     const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
     auto table = std::make_shared<SnapshotsSystemTable>(*this);
     return std::shared_ptr<Table>(std::move(table));
 }
 
-Result<std::shared_ptr<Table>> SchemasSystemTable::Copy(
+Result<std::shared_ptr<Table>> SchemasSystemTable::CopyWithoutTimeTravel(
     const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
     auto table = std::make_shared<SchemasSystemTable>(*this);
     return std::shared_ptr<Table>(std::move(table));
 }
 
-Result<std::shared_ptr<Table>> TagsSystemTable::Copy(
+Result<std::shared_ptr<Table>> TagsSystemTable::CopyWithoutTimeTravel(
     const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
     auto table = std::make_shared<TagsSystemTable>(*this);
     return std::shared_ptr<Table>(std::move(table));
 }
 
-Result<std::shared_ptr<Table>> BranchesSystemTable::Copy(
+Result<std::shared_ptr<Table>> BranchesSystemTable::CopyWithoutTimeTravel(
     const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
     auto table = std::make_shared<BranchesSystemTable>(*this);
     return std::shared_ptr<Table>(std::move(table));
 }
 
-Result<std::shared_ptr<Table>> ConsumersSystemTable::Copy(
+Result<std::shared_ptr<Table>> ConsumersSystemTable::CopyWithoutTimeTravel(
     const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
     auto table = std::make_shared<ConsumersSystemTable>(*this);
     return std::shared_ptr<Table>(std::move(table));
 }
 
-Result<std::shared_ptr<Table>> ManifestsSystemTable::Copy(
+Result<std::shared_ptr<Table>> ManifestsSystemTable::CopyWithoutTimeTravel(
     const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
     PAIMON_ASSIGN_OR_RAISE(MetadataSystemTableContext context,
@@ -1056,7 +1056,7 @@ Result<std::shared_ptr<Table>> ManifestsSystemTable::Copy(
     return std::shared_ptr<Table>(std::move(table));
 }
 
-Result<std::shared_ptr<Table>> FilesSystemTable::Copy(
+Result<std::shared_ptr<Table>> FilesSystemTable::CopyWithoutTimeTravel(
     const std::map<std::string, std::string>& dynamic_options) const {
     PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
     PAIMON_ASSIGN_OR_RAISE(MetadataSystemTableContext context,

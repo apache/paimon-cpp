@@ -423,7 +423,7 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
                            CreateDataTable(table_schema_, options_));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table,
-                           data_table->Copy(dynamic_options));
+                           data_table->CopyWithoutTimeTravel(dynamic_options));
     return configured_table->NewScan(std::move(data_context));
 }
 
@@ -455,7 +455,8 @@ Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewChangelogRead(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
                            CreateDataTable(table_schema_, options_));
     auto options = read_options;
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table, data_table->Copy(options));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table,
+                           data_table->CopyWithoutTimeTravel(options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> data_read,
                            configured_table->NewRead(std::move(data_context)));
     auto* key_value_read = dynamic_cast<KeyValueTableRead*>(data_read.get());
@@ -519,7 +520,7 @@ Result<std::map<std::string, std::string>> AuditLogSystemTable::ReadOptions(
     return read_options;
 }
 
-Result<std::shared_ptr<Table>> AuditLogSystemTable::Copy(
+Result<std::shared_ptr<Table>> AuditLogSystemTable::CopyWithoutTimeTravel(
     const std::map<std::string, std::string>& dynamic_options) const {
     using OptionsMap = std::map<std::string, std::string>;
     PAIMON_ASSIGN_OR_RAISE(OptionsMap options,

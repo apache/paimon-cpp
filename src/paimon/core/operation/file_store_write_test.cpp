@@ -300,7 +300,7 @@ TEST(FileStoreWriteTest, TestCreateWithInvalidInput) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> ctx2,
                          builder.WithExecutor(nullptr).Finish());
     ASSERT_NOK(FileStoreWrite::Create(builder_load_context, std::move(ctx2), builder_options));
-    ASSERT_NOK(FileStoreWrite::Create({}, /*context=*/nullptr));
+    ASSERT_NOK(FileStoreWrite::Create({}, /*context=*/nullptr, {}));
 }
 
 TEST(FileStoreWriteTest, TestCreateAppendTable) {

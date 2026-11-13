@@ -32,7 +32,7 @@ class TableSchema;
 /// System table for `T$ro`, exposing read-optimized data.
 class ReadOptimizedSystemTable : public SystemTable {
  public:
-    Result<std::shared_ptr<Table>> Copy(
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     static constexpr const char* kName = "ro";

@@ -56,7 +56,7 @@ class PAIMON_EXPORT FileStoreWrite {
     /// @return A Result containing a unique pointer to the `FileStoreWrite` instance.
     static Result<std::unique_ptr<FileStoreWrite>> Create(
         const TableLoadContext& load_context, std::unique_ptr<WriteContext> context,
-        const std::map<std::string, std::string>& dynamic_options = {});
+        const std::map<std::string, std::string>& dynamic_options);
 
     virtual ~FileStoreWrite() = default;
 

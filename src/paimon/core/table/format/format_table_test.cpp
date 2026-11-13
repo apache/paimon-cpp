@@ -673,7 +673,7 @@ TEST(FormatTableTest, TestReadRejectsSearchForDirectAndStaticEntrypoints) {
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
             auto read = entrypoint != 1 ? ([&]() -> Result<std::unique_ptr<TableRead>> {
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                       loaded_table->Copy(context_options));
+                                       loaded_table->CopyWithoutTimeTravel(context_options));
                 return configured->NewRead(std::move(context));
             })()
                                         : TableRead::Create(context_load_context,
@@ -688,7 +688,7 @@ TEST(FormatTableTest, TestReadRejectsSearchForDirectAndStaticEntrypoints) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, context_builder.Finish());
     ASSERT_OK(([&]() -> Result<std::unique_ptr<TableRead>> {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                               loaded_table->Copy(context_builder_options));
+                               loaded_table->CopyWithoutTimeTravel(context_builder_options));
         return configured->NewRead(std::move(context));
     })());
 }
@@ -1192,7 +1192,7 @@ TEST(FormatTableTest, TestCatalogFactoriesRetainExternalLocationWithExplicitPath
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
                                  WriteContextBuilder("writer").Finish());
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
-                                 FileStoreWrite::Create(load, std::move(write_context)));
+                                 FileStoreWrite::Create(load, std::move(write_context), {}));
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
                                  MakeBatch({++id}, {partition}, partition, {{"dt", partition}}));
             ASSERT_OK(writer->Write(std::move(batch)));
@@ -1201,7 +1201,7 @@ TEST(FormatTableTest, TestCatalogFactoriesRetainExternalLocationWithExplicitPath
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
                                  CommitContextBuilder("writer").Finish());
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
-                                 FileStoreCommit::Create(load, std::move(commit_context)));
+                                 FileStoreCommit::Create(load, std::move(commit_context), {}));
             ASSERT_OK(commit->Commit(messages));
             ASSERT_OK(writer->Close());
         }
@@ -1220,13 +1220,13 @@ TEST(FormatTableTest, TestCatalogFactoriesRetainExternalLocationWithExplicitPath
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
                              ScanContextBuilder().Finish());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
-                             TableScan::Create(load, std::move(scan_context)));
+                             TableScan::Create(load, std::move(scan_context), {}));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
         ASSERT_EQ(plan->Splits().size(), 2u);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                              ReadContextBuilder().Finish());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
-                             TableRead::Create(load, std::move(read_context)));
+                             TableRead::Create(load, std::move(read_context), {}));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                              read->CreateReader(plan->Splits()));
         std::vector<std::string> partitions;
@@ -1248,7 +1248,7 @@ TEST(FormatTableTest, TestCatalogFactoriesRetainExternalLocationWithExplicitPath
         load.path = dir->Str() + "/other";
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> mismatch_context,
                              ScanContextBuilder().Finish());
-        ASSERT_NOK_WITH_MSG(TableScan::Create(load, std::move(mismatch_context)),
+        ASSERT_NOK_WITH_MSG(TableScan::Create(load, std::move(mismatch_context), {}),
                             "does not match the catalog table location");
     }
 }
@@ -3050,7 +3050,7 @@ TEST(FormatTableTest, TestTheGenericEntryPointsTakeALoadedFormatTable) {
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_3,
-                         write_builder_table->Copy(write_builder_options));
+                         write_builder_table->CopyWithoutTimeTravel(write_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> write,
                          configured_table_3->NewWrite(std::move(write_context)));
     for (int32_t i = 1; i <= 3; i++) {
@@ -3067,7 +3067,7 @@ TEST(FormatTableTest, TestTheGenericEntryPointsTakeALoadedFormatTable) {
     CommitContextBuilder commit_builder("");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_4,
-                         commit_builder_table->Copy(commit_builder_options));
+                         commit_builder_table->CopyWithoutTimeTravel(commit_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
                          configured_table_4->NewCommit(std::move(commit_context)));
     ASSERT_OK(commit->Commit(messages));
@@ -3078,7 +3078,7 @@ TEST(FormatTableTest, TestTheGenericEntryPointsTakeALoadedFormatTable) {
     ScanContextBuilder scan_builder;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_5,
-                         scan_builder_table->Copy(scan_builder_options));
+                         scan_builder_table->CopyWithoutTimeTravel(scan_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
                          configured_table_5->NewScan(std::move(scan_context)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
@@ -3090,7 +3090,7 @@ TEST(FormatTableTest, TestTheGenericEntryPointsTakeALoadedFormatTable) {
     ReadContextBuilder read_builder;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_6,
-                         read_builder_table->Copy(read_builder_options));
+                         read_builder_table->CopyWithoutTimeTravel(read_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
                          configured_table_6->NewRead(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
@@ -3135,8 +3135,9 @@ TEST(FormatTableTest, TestABranchNamedThroughOptionsIsRefusedAtEveryEntryPoint) 
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
     ASSERT_NOK_WITH_MSG(([&]() -> Result<std::unique_ptr<TableScan>> {
-                            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                                   scan_builder_table->Copy(scan_builder_options));
+                            PAIMON_ASSIGN_OR_RAISE(
+                                std::shared_ptr<Table> configured,
+                                scan_builder_table->CopyWithoutTimeTravel(scan_builder_options));
                             return configured->NewScan(std::move(scan_context));
                         })(),
                         "has no branches");
@@ -3148,8 +3149,9 @@ TEST(FormatTableTest, TestABranchNamedThroughOptionsIsRefusedAtEveryEntryPoint) 
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_NOK_WITH_MSG(([&]() -> Result<std::unique_ptr<TableRead>> {
-                            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                                   read_builder_table->Copy(read_builder_options));
+                            PAIMON_ASSIGN_OR_RAISE(
+                                std::shared_ptr<Table> configured,
+                                read_builder_table->CopyWithoutTimeTravel(read_builder_options));
                             return configured->NewRead(std::move(read_context));
                         })(),
                         "has no branches");
@@ -3163,7 +3165,7 @@ TEST(FormatTableTest, TestABranchNamedThroughOptionsIsRefusedAtEveryEntryPoint) 
     ASSERT_NOK_WITH_MSG(([&]() -> Result<std::unique_ptr<FileStoreWrite>> {
                             PAIMON_ASSIGN_OR_RAISE(
                                 std::shared_ptr<Table> configured,
-                                write_builder_table->Copy(write_builder_options));
+                                write_builder_table->CopyWithoutTimeTravel(write_builder_options));
                             return configured->NewWrite(std::move(write_context));
                         })(),
                         "has no branches");
@@ -3177,9 +3179,9 @@ TEST(FormatTableTest, TestABranchNamedThroughOptionsIsRefusedAtEveryEntryPoint) 
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
     ASSERT_NOK_WITH_MSG(([&]() -> Result<std::unique_ptr<FileStoreCommit>> {
-                            PAIMON_ASSIGN_OR_RAISE(
-                                std::shared_ptr<Table> configured,
-                                commit_builder_table->Copy(commit_builder_options));
+                            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
+                                                   commit_builder_table->CopyWithoutTimeTravel(
+                                                       commit_builder_options));
                             return configured->NewCommit(std::move(commit_context));
                         })(),
                         "has no branches");

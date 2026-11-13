@@ -316,7 +316,7 @@ Result<CoreOptions> FileStoreTable::ResolveOptions(
     return CoreOptions::FromMap(options, file_system_, fs_scheme_map_);
 }
 
-Result<std::shared_ptr<Table>> FileStoreTable::Copy(
+Result<std::shared_ptr<Table>> FileStoreTable::CopyWithoutTimeTravel(
     const std::map<std::string, std::string>& dynamic_options) const {
     using OptionsMap = std::map<std::string, std::string>;
     PAIMON_ASSIGN_OR_RAISE(OptionsMap options, ResolveOptionMap(dynamic_options));

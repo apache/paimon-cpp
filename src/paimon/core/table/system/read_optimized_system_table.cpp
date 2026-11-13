@@ -90,7 +90,8 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
                            CreateDataTable(table_schema_, options));
     auto scan_options = dynamic_options;
     scan_options[kReadOptimizedScanOption] = "true";
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table, data_table->Copy(scan_options));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table,
+                           data_table->CopyWithoutTimeTravel(scan_options));
     return configured_table->NewScan(std::move(base_context));
 }
 
@@ -133,11 +134,11 @@ Result<std::unique_ptr<TableRead>> ReadOptimizedSystemTable::NewRead(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
                            CreateDataTable(table_schema_, options_));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table,
-                           data_table->Copy(dynamic_options));
+                           data_table->CopyWithoutTimeTravel(dynamic_options));
     return configured_table->NewRead(std::move(base_context));
 }
 
-Result<std::shared_ptr<Table>> ReadOptimizedSystemTable::Copy(
+Result<std::shared_ptr<Table>> ReadOptimizedSystemTable::CopyWithoutTimeTravel(
     const std::map<std::string, std::string>& dynamic_options) const {
     using OptionsMap = std::map<std::string, std::string>;
     PAIMON_ASSIGN_OR_RAISE(OptionsMap options,

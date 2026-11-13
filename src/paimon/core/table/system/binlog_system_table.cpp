@@ -104,7 +104,7 @@ Result<std::unique_ptr<TableRead>> BinlogSystemTable::NewRead(
     return NewChangelogRead(context, CreateBinlogBatchConverter(), dynamic_options);
 }
 
-Result<std::shared_ptr<Table>> BinlogSystemTable::Copy(
+Result<std::shared_ptr<Table>> BinlogSystemTable::CopyWithoutTimeTravel(
     const std::map<std::string, std::string>& dynamic_options) const {
     using OptionsMap = std::map<std::string, std::string>;
     PAIMON_ASSIGN_OR_RAISE(OptionsMap options,

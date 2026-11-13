@@ -60,7 +60,7 @@ class PAIMON_EXPORT FileStoreCommit {
     /// @return A Result containing a unique pointer to the `FileStoreCommit` instance.
     static Result<std::unique_ptr<FileStoreCommit>> Create(
         const TableLoadContext& load_context, std::unique_ptr<CommitContext> context,
-        const std::map<std::string, std::string>& dynamic_options = {});
+        const std::map<std::string, std::string>& dynamic_options);
 
     virtual ~FileStoreCommit() = default;
 

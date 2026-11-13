@@ -117,7 +117,7 @@ class PAIMON_EXPORT FormatTable : public Table {
 
     ~FormatTable() override;
 
-    Result<std::shared_ptr<Table>> Copy(
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;

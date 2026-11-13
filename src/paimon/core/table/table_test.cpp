@@ -140,11 +140,11 @@ TEST(TableTest, TestCopyRetainsBindingsAndMergesOptionsIndependently) {
         FileStoreTable::Create(fs, path, checked_pointer_cast<TableSchema>(created->GetSchema()),
                                Identifier("db", "tbl"), "catalog-uuid", "main", routing, catalog));
     const auto original_options = checked_pointer_cast<DataSchema>(table->GetSchema())->Options();
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<Table> first,
-        table->Copy({{Options::TARGET_FILE_ROW_NUM, "1"}, {Options::FILE_FORMAT, "parquet"}}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> first,
+                         table->CopyWithoutTimeTravel({{Options::TARGET_FILE_ROW_NUM, "1"},
+                                                       {Options::FILE_FORMAT, "parquet"}}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> second,
-                         first->Copy({{Options::TARGET_FILE_ROW_NUM, "2"}}));
+                         first->CopyWithoutTimeTravel({{Options::TARGET_FILE_ROW_NUM, "2"}}));
     ASSERT_EQ(original_options, checked_pointer_cast<DataSchema>(table->GetSchema())->Options());
     ASSERT_EQ("1", checked_pointer_cast<DataSchema>(first->GetSchema())
                        ->Options()
@@ -161,8 +161,10 @@ TEST(TableTest, TestCopyRetainsBindingsAndMergesOptionsIndependently) {
     ASSERT_EQ(fs, second->GetFileSystem());
     ASSERT_EQ(routing,
               checked_pointer_cast<FileStoreTable>(second)->GetFileSystemSchemeToIdentifierMap());
-    ASSERT_NOK_WITH_MSG(second->Copy({{Options::BRANCH, "dev"}}), "branch contradicts");
-    ASSERT_NOK_WITH_MSG(second->Copy({{Options::TYPE, "format-table"}}), "type contradicts");
+    ASSERT_NOK_WITH_MSG(second->CopyWithoutTimeTravel({{Options::BRANCH, "dev"}}),
+                        "branch contradicts");
+    ASSERT_NOK_WITH_MSG(second->CopyWithoutTimeTravel({{Options::TYPE, "format-table"}}),
+                        "type contradicts");
     catalog.reset();
     table.reset();
     first.reset();
@@ -203,11 +205,12 @@ TEST(TableTest, TestCopyRejectsBucketKeyChangesWithoutLosingRows) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<RecordBatch>> batches,
                          generator.SplitArrayByPartitionAndBucket({row}));
     ASSERT_OK(helper->WriteAndCommit(std::move(batches), 0, std::nullopt));
-    ASSERT_NOK_WITH_MSG(table->Copy({{Options::BUCKET_KEY, "b"}}), "immutable option 'bucket-key'");
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<Table> copied,
-        table->Copy({{Options::BUCKET_KEY, "a"}, {Options::READ_BATCH_SIZE, "1"}}));
-    ASSERT_NOK_WITH_MSG(copied->Copy({{Options::BUCKET_KEY, "b"}}),
+    ASSERT_NOK_WITH_MSG(table->CopyWithoutTimeTravel({{Options::BUCKET_KEY, "b"}}),
+                        "immutable option 'bucket-key'");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied,
+                         table->CopyWithoutTimeTravel(
+                             {{Options::BUCKET_KEY, "a"}, {Options::READ_BATCH_SIZE, "1"}}));
+    ASSERT_NOK_WITH_MSG(copied->CopyWithoutTimeTravel({{Options::BUCKET_KEY, "b"}}),
                         "immutable option 'bucket-key'");
     ASSERT_EQ(schema.value()->Options(), original_options);
     auto predicate = PredicateBuilder::Equal(1, "b", FieldType::INT, Literal(int32_t{1}));
@@ -247,11 +250,11 @@ TEST(TableTest, TestCopyNormalizesSchemaKeysAndRetainsPath) {
                          FileStoreTable::Create(dir->GetFileSystem(), dir->Str(), schema,
                                                 Identifier("db", "tbl"), "uuid", "main"));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied,
-                         table->Copy({{"primary-key", " a, , b "},
-                                      {"partition", "a, "},
-                                      {"type", "TABLE"},
-                                      {"path", "another/table"},
-                                      {Options::READ_BATCH_SIZE, "32"}}));
+                         table->CopyWithoutTimeTravel({{"primary-key", " a, , b "},
+                                                       {"partition", "a, "},
+                                                       {"type", "TABLE"},
+                                                       {"path", "another/table"},
+                                                       {Options::READ_BATCH_SIZE, "32"}}));
     auto copied_schema = checked_pointer_cast<TableSchema>(copied->GetSchema());
     ASSERT_EQ(copied_schema->Id(), 7);
     ASSERT_EQ(copied_schema->Options().count("primary-key"), 0u);
@@ -259,8 +262,8 @@ TEST(TableTest, TestCopyNormalizesSchemaKeysAndRetainsPath) {
     ASSERT_EQ(copied_schema->Options().count("type"), 0u);
     ASSERT_EQ(copied_schema->Options().at("path"), table->GetRootPath());
     ASSERT_EQ(copied_schema->Options().at(Options::READ_BATCH_SIZE), "32");
-    ASSERT_NOK_WITH_MSG(copied->Copy({{"primary-key", "b,a"}}), "primary-key");
-    ASSERT_NOK_WITH_MSG(copied->Copy({{"partition", "b"}}), "partition");
+    ASSERT_NOK_WITH_MSG(copied->CopyWithoutTimeTravel({{"primary-key", "b,a"}}), "primary-key");
+    ASSERT_NOK_WITH_MSG(copied->CopyWithoutTimeTravel({{"partition", "b"}}), "partition");
     ASSERT_EQ(schema->Options().count(Options::READ_BATCH_SIZE), 0u);
 }
 
@@ -277,11 +280,13 @@ TEST(TableTest, TestSystemTableCopiesPreserveManagedOptionRules) {
         SCOPED_TRACE(kind);
         TableLoadContext load{dir->Str() + "$" + kind};
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table, TableFactory::Create(load, {}, "read"));
-        ASSERT_NOK_WITH_MSG(table->Copy({{Options::BUCKET_KEY, "b"}}), "bucket-key");
+        ASSERT_NOK_WITH_MSG(table->CopyWithoutTimeTravel({{Options::BUCKET_KEY, "b"}}),
+                            "bucket-key");
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied,
-                             table->Copy({{Options::IGNORE_DELETE, "true"}}));
-        ASSERT_NOK_WITH_MSG(copied->Copy({{Options::IGNORE_DELETE, "false"}}), "ignore-delete");
-        ASSERT_OK(table->Copy({{Options::IGNORE_DELETE, "false"}}));
+                             table->CopyWithoutTimeTravel({{Options::IGNORE_DELETE, "true"}}));
+        ASSERT_NOK_WITH_MSG(copied->CopyWithoutTimeTravel({{Options::IGNORE_DELETE, "false"}}),
+                            "ignore-delete");
+        ASSERT_OK(table->CopyWithoutTimeTravel({{Options::IGNORE_DELETE, "false"}}));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, ScanContextBuilder().Finish());
         ASSERT_NOK_WITH_MSG(
             TableScan::Create(load, std::move(context), {{Options::BUCKET_KEY, "b"}}),
@@ -431,7 +436,7 @@ TEST(TableTest, TestScanWithMainBranchAlias) {
 
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> loaded_context, builder.Finish());
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_1,
-                                 table->Copy(dynamic_options));
+                                 table->CopyWithoutTimeTravel(dynamic_options));
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> loaded_scan,
                                  configured_table_1->NewScan(std::move(loaded_context)));
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> loaded_plan, loaded_scan->CreatePlan());
@@ -518,7 +523,7 @@ TEST(TableTest, TestGetTableDispatchesByTableType) {
                              context_builder.EnablePreciseFileIndexEvaluate(true).Finish());
         auto read = direct ? ([&]() -> Result<std::unique_ptr<TableRead>> {
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                   system_table->Copy(context_builder_options));
+                                   system_table->CopyWithoutTimeTravel(context_builder_options));
             return configured->NewRead(std::move(context));
         })()
                            : TableRead::Create(context_builder_load_context, std::move(context),
@@ -582,7 +587,7 @@ TEST(TableTest, TestNewScanCreatesATableScan) {
     ScanContextBuilder ctx_builder;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ctx, ctx_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_3,
-                         table->Copy(ctx_builder_options));
+                         table->CopyWithoutTimeTravel(ctx_builder_options));
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
                          configured_table_3->NewScan(std::move(ctx)));
 }
@@ -603,7 +608,7 @@ TEST(TableTest, TestNewReadCreatesATableRead) {
     ReadContextBuilder ctx_builder_18211;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> ctx, ctx_builder_18211.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_4,
-                         table->Copy(ctx_builder_18211_options));
+                         table->CopyWithoutTimeTravel(ctx_builder_18211_options));
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
                          configured_table_4->NewRead(std::move(ctx)));
 }
@@ -2406,7 +2411,7 @@ TEST(TableTest, TestNewWriteCreatesAFileStoreWrite) {
     WriteContextBuilder ctx_builder_18974("commit-user");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> ctx, ctx_builder_18974.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_5,
-                         table->Copy(ctx_builder_18974_options));
+                         table->CopyWithoutTimeTravel(ctx_builder_18974_options));
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreWrite> write,
                          configured_table_5->NewWrite(std::move(ctx)));
 }
@@ -2427,7 +2432,7 @@ TEST(TableTest, TestNewCommitCreatesAFileStoreCommit) {
     CommitContextBuilder ctx_builder_19886("commit-user");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> ctx, ctx_builder_19886.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_6,
-                         table->Copy(ctx_builder_19886_options));
+                         table->CopyWithoutTimeTravel(ctx_builder_19886_options));
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<FileStoreCommit> commit,
                          configured_table_6->NewCommit(std::move(ctx)));
 }
@@ -2520,14 +2525,14 @@ TEST(TableTest, TestLoadedSchemaAndPathAreUsedWithoutReloading) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                          read_context_builder.SetReadFieldNames({"id"}).Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_7,
-                         table->Copy(read_context_builder_options));
+                         table->CopyWithoutTimeTravel(read_context_builder_options));
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableRead> read,
                          configured_table_7->NewRead(std::move(read_context)));
     std::map<std::string, std::string> scan_context_builder_options;
     ScanContextBuilder scan_context_builder;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_8,
-                         table->Copy(scan_context_builder_options));
+                         table->CopyWithoutTimeTravel(scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
                          configured_table_8->NewScan(std::move(scan_context)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
@@ -2548,9 +2553,9 @@ TEST(TableTest, TestContextOptionsCannotChangeLoadedTypeOrBranch) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
                              scan_context_builder_25016.Finish());
         ASSERT_NOK_WITH_MSG(([&]() -> Result<std::unique_ptr<TableScan>> {
-                                PAIMON_ASSIGN_OR_RAISE(
-                                    std::shared_ptr<Table> configured,
-                                    table->Copy(scan_context_builder_25016_options));
+                                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
+                                                       table->CopyWithoutTimeTravel(
+                                                           scan_context_builder_25016_options));
                                 return configured->NewScan(std::move(scan_context));
                             })(),
                             "contradicts the loaded table");
@@ -2560,9 +2565,9 @@ TEST(TableTest, TestContextOptionsCannotChangeLoadedTypeOrBranch) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                              read_context_builder_25926.Finish());
         ASSERT_NOK_WITH_MSG(([&]() -> Result<std::unique_ptr<TableRead>> {
-                                PAIMON_ASSIGN_OR_RAISE(
-                                    std::shared_ptr<Table> configured,
-                                    table->Copy(read_context_builder_25926_options));
+                                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
+                                                       table->CopyWithoutTimeTravel(
+                                                           read_context_builder_25926_options));
                                 return configured->NewRead(std::move(read_context));
                             })(),
                             "contradicts the loaded table");
@@ -2572,8 +2577,9 @@ TEST(TableTest, TestContextOptionsCannotChangeLoadedTypeOrBranch) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
                              write_context_builder.Finish());
         ASSERT_NOK_WITH_MSG(([&]() -> Result<std::unique_ptr<FileStoreWrite>> {
-                                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                                       table->Copy(write_context_builder_options));
+                                PAIMON_ASSIGN_OR_RAISE(
+                                    std::shared_ptr<Table> configured,
+                                    table->CopyWithoutTimeTravel(write_context_builder_options));
                                 return configured->NewWrite(std::move(write_context));
                             })(),
                             "contradicts the loaded table");
@@ -2583,8 +2589,9 @@ TEST(TableTest, TestContextOptionsCannotChangeLoadedTypeOrBranch) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
                              commit_context_builder.Finish());
         ASSERT_NOK_WITH_MSG(([&]() -> Result<std::unique_ptr<FileStoreCommit>> {
-                                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                                       table->Copy(commit_context_builder_options));
+                                PAIMON_ASSIGN_OR_RAISE(
+                                    std::shared_ptr<Table> configured,
+                                    table->CopyWithoutTimeTravel(commit_context_builder_options));
                                 return configured->NewCommit(std::move(commit_context));
                             })(),
                             "contradicts the loaded table");
@@ -2606,8 +2613,9 @@ TEST(TableTest, TestOperationOptionsDoNotMutateTheLoadedTable) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> invalid_context,
                          invalid_context_builder.Finish());
     ASSERT_NOK_WITH_MSG(([&]() -> Result<std::unique_ptr<TableScan>> {
-                            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                                   table->Copy(invalid_context_builder_options));
+                            PAIMON_ASSIGN_OR_RAISE(
+                                std::shared_ptr<Table> configured,
+                                table->CopyWithoutTimeTravel(invalid_context_builder_options));
                             return configured->NewScan(std::move(invalid_context));
                         })(),
                         "Cannot change bucket from or to -1 dynamically");
@@ -2616,7 +2624,7 @@ TEST(TableTest, TestOperationOptionsDoNotMutateTheLoadedTable) {
     ScanContextBuilder context_builder_27781;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, context_builder_27781.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_14,
-                         table->Copy(context_builder_27781_options));
+                         table->CopyWithoutTimeTravel(context_builder_27781_options));
     ASSERT_OK_AND_ASSIGN([[maybe_unused]] std::unique_ptr<TableScan> scan,
                          configured_table_14->NewScan(std::move(context)));
 }
@@ -2654,7 +2662,7 @@ TEST(TableTest, TestGlobalSystemTableRetainsCatalog) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
                          scan_context_builder_28121.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_15,
-                         table->Copy(scan_context_builder_28121_options));
+                         table->CopyWithoutTimeTravel(scan_context_builder_28121_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
                          configured_table_15->NewScan(std::move(scan_context)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
@@ -2663,7 +2671,7 @@ TEST(TableTest, TestGlobalSystemTableRetainsCatalog) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                          read_context_builder_29694.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_16,
-                         table->Copy(read_context_builder_29694_options));
+                         table->CopyWithoutTimeTravel(read_context_builder_29694_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
                          configured_table_16->NewRead(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
@@ -2706,12 +2714,12 @@ TEST(TableTest, TestMetadataSystemTablesRejectConflictingBranches) {
                                      ScanContextBuilder().Finish());
                 auto read = ([&]() -> Result<std::unique_ptr<TableRead>> {
                     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                           table->Copy(read_context_options_82));
+                                           table->CopyWithoutTimeTravel(read_context_options_82));
                     return configured->NewRead(std::move(read_context));
                 })();
                 auto scan = ([&]() -> Result<std::unique_ptr<TableScan>> {
                     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                           table->Copy(scan_context_options_83));
+                                           table->CopyWithoutTimeTravel(scan_context_options_83));
                     return configured->NewScan(std::move(scan_context));
                 })();
                 if (requested == branch) {
@@ -2740,7 +2748,7 @@ TEST(TableTest, TestOperatorFactoryPreservesLoadedSchemaCache) {
         ASSERT_OK(managed->GetSchemaManager()->ReadSchema(0));
         ASSERT_OK(managed->GetSchemaManager()->ReadSchema(0));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copy,
-                             table->Copy({{Options::TARGET_FILE_ROW_NUM, "1"}}));
+                             table->CopyWithoutTimeTravel({{Options::TARGET_FILE_ROW_NUM, "1"}}));
         auto copied = checked_pointer_cast<FileStoreTable>(copy);
         ASSERT_EQ(managed->GetSchemaManager(), copied->GetSchemaManager());
         ASSERT_OK(copied->GetSchemaManager()->ReadSchema(0));
@@ -2773,7 +2781,7 @@ TEST(TableTest, TestMainBranchAliasesUseMainSchemaForAllOperatorEntryPoints) {
                     scan, TableScan::Create(builder_load, std::move(context), builder_options));
             } else {
                 ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_19,
-                                     table->Copy(builder_options));
+                                     table->CopyWithoutTimeTravel(builder_options));
                 ASSERT_OK_AND_ASSIGN(scan, configured_table_19->NewScan(std::move(context)));
             }
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
@@ -2792,7 +2800,7 @@ TEST(TableTest, TestMainBranchAliasesUseMainSchemaForAllOperatorEntryPoints) {
                                                        read_builder_options));
             } else {
                 ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_20,
-                                     table->Copy(read_builder_options));
+                                     table->CopyWithoutTimeTravel(read_builder_options));
                 ASSERT_OK_AND_ASSIGN(read, configured_table_20->NewRead(std::move(read_context)));
             }
 
@@ -2810,7 +2818,7 @@ TEST(TableTest, TestMainBranchAliasesUseMainSchemaForAllOperatorEntryPoints) {
                                                   write_builder_options));
             } else {
                 ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_21,
-                                     table->Copy(write_builder_options));
+                                     table->CopyWithoutTimeTravel(write_builder_options));
                 ASSERT_OK_AND_ASSIGN(write,
                                      configured_table_21->NewWrite(std::move(write_context)));
             }
@@ -2830,7 +2838,7 @@ TEST(TableTest, TestMainBranchAliasesUseMainSchemaForAllOperatorEntryPoints) {
                                                     commit_builder_options));
             } else {
                 ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_22,
-                                     table->Copy(commit_builder_options));
+                                     table->CopyWithoutTimeTravel(commit_builder_options));
                 ASSERT_OK_AND_ASSIGN(commit,
                                      configured_table_22->NewCommit(std::move(commit_context)));
             }
@@ -2864,12 +2872,12 @@ TEST(TableTest, TestExplicitContextBranchMustMatchLoadedTable) {
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
             auto write = ([&]() -> Result<std::unique_ptr<FileStoreWrite>> {
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                       table->Copy(write_builder_options));
+                                       table->CopyWithoutTimeTravel(write_builder_options));
                 return configured->NewWrite(std::move(write_context));
             })();
             auto read = ([&]() -> Result<std::unique_ptr<TableRead>> {
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                       table->Copy(read_builder_options));
+                                       table->CopyWithoutTimeTravel(read_builder_options));
                 return configured->NewRead(std::move(read_context));
             })();
             if (requested && BranchManager::NormalizeBranch(*requested) != table_branch) {
@@ -2947,7 +2955,7 @@ TEST(TableTest, TestPreloadedSchemaBranchMatchesScanAndRead) {
         ASSERT_EQ(expected_options,
                   std::dynamic_pointer_cast<TableSchema>(loaded->GetSchema())->Options());
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_25,
-                             loaded->Copy(read_context_builder_34363_options));
+                             loaded->CopyWithoutTimeTravel(read_context_builder_34363_options));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
                              configured_table_25->NewRead(std::move(read_context)));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
@@ -3010,7 +3018,7 @@ TEST(TableTest, TestLoadedTableReadRetainsLoadSchemeMap) {
             std::unique_ptr<TableRead> read,
             direct ? ([&]() -> Result<std::unique_ptr<TableRead>> {
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                       table->Copy(context_builder_36442_options));
+                                       table->CopyWithoutTimeTravel(context_builder_36442_options));
                 return configured->NewRead(std::move(context));
             })()
                    : TableRead::Create(context_builder_36442_load_context, std::move(context),
@@ -3052,7 +3060,7 @@ TEST(TableTest, TestReadRetainsLoadSchemeMapForMainAndFallback) {
         }
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_27,
-                             table->Copy(builder_options));
+                             table->CopyWithoutTimeTravel(builder_options));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
                              configured_table_27->NewRead(std::move(context)));
         std::vector<TableRead*> reads;
@@ -3077,7 +3085,7 @@ TEST(TableTest, TestReadRetainsLoadSchemeMapForMainAndFallback) {
     ReadContextBuilder context_builder_38424;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, context_builder_38424.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_28,
-                         table->Copy(context_builder_38424_options));
+                         table->CopyWithoutTimeTravel(context_builder_38424_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
                          configured_table_28->NewRead(std::move(context)));
     auto* append_read = dynamic_cast<AppendOnlyTableRead*>(read.get());
@@ -3126,7 +3134,7 @@ TEST(TableTest, TestSystemTablePathRetainsSchemeMapForDependencyReads) {
             context_builder_41670_options = context_builder_42682_options;
             ASSERT_OK_AND_ASSIGN(context, context_builder_42682.Finish());
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_29,
-                                 table->Copy(context_builder_41670_options));
+                                 table->CopyWithoutTimeTravel(context_builder_41670_options));
             ASSERT_OK_AND_ASSIGN(read, configured_table_29->NewRead(std::move(context)));
         } else {
             ASSERT_OK_AND_ASSIGN(
@@ -3158,7 +3166,7 @@ TEST(TableTest, TestSystemTableReadRetainsLoadSchemeMapWithoutReplacingFileSyste
     ReadContextBuilder context_builder_43111;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, context_builder_43111.Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_30,
-                         table->Copy(context_builder_43111_options));
+                         table->CopyWithoutTimeTravel(context_builder_43111_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
                          configured_table_30->NewRead(std::move(context)));
     auto* append_read = dynamic_cast<AppendOnlyTableRead*>(read.get());
@@ -3201,7 +3209,7 @@ TEST(TableTest, TestRealtimeFallbackOnlyAllowsMainBranch) {
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
             auto read = ([&]() -> Result<std::unique_ptr<TableRead>> {
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                       table->Copy(builder_options));
+                                       table->CopyWithoutTimeTravel(builder_options));
                 return configured->NewRead(std::move(context));
             })();
             if (realtime_enabled && fallback != "main") {
@@ -3348,7 +3356,7 @@ TEST(TableTest, LoadedFallbackReadUsesBoundStorage) {
                          CreateManagedTable(fs, dir->Str(), Identifier("db", "tbl", "dev"), "dev"));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, ReadContextBuilder().Finish());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_32,
-                         dev->Copy({{Options::SCAN_FALLBACK_BRANCH, "main"}}));
+                         dev->CopyWithoutTimeTravel({{Options::SCAN_FALLBACK_BRANCH, "main"}}));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
                          configured_table_32->NewRead(std::move(context)));
     auto* fallback = dynamic_cast<FallbackTableRead*>(read.get());
@@ -3443,8 +3451,9 @@ TEST(TableTest, LoadedHandlesCheckNewAuthorizationSettings) {
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> enabled,
                                  ReadContextBuilder().Finish());
             ASSERT_NOK_WITH_MSG(([&]() -> Result<std::unique_ptr<TableRead>> {
-                                    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                                           view->Copy(enabled_options_100));
+                                    PAIMON_ASSIGN_OR_RAISE(
+                                        std::shared_ptr<Table> configured,
+                                        view->CopyWithoutTimeTravel(enabled_options_100));
                                     return configured->NewRead(std::move(enabled));
                                 })(),
                                 "query-auth.enabled");
@@ -3463,8 +3472,9 @@ TEST(TableTest, LoadedHandlesCheckNewAuthorizationSettings) {
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
                                  ReadContextBuilder().Finish());
             ASSERT_NOK_WITH_MSG(([&]() -> Result<std::unique_ptr<TableRead>> {
-                                    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                                           view->Copy(context_options_101));
+                                    PAIMON_ASSIGN_OR_RAISE(
+                                        std::shared_ptr<Table> configured,
+                                        view->CopyWithoutTimeTravel(context_options_101));
                                     return configured->NewRead(std::move(context));
                                 })(),
                                 "query-auth.enabled");
@@ -3474,7 +3484,7 @@ TEST(TableTest, LoadedHandlesCheckNewAuthorizationSettings) {
         read_options_102[Options::BRANCH] = branch;
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read, ReadContextBuilder().Finish());
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_35,
-                             table->Copy(read_options_102));
+                             table->CopyWithoutTimeTravel(read_options_102));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> guarded,
                              configured_table_35->NewRead(std::move(read)));
         ASSERT_NE(nullptr, dynamic_cast<QueryAuthTableRead*>(guarded.get()));
@@ -3484,8 +3494,9 @@ TEST(TableTest, LoadedHandlesCheckNewAuthorizationSettings) {
         scan_options_103[Options::BRANCH] = branch;
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan, ScanContextBuilder().Finish());
         ASSERT_NOK_WITH_MSG(([&]() -> Result<std::unique_ptr<TableScan>> {
-                                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                                       table->Copy(scan_options_103));
+                                PAIMON_ASSIGN_OR_RAISE(
+                                    std::shared_ptr<Table> configured,
+                                    table->CopyWithoutTimeTravel(scan_options_103));
                                 return configured->NewScan(std::move(scan));
                             })(),
                             "without the catalog");
@@ -3697,16 +3708,16 @@ TEST(TableTest, TestCatalogOnlyLoadsRetainTheResolvedBranchSchema) {
             }
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                                  ReadContextBuilder().SetReadFieldNames({"remote"}).Finish());
-            ASSERT_OK(TableRead::Create(load, std::move(read_context)));
+            ASSERT_OK(TableRead::Create(load, std::move(read_context), {}));
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
                                  ScanContextBuilder().Finish());
-            ASSERT_OK(TableScan::Create(load, std::move(scan_context)));
+            ASSERT_OK(TableScan::Create(load, std::move(scan_context), {}));
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
                                  WriteContextBuilder("writer").Finish());
-            ASSERT_OK(FileStoreWrite::Create(load, std::move(write_context)));
+            ASSERT_OK(FileStoreWrite::Create(load, std::move(write_context), {}));
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
                                  CommitContextBuilder("writer").Finish());
-            ASSERT_OK(FileStoreCommit::Create(load, std::move(commit_context)));
+            ASSERT_OK(FileStoreCommit::Create(load, std::move(commit_context), {}));
         }
     }
 }
@@ -3731,8 +3742,9 @@ TEST(TableTest, TestLoadContextValidateExpectedCatalogUuid) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
                          CommitContextBuilder("writer").Finish());
     ASSERT_NOK_WITH_MSG(([&]() -> Result<std::unique_ptr<FileStoreCommit>> {
-                            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured,
-                                                   table->Copy({{Options::BRANCH, "dev"}}));
+                            PAIMON_ASSIGN_OR_RAISE(
+                                std::shared_ptr<Table> configured,
+                                table->CopyWithoutTimeTravel({{Options::BRANCH, "dev"}}));
                             return configured->NewCommit(std::move(context));
                         })(),
                         "branch contradicts");

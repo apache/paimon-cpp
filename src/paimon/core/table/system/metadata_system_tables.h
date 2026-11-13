@@ -33,7 +33,7 @@ class TableSchema;
 /// System table for `T$options`, exposing the latest base table options as key/value rows.
 class OptionsSystemTable : public InMemorySystemTable {
  public:
-    Result<std::shared_ptr<Table>> Copy(
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     static constexpr const char* kName = "options";
@@ -60,7 +60,7 @@ struct MetadataSystemTableContext {
 /// System table for `T$snapshots`, exposing snapshot commit history.
 class SnapshotsSystemTable : public InMemorySystemTable {
  public:
-    Result<std::shared_ptr<Table>> Copy(
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     static constexpr const char* kName = "snapshots";
@@ -78,7 +78,7 @@ class SnapshotsSystemTable : public InMemorySystemTable {
 /// System table for `T$schemas`, exposing schema evolution history.
 class SchemasSystemTable : public InMemorySystemTable {
  public:
-    Result<std::shared_ptr<Table>> Copy(
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     static constexpr const char* kName = "schemas";
@@ -95,7 +95,7 @@ class SchemasSystemTable : public InMemorySystemTable {
 /// System table for `T$tags`, exposing tags and the snapshots they reference.
 class TagsSystemTable : public InMemorySystemTable {
  public:
-    Result<std::shared_ptr<Table>> Copy(
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     static constexpr const char* kName = "tags";
@@ -112,7 +112,7 @@ class TagsSystemTable : public InMemorySystemTable {
 /// System table for `T$branches`, exposing table branches including `main`.
 class BranchesSystemTable : public InMemorySystemTable {
  public:
-    Result<std::shared_ptr<Table>> Copy(
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     static constexpr const char* kName = "branches";
@@ -129,7 +129,7 @@ class BranchesSystemTable : public InMemorySystemTable {
 /// System table for `T$consumers`, exposing persisted streaming consumer offsets.
 class ConsumersSystemTable : public InMemorySystemTable {
  public:
-    Result<std::shared_ptr<Table>> Copy(
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     static constexpr const char* kName = "consumers";
@@ -147,7 +147,7 @@ class ConsumersSystemTable : public InMemorySystemTable {
 /// System table for `T$manifests`, exposing data manifest metadata in the latest snapshot.
 class ManifestsSystemTable : public InMemorySystemTable {
  public:
-    Result<std::shared_ptr<Table>> Copy(
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     static constexpr const char* kName = "manifests";
@@ -169,7 +169,7 @@ class ManifestsSystemTable : public InMemorySystemTable {
 /// System table for `T$files`, exposing data file metadata in the latest snapshot.
 class FilesSystemTable : public InMemorySystemTable {
  public:
-    Result<std::shared_ptr<Table>> Copy(
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
         const std::map<std::string, std::string>& dynamic_options) const override;
 
     static constexpr const char* kName = "files";

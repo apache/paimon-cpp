@@ -324,7 +324,7 @@ them. A search whose ``full-text-index.search-mode``, or else ``global-index.sea
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
                           scan_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
-                          paimon::TableScan::Create(load_context, std::move(scan_context)));
+                          paimon::TableScan::Create(load_context, std::move(scan_context), {}));
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Plan> data_plan, scan->CreatePlan());
 
    paimon::ReadContextBuilder read_builder;
@@ -332,7 +332,7 @@ them. A search whose ``full-text-index.search-mode``, or else ``global-index.sea
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ReadContext> read_context,
                           read_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> read,
-                          paimon::TableRead::Create(load_context, std::move(read_context)));
+                          paimon::TableRead::Create(load_context, std::move(read_context), {}));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::BatchReader> reader,
                           read->CreateReader(data_plan->Splits()));
 
