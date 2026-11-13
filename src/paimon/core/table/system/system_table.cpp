@@ -342,6 +342,14 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
     const std::shared_ptr<FileSystem>& fs, const std::string& path,
     const std::map<std::string, std::string>& dynamic_options,
     const std::map<std::string, std::string>& fs_scheme_map) {
+    return LoadFromPath(fs, path, dynamic_options, fs_scheme_map, std::nullopt);
+}
+
+Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
+    const std::shared_ptr<FileSystem>& fs, const std::string& path,
+    const std::map<std::string, std::string>& dynamic_options,
+    const std::map<std::string, std::string>& fs_scheme_map,
+    const std::optional<std::string>& specific_schema) {
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path, TryParsePath(path));
     if (!system_table_path) {
         return Status::Invalid("path is not a system table path: ", path);
@@ -361,15 +369,21 @@ Result<std::shared_ptr<SystemTable>> SystemTableLoader::LoadFromPath(
         return GlobalSystemTableLoader::Load(parsed.system_table_name, context);
     }
 
-    const Identifier path_identifier(Identifier::kUnknownDatabase, PathUtil::GetName(path));
-    PAIMON_ASSIGN_OR_RAISE(std::string branch,
-                           BranchManager::ResolveBranch(path_identifier, dynamic_options,
-                                                        std::nullopt, "system table"));
+    // Path branch names are case-sensitive; Identifier aliases apply only to catalog loads.
+    PAIMON_ASSIGN_OR_RAISE(
+        std::string branch,
+        BranchManager::ResolveBranch(std::nullopt, dynamic_options, parsed.branch, "system table"));
     SchemaManager schema_manager(fs, parsed.table_path, branch);
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
                            schema_manager.Latest());
     if (!latest_schema) {
         return Status::NotExist("base table schema not found for system table path: ", path);
+    }
+    PAIMON_RETURN_NOT_OK(ValidateQueryAuthSystemTable(parsed.system_table_name,
+                                                      latest_schema.value(), dynamic_options));
+    if (StringUtils::ToLowerCase(parsed.system_table_name) == ReadOptimizedSystemTable::kName &&
+        branch == BranchManager::DEFAULT_MAIN_BRANCH && specific_schema) {
+        PAIMON_ASSIGN_OR_RAISE(latest_schema, TableSchema::CreateFromJson(*specific_schema));
     }
     auto options = dynamic_options;
     if (parsed.branch || options.count(Options::BRANCH) != 0) {

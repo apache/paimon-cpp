@@ -297,8 +297,7 @@ Result<std::map<std::string, std::string>> CatalogUtils::ResolveQueryAuthReadOpt
             }
         }
     }
-    if (!enabled && has_specific_table_schema &&
-        read_branch == BranchManager::DEFAULT_MAIN_BRANCH && !system_table_path) {
+    if (!enabled && has_specific_table_schema && !system_table_path) {
         SchemaManager schema_manager(file_system, path, read_branch);
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
                                schema_manager.Latest());

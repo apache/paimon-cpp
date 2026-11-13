@@ -28,6 +28,7 @@
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/table.h"
 #include "paimon/commit_context.h"
+#include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
 #include "paimon/core/core_options.h"
@@ -257,9 +258,10 @@ Result<std::shared_ptr<Table>> TableFactory::Create(const ScanContext* context) 
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(context->GetPath()));
     if (system_table_path) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
-                               SystemTableLoader::LoadFromPath(tmp_options.GetFileSystem(),
-                                                               context->GetPath(), read_options));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<SystemTable> system_table,
+            SystemTableLoader::LoadFromPath(tmp_options.GetFileSystem(), context->GetPath(),
+                                            read_options, {}, context->GetSpecificTableSchema()));
         return std::shared_ptr<Table>(system_table);
     }
     // A format table is planned by listing directories, so it never reaches the manifest path
@@ -321,10 +323,11 @@ Result<std::shared_ptr<Table>> TableFactory::Create(const ReadContext* context) 
             return Status::NotImplemented(
                 "Precise file-index evaluation is not supported for system tables");
         }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
-                               SystemTableLoader::LoadFromPath(
-                                   tmp_core_options.GetFileSystem(), context->GetPath(),
-                                   read_options, context->GetFileSystemSchemeToIdentifierMap()));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<SystemTable> system_table,
+            SystemTableLoader::LoadFromPath(
+                tmp_core_options.GetFileSystem(), context->GetPath(), read_options,
+                context->GetFileSystemSchemeToIdentifierMap(), context->GetSpecificTableSchema()));
         return std::shared_ptr<Table>(system_table);
     }
 
@@ -358,9 +361,12 @@ Result<std::shared_ptr<Table>> TableFactory::Create(const ReadContext* context) 
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options,
                            CoreOptions::FromMap(options_map, context->GetSpecificFileSystem(),
                                                 context->GetFileSystemSchemeToIdentifierMap()));
-    return ManagedTable(context->GetPath(), branch, latest_schema, std::move(options),
-                        context->GetIdentifier(), std::nullopt,
-                        context->GetFileSystemSchemeToIdentifierMap());
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table,
+                           ManagedTable(context->GetPath(), branch, latest_schema,
+                                        std::move(options), context->GetIdentifier(), std::nullopt,
+                                        context->GetFileSystemSchemeToIdentifierMap()));
+    checked_pointer_cast<FileStoreTable>(table)->loaded_from_read_context_ = true;
+    return table;
 }
 
 Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext> context) {

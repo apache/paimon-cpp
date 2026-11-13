@@ -99,6 +99,10 @@ class FileStoreTable : public Table {
         std::unique_ptr<CommitContext> context) const override;
 
  private:
+    friend class TableFactory;
+    // Only the legacy static factory may use its context to load the fallback branch.
+    bool loaded_from_read_context_ = false;
+
     Result<std::unique_ptr<TableScan>> NewScan(const std::shared_ptr<ScanContext>& context,
                                                bool query_auth_applied) const;
 

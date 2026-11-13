@@ -523,24 +523,28 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForTable
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForFallbackBranch(
     const std::shared_ptr<ReadContext>& context, const std::string& branch,
     const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
-    const std::map<std::string, std::string>& fs_scheme_map) {
+    const std::map<std::string, std::string>& fs_scheme_map, bool use_context_load) {
     if (context->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(branch));
     }
+    std::shared_ptr<FileSystem> fallback_fs = file_system;
+    if (use_context_load) {
+        // Preserve static-factory loading: metadata uses the caller's storage configuration;
+        // data storage is resolved below after the fallback schema options are known.
+        PAIMON_ASSIGN_OR_RAISE(
+            CoreOptions metadata_options,
+            CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(),
+                                 fs_scheme_map));
+        fallback_fs = metadata_options.GetFileSystem();
+    }
     std::shared_ptr<TableSchema> schema;
-    if (branch == BranchManager::DEFAULT_MAIN_BRANCH && context->GetSpecificTableSchema()) {
-        // A loaded table may receive a context for another path; its supplied schema must not
-        // replace this table's fallback schema. Static entrypoints use the context's own path.
-        PAIMON_ASSIGN_OR_RAISE(std::string context_path,
-                               PathUtil::NormalizePath(context->GetPath()));
-        PAIMON_ASSIGN_OR_RAISE(std::string table_path, PathUtil::NormalizePath(root_path));
-        if (context_path == table_path) {
-            PAIMON_ASSIGN_OR_RAISE(
-                schema, TableSchema::CreateFromJson(context->GetSpecificTableSchema().value()));
-        }
+    if (use_context_load && branch == BranchManager::DEFAULT_MAIN_BRANCH &&
+        context->GetSpecificTableSchema()) {
+        PAIMON_ASSIGN_OR_RAISE(
+            schema, TableSchema::CreateFromJson(context->GetSpecificTableSchema().value()));
     }
     if (!schema) {
-        SchemaManager manager(file_system, root_path, branch);
+        SchemaManager manager(fallback_fs, root_path, branch);
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
                                manager.Latest());
         if (!latest) {
@@ -553,7 +557,11 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateForFallb
         options[key] = value;
     }
     options[Options::BRANCH] = branch;
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options, file_system));
+    PAIMON_ASSIGN_OR_RAISE(
+        CoreOptions core_options,
+        CoreOptions::FromMap(options,
+                             use_context_load ? context->GetSpecificFileSystem() : file_system,
+                             fs_scheme_map));
     return CreateForTable(context, schema, std::move(core_options), root_path, fs_scheme_map);
 }
 

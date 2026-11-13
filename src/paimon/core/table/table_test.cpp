@@ -36,6 +36,7 @@
 #include "gtest/gtest.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/catalog/catalog_context.h"
+#include "paimon/common/fs/resolving_file_system.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -60,6 +61,8 @@
 #include "paimon/core/table/source/append_only_table_read.h"
 #include "paimon/core/table/source/fallback_table_read.h"
 #include "paimon/core/table/source/query_auth_split.h"
+#include "paimon/core/table/source/query_auth_table_read.h"
+#include "paimon/core/table/source/read_optimized_scan_options.h"
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/table/table_factory.h"
 #include "paimon/defs.h"
@@ -1925,7 +1928,7 @@ TEST(TableTest, TestQueryAuthSystemTablesValidateTheBranchRead) {
     ASSERT_NOK_WITH_MSG(
         SystemTableLoader::LoadFromPath(dir->GetFileSystem(), path + "$branch_dev$files",
                                         {{Options::BRANCH, "other"}}),
-        "a system table is aimed at one branch, but both 'dev' and 'other' were named");
+        "a system table is aimed at one branch, but both 'other' and 'dev' were named");
 }
 
 TEST(TableTest, TestNewWriteCreatesAFileStoreWrite) {
@@ -2670,14 +2673,19 @@ TEST(TableTest, LoadedFallbackReadIgnoresForeignContextSchema) {
     ASSERT_OK(CreateManagedTable(fs, dir->Str(), Identifier("db", "tbl"), "main"));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> dev,
                          CreateManagedTable(fs, dir->Str(), Identifier("db", "tbl", "dev"), "dev"));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
-                         ReadContextBuilder(dir->Str() + "/other")
-                             .WithBranch("dev")
-                             .AddOption(Options::SCAN_FALLBACK_BRANCH, "main")
-                             .SetTableSchema("invalid json")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, dev->NewRead(std::move(context)));
-    ASSERT_NE(nullptr, dynamic_cast<FallbackTableRead*>(read.get()));
+    for (const std::string& context_path : {dir->Str() + "/other", dir->Str()}) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
+                             ReadContextBuilder(context_path)
+                                 .WithFileSystem(std::make_shared<ResolvingFileSystem>(
+                                     std::map<std::string, std::string>{}, "local",
+                                     std::map<std::string, std::string>{}))
+                                 .WithBranch("dev")
+                                 .AddOption(Options::SCAN_FALLBACK_BRANCH, "main")
+                                 .SetTableSchema("invalid json")
+                                 .Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, dev->NewRead(std::move(context)));
+        ASSERT_NE(nullptr, dynamic_cast<FallbackTableRead*>(read.get()));
+    }
 }
 
 TEST(TableTest, CatalogMetadataDoesNotRequireDataFormatPlugin) {
@@ -2718,6 +2726,178 @@ TEST(TableTest, SystemTableFullNamesDistinguishDatabases) {
         ASSERT_EQ("tbl$options", table->Name());
         ASSERT_EQ(db + ".tbl$options", table->FullName());
         ASSERT_EQ(table->FullName(), table->Uuid());
+    }
+}
+
+TEST(TableTest, LoadedQueryAuthRejectsForeignContextBeforePlanning) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper, CreateQueryAuthTable(dir->Str()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<MockQueryAuthCatalog> catalog,
+                         CreateQueryAuthCatalog(*helper, dir->GetFileSystem()));
+    FileSystemCatalog file_catalog(dir->GetFileSystem(), dir->Str(), {});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         file_catalog.GetTable(Identifier("foo", "bar")));
+    // Reject a foreign scope at operator construction; no data access is needed.
+    for (bool same_path : {false, true}) {
+        catalog->table_location = table->GetRootPath() + (same_path ? "" : "/other");
+        const std::string error = same_path ? "context names table" : "context names root path";
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan,
+                             ScanContextBuilder(catalog->table_location)
+                                 .WithCatalog(catalog, Identifier("foo", "other"))
+                                 .Finish());
+        ASSERT_NOK_WITH_MSG(table->NewScan(std::move(scan)), error);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read,
+                             ReadContextBuilder(catalog->table_location)
+                                 .WithCatalog(catalog, Identifier("foo", "other"))
+                                 .Finish());
+        ASSERT_NOK_WITH_MSG(table->NewRead(std::move(read)), error);
+    }
+}
+
+TEST(TableTest, LoadedHandlesCheckNewAuthorizationSettings) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    for (const std::string& branch : {std::string("main"), std::string("dev")}) {
+        SCOPED_TRACE(branch);
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Table> table,
+            CreateManagedTable(fs, dir->Str(), Identifier("db", "tbl", branch), branch));
+        std::vector<std::shared_ptr<SystemTable>> views;
+        for (const std::string& kind : {std::string("files"), std::string("manifests")}) {
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<SystemTable> view,
+                SystemTableLoader::Load(kind, fs, dir->Str(),
+                                        checked_pointer_cast<TableSchema>(table->GetSchema()),
+                                        {{Options::BRANCH, branch}}));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> enabled,
+                                 ReadContextBuilder(dir->Str())
+                                     .WithBranch(branch)
+                                     .AddOption(Options::QUERY_AUTH_ENABLED, "true")
+                                     .Finish());
+            ASSERT_NOK_WITH_MSG(view->NewRead(std::move(enabled)), "query-auth.enabled");
+            views.push_back(std::move(view));
+        }
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TableSchema> changed,
+            TableSchema::Create(1, arrow::schema({arrow::field("id", arrow::int32(), false)}), {},
+                                {}, {{Options::QUERY_AUTH_ENABLED, "true"}}));
+        ASSERT_OK_AND_ASSIGN(std::string json, changed->GetJsonSchema());
+        const std::string schema_dir = branch == "main" ? "/schema" : "/branch/branch-dev/schema";
+        ASSERT_OK(fs->AtomicStore(dir->Str() + schema_dir + "/schema-1", json));
+        for (const auto& view : views) {
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
+                                 ReadContextBuilder(dir->Str()).WithBranch(branch).Finish());
+            ASSERT_NOK_WITH_MSG(view->NewRead(std::move(context)), "query-auth.enabled");
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read,
+                             ReadContextBuilder(dir->Str()).WithBranch(branch).Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> guarded, table->NewRead(std::move(read)));
+        ASSERT_NE(nullptr, dynamic_cast<QueryAuthTableRead*>(guarded.get()));
+        ASSERT_NOK_WITH_MSG(guarded->CreateReader(std::shared_ptr<Split>()), "query-auth.enabled");
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<ScanContext> scan,
+            ScanContextBuilder(dir->Str()).AddOption(Options::BRANCH, branch).Finish());
+        ASSERT_NOK_WITH_MSG(table->NewScan(std::move(scan)), "without the catalog");
+    }
+}
+
+TEST(TableTest, StaticReadOptimizedPreservesSuppliedSchemaAndMandatoryOptions) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK(CreateManagedTable(dir->GetFileSystem(), dir->Str(), Identifier("db", "tbl")));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableSchema> supplied,
+        TableSchema::Create(1,
+                            arrow::schema({arrow::field("id", arrow::int32(), false),
+                                           arrow::field("extra", arrow::int32())}),
+                            {}, {}, {}));
+    ASSERT_OK_AND_ASSIGN(std::string json, supplied->GetJsonSchema());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
+                         ReadContextBuilder(dir->Str() + "$ro")
+                             .SetTableSchema(json)
+                             .SetReadFieldNames({"extra"})
+                             .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, TableRead::Create(std::move(context)));
+    auto* append = dynamic_cast<AppendOnlyTableRead*>(read.get());
+    ASSERT_NE(nullptr, append);
+    ASSERT_EQ((std::vector<std::string>{"extra"}),
+              append->context_->GetReadSchema()->field_names());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ScanContext> scan_context,
+        ScanContextBuilder(dir->Str() + "$ro")
+            .SetTableSchema(json)
+            .SetPredicate(PredicateBuilder::GreaterThan(1, "extra", FieldType::INT, Literal(0)))
+            .AddOption(kReadOptimizedScanOption, "false")
+            .Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                         TableScan::Create(std::move(scan_context)));
+    ASSERT_OK(scan->CreatePlan());
+    const std::string pk_path = dir->Str() + "/pk";
+    SchemaManager manager(dir->GetFileSystem(), pk_path);
+    ASSERT_OK(manager.CreateTable(arrow::schema({arrow::field("id", arrow::int32(), false)}), {},
+                                  {"id"}, {{Options::BUCKET, "1"}}));
+    ASSERT_OK_AND_ASSIGN(scan_context, ScanContextBuilder(pk_path + "$ro")
+                                           .WithStreamingMode(true)
+                                           .AddOption(kReadOptimizedScanOption, "false")
+                                           .Finish());
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(scan_context)),
+                        "read-optimized system table does not support streaming scan");
+}
+
+TEST(TableTest, StaticSystemTablePathPreservesCaseSensitiveBranch) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    const std::string branch = "MAIN";
+    ASSERT_OK(CreateManagedTable(fs, dir->Str(), Identifier("db", "tbl"), branch));
+    const std::string path = dir->Str() + "$branch_MAIN$schemas";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
+                         ScanContextBuilder(path).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                         TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                         ReadContextBuilder(path).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                         TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> rows,
+                         ReadResultCollector::CollectResult(std::move(reader)));
+    ASSERT_EQ(1, rows->length());
+}
+
+TEST(TableTest, StaticFallbackResolvesStorageFromFallbackOptions) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    auto schema = arrow::schema({arrow::field("id", arrow::int32(), false)});
+    SchemaManager main(fs, dir->Str(), "main");
+    SchemaManager dev(fs, dir->Str(), "dev");
+    ASSERT_OK(main.CreateTable(schema, {}, {}, {{"test.endpoint", "fallback"}}));
+    ASSERT_OK(dev.CreateTable(schema, {}, {}, {{"test.endpoint", "primary"}}));
+    for (bool explicit_fs : {false, true}) {
+        ReadContextBuilder builder(dir->Str());
+        builder.WithBranch("dev").AddOption(Options::SCAN_FALLBACK_BRANCH, "main");
+        if (explicit_fs) {
+            builder.WithFileSystem(fs);
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                             TableRead::Create(std::move(context)));
+        auto* fallback = dynamic_cast<FallbackTableRead*>(read.get());
+        ASSERT_NE(nullptr, fallback);
+        auto* append = dynamic_cast<AppendOnlyTableRead*>(fallback->fallback_table_.get());
+        ASSERT_NE(nullptr, append);
+        auto actual_fs = append->context_->GetCoreOptions().GetFileSystem();
+        if (explicit_fs) {
+            ASSERT_EQ(fs, actual_fs);
+        } else {
+            auto resolving = std::dynamic_pointer_cast<ResolvingFileSystem>(actual_fs);
+            ASSERT_TRUE(resolving);
+            ASSERT_EQ("fallback", resolving->options_.at("test.endpoint"));
+        }
     }
 }
 

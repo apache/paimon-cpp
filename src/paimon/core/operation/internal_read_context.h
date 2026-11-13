@@ -68,7 +68,7 @@ class InternalReadContext {
     static Result<std::unique_ptr<InternalReadContext>> CreateForFallbackBranch(
         const std::shared_ptr<ReadContext>& context, const std::string& branch,
         const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
-        const std::map<std::string, std::string>& fs_scheme_map);
+        const std::map<std::string, std::string>& fs_scheme_map, bool use_context_load);
 
     /// Maps score output positions in the read schema to their logical search sources.
     const std::map<int32_t, IndexScoreSource>& GetIndexScoreBindings() const {

@@ -465,6 +465,11 @@ Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
     PAIMON_ASSIGN_OR_RAISE(bool query_auth, SchemaValidation::QueryAuthReadEnabled(
                                                 table_schema->Options(), read_options));
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, ResolveOptions(read_options));
+    if (query_auth) {
+        // The authorization scope and the bound data source must name the same table.
+        PAIMON_RETURN_NOT_OK(CheckContextNamesThisTable("scan", context->GetPath(),
+                                                        context->GetIdentifier(), std::nullopt));
+    }
     if (query_auth && !query_auth_applied) {
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FileStoreTable> table,
@@ -611,6 +616,11 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
     PAIMON_ASSIGN_OR_RAISE(bool query_auth, SchemaValidation::QueryAuthReadEnabled(
                                                 loaded_schema->Options(), read_options));
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options, ResolveOptions(read_options));
+    if (query_auth) {
+        // The authorization scope and the bound data source must name the same table.
+        PAIMON_RETURN_NOT_OK(CheckContextNamesThisTable(
+            "read", read_context->GetPath(), read_context->GetIdentifier(), std::nullopt));
+    }
     if (query_auth && !query_auth_applied) {
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FileStoreTable> table,
@@ -656,7 +666,7 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> fallback_context,
                            InternalReadContext::CreateForFallbackBranch(
                                read_context, /*branch=*/scan_fallback_branch.value(), file_system_,
-                               root_path_, fs_scheme_map));
+                               root_path_, fs_scheme_map, loaded_from_read_context_));
 
     PAIMON_ASSIGN_OR_RAISE(
         bool fallback_query_auth,

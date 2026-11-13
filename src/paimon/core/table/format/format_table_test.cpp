@@ -5228,4 +5228,27 @@ TEST(FormatTableTest, LoadedTableRejectsAnotherTablesWriteAndCommitContext) {
     }
 }
 
+TEST(FormatTableTest, LoadedWriteContextsRequireSameStorageBindingAndAcceptMainAlias) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table, CreateTable(fs, dir->Str(), {"dt"}));
+    auto other_fs = std::make_shared<CallOrderFileSystem>(fs);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> other,
+                         FormatTable::Create(other_fs, dir->Str(), Identifier("db", "tbl"), {}));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write, WriteContextBuilder(other).Finish());
+    ASSERT_NOK_WITH_MSG(table->NewWrite(std::move(write)), "context filesystem contradicts");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit,
+                         CommitContextBuilder(other).Finish());
+    ASSERT_NOK_WITH_MSG(table->NewCommit(std::move(commit)), "context filesystem contradicts");
+    ASSERT_TRUE(other_fs->Calls().empty());
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FormatTable> alias,
+        FormatTable::Create(fs, dir->Str(), Identifier("db", "tbl$branch_MAIN"), {}));
+    ASSERT_OK_AND_ASSIGN(write, WriteContextBuilder(alias).Finish());
+    ASSERT_OK(table->NewWrite(std::move(write)));
+    ASSERT_OK_AND_ASSIGN(commit, CommitContextBuilder(alias).Finish());
+    ASSERT_OK(table->NewCommit(std::move(commit)));
+}
+
 }  // namespace paimon::test

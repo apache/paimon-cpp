@@ -66,9 +66,11 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
             "PK real-time union read does not support read-optimized scans");
     }
     auto options = ReadOptimizedOptions();
+    auto read_options = context->GetOptions();
+    read_options[kReadOptimizedScanOption] = "true";
     ScanContextBuilder builder(table_path_);
     builder.WithStreamingMode(context->IsStreamingMode())
-        .SetOptions(context->GetOptions())
+        .SetOptions(read_options)
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
         .WithFileSystem(GetFileSystem())

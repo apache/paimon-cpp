@@ -342,12 +342,22 @@ Status FormatTable::CheckWriteContext(const std::string& path,
         return Status::Invalid("write/commit context path contradicts the loaded format table");
     }
     if (context_table) {
+        // Equal URIs do not establish equal endpoints or credentials. A typed context must
+        // reuse this storage binding (including copies of this table), not a separately loaded one.
+        if (file_system_ != context_table->GetFileSystem()) {
+            return Status::Invalid(
+                "write/commit context filesystem contradicts the loaded format table");
+        }
         const Identifier& other = context_table->identifier_;
         const bool database_matches =
             identifier_.GetDatabaseName() == Identifier::kUnknownDatabase ||
             other.GetDatabaseName() == Identifier::kUnknownDatabase ||
             identifier_.GetDatabaseName() == other.GetDatabaseName();
-        if (!database_matches || identifier_.GetObjectName() != other.GetObjectName()) {
+        PAIMON_ASSIGN_OR_RAISE(std::string table_name, identifier_.GetDataTableName());
+        PAIMON_ASSIGN_OR_RAISE(std::string other_name, other.GetDataTableName());
+        PAIMON_ASSIGN_OR_RAISE(std::string table_branch, identifier_.GetBranchNameOrDefault());
+        PAIMON_ASSIGN_OR_RAISE(std::string other_branch, other.GetBranchNameOrDefault());
+        if (!database_matches || table_name != other_name || table_branch != other_branch) {
             return Status::Invalid(
                 "write/commit context identity contradicts the loaded format table");
         }

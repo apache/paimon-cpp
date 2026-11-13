@@ -56,6 +56,7 @@
 #include "paimon/core/manifest/manifest_list.h"
 #include "paimon/core/options/table_type.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/stats/simple_stats_evolution.h"
@@ -217,6 +218,15 @@ Result<MetadataSystemTableContext> WithReadOptions(
         return Status::Invalid("context type contradicts the loaded table");
     }
     merged.options[Options::BRANCH] = context.branch;
+    PAIMON_RETURN_NOT_OK(SchemaValidation::RejectQueryAuth(*context.table_schema, merged.options,
+                                                           "System table statistics"));
+    // A held schema remains stable, but a newly enabled policy must also protect statistics.
+    SchemaManager manager(context.fs, context.table_path, context.branch);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest, manager.Latest());
+    if (latest) {
+        PAIMON_RETURN_NOT_OK(
+            SchemaValidation::RejectQueryAuth(**latest, merged.options, "System table statistics"));
+    }
     return merged;
 }
 
