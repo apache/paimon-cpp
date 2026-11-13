@@ -34,18 +34,18 @@ class FileSystem;
 /// A catalog requires an identifier; a path is required for file-system loading.
 struct PAIMON_EXPORT TableLoadOptions {
     /// Optional for catalog loads; otherwise the native table or system-table path.
-    std::string path;
+    std::string path = {};
     /// Explicit storage binding, taking precedence over the catalog's per-table file system.
-    std::shared_ptr<FileSystem> file_system;
+    std::shared_ptr<FileSystem> file_system = nullptr;
     /// URI scheme routing; cannot be specified together with file_system.
-    std::map<std::string, std::string> fs_scheme_to_identifier_map;
+    std::map<std::string, std::string> fs_scheme_to_identifier_map = {};
     /// Serialized Paimon table schema, independent of the reader's Arrow projection.
     /// Used for the main branch, including a fallback to main from another branch.
-    std::optional<std::string> table_schema_json;
-    std::shared_ptr<Catalog> catalog;
+    std::optional<std::string> table_schema_json = std::nullopt;
+    std::shared_ptr<Catalog> catalog = nullptr;
     /// Requires catalog. A named branch must agree with the dynamic branch option.
-    std::optional<Identifier> identifier;
+    std::optional<Identifier> identifier = std::nullopt;
     /// Expected catalog UUID, or the UUID for an external REST commit request.
-    std::optional<std::string> table_id;
+    std::optional<std::string> table_id = std::nullopt;
 };
 }  // namespace paimon
