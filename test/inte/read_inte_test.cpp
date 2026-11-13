@@ -522,6 +522,11 @@ TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
     std::string path =
         paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
     ReadContextBuilder context_builder(path);
+    // Keep payload fetches observable: tiny fixtures otherwise reuse the footer block and
+    // legitimately report zero new range-cache I/O after schema setup resets the counters.
+    CacheConfig cache_config;
+    cache_config.SetBlockCacheLimit(0);
+    context_builder.WithCacheConfig(cache_config);
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format);
     context_builder.EnablePrefetch(param.enable_prefetch)
         .AddOption("test.enable-adaptive-prefetch-strategy", "false")

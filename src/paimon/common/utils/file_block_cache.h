@@ -105,6 +105,10 @@ class PAIMON_EXPORT FileBlockCache {
     /// buffers. The counters are kept readable for the owner's metrics.
     void Release();
 
+    /// Copy only fully resident, successfully completed blocks. Never fetches or waits,
+    /// and leaves dest untouched on a miss. Internal reuse does not count as a caller read.
+    bool ReadCached(const ByteRange& range, char* dest);
+
     /// Zero the counters while keeping the cached blocks, which cache the file
     /// rather than a round of reads.
     void ResetCounters();

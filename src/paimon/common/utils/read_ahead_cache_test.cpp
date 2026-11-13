@@ -19,6 +19,7 @@
 
 #include "paimon/common/utils/read_ahead_cache.h"
 
+#include <atomic>
 #include <chrono>
 #include <fstream>
 #include <limits>
@@ -1079,6 +1080,93 @@ TEST(TestReadAheadCache, TestBlockCacheDisabled) {
     GetBlockCounters(unknown_size_cache.get(), &blocks);
     ASSERT_EQ(blocks.fetches, 0u);
     ASSERT_EQ(blocks.hits, 0u);
+}
+
+TEST(TestReadAheadCache, WarmupReusesCompletedBlocksAcrossSchemaReset) {
+    CacheConfig config = TestCacheConfig(16, 0, 32);
+    config.SetBlockSize(8);
+    config.SetBlockCacheLimit(32);
+    auto cache = CreateTestFileAndCache("data_file", "abcdefghijklmnopqrstuvwxyz", config, {}, 26);
+    AssertReadEquals({10, 8}, "klmnopqr", cache.get());
+    AssertReadEquals({18, 8}, "stuvwxyz", cache.get());
+    cache->Reset();
+    ASSERT_OK(cache->AddRanges({{10, 16}}));
+    cache->Warmup();
+    ASSERT_EQ(CounterOf(ReadAheadCacheMetrics::IO_COUNT, cache.get()), 0u);
+    AssertReadEquals({10, 16}, "klmnopqrstuvwxyz", cache.get());
+    ASSERT_EQ(CounterOf(ReadAheadCacheMetrics::IO_COUNT, cache.get()), 0u);
+}
+
+TEST(TestReadAheadCache, PinnedBudgetOnlyTracksResidentEvictionCandidates) {
+    constexpr uint64_t kRangeCount = 64000;
+    CacheConfig config = TestCacheConfig(4, 0, 4);
+    config.SetBlockCacheLimit(0);
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto gated = std::make_shared<GatedAsyncInputStream>(
+        OpenTestFile(&dir, "data_file", std::string(kRangeCount * 4, 'x')));
+    ReadAheadCache cache(gated, config, kRangeCount * 4, TestPool());
+    cache.SetBoundedRetention(true);
+    ASSERT_OK(cache.AddRanges({{0, kRangeCount * 4}}));
+    cache.Warmup();
+    gated->ReleaseAllKeepingCallbacks();
+    ASSERT_EQ(cache.ranges_.size(), kRangeCount);
+    ASSERT_EQ(cache.resident_ranges_.size(), 1u);
+    for (uint64_t i = 1; i <= 256; ++i) {
+        AssertReadMiss({i * 4, 4}, &cache);
+    }
+    ASSERT_EQ(gated->AsyncReadCount(), 1);
+    ASSERT_EQ(cache.resident_ranges_.size(), 1u);
+    // Registration can move entries, but must preserve the resident candidates.
+    ASSERT_OK(cache.AddRanges({{0, 8}}));
+    gated->DropCompletedCallbacks();
+    cache.Warmup(4);
+    ASSERT_EQ(gated->AsyncReadCount(), 2);
+    ASSERT_EQ(cache.resident_ranges_, (std::set<uint64_t>{4}));
+    gated->ReleaseAll();
+    AssertReadEquals({4, 4}, "xxxx", &cache);
+    cache.Reset();
+    ASSERT_TRUE(cache.resident_ranges_.empty());
+}
+
+class CloseObservedGatedStream : public GatedAsyncInputStream {
+ public:
+    explicit CloseObservedGatedStream(const std::shared_ptr<InputStream>& inner)
+        : GatedAsyncInputStream(inner) {}
+    Status Close() override {
+        ++close_count;
+        return GatedAsyncInputStream::Close();
+    }
+    std::atomic<uint32_t> close_count{0};
+};
+
+TEST(TestReadAheadCache, CloseDrainsFetchesBeforeClosingStreamAndPreservesMetrics) {
+    CacheConfig config = TestCacheConfig(4, 0, 4);
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto gated =
+        std::make_shared<CloseObservedGatedStream>(OpenTestFile(&dir, "data_file", "abcdefgh"));
+    ReadAheadCache cache(gated, config, 0, TestPool());
+    ASSERT_OK(cache.AddRanges({{0, 4}}));
+    cache.Warmup();
+    ASSERT_EQ(gated->AsyncReadCount(), 1);
+    auto closed = std::async(std::launch::async, [&]() { return cache.Close(); });
+    // ReleasePrefetchBuffers detaches the generation before waiting on its fetches.
+    // Observe that transition instead of relying on a sleep to start Close().
+    while (true) {
+        std::shared_lock<std::shared_mutex> lock(cache.rw_mutex_);
+        if (cache.ranges_.empty()) {
+            break;
+        }
+        lock.unlock();
+        std::this_thread::yield();
+    }
+    const uint32_t closed_before_completion = gated->close_count.load();
+    gated->ReleaseAll();
+    ASSERT_OK(closed.get());
+    ASSERT_EQ(closed_before_completion, 0u);
+    ASSERT_EQ(gated->close_count, 1u);
+    ASSERT_EQ(CounterOf(ReadAheadCacheMetrics::IO_BYTES, &cache), 4u);
+    ASSERT_OK(cache.Close());
+    ASSERT_EQ(gated->close_count, 1u);
 }
 
 }  // namespace paimon::test

@@ -18,6 +18,7 @@
  */
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -75,6 +76,10 @@ class PAIMON_EXPORT FileReadAhead {
     void EndGeneration();
     void Reset();
     void ReleaseBuffers();
+    void Close();
+    /// Format-specific physical bytes are emitted once by the owning framework reader, rather
+    /// than summed once per format reader sharing this context.
+    void SetStorageReadMetric(const std::string& name);
     std::shared_ptr<Metrics> GetMetrics() const;
 
  private:
@@ -89,6 +94,10 @@ class PAIMON_EXPORT FileReadAhead {
     std::string path_;
     mutable std::mutex mutex_;
     bool warmed_ = false;
+    bool closed_ = false;
+    std::shared_ptr<std::atomic<uint64_t>> storage_read_bytes_ =
+        std::make_shared<std::atomic<uint64_t>>(0);
+    std::string storage_read_metric_;
     Status status_;
     uint64_t error_count_ = 0;
 };

@@ -81,12 +81,14 @@ void RecordLatency(uint64_t latency_us, std::atomic<uint64_t>* count,
 class MetricsInputStream : public InputStream {
  public:
     MetricsInputStream(const std::shared_ptr<InputStream>& stream,
-                       const std::shared_ptr<PrefetchIoMetricsState>& metrics)
-        : stream_(stream), metrics_(metrics) {}
+                       const std::shared_ptr<PrefetchIoMetricsState>& metrics,
+                       const std::shared_ptr<std::atomic<uint64_t>>& storage_read_bytes)
+        : stream_(stream), metrics_(metrics), storage_read_bytes_(storage_read_bytes) {}
 
     MetricsInputStream(std::unique_ptr<InputStream>&& stream,
-                       const std::shared_ptr<PrefetchIoMetricsState>& metrics)
-        : stream_(std::move(stream)), metrics_(metrics) {}
+                       const std::shared_ptr<PrefetchIoMetricsState>& metrics,
+                       const std::shared_ptr<std::atomic<uint64_t>>& storage_read_bytes)
+        : stream_(std::move(stream)), metrics_(metrics), storage_read_bytes_(storage_read_bytes) {}
 
     Status Seek(int64_t offset, SeekOrigin origin) override {
         return stream_->Seek(offset, origin);
@@ -106,6 +108,19 @@ class MetricsInputStream : public InputStream {
 
     void ReadAsync(char* buffer, int64_t size, int64_t offset,
                    std::function<void(Status)>&& callback) override {
+        auto storage_read_bytes = storage_read_bytes_;
+        auto counted_callback = [storage_read_bytes, size,
+                                 callback = std::move(callback)](Status status) mutable {
+            if (status.ok()) {
+                storage_read_bytes->fetch_add(static_cast<uint64_t>(std::max<int64_t>(0, size)),
+                                              kMetricsMemoryOrder);
+            }
+            callback(status);
+        };
+        if (!metrics_) {
+            stream_->ReadAsync(buffer, size, offset, std::move(counted_callback));
+            return;
+        }
         metrics_->async_requests.fetch_add(1, kMetricsMemoryOrder);
         metrics_->async_requested_bytes.fetch_add(static_cast<uint64_t>(std::max<int64_t>(0, size)),
                                                   kMetricsMemoryOrder);
@@ -114,7 +129,7 @@ class MetricsInputStream : public InputStream {
         const auto start = std::chrono::steady_clock::now();
         stream_->ReadAsync(
             buffer, size, offset,
-            [metrics, size, start, callback = std::move(callback)](Status status) mutable {
+            [metrics, size, start, callback = std::move(counted_callback)](Status status) mutable {
                 metrics->async_pending.fetch_sub(1, kMetricsMemoryOrder);
                 if (status.ok()) {
                     metrics->async_completed.fetch_add(1, kMetricsMemoryOrder);
@@ -144,12 +159,23 @@ class MetricsInputStream : public InputStream {
  private:
     template <typename ReadFunction>
     Result<int64_t> RecordRead(ReadFunction&& read, int64_t size) {
+        if (!metrics_) {
+            Result<int64_t> result = read();
+            if (result.ok()) {
+                storage_read_bytes_->fetch_add(
+                    static_cast<uint64_t>(std::max<int64_t>(0, result.value())),
+                    kMetricsMemoryOrder);
+            }
+            return result;
+        }
         metrics_->read_requests.fetch_add(1, kMetricsMemoryOrder);
         metrics_->read_requested_bytes.fetch_add(static_cast<uint64_t>(std::max<int64_t>(0, size)),
                                                  kMetricsMemoryOrder);
         const auto start = std::chrono::steady_clock::now();
         Result<int64_t> result = read();
         if (result.ok()) {
+            storage_read_bytes_->fetch_add(
+                static_cast<uint64_t>(std::max<int64_t>(0, result.value())), kMetricsMemoryOrder);
             metrics_->read_physical_bytes.fetch_add(
                 static_cast<uint64_t>(std::max<int64_t>(0, result.value())), kMetricsMemoryOrder);
         } else {
@@ -162,6 +188,7 @@ class MetricsInputStream : public InputStream {
 
     std::shared_ptr<InputStream> stream_;
     std::shared_ptr<PrefetchIoMetricsState> metrics_;
+    std::shared_ptr<std::atomic<uint64_t>> storage_read_bytes_;
 };
 
 }  // namespace
@@ -216,21 +243,21 @@ Result<FileReadAhead::OpenedReaders> FileReadAhead::Open(
         streams.push_back(std::move(opened_stream).value());
     }
 
+    auto state = Create(nullptr, path);
+    state->io_metrics_ = io_metrics;
     size_t next_stream = 0;
     std::shared_ptr<ReadAheadCache> cache;
     if (cache_enabled) {
         std::shared_ptr<InputStream> input_stream = std::move(streams[next_stream++]);
-        if (io_metrics) {
-            input_stream = std::make_shared<MetricsInputStream>(input_stream, io_metrics);
-        }
+        input_stream = std::make_shared<MetricsInputStream>(input_stream, io_metrics,
+                                                            state->storage_read_bytes_);
         // The file size lets the cache align its blocks to the end of the file,
         // where the metadata the readers read before any range is registered
         // lives. A zero size means unknown and disables the block cache.
         cache = std::make_shared<ReadAheadCache>(input_stream, cache_config,
                                                  static_cast<uint64_t>(file_size), pool);
     }
-    auto state = Create(cache, path);
-    state->io_metrics_ = io_metrics;
+    state->cache_ = cache;
     // Wave two builds the readers, which reads each file's footer and so still needs the cache
     // above to exist. The builds are concurrent, like the opens were.
     std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> futures;
@@ -241,10 +268,8 @@ Result<FileReadAhead::OpenedReaders> FileReadAhead::Open(
             [&builder, &cache, &streams, i, next_stream, io_metrics,
              state]() -> Result<std::unique_ptr<FileBatchReader>> {
                 std::unique_ptr<InputStream> input_stream = std::move(streams[next_stream + i]);
-                if (io_metrics) {
-                    input_stream =
-                        std::make_unique<MetricsInputStream>(std::move(input_stream), io_metrics);
-                }
+                input_stream = std::make_unique<MetricsInputStream>(
+                    std::move(input_stream), io_metrics, state->storage_read_bytes_);
                 auto cache_input_stream = std::make_shared<CacheInputStream>(
                     std::move(input_stream), cache, CacheInputStream::CacheFactory(), state);
                 return builder->Build(cache_input_stream);
@@ -283,19 +308,16 @@ Result<std::unique_ptr<FileBatchReader>> FileReadAhead::OpenSynchronous(
     state->io_metrics_ = io_metrics;
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input_stream,
                            fs->Open(FileStatus(path, file_size)));
-    if (io_metrics) {
-        input_stream = std::make_unique<MetricsInputStream>(std::move(input_stream), io_metrics);
-    }
+    input_stream = std::make_unique<MetricsInputStream>(std::move(input_stream), io_metrics,
+                                                        state->storage_read_bytes_);
     CacheInputStream::CacheFactory cache_factory;
     if (cache_enabled) {
         cache_factory = [state, fs, path, file_size, cache_config,
                          pool]() -> Result<std::shared_ptr<ReadAheadCache>> {
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> cache_stream,
                                    fs->Open(FileStatus(path, file_size)));
-            if (state->io_metrics_) {
-                cache_stream =
-                    std::make_shared<MetricsInputStream>(cache_stream, state->io_metrics_);
-            }
+            cache_stream = std::make_shared<MetricsInputStream>(cache_stream, state->io_metrics_,
+                                                                state->storage_read_bytes_);
             state->cache_ = std::make_shared<ReadAheadCache>(
                 cache_stream, cache_config, static_cast<uint64_t>(file_size), pool);
             return state->cache_;
@@ -319,7 +341,7 @@ Result<std::unique_ptr<FileBatchReader>> FileReadAhead::OpenSynchronous(
 
 Status FileReadAhead::Warmup(PrefetchFileBatchReader* reader) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!cache_ || warmed_) {
+    if (closed_ || !cache_ || warmed_) {
         return status_;
     }
     warmed_ = true;
@@ -329,7 +351,7 @@ Status FileReadAhead::Warmup(PrefetchFileBatchReader* reader) {
 Status FileReadAhead::PrepareRanges(PrefetchFileBatchReader* reader) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!cache_ || !warmed_) {
+        if (closed_ || !cache_ || !warmed_) {
             return Status::OK();
         }
         if (!status_.ok()) {
@@ -340,7 +362,7 @@ Status FileReadAhead::PrepareRanges(PrefetchFileBatchReader* reader) {
     // format readers can discover their stripes concurrently. Reset/Close stop reader tasks first.
     Result<ByteRanges> ranges = reader->PreBufferRange();
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!cache_ || !warmed_) {
+    if (closed_ || !cache_ || !warmed_) {
         return Status::OK();
     }
     if (!status_.ok()) {
@@ -412,8 +434,32 @@ void FileReadAhead::ReleaseBuffers() {
     }
 }
 
+void FileReadAhead::Close() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (closed_) {
+        return;
+    }
+    closed_ = true;
+    warmed_ = false;
+    if (cache_) {
+        (void)cache_->Close();
+    }
+}
+
+void FileReadAhead::SetStorageReadMetric(const std::string& name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    storage_read_metric_ = name;
+}
+
 std::shared_ptr<Metrics> FileReadAhead::GetMetrics() const {
     auto result = std::make_shared<MetricsImpl>();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!storage_read_metric_.empty()) {
+            result->SetCounter(storage_read_metric_,
+                               storage_read_bytes_->load(kMetricsMemoryOrder));
+        }
+    }
     if (cache_) {
         std::shared_ptr<Metrics> cache_metrics = std::make_shared<MetricsImpl>();
         cache_->CollectMetrics(&cache_metrics);

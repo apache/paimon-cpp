@@ -70,9 +70,7 @@ Result<std::unique_ptr<ReaderBuilder>> DataFileReaderFactory::CreateReaderBuilde
     // off when the shared read-ahead cache is reading ahead.
     ReadHints read_hints;
     read_hints.prefetch_enabled = read_options.prefetch_enabled;
-    read_hints.read_ahead_cache_enabled = read_options.read_ahead_cache_enabled &&
-                                          read_options.prefetch_enabled &&
-                                          FormatSupportsPrefetch(format_identifier);
+    read_hints.read_ahead_cache_enabled = read_options.read_ahead_cache_enabled;
     reader_builder->WithReadHints(read_hints);
     return reader_builder;
 }

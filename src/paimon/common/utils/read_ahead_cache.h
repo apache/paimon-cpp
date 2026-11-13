@@ -26,6 +26,7 @@
 #include <future>
 #include <memory>
 #include <optional>
+#include <set>
 #include <shared_mutex>
 #include <utility>
 #include <vector>
@@ -232,6 +233,10 @@ class PAIMON_EXPORT ReadAheadCache {
     /// released too, as the file is not read again.
     void ReleaseBuffers();
 
+    /// Drain fetches and close the backing stream, preserving counters. The owner must stop
+    /// readers first; use only when this cache owns the file's dedicated stream.
+    Status Close();
+
  private:
     /// Merge coalesced, validated `new_ranges` into the disjoint, offset-ordered ranges_, moving
     /// the already registered entries (and thus their published buffer/future) over as-is, and
@@ -277,7 +282,11 @@ class PAIMON_EXPORT ReadAheadCache {
     // region is found by binary search). An entry whose buffer is still null is
     // registered but not fetched yet; publishing fills buffer/future in place.
     std::vector<RangeCacheEntry> ranges_;
-    size_t eviction_cursor_ = 0;
+    // Stable offsets survive registration merging/reallocation. Only published entries belong
+    // here, so a pinned budget never scans all of a file's unmaterialized ranges.
+    std::set<uint64_t> resident_ranges_;
+    uint64_t eviction_offset_ = 0;
+    bool closed_ = false;
     std::shared_ptr<MemoryPool> memory_pool_;
     mutable std::shared_mutex rw_mutex_;
     // Caches the reads that no registered range covers, or null when the block

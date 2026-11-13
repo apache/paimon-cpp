@@ -32,10 +32,13 @@
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/executor.h"
+#include "paimon/factories/factory_creator.h"
+#include "paimon/format/file_format_factory.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/reader/file_batch_reader.h"
+#include "paimon/testing/mock/mock_file_format.h"
 #include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/mock/mock_format_reader_builder.h"
 #include "paimon/testing/utils/testharness.h"
@@ -286,6 +289,76 @@ TEST(DataFileReaderFactoryTest, OpenForwardsWarmupLevelToPrefetchReader) {
         auto* delegating_reader = dynamic_cast<DelegatingPrefetchReader*>(reader.get());
         ASSERT_NE(delegating_reader, nullptr);
         EXPECT_EQ(level, delegating_reader->prefetch_reader_->warmup_level_);
+    }
+}
+
+class HintAwareReaderBuilder : public CapabilityReaderBuilder {
+ public:
+    HintAwareReaderBuilder(const std::shared_ptr<arrow::Array>& data,
+                           const std::shared_ptr<arrow::DataType>& type)
+        : CapabilityReaderBuilder(data, type, true) {}
+
+    ReaderBuilder* WithReadHints(const std::optional<ReadHints>& hints) override {
+        hints_ = hints;
+        return this;
+    }
+    Result<std::unique_ptr<FileBatchReader>> Build(
+        const std::shared_ptr<InputStream>& input) const override {
+        cache_hint_at_build = hints_ && hints_->read_ahead_cache_enabled;
+        return CapabilityReaderBuilder::Build(input);
+    }
+    mutable bool cache_hint_at_build = false;
+    std::optional<ReadHints> hints_;
+};
+
+class HintAwareFileFormat : public MockFileFormat {
+ public:
+    Result<std::unique_ptr<ReaderBuilder>> CreateReaderBuilder(int32_t batch_size) const override {
+        auto type = arrow::struct_({arrow::field("v", arrow::int32())});
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            std::shared_ptr<arrow::Array> data,
+            arrow::ipc::internal::json::ArrayFromJSON(type, "[[1],[2]]"));
+        return std::make_unique<HintAwareReaderBuilder>(data, type);
+    }
+};
+
+class HintAwareFileFormatFactory : public FileFormatFactory {
+ public:
+    const char* Identifier() const override {
+        return "hint_aware_format";
+    }
+    Result<std::unique_ptr<FileFormat>> Create(
+        const std::map<std::string, std::string>& options) const override {
+        return std::make_unique<HintAwareFileFormat>();
+    }
+};
+REGISTER_PAIMON_FACTORY(HintAwareFileFormatFactory);
+
+TEST(DataFileReaderFactoryTest, SynchronousPluginReceivesCacheHintBeforeBuild) {
+    auto pool = GetDefaultPool();
+    for (bool cache_enabled : {false, true}) {
+        DataFileReadOptions options;
+        options.read_ahead_cache_enabled = cache_enabled;
+        auto fs = std::make_shared<CountingOpenFileSystem>();
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<ReaderBuilder> builder,
+            DataFileReaderFactory::CreateReaderBuilder("hint_aware_format", {}, {}, options, pool));
+        auto* plugin_builder = dynamic_cast<HintAwareReaderBuilder*>(builder.get());
+        ASSERT_NE(plugin_builder, nullptr);
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<FileBatchReader> reader,
+            DataFileReaderFactory::Open("hint_aware_format", "dummy", 0, builder.get(), options, fs,
+                                        nullptr, pool, GetArrowPool(pool)));
+        ASSERT_EQ(plugin_builder->cache_hint_at_build, cache_enabled);
+        ASSERT_EQ(plugin_builder->build_count, 1u);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> schema, reader->GetFileSchema());
+        ASSERT_OK(reader->SetReadSchema(schema.get(), nullptr, std::nullopt));
+        reader->Warmup();
+        const auto metrics = reader->GetReaderMetrics();
+        ASSERT_EQ(metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT).value_or(0),
+                  cache_enabled ? 1u : 0u);
+        ASSERT_EQ(fs->open_count, cache_enabled ? 2u : 1u);
+        reader->Close();
     }
 }
 

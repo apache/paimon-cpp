@@ -32,6 +32,7 @@
 #include "fmt/format.h"
 #include "paimon/cache/cache.h"
 #include "paimon/common/io/cache_input_stream.h"
+#include "paimon/common/reader/file_read_ahead.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/format/parquet/parquet_file_batch_reader.h"
@@ -101,6 +102,14 @@ class ParquetReaderBuilder : public ReaderBuilder {
             auto input_stream = std::make_shared<ParquetInputStream>(path, file_length, arrow_pool_,
                                                                      pool_, cache_, file_uri);
             auto storage_read_bytes = input_stream->StorageReadBytes();
+            if (auto cache_stream = std::dynamic_pointer_cast<CacheInputStream>(path)) {
+                if (const auto& read_ahead = cache_stream->GetReadAhead()) {
+                    // The framework emits the shared backing-stream counter once, including
+                    // cache fetches. Adapter bytes above the cache are logical reads.
+                    read_ahead->SetStorageReadMetric(ParquetMetrics::READ_STORAGE_BYTES);
+                    storage_read_bytes.reset();
+                }
+            }
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<::parquet::FileMetaData> file_metadata,
                 GetCachedParquetMetadata(input_stream, file_uri, arrow_pool_, hints));

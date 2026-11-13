@@ -1573,6 +1573,9 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestWarmupLevelRaw) {
                                         /*selection_bitmap=*/std::nullopt, /*batch_size=*/10,
                                         /*prefetch_max_parallel_num=*/3, read_ahead_cache_enabled,
                                         WarmupLevel::RAW);
+    // Exercise a cold cache: footer blocks may already cover every payload byte in this fixture.
+    // Reuse of those blocks is covered separately; this case requires a real warmup fetch.
+    reader->read_ahead_->ReleaseBuffers();
 
     reader->Warmup();
     // A second Warmup() must be a no-op: the one-shot guard prevents opening the cache round
@@ -1615,6 +1618,9 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestWarmupCacheRearmsForNewReadRangeGene
                                         /*selection_bitmap=*/std::nullopt, /*batch_size=*/10,
                                         /*prefetch_max_parallel_num=*/3, read_ahead_cache_enabled,
                                         WarmupLevel::RAW);
+    // Exercise a cold cache: footer blocks may already cover every payload byte in this fixture.
+    // Reuse of those blocks is covered separately; this case requires a real warmup fetch.
+    reader->read_ahead_->ReleaseBuffers();
 
     // GetReaderMetrics() returns a snapshot, so it is re-read at every step.
     ASSERT_OK(reader->RefreshReadRanges());
@@ -1628,6 +1634,9 @@ TEST_P(PrefetchFileBatchReaderImplTest, TestWarmupCacheRearmsForNewReadRangeGene
                          reader->GetReaderMetrics()->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
     ASSERT_EQ(reset_io_count, 0);
 
+    // ORC range discovery can refill footer blocks after reset. Clear only the cache buffers,
+    // leaving the generation's warmup guard untouched, so this tests that Reset rearmed it.
+    reader->read_ahead_->cache_->ReleaseBuffers();
     // The new generation must be warmed again, which a stale guard would silently skip.
     reader->Warmup();
     ASSERT_OK_AND_ASSIGN(uint64_t second_io_count,

@@ -240,6 +240,7 @@ void ReadAheadCache::PreBuffer(uint64_t offset) {
             // so every pending fetch remains reachable for Close()/Reset() to wait on.
             entry->buffer = std::move(buffer);
             entry->future = std::move(future).share();
+            resident_ranges_.insert(entry->range.offset);
         }
     }
     // Dispatched OUTSIDE the lock, so that a fetch completing inline does not deadlock against a
@@ -257,16 +258,26 @@ bool ReadAheadCache::MakeRoomLocked(uint64_t size, uint64_t window_begin, uint64
     if (size > limit) {
         return false;
     }
-    for (size_t visited = 0; visited < ranges_.size(); ++visited) {
+    auto candidate = resident_ranges_.lower_bound(eviction_offset_);
+    const size_t candidate_count = resident_ranges_.size();
+    for (size_t visited = 0; visited < candidate_count; ++visited) {
         if (budget_->resident_bytes.load(std::memory_order_acquire) <= limit - size) {
             return true;
         }
-        auto& entry = ranges_[eviction_cursor_ % ranges_.size()];
-        eviction_cursor_ = (eviction_cursor_ + 1) % ranges_.size();
+        if (candidate == resident_ranges_.end()) {
+            candidate = resident_ranges_.begin();
+        }
+        auto current = candidate++;
+        auto it = std::lower_bound(ranges_.begin(), ranges_.end(), *current,
+                                   [](const RangeCacheEntry& entry, uint64_t offset) {
+                                       return entry.range.offset < offset;
+                                   });
+        assert(it != ranges_.end() && it->range.offset == *current && it->Published());
+        auto& entry = *it;
+        eviction_offset_ = candidate == resident_ranges_.end() ? 0 : *candidate;
         // Keep this window, pending I/O, failed results and buffers being copied or retained by
         // a filesystem callback. Re-reading an evicted range simply publishes it again.
-        if (!entry.Published() ||
-            (entry.range.offset >= window_begin && entry.range.offset < window_end) ||
+        if ((entry.range.offset >= window_begin && entry.range.offset < window_end) ||
             entry.buffer.use_count() != 1 ||
             entry.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready ||
             !entry.future.get().ok()) {
@@ -274,6 +285,7 @@ bool ReadAheadCache::MakeRoomLocked(uint64_t size, uint64_t window_begin, uint64
         }
         entry.buffer.reset();
         entry.future = {};
+        resident_ranges_.erase(current);
     }
     return budget_->resident_bytes.load(std::memory_order_acquire) <= limit - size;
 }
@@ -330,6 +342,15 @@ void ReadAheadCache::Reset() {
     }
 }
 
+Status ReadAheadCache::Close() {
+    if (closed_) {
+        return Status::OK();
+    }
+    ReleaseBuffers();
+    closed_ = true;
+    return stream_->Close();
+}
+
 void ReadAheadCache::ReleaseBuffers() {
     ReleasePrefetchBuffers();
     if (block_cache_ != nullptr) {
@@ -349,7 +370,8 @@ void ReadAheadCache::ReleasePrefetchBuffers() {
         // buffers go away. The buffers keep the memory pool alive themselves, for the callbacks
         // that a stream destroys later than it resolves them.
         to_release.swap(ranges_);
-        eviction_cursor_ = 0;
+        resident_ranges_.clear();
+        eviction_offset_ = 0;
     }
     // Wait OUTSIDE the lock; the buffers are released when to_release destructs.
     for (auto& entry : to_release) {
@@ -473,6 +495,10 @@ void ReadAheadCache::DispatchFetches(const std::vector<PendingFetch>& fetches) {
     for (const auto& fetch : fetches) {
         auto promise = fetch.promise;
         auto buffer = fetch.buffer;
+        if (block_cache_ && block_cache_->ReadCached(fetch.range, buffer->data())) {
+            promise->set_value(Status::OK());
+            continue;
+        }
         auto read_size = static_cast<int64_t>(buffer->size());
         auto read_offset = static_cast<int64_t>(fetch.range.offset);
         stream_->ReadAsync(
