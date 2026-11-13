@@ -70,6 +70,7 @@ class PAIMON_EXPORT DataSplit : public Split {
         int64_t schema_id;
         int32_t level;
         Timestamp creation_time;
+        /// Snapshot delete count: DV cardinality or stored metadata; nullopt if unknown.
         std::optional<int64_t> delete_row_count;
 
         bool operator==(const SimpleDataFileMeta& other) const;
@@ -81,6 +82,7 @@ class PAIMON_EXPORT DataSplit : public Split {
     virtual int32_t Bucket() const = 0;
 
     /// Get the list of metadata for all data files in this split.
+    /// Uses snapshot DV metadata without reading DV files or changing stored metadata.
     /// @note This method will be removed in future versions and is only used for append tables.
     virtual std::vector<SimpleDataFileMeta> GetFileList() const = 0;
 };

@@ -22,7 +22,9 @@
 
 #include "paimon/commit_context.h"               // IWYU pragma: export
 #include "paimon/defs.h"                         // IWYU pragma: export
+#include "paimon/deletion_vector_write.h"        // IWYU pragma: export
 #include "paimon/factories/factory.h"            // IWYU pragma: export
+#include "paimon/file_index/file_index_read.h"   // IWYU pragma: export
 #include "paimon/file_store_commit.h"            // IWYU pragma: export
 #include "paimon/file_store_write.h"             // IWYU pragma: export
 #include "paimon/fs/file_system_factory.h"       // IWYU pragma: export

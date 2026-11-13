@@ -22,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
@@ -29,6 +30,7 @@
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
 #include "paimon/core/index/index_file_handler.h"
 #include "paimon/core/index/index_file_meta.h"
+#include "paimon/utils/roaring_bitmap32.h"
 
 namespace paimon {
 
@@ -57,6 +59,34 @@ class BucketedDvMaintainer {
 
         PAIMON_ASSIGN_OR_RAISE(bool updated, dv->CheckedDelete(position));
         if (updated) {
+            modified_ = true;
+        }
+        return Status::OK();
+    }
+
+    Status NotifyNewDeletion(const std::string& file_name, const RoaringBitmap32& positions) {
+        if (positions.IsEmpty()) {
+            return Status::OK();
+        }
+        auto bitmap = std::make_shared<BitmapDeletionVector>(positions);
+        auto iter = deletion_vectors_.find(file_name);
+        std::shared_ptr<DeletionVector> incoming = bitmap;
+        bool use_bitmap64 =
+            iter == deletion_vectors_.end()
+                ? bitmap64_
+                : dynamic_cast<Bitmap64DeletionVector*>(iter->second.get()) != nullptr;
+        if (use_bitmap64) {
+            incoming = Bitmap64DeletionVector::FromBitmapDeletionVector(*bitmap);
+        }
+        if (iter == deletion_vectors_.end()) {
+            deletion_vectors_.emplace(file_name, std::move(incoming));
+            modified_ = true;
+            return Status::OK();
+        }
+        PAIMON_ASSIGN_OR_RAISE(int64_t before, iter->second->GetCardinality());
+        PAIMON_RETURN_NOT_OK(iter->second->Merge(incoming));
+        PAIMON_ASSIGN_OR_RAISE(int64_t after, iter->second->GetCardinality());
+        if (after != before) {
             modified_ = true;
         }
         return Status::OK();
