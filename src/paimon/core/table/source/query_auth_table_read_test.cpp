@@ -253,15 +253,14 @@ TEST(QueryAuthTableReadTest, TestClosesTheReadersOfSplitsBeforeOneThatFails) {
                             /*partition_keys=*/{}, /*primary_keys=*/{},
                             {{Options::QUERY_AUTH_ENABLED, "true"}}));
     std::shared_ptr<TableSchema> table_schema = std::move(created);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
-                         ReadContextBuilder("table_root_path").Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, ReadContextBuilder().Finish());
     int32_t closes = 0;
     auto failing_split = std::make_shared<DummySplit>();
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<TableRead> read,
         QueryAuthTableRead::Create(
-            std::shared_ptr<ReadContext>(std::move(context)), table_schema,
-            GetArrowPool(GetDefaultPool()),
+            std::shared_ptr<ReadContext>(std::move(context)), table_schema, "table_root_path",
+            "main", GetArrowPool(GetDefaultPool()),
             CreateSplitTableRead([&closes, failing_split](const std::shared_ptr<Split>& split)
                                      -> Result<std::unique_ptr<BatchReader>> {
                 if (split == failing_split) {
@@ -351,13 +350,12 @@ TEST(QueryAuthTableReadTest, TestRowFilterRemovesRowsFromTheBatchWithBitmap) {
         scope.authorized_field_ids.emplace(field.Name(), field.Id());
     }
     scope.rule_field_ids = rules->BindFieldIds(table_schema->Fields());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
-                         ReadContextBuilder("table_root_path").Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, ReadContextBuilder().Finish());
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<TableRead> read,
         QueryAuthTableRead::Create(
-            std::shared_ptr<ReadContext>(std::move(context)), table_schema,
-            GetArrowPool(GetDefaultPool()),
+            std::shared_ptr<ReadContext>(std::move(context)), table_schema, "table_root_path",
+            "main", GetArrowPool(GetDefaultPool()),
             CreateSplitTableRead(
                 [batch](const std::shared_ptr<Split>&) -> Result<std::unique_ptr<BatchReader>> {
                     return std::unique_ptr<BatchReader>(std::make_unique<OneBatchReader>(batch));

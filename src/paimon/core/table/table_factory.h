@@ -17,24 +17,25 @@
  */
 
 #pragma once
-#include <memory>
 
+#include <map>
+#include <memory>
+#include <string>
+
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/result.h"
+
 namespace paimon {
 class Table;
-class ScanContext;
-class ReadContext;
-class WriteContext;
-class CommitContext;
-/// Compatibility loading for the existing static operator factories.
+
+/// Loads the table used by a static operator factory.
 class TableFactory {
  public:
     TableFactory() = delete;
     ~TableFactory() = delete;
 
-    static Result<std::shared_ptr<Table>> Create(const ScanContext* context);
-    static Result<std::shared_ptr<Table>> Create(const ReadContext* context);
-    static Result<std::shared_ptr<Table>> Create(const WriteContext* context);
-    static Result<std::shared_ptr<Table>> Create(const CommitContext* context);
+    static Result<std::shared_ptr<Table>> Create(
+        const TableLoadOptions& load_options,
+        const std::map<std::string, std::string>& dynamic_options, const char* operation);
 };
 }  // namespace paimon

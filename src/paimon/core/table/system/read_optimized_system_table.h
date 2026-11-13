@@ -32,6 +32,9 @@ class TableSchema;
 /// System table for `T$ro`, exposing read-optimized data.
 class ReadOptimizedSystemTable : public SystemTable {
  public:
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "ro";
 
     /// @param data_table_name Logical table name, including any branch suffix.

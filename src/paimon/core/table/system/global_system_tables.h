@@ -46,6 +46,9 @@ struct GlobalSystemTableContext {
 /// as key/value rows.
 class CatalogOptionsSystemTable : public InMemorySystemTable {
  public:
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "catalog_options";
     static constexpr const char* kEnabledOption = "catalog-options-table.enabled";
 
@@ -62,6 +65,9 @@ class CatalogOptionsSystemTable : public InMemorySystemTable {
 /// all databases as (database_name, table_name, key, value) rows.
 class AllTableOptionsSystemTable : public InMemorySystemTable {
  public:
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "all_table_options";
 
     explicit AllTableOptionsSystemTable(GlobalSystemTableContext context);
@@ -77,6 +83,9 @@ class AllTableOptionsSystemTable : public InMemorySystemTable {
 /// databases including record counts and file statistics.
 class TablesSystemTable : public InMemorySystemTable {
  public:
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "tables";
 
     explicit TablesSystemTable(GlobalSystemTableContext context);
@@ -92,6 +101,9 @@ class TablesSystemTable : public InMemorySystemTable {
 /// for all tables across all databases.
 class PartitionsSystemTable : public InMemorySystemTable {
  public:
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "partitions";
 
     explicit PartitionsSystemTable(GlobalSystemTableContext context);

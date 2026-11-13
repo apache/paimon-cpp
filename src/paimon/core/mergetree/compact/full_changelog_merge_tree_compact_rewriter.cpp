@@ -65,10 +65,8 @@ FullChangelogMergeTreeCompactRewriter::Create(
     std::shared_ptr<arrow::Schema> write_schema =
         SpecialFields::CompleteSequenceAndValueKindField(data_schema);
 
-    ReadContextBuilder read_context_builder(path_factory_cache->RootPath());
-    read_context_builder.SetOptions(options.ToMap())
-        .WithFileSystem(options.GetFileSystem())
-        .EnablePrefetch(true)
+    ReadContextBuilder read_context_builder;
+    read_context_builder.EnablePrefetch(true)
         .SetPrefetchMaxParallelNum(1)
         .SetPrefetchBatchCount(3)
         .WithMemoryPool(pool);
@@ -76,7 +74,8 @@ FullChangelogMergeTreeCompactRewriter::Create(
                            read_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<InternalReadContext> internal_context,
-        InternalReadContext::Create(read_context, table_schema, options.ToMap()));
+        InternalReadContext::Create(read_context, table_schema, options.ToMap(),
+                                    options.GetFileSystem(), path_factory_cache->RootPath()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         path_factory_cache->GetOrCreatePathFactory(options.GetFileFormat()->Identifier()));

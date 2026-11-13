@@ -48,33 +48,27 @@ Write and commit contexts must name the loaded table's location and, when they
 carry a format-table handle, its identity. Conflicting contexts are rejected
 before creating an operator, including for overwrite commits.
 
-Reading and writing go through the entry points every other table uses: ``TableScan::Create``,
-``TableRead::Create``, ``FileStoreWrite::Create`` and ``FileStoreCommit::Create``, each from its
-usual context builder. Each reads the table's schema - from under the table path, or from the one
-the context carries - and dispatches to a format table when its ``type`` says so.
+Static ``TableScan::Create``, ``TableRead::Create``, ``FileStoreWrite::Create``
+and ``FileStoreCommit::Create`` load tables through ``TableLoadOptions``. They
+read the schema from the table path or ``table_schema_json`` and dispatch by its
+type. Operation Contexts contain execution settings; dynamic options are a
+separate final argument.
 
-That path needs a schema under the table's own location, which is what every table a file system
-catalog serves has. A table loaded from a catalog that keeps the schema elsewhere, such as the
-REST catalog, has none: nothing under the location says that it is a format table, nor that
-``schema`` and ``branch`` below it are data rather than metadata. Such a table is read and written
-by handing the loaded ``FormatTable`` to the context instead of a path - every context builder has
-a constructor taking one - which is what Java does through ``FormatTable.newReadBuilder()`` and
+A format table whose schema lives only in a catalog is used through its loaded
+Table handle, as Java uses ``FormatTable.newReadBuilder()`` and
 ``newBatchWriteBuilder()``:
 
 .. code-block:: cpp
 
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::FormatTable> table,
                           catalog->GetFormatTable(paimon::Identifier("db", "tbl")));
-   paimon::ScanContextBuilder scan_builder(table);
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
-                          scan_builder.Finish());
+                          paimon::ScanContextBuilder().Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
-                          paimon::TableScan::Create(std::move(scan_context)));
+                          table->NewScan(std::move(scan_context)));
 
-The table already carries its schema and the file system it was loaded through, so a context built
-from one refuses ``SetTableSchema()``, ``WithFileSystem()``,
-``WithFileSystemSchemeToIdentifierMap()``, ``WithCatalog()`` and a branch. Options
-given at the call still win over the ones the schema stored, as they do everywhere else.
+The loaded table supplies its schema and file system. Dynamic options passed to
+``New*()`` override stored options.
 
 A batch comes back in the table's column order, or the projection's when the read names one,
 behind the ``_VALUE_KIND`` field every ``BatchReader`` carries. Which columns a *file* is asked for
@@ -132,17 +126,15 @@ A setting the format path cannot act on is refused by name rather than quietly d
 * ``WriteContextBuilder::WithWriteId()``, which prefixes a postpone-bucket writer's files so one
   compaction reader can put them back in order; a format table has no buckets.
 * ``CommitContextBuilder::IgnoreEmptyCommit(false)``, ``UseRESTCatalogCommit(true)``,
-  ``WithTableId()``, ``WithCatalog()`` and ``AppendCommitCheckConflict(true)``. Keeping an empty
-  commit means writing a snapshot that adds no files, a rest-catalog commit sends that snapshot to
-  a catalog, a table id names the table in the request that commit sends, committing through a
-  catalog hands it a snapshot to take, and the conflict check reads the manifests of concurrent
-  commits - none of which exist here. Each is refused only when set away from its default, so an
+  ``TableLoadOptions::table_id`` and ``AppendCommitCheckConflict(true)``. Keeping an empty
+  commit means writing a snapshot that adds no files, a REST commit sends that snapshot to
+  a catalog, a table id names the table in that request, and the conflict check reads the
+  manifests of concurrent commits - none of which exist here. Each is refused only when set away from its default, so an
   ordinary commit is unaffected.
 * the ``branch`` option, whatever names it: a format table keeps no metadata to branch, and its
   data is the files under its one location, which is where a read or a write would go whichever
   branch was asked for. It is refused wherever it comes from - the schema, a catalog that parsed
-  ``tbl$branch_dev``, or the options of a single call - and so is ``WithBranch()`` on a context
-  built from a format table. A branch quietly ignored would be the wrong answer everywhere and a
+  ``tbl$branch_dev``, or the dynamic options of a single call. A branch quietly ignored would be the wrong answer everywhere and a
   destructive one for an overwrite, which would clear the data it was told not to touch. The
   value naming the main branch is the default and is left alone.
 * A scan predicate or bucket filter, as above, and more than one partition filter: a scan descends

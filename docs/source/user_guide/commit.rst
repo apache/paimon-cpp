@@ -129,7 +129,7 @@ Snapshot publication depends on the commit mode:
   published through an atomic rename. After publication, the committer writes
   the ``LATEST`` hint file to reduce list operations when fetching the latest
   Snapshot.
-* **Catalog-mediated commit:** When ``CommitContextBuilder::WithCatalog()``
+* **Catalog-mediated commit:** When the Table is loaded through a catalog
   supplies a catalog that manages table versions, the committer sends the
   Snapshot and change statistics to that catalog for publication. This path
   does not rename a local Snapshot file or write a local ``LATEST`` hint.

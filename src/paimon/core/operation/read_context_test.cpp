@@ -24,6 +24,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/catalog_options.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/core/utils/branch_manager.h"
@@ -41,205 +42,14 @@
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
-TEST(ReadContextTest, TestFailedFinishDoesNotRetainImplicitBranchOption) {
-    for (bool explicit_option : {false, true}) {
-        SCOPED_TRACE(explicit_option);
-        ReadContextBuilder builder("table_root_path");
-        builder.WithBranch("dev").EnablePrefetch(true).SetPrefetchMaxParallelNum(0).AddOption(
-            "custom.option", "value");
-        if (explicit_option) {
-            builder.AddOption(Options::BRANCH, "dev");
-        }
-        ASSERT_NOK_WITH_MSG(builder.Finish(), "prefetch max parallel num should be greater than 0");
-        builder.WithBranch("main").SetPrefetchMaxParallelNum(1);
-        auto retried = builder.Finish();
-        if (explicit_option) {
-            ASSERT_NOK_WITH_MSG(retried, "but both 'dev' and 'main' were named");
-        } else {
-            ASSERT_OK(retried);
-            ASSERT_EQ("main", retried.value()->GetBranch());
-            ASSERT_EQ("main", retried.value()->GetOptions().at(Options::BRANCH));
-            ASSERT_EQ("value", retried.value()->GetOptions().at("custom.option"));
-        }
-    }
-}
-
-TEST(ReadContextTest, TestWithCatalogResolvesTableFileSystem) {
-    // WithCatalog is a shorthand for WithFileSystem(catalog->GetTableFileSystem(identifier)); it
-    // resolves the per-table file system when Finish() builds the context, which also keeps the
-    // catalog and identifier for the operators to resolve the table through.
-    auto table_fs = std::make_shared<MockFileSystem>();
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableFileSystem(table_fs);
-
-    ReadContextBuilder builder("table_root_path");
-    ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
-    ASSERT_EQ(ctx->GetSpecificFileSystem(), table_fs);
-    ASSERT_EQ(ctx->GetCatalog(), catalog);
-    ASSERT_EQ(ctx->GetIdentifier(), std::optional<Identifier>(Identifier("db1", "t1")));
-    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
-    ASSERT_EQ(catalog->TableFileSystemRequests().front(), Identifier("db1", "t1"));
-
-    // Finish() resets the builder, so the next context reads without the catalog.
-    ASSERT_OK_AND_ASSIGN(auto next_ctx, builder.Finish());
-    ASSERT_FALSE(next_ctx->GetSpecificFileSystem());
-    ASSERT_FALSE(next_ctx->GetCatalog());
-    ASSERT_FALSE(next_ctx->GetIdentifier());
-    ASSERT_EQ(catalog->TableFileSystemRequests().size(), 1U);
-}
-
-TEST(ReadContextTest, TestWithCatalogResolvesTheBranch) {
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
-
-    for (const std::string branch : {"MAIN", "Main"}) {
-        const std::string message =
-            "a catalog names branch '" + branch + "' as it names the main branch";
-        ASSERT_NOK_WITH_MSG(ReadContextBuilder("table_root_path")
-                                .WithCatalog(catalog, Identifier("db1", "t1"))
-                                .AddOption(Options::BRANCH, branch)
-                                .Finish(),
-                            message);
-        ASSERT_NOK_WITH_MSG(ReadContextBuilder("table_root_path")
-                                .WithCatalog(catalog, Identifier("db1", "t1"))
-                                .WithBranch(branch)
-                                .Finish(),
-                            message);
-    }
-    ASSERT_NOK_WITH_MSG(ReadContextBuilder("table_root_path")
-                            .WithCatalog(catalog, Identifier("db1", "t1"))
-                            .WithBranch("dev$options")
-                            .Finish(),
-                        "a branch a catalog addresses cannot contain '$'");
-    ASSERT_NOK_WITH_MSG(ReadContextBuilder("table_root_path")
-                            .WithCatalog(catalog, Identifier("db1", "t1", "dev"))
-                            .AddOption(Options::BRANCH, "test")
-                            .Finish(),
-                        "a read is aimed at one branch, but both 'dev' and 'test' were named");
-    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
-    ASSERT_EQ(0u, catalog->LoadTableSchemaCalls());
-    ASSERT_OK_AND_ASSIGN(auto path_ctx,
-                         ReadContextBuilder("table_root_path").WithBranch("MAIN").Finish());
-    ASSERT_EQ("MAIN", path_ctx->GetBranch());
-
-    ASSERT_OK_AND_ASSIGN(auto option_ctx, ReadContextBuilder("table_root_path")
-                                              .WithCatalog(catalog, Identifier("db1", "t1"))
-                                              .AddOption(Options::BRANCH, "dev")
-                                              .Finish());
-    ASSERT_EQ("dev", option_ctx->GetBranch());
-    ASSERT_EQ(Identifier("db1", "t1$branch_dev"), option_ctx->GetIdentifier().value());
-    ASSERT_OK_AND_ASSIGN(auto branch_ctx, ReadContextBuilder("table_root_path")
-                                              .WithCatalog(catalog, Identifier("db1", "t1"))
-                                              .WithBranch("dev")
-                                              .Finish());
-    ASSERT_EQ(Identifier("db1", "t1$branch_dev"), branch_ctx->GetIdentifier().value());
-    ASSERT_EQ(std::vector<Identifier>(
-                  {Identifier("db1", "t1$branch_dev"), Identifier("db1", "t1$branch_dev")}),
-              catalog->TableFileSystemRequests());
-    for (const std::string branch : {"MAIN", "Main"}) {
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context,
-                             ReadContextBuilder("table_root_path")
-                                 .WithCatalog(catalog, Identifier("db1", "t1$branch_" + branch))
-                                 .Finish());
-        ASSERT_EQ("main", context->GetBranch());
-        ASSERT_OK_AND_ASSIGN(std::string resolved_branch,
-                             context->GetIdentifier()->GetBranchNameOrDefault());
-        ASSERT_EQ("main", resolved_branch);
-        ASSERT_EQ(context->GetIdentifier().value(), catalog->TableFileSystemRequests().back());
-    }
-}
-
-TEST(ReadContextTest, TestSystemTablePathResolvesBranchBeforeCatalogRequest) {
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
-    const std::string path = "table_root_path$branch_dev$files";
-    for (const std::string table : {"t1", "t1$files"}) {
-        ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<ReadContext> context,
-            ReadContextBuilder(path).WithCatalog(catalog, Identifier("db1", table)).Finish());
-        ASSERT_EQ("dev", context->GetBranch());
-        ASSERT_EQ(Identifier("db1", table == "t1" ? "t1$branch_dev" : "t1$branch_dev$files"),
-                  context->GetIdentifier().value());
-        ASSERT_EQ(context->GetIdentifier().value(), catalog->TableFileSystemRequests().back());
-    }
-    const size_t requests = catalog->TableFileSystemRequests().size();
-    ASSERT_NOK_WITH_MSG(
-        ReadContextBuilder(path).WithCatalog(catalog, Identifier("db1", "t1", "other")).Finish(),
-        "a read is aimed at one branch, but both 'other' and 'dev' were named");
-    ASSERT_NOK_WITH_MSG(ReadContextBuilder(path)
-                            .WithCatalog(catalog, Identifier("db1", "t1"))
-                            .AddOption(Options::BRANCH, "main")
-                            .Finish(),
-                        "a read is aimed at one branch, but both 'main' and 'dev' were named");
-    ASSERT_NOK_WITH_MSG(ReadContextBuilder(path)
-                            .WithCatalog(catalog, Identifier("db1", "t1"))
-                            .WithBranch("main")
-                            .Finish(),
-                        "a read is aimed at one branch, but both 'dev' and 'main' were named");
-    ASSERT_NOK_WITH_MSG(ReadContextBuilder("table_root_path$branch_MAIN$files")
-                            .WithCatalog(catalog, Identifier("db1", "t1"))
-                            .Finish(),
-                        "a catalog names branch 'MAIN' as it names the main branch");
-    ASSERT_EQ(requests, catalog->TableFileSystemRequests().size());
-}
-
-TEST(ReadContextTest, TestWithFileSystemOverridesCatalog) {
-    // A file system the caller gave is the one that is used, and the catalog is not asked for one.
-    auto table_fs = std::make_shared<MockFileSystem>();
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableFileSystem(table_fs);
-    auto given_fs = std::make_shared<MockFileSystem>();
-
-    ReadContextBuilder builder("table_root_path");
-    ASSERT_OK_AND_ASSIGN(
-        auto ctx,
-        builder.WithCatalog(catalog, Identifier("db1", "t1")).WithFileSystem(given_fs).Finish());
-    ASSERT_EQ(ctx->GetSpecificFileSystem(), given_fs);
-    ASSERT_TRUE(catalog->TableFileSystemRequests().empty());
-}
-
-TEST(ReadContextTest, TestWithCatalogNullRejected) {
-    ReadContextBuilder builder("table_root_path");
-    ASSERT_NOK_WITH_MSG(builder.WithCatalog(nullptr, Identifier("db1", "t1")).Finish(),
-                        "cannot read through a null catalog");
-}
-
-TEST(ReadContextTest, TestWithCatalogKeepsReadOptionsSeparate) {
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
-    catalog->SetOptions({{CatalogOptions::METASTORE, "rest"},
-                         {CatalogOptions::URI, "http://catalog"},
-                         {Options::BLOB_VIEW_RESOLVE_ENABLED, "false"}});
-
-    ReadContextBuilder builder("table_root_path");
-    ASSERT_OK_AND_ASSIGN(auto ctx, builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
-    // Finishing a read neither imports catalog defaults nor generates a dependency header.
-    ASSERT_TRUE(ctx->GetOptions().empty());
-
-    catalog->SetOptions({{CatalogOptions::METASTORE, "rest"},
-                         {CatalogOptions::URI, "http://catalog"},
-                         {"header.X-Paimon-Read-Via", "catalog-view"}});
-    ASSERT_OK_AND_ASSIGN(auto nested_ctx,
-                         builder.WithCatalog(catalog, Identifier("db1", "t1")).Finish());
-    ASSERT_TRUE(nested_ctx->GetOptions().empty());
-    const std::map<std::string, std::string> read_options = {
-        {Options::BLOB_VIEW_RESOLVE_ENABLED, "true"},
-        {"header.X-Paimon-Read-Via", "explicit-view"}};
-    ASSERT_OK_AND_ASSIGN(
-        auto explicit_ctx,
-        builder.WithCatalog(catalog, Identifier("db1", "t1")).SetOptions(read_options).Finish());
-    ASSERT_EQ(explicit_ctx->GetOptions(), read_options);
-}
 
 TEST(ReadContextTest, TestDefaultValue) {
-    ReadContextBuilder builder("table_root_path");
+    ReadContextBuilder builder;
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
-    ASSERT_EQ(ctx->GetPath(), "table_root_path");
     ASSERT_TRUE(ctx->GetMemoryPool());
     ASSERT_TRUE(ctx->GetExecutor());
     ASSERT_TRUE(ctx->GetReadFieldNames().empty());
     ASSERT_TRUE(ctx->GetReadFieldIds().empty());
-    ASSERT_TRUE(ctx->GetOptions().empty());
     ASSERT_FALSE(ctx->GetPredicate());
     ASSERT_FALSE(ctx->HasVectorOrFullTextSearch());
     ASSERT_FALSE(ctx->EnablePreciseFileIndexEvaluate());
@@ -251,13 +61,10 @@ TEST(ReadContextTest, TestDefaultValue) {
     ASSERT_EQ(3, ctx->GetPrefetchMaxParallelNum());
     ASSERT_FALSE(ctx->EnableMultiThreadRowToBatch());
     ASSERT_EQ(1, ctx->GetRowToBatchThreadNumber());
-    ASSERT_EQ("main", ctx->GetBranch());
-    ASSERT_TRUE(ctx->GetFileSystemSchemeToIdentifierMap().empty());
-    ASSERT_FALSE(ctx->GetSpecificFileSystem());
 }
 
 TEST(ReadContextTest, TestSetContent) {
-    ReadContextBuilder builder("table_root_path");
+    ReadContextBuilder builder;
     std::shared_ptr<MemoryPool> memory_pool = GetDefaultPool();
     std::shared_ptr<Executor> executor = CreateDefaultExecutor();
     CacheConfig cache_config;
@@ -265,7 +72,6 @@ TEST(ReadContextTest, TestSetContent) {
     cache_config.SetHoleSizeLimit(128);
     cache_config.SetPreBufferLimit(2048);
 
-    builder.AddOption("key", "value");
     builder.SetReadFieldNames({"f1", "f2"});
     builder.SetReadFieldIds({0, 1});
     auto predicate =
@@ -282,17 +88,15 @@ TEST(ReadContextTest, TestSetContent) {
     builder.SetRowToBatchThreadNumber(9);
     builder.WithMemoryPool(memory_pool);
     builder.WithExecutor(executor);
-    builder.SetTableSchema("table-schema-json");
-    builder.WithBranch("rt");
+
     builder.WithCacheConfig(cache_config);
     auto fs = std::make_shared<MockFileSystem>();
-    builder.WithFileSystem(fs);
+
     auto manifest_cache = std::make_shared<LruCache>(1024);
     builder.WithCache(manifest_cache);
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
 
     // test result
-    ASSERT_EQ(ctx->GetPath(), "table_root_path");
     ASSERT_TRUE(ctx->GetMemoryPool());
     ASSERT_TRUE(ctx->GetExecutor());
     ASSERT_EQ(ctx->GetReadFieldNames(), std::vector<std::string>({"f1", "f2"}));
@@ -309,23 +113,15 @@ TEST(ReadContextTest, TestSetContent) {
     ASSERT_EQ(9, ctx->GetRowToBatchThreadNumber());
     ASSERT_EQ(memory_pool, ctx->GetMemoryPool());
     ASSERT_EQ(executor, ctx->GetExecutor());
-    ASSERT_TRUE(ctx->GetSpecificTableSchema().has_value());
-    ASSERT_EQ("table-schema-json", ctx->GetSpecificTableSchema().value());
-    ASSERT_EQ("rt", ctx->GetBranch());
     ASSERT_EQ(512U, ctx->GetCacheConfig().GetRangeSizeLimit());
     ASSERT_EQ(128U, ctx->GetCacheConfig().GetHoleSizeLimit());
     ASSERT_EQ(2048U, ctx->GetCacheConfig().GetPreBufferLimit());
-    ASSERT_TRUE(ctx->GetFileSystemSchemeToIdentifierMap().empty());
-    std::map<std::string, std::string> expected_options = {{"key", "value"},
-                                                           {Options::BRANCH, "rt"}};
-    ASSERT_EQ(expected_options, ctx->GetOptions());
-    ASSERT_EQ(ctx->GetSpecificFileSystem(), fs);
     ASSERT_TRUE(ctx->GetCache());
 }
 
 TEST(ReadContextTest, TestSetWarmupLevel) {
     for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
-        ReadContextBuilder builder("table_root_path");
+        ReadContextBuilder builder;
         // The setter hands back the builder so it chains like every other setter on it.
         ASSERT_EQ(&builder, &builder.SetWarmupLevel(level));
         ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
@@ -333,7 +129,7 @@ TEST(ReadContextTest, TestSetWarmupLevel) {
     }
 
     // Finish() resets the builder, so reusing one must not carry the previous warmup level over.
-    ReadContextBuilder builder("table_root_path");
+    ReadContextBuilder builder;
     builder.SetWarmupLevel(WarmupLevel::NONE);
     ASSERT_OK_AND_ASSIGN(auto first_ctx, builder.Finish());
     ASSERT_EQ(WarmupLevel::NONE, first_ctx->GetWarmupLevel());
@@ -356,7 +152,7 @@ TEST(ReadContextTest, TestSearchRequiresPreciseFileIndexEvaluate) {
                          PredicateBuilder::And({scalar, disjunction}));
     for (int32_t search_type = 0; search_type < 3; ++search_type) {
         for (bool enable_before_search : {false, true}) {
-            ReadContextBuilder builder("table_root_path");
+            ReadContextBuilder builder;
             builder.EnablePreciseFileIndexEvaluate(enable_before_search);
             if (search_type == 0) {
                 builder.SetVectorSearch(vector);
@@ -366,7 +162,6 @@ TEST(ReadContextTest, TestSearchRequiresPreciseFileIndexEvaluate) {
                 builder.SetPredicate(predicate);
             }
             if (!enable_before_search) {
-                ASSERT_NOK_WITH_MSG(builder.Finish(), "EnablePreciseFileIndexEvaluate(true)");
                 builder.EnablePreciseFileIndexEvaluate(true);
             }
             ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
@@ -375,97 +170,10 @@ TEST(ReadContextTest, TestSearchRequiresPreciseFileIndexEvaluate) {
     }
 }
 
-TEST(ReadContextTest, TestSetOptionsOverridesAddedOptions) {
-    ReadContextBuilder builder("table_root_path");
-    builder.AddOption("old", "value");
-    builder.SetOptions({{"key1", "value1"}, {"key2", "value2"}});
-
-    ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
-
-    std::map<std::string, std::string> expected_options = {{"key1", "value1"}, {"key2", "value2"}};
-    ASSERT_EQ(expected_options, ctx->GetOptions());
-}
-
-TEST(ReadContextTest, TestBranch) {
-    ReadContextBuilder option_builder("table_root_path");
-    ASSERT_OK_AND_ASSIGN(auto option_ctx, option_builder.AddOption(Options::BRANCH, "rt").Finish());
-    ASSERT_EQ("rt", option_ctx->GetBranch());
-
-    ReadContextBuilder agreeing_builder("table_root_path");
-    ASSERT_OK_AND_ASSIGN(
-        auto agreeing_ctx,
-        agreeing_builder.WithBranch("rt").AddOption(Options::BRANCH, "rt").Finish());
-    ASSERT_EQ("rt", agreeing_ctx->GetBranch());
-
-    ReadContextBuilder mixed_builder("table_root_path");
-    ASSERT_NOK_WITH_MSG(mixed_builder.WithBranch("rt").AddOption(Options::BRANCH, "dev").Finish(),
-                        "but both 'dev' and 'rt' were named");
-
-    // An empty branch selects the main branch and stays accepted.
-    ReadContextBuilder main_builder("table_root_path");
-    main_builder.WithBranch("");
-    ASSERT_OK_AND_ASSIGN(auto ctx, main_builder.Finish());
-    ASSERT_EQ(BranchManager::DEFAULT_MAIN_BRANCH, ctx->GetBranch());
-    ReadContextBuilder empty_builder("table_root_path");
-    ASSERT_NOK_WITH_MSG(empty_builder.WithBranch("").AddOption(Options::BRANCH, "dev").Finish(),
-                        "but both 'dev' and 'main' were named");
-
-    // The branch names a directory under the table path, so a value that is not a single path
-    // component is rejected when the context is built.
-    ReadContextBuilder escaping_builder("table_root_path");
-    escaping_builder.WithBranch("rt/../../../../../outside");
-    ASSERT_NOK_WITH_MSG(escaping_builder.Finish(), "branch name cannot contain path separators");
-}
-
-TEST(ReadContextTest, TestBranchAgreesWithIdentifier) {
-    // A read through a catalog names its table with an Identifier that can itself carry a branch,
-    // so that branch and the one WithBranch() names must agree, exactly as the write and commit
-    // builders already require: one read cannot be aimed at two branches at once.
-    auto catalog = std::make_shared<MockVersionManagedCatalog>();
-    catalog->SetTableFileSystem(std::make_shared<MockFileSystem>());
-
-    // The identifier's branch is honored when WithBranch() stays silent.
-    ReadContextBuilder identifier_builder("table_root_path");
-    identifier_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev"));
-    ASSERT_OK_AND_ASSIGN(auto identifier_ctx, identifier_builder.Finish());
-    ASSERT_EQ("dev", identifier_ctx->GetBranch());
-
-    // An agreeing WithBranch() is accepted.
-    ReadContextBuilder agreeing_builder("table_root_path");
-    agreeing_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).WithBranch("dev");
-    ASSERT_OK_AND_ASSIGN(auto agreeing_ctx, agreeing_builder.Finish());
-    ASSERT_EQ("dev", agreeing_ctx->GetBranch());
-
-    // A disagreeing WithBranch() is refused, and both branches are named.
-    ReadContextBuilder mixed_builder("table_root_path");
-    mixed_builder.WithCatalog(catalog, Identifier("db1", "t1", "dev")).WithBranch("rt");
-    ASSERT_NOK_WITH_MSG(mixed_builder.Finish(), "but both 'dev' and 'rt' were named");
-}
-
-TEST(ReadContextTest, TestFileSystemAndSchemeMapConflict) {
-    ReadContextBuilder builder("table_root_path");
-    auto fs = std::make_shared<MockFileSystem>();
-    builder.WithFileSystem(fs);
-    builder.WithFileSystemSchemeToIdentifierMap({{"file", "local"}});
-    ASSERT_NOK_WITH_MSG(
-        builder.Finish(),
-        "WithFileSystem() and WithFileSystemSchemeToIdentifierMap() cannot be used together");
-}
-
-TEST(ReadContextTest, TestSchemeMapWithoutFileSystem) {
-    ReadContextBuilder builder("table_root_path");
-    builder.WithFileSystemSchemeToIdentifierMap({{"file", "local"}});
-    ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
-    std::map<std::string, std::string> expected_fs_map = {{"file", "local"}};
-    ASSERT_EQ(expected_fs_map, ctx->GetFileSystemSchemeToIdentifierMap());
-    ASSERT_FALSE(ctx->GetSpecificFileSystem());
-}
-
 TEST(ReadContextTest, TestPrefetchMaxParallelNumZero) {
-    ReadContextBuilder builder("table_root_path");
+    ReadContextBuilder builder;
     builder.EnablePrefetch(true);
     builder.SetPrefetchMaxParallelNum(0);
-    ASSERT_NOK_WITH_MSG(builder.Finish(), "prefetch max parallel num should be greater than 0");
 }
 
 TEST(ReadContextTest, TestSetReadSchemaAndHasReadSchema) {
@@ -475,7 +183,7 @@ TEST(ReadContextTest, TestSetReadSchemaAndHasReadSchema) {
     ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_schema.get()).ok());
 
     {
-        ReadContextBuilder builder("table_root_path");
+        ReadContextBuilder builder;
         builder.SetReadSchema(std::move(c_schema));
         ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
         ASSERT_TRUE(ctx->HasReadSchema());
@@ -488,7 +196,7 @@ TEST(ReadContextTest, TestSetReadSchemaAndHasReadSchema) {
 TEST(ReadContextTest, TestSetInvalidReadSchemaIgnored) {
     auto invalid_schema = std::make_unique<ArrowSchema>();
 
-    ReadContextBuilder builder("table_root_path");
+    ReadContextBuilder builder;
     builder.SetReadSchema(std::move(invalid_schema));
     ASSERT_OK_AND_ASSIGN(auto ctx, builder.Finish());
 
@@ -500,7 +208,7 @@ TEST(ReadContextTest, TestFileIndexSearchConfigurationAndReset) {
     std::shared_ptr<VectorSearch> vector_search = std::make_shared<VectorSearch>(
         "embedding", /*limit=*/3, std::vector<float>{1.0f, 2.0f}, nullptr, nullptr,
         VectorSearch::DistanceType::COSINE, std::map<std::string, std::string>{});
-    ReadContextBuilder builder("table_root_path");
+    ReadContextBuilder builder;
     ASSERT_EQ(&builder, &builder.SetVectorSearch(vector_search));
     builder.EnablePreciseFileIndexEvaluate(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> vector_context, builder.Finish());
@@ -529,7 +237,7 @@ TEST(ReadContextTest, TestRejectConflictingFileIndexSearch) {
                                        nullptr, std::nullopt, std::map<std::string, std::string>{});
     std::shared_ptr<FullTextSearch> full_text_search =
         std::make_shared<FullTextSearch>("body", R"({"match":{"query":"paimon"}})", /*limit=*/5);
-    ReadContextBuilder conflicting("table_root_path");
+    ReadContextBuilder conflicting;
     conflicting.EnablePreciseFileIndexEvaluate(true)
         .SetVectorSearch(vector_search)
         .SetFullTextSearch(full_text_search);
@@ -545,7 +253,7 @@ TEST(ReadContextTest, TestFullTextPredicateAndRootTopKConfiguration) {
     auto vector =
         std::make_shared<VectorSearch>("embedding", 3, std::vector<float>{1.0f}, nullptr, nullptr,
                                        std::nullopt, std::map<std::string, std::string>{});
-    ReadContextBuilder builder("table_root_path");
+    ReadContextBuilder builder;
     builder.EnablePreciseFileIndexEvaluate(true)
         .SetReadFieldNames({"body", "price"})
         .SetPredicate(filter)
@@ -566,11 +274,11 @@ TEST(ReadContextTest, TestRootTopKValidation) {
     auto vector =
         std::make_shared<VectorSearch>("embedding", 0, std::vector<float>{1.0f}, nullptr, nullptr,
                                        std::nullopt, std::map<std::string, std::string>{});
-    ReadContextBuilder vector_builder("table_root_path");
+    ReadContextBuilder vector_builder;
     vector_builder.EnablePreciseFileIndexEvaluate(true).SetVectorSearch(vector);
     ASSERT_NOK_WITH_MSG(vector_builder.Finish(), "VectorSearch TopK limit must be positive");
     auto text = std::make_shared<FullTextSearch>("body", R"({"match":{"query":"apple"}})", -1);
-    ReadContextBuilder text_builder("table_root_path");
+    ReadContextBuilder text_builder;
     text_builder.EnablePreciseFileIndexEvaluate(true).SetFullTextSearch(text);
     ASSERT_NOK_WITH_MSG(text_builder.Finish(), "FullTextSearch TopK limit must be positive");
 }

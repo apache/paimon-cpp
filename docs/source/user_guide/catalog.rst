@@ -121,66 +121,65 @@ through the regular ``Catalog`` API, and table snapshots can be listed through
 Committing through the catalog
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 A REST catalog reports ``Catalog::SupportsVersionManagement() == true`` and
-publishes snapshots through the server. Pass the catalog and table identifier
-to ``CommitContextBuilder::WithCatalog`` to commit on local or object storage
-without an atomic snapshot-file rename:
+publishes snapshots through the server. A loaded table retains its catalog
+services and UUID. Writers and committers created from that table use the same
+identity and per-table credentials:
 
 .. code-block:: cpp
 
-   // Writers and committers share ownership of the catalog.
    std::shared_ptr<paimon::Catalog> shared_catalog(std::move(catalog));
-
-   // Load the table's identity before preparing changes.
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> table,
                           shared_catalog->GetTable(paimon::Identifier("db", "tbl")));
-
-   paimon::CommitContextBuilder builder(table_path, "commit-user");
-   builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
-   // CatalogUuid() stays null when the server supplies no id.
-   if (std::optional<std::string> table_uuid = table->CatalogUuid()) {
-       builder.WithTableId(table_uuid.value());
-   }
-   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> context, builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::WriteContext> write_context,
+                          paimon::WriteContextBuilder("commit-user").Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreWrite> writer,
+                          table->NewWrite(std::move(write_context)));
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> commit_context,
+                          paimon::CommitContextBuilder("commit-user").Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreCommit> commit,
-                          paimon::FileStoreCommit::Create(std::move(context)));
+                          table->NewCommit(std::move(commit_context)));
    PAIMON_RETURN_NOT_OK(commit->Commit(commit_messages));
 
-Configure native writers with the same catalog and identifier. They load the
-current schema and latest snapshot from the catalog, including committed
-offsets when a real-time writer is created:
+``Catalog::GetTable()`` returns a common ``Table`` interface for managed, format
+and system tables. Managed tables select append-only or primary-key behavior
+from the loaded schema; system tables reject writes and commits.
+Loading a managed table's schema, location and catalog UUID does not require
+its data-format plugin; the plugin is resolved when creating an operator that
+uses the format.
+
+``NewCommit()``, ``NewWrite()``, ``NewRead()`` and ``NewScan()`` take an operation
+Context containing execution settings. Apply dynamic options with ``Table::Copy()``
+before creating operators; the original table remains unchanged. Operators use
+the copy's bound type, path, schema, options, file system and catalog services.
+``GetSchema()`` returns the
+bound schema without metadata I/O; reload through the catalog to refresh it.
+Branch or type options that contradict a loaded managed table are rejected.
+See the :ref:`Table API <cpp-api-catalog>`.
+
+The static factories instead take ``TableLoadOptions``, an operation Context and
+an optional dynamic options map. Loading parameters are independent of the
+Context; finishing a Context performs no table metadata I/O:
 
 .. code-block:: cpp
 
-   paimon::WriteContextBuilder write_builder(table_path, "commit-user");
-   write_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
-   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::WriteContext> write_context,
-                          write_builder.Finish());
-   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreWrite> writer,
-                          paimon::FileStoreWrite::Create(std::move(write_context)));
+   paimon::TableLoadOptions load_options;
+   load_options.catalog = shared_catalog;
+   load_options.identifier.emplace("db", "tbl");
+   // Optional expected UUID, validated against the catalog during loading.
+   load_options.table_id = table->CatalogUuid();
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> context,
+                          paimon::CommitContextBuilder("commit-user").Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreCommit> commit,
+                          paimon::FileStoreCommit::Create(load_options, std::move(context)));
 
-``Catalog::GetTable()`` returns a common ``Table`` interface for managed, format and
-system tables. The managed implementation selects append-only or primary-key behavior
-from the loaded schema; system tables reject writes and commits. Loading a managed
-table's schema, location and catalog UUID does not require its data-format plugin;
-the plugin is resolved when creating an operator that uses the format.
+For file-system loading, set ``TableLoadOptions::path``. Optional fields specify
+an explicit file system, URI scheme routing or a serialized Paimon table schema.
+The serialized table schema is separate from the Arrow projection in
+``ReadContextBuilder::SetReadSchema()``. Set the branch through the identifier
+or the dynamic ``branch`` option; conflicting values are rejected.
 
-``table->NewCommit()``, ``NewWrite()``, ``NewRead()`` and ``NewScan()`` use the table's
-bound type, path, schema and file system. ``GetSchema()`` returns that schema without
-metadata I/O; reload through the catalog to refresh it. Contexts still provide execution
-settings, dynamic options and optional catalog services. Branch or type options that
-contradict a loaded managed table are rejected. The legacy static ``Create()`` methods
-load the table from their context before delegating to these methods.
-See the :ref:`Table API <cpp-api-catalog>`.
-
-An explicit ``WithBranch()`` or branch-qualified identifier participates in the same
-branch check. Omitting a branch allows the loaded table to supply it. The static
-scan and read factories use an explicit context branch first, then the branch in
-the schema options, and finally main.
-
-Global system tables under ``sys`` retain their catalog for deferred row loading.
-Before calling ``GetTable()`` for one, place the catalog in a ``std::shared_ptr``,
-as in the example above. ``LoadTableSchema()`` can inspect the schema without
-retaining the catalog.
+Global system tables under ``sys`` retain their catalog for deferred row
+loading. Keep the catalog in a ``std::shared_ptr`` before loading these tables.
 
 For real-time writes, also set ``WithStreamingMode(true)`` and
 ``WithRealtimeContext(...)`` with ``realtime.enabled=true``. After
@@ -191,14 +190,12 @@ already advanced the latest snapshot, the requested snapshot must be published
 under the table path. Recreating the writer restores offsets from the catalog's
 current snapshot.
 
-Both builders use the file system of the table being written or committed for
-manifests and data, so a catalog that issues temporary credentials per table
-serves them through ``Catalog::GetTableFileSystem``. ``WithFileSystem`` overrides
-it; writers also allow ``WithFileSystemSchemeToIdentifierMap`` to override
-file-system selection. For format tables, use ``WriteContextBuilder(FormatTable)``
-instead.
+Table loading uses ``Catalog::GetTableFileSystem`` for per-table credentials.
+An explicit ``TableLoadOptions::file_system`` or
+``fs_scheme_to_identifier_map`` controls file-system resolution instead.
+Loaded format tables create operators directly with their ``New*()`` methods.
 
-A file system passed to ``WithFileSystem`` is used exactly as it is: neither the
+A file system passed in ``TableLoadOptions::file_system`` is used exactly as it is: neither the
 built-in file systems nor the table's own credentials are involved, so a custom
 one has to authenticate its own accesses. Draw credentials that expire from a
 ``CredentialProvider`` you build with ``CredentialProviderFactory``: hold the
@@ -212,8 +209,9 @@ returns credentials that are still valid and reloads them before they expire.
                                                                  "oss://bucket/tbl", options));
    // MyFileSystem merges provider->GetCredentials() over its own options per access.
    auto my_fs = std::make_shared<MyFileSystem>(provider);
-   write_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"))
-       .WithFileSystem(my_fs);
+   load_options.catalog = shared_catalog;
+   load_options.identifier.emplace("db", "tbl");
+   load_options.file_system = my_fs;
 
 The snapshot being committed carries a uuid generated on the client, and the
 commit names the snapshot it is based on by that snapshot's uuid, so the server
@@ -224,12 +222,12 @@ and ``commit.timeout`` as a file-system commit is.
 A REST catalog can also give a writer a commit lease, so concurrent writers take
 turns instead of racing. The table property ``rest.commit.lock-enabled = true``
 turns on lease enforcement on the server, and a writer that sets
-``rest.commit.acquire-lock = true``, usually as a commit context option, acquires
+``rest.commit.acquire-lock = true``, as a dynamic commit option, acquires
 a lease for each publication attempt. Both default to ``false``; enabling the
 table property alone does not make writers acquire, and asking to acquire without
 it fails when the commit is created. A writer with an active lease keeps the
 others out, including writers that do not acquire one. The lease is bound to the
-table or branch, to the table UUID, which has to be passed to ``WithTableId``,
+table or branch, to the table UUID retained by the loaded table,
 and to the exact commit user, so give each logical writer its own commit user and
 keep it across recovery.
 
@@ -241,10 +239,13 @@ keep it across recovery.
    if (!table_uuid) {
        return paimon::Status::Invalid("a commit lease needs the table UUID");
    }
-   paimon::CommitContextBuilder builder(table_path, "writer-1");
-   builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"))
-       .WithTableId(table_uuid.value())
-       .AddOption(paimon::Options::REST_COMMIT_ACQUIRE_LOCK, "true");
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> context,
+                          paimon::CommitContextBuilder("writer-1").Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> commit_table,
+                          table->Copy(
+                              {{paimon::Options::REST_COMMIT_ACQUIRE_LOCK, "true"}}));
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreCommit> commit,
+                          commit_table->NewCommit(std::move(context)));
 
 Each attempt acquires its own lease before reading the latest snapshot, waits
 while another writer holds it until ``commit.timeout`` without using up
@@ -269,7 +270,7 @@ under it. Ending an attempt that published nothing only stops renewing the
 lease, without waiting for a renewal in flight, and the lease stays held until
 it expires.
 
-Leases need ``WithCatalog``: a commit that only builds the commit table request
+Leases need a table loaded through a catalog: a commit that only builds the commit table request
 for the caller to send cannot hold one, so asking to acquire is rejected there.
 The snapshot UUID checks above still apply.
 
@@ -287,8 +288,9 @@ A catalog response of ``{"snapshot": null}`` means the table has no snapshot.
 Only a catalog reporting that snapshot loading is unsupported falls back to
 file-system lookup; other catalog errors propagate to the caller.
 
-Read ``Table::CatalogUuid()`` before preparing changes and pass it to
-``WithTableId`` so the server can reject commits to a dropped and recreated table.
+Load the table before preparing changes so its retained ``CatalogUuid()`` lets
+the server reject commits to a dropped and recreated table. Static commit
+loading accepts the expected UUID through ``TableLoadOptions::table_id``.
 ``Table::Uuid()`` can fall back to the table name and must not supply this id.
 An unset table id is sent as null and subject to server validation. Each commit
 attempt to the main branch reloads the catalog's current schema id for the new
@@ -336,57 +338,35 @@ so its restored file references are visible to the expiration operation.
 
 Reading through the catalog
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-To read a native table through its catalog, pass the catalog and table
-identifier to ``ReadContextBuilder::WithCatalog`` or
-``ScanContextBuilder::WithCatalog``. The catalog then supplies:
-
-* the table's file system, with the per-table temporary credentials the catalog
-  issues, unless ``WithFileSystem`` sets one;
-* whether the table enables ``query-auth.enabled``, read from the schema the
-  catalog holds for the branch read;
-* for a table that does, its row filters and column masks.
-
-Passing only the file system through ``WithFileSystem`` gives neither of the
-last two.
-
-The fields a scan plans with and a read reads with do not come from the catalog,
-but from the schema ``SetTableSchema`` hands in for the main branch or, otherwise,
-from the latest schema published under the table path of the branch read. That
-schema has to exist even when the catalog holds the current one: a table whose
-schema only the catalog holds cannot be scanned or read this way yet, and when
-the two differ, the fields are those of the schema under the table path. A
-query-auth scan also checks column identities and rule types against the
-catalog's schema on every plan:
+Load the table through a shared catalog and create read and scan operators from it:
 
 .. code-block:: cpp
 
-   // Readers and scanners share ownership of the catalog.
-   std::shared_ptr<paimon::Catalog> shared_catalog(std::move(catalog));
-
-   paimon::ScanContextBuilder scan_builder(table_path);
-   scan_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Table> table,
+                          shared_catalog->GetTable(paimon::Identifier("db", "tbl")));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
-                          scan_builder.Finish());
+                          paimon::ScanContextBuilder().Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
-                          paimon::TableScan::Create(std::move(scan_context)));
-
-   paimon::ReadContextBuilder read_builder(table_path);
-   read_builder.WithCatalog(shared_catalog, paimon::Identifier("db", "tbl"));
+                          table->NewScan(std::move(scan_context)));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ReadContext> read_context,
-                          read_builder.Finish());
+                          paimon::ReadContextBuilder().Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> read,
-                          paimon::TableRead::Create(std::move(read_context)));
+                          table->NewRead(std::move(read_context)));
 
-When ``Finish()`` builds the context, it asks the catalog for the table's file
-system through ``Catalog::GetTableFileSystem`` and uses it as-is for the schema,
-snapshots, manifests and data under the table path, so it signs every access with
-the table's credentials and reloads them as they expire. An explicit
-``WithFileSystem`` takes precedence, so the catalog is not asked for one. A
-catalog that issues no per-table credentials returns its catalog-level file
-system, so this is also how you read with the catalog's own object-store
-credentials. For a format table, use ``ReadContextBuilder(FormatTable)`` or
-``ScanContextBuilder(FormatTable)`` instead; ``WithCatalog`` is rejected because
-the table already carries the file system it was loaded through.
+Context builders retain execution settings only; ``Finish()`` performs no table
+metadata I/O. The loaded table retains its schema, location, identifier, catalog
+services and per-table file system. That file system signs metadata and data
+accesses with the table's credentials and refreshes them as they expire.
+
+Static factories take ``TableLoadOptions`` separately. Its explicit ``file_system``
+takes precedence over the catalog's file system. Without one, the catalog supplies
+its per-table credentials, or its catalog-level file system when it issues none.
+Use ``NewScan`` and ``NewRead`` on a loaded format table too; its storage binding
+and external-directory semantics remain those of the loaded table.
+
+Dependency reads retain the catalog configuration and URI routing. REST dependency
+reads preserve an existing ``X-Paimon-Read-Via`` header or derive it from the outer
+table identifier.
 
 Row filters and column masks
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -396,11 +376,11 @@ any of these sets it:
 
 * the latest schema under the table path;
 * the options of the scan or read;
-* for a scan or read built ``WithCatalog``, the schema the catalog holds for the
+* for a scan or read of a table loaded through its catalog, the schema the catalog holds for the
   branch read, which ``TableScan::Create`` and ``TableRead::Create`` load as Java
   loads the table of that branch.
 
-A schema handed in with ``SetTableSchema`` for the main branch does not decide it
+A schema handed in through ``TableLoadOptions::table_schema_json`` for the main branch does not decide it
 alone: unless the catalog already enabled the option, the latest schema under the
 table path is checked too, so a cache taken before the option was turned on still
 applies the rules.
@@ -466,7 +446,7 @@ Every plan of such a table, the first included, asks the catalog for the rules
 of the query (``POST /v1/{prefix}/databases/{database}/tables/{table}/auth``),
 checks that the columns they name still exist with the types they were written
 for and are columns of the schema the scan plans with, and attaches them to each
-split. A scan therefore has to be built ``WithCatalog``, and a catalog that does
+split. A scan therefore has to use a table loaded through its catalog, and a catalog that does
 not support the query auth interface is refused with ``NotImplemented``. The
 scan path must be the location ``Catalog::GetTableLocation`` returns for the
 table and branch the rules are asked for, so the rules of one table are never
@@ -478,13 +458,13 @@ system table path such as ``tbl$branch_dev$files`` takes it from the branch it
 names. An identifier in the ``sys`` database can only be used with a global
 system table path (``<warehouse>/sys/<table>``); it cannot skip the catalog policy
 of a data table or its per-table system tables.
-The branch the identifier, the ``branch`` option, ``WithBranch()`` or a
-system table path names must agree, which ``Finish()`` checks before it asks the
+The branch the identifier, the dynamic ``branch`` option or a
+system table path names must agree, which the static factory checks before it asks the
 catalog for anything. A branch named only by the option or the path is carried
 into the identifier before requesting the table's file system, so the
 ``query-auth.enabled`` setting, the credentials and the rules all come from the
 branch the scan plans.
-``Finish()`` also refuses, as for a write, a branch the catalog would read as
+The static factory also refuses, as for a write, a branch the catalog would read as
 another object, such as ``MAIN`` or a name holding a ``$``
 (see `Naming the branch`_). The request selects every column unless
 ``ScanContextBuilder::SetReadFieldNames`` names the columns the query reads; the
@@ -518,7 +498,7 @@ the rules a split carries and refuses a split planned without them. It refuses
 a split authorized for another table location or branch, even when their schemas
 and data file names match. This check also applies to a worker without the
 catalog. The read only has to know that the table enables query auth, which the
-schema under the table path, ``WithCatalog`` or the read option
+schema under the table path, the bound catalog or the dynamic read option
 ``query-auth.enabled = true`` tells it. It refuses a split when a column it
 outputs or filters on is not among those the split was authorized for or is now
 another field under the same name, as after a rename or a column added since the
@@ -571,54 +551,59 @@ These examples use ``shared_catalog`` from `Reading through the catalog`_.
    using namespace paimon;
 
    // Plan with the columns and the filter the read uses.
-   ScanContextBuilder scan_builder(table_path);
-   scan_builder.WithCatalog(shared_catalog, Identifier("db", "tbl"))
-       .SetReadFieldNames({"name", "phone"})
+   TableLoadOptions scan_load{table_path};
+   scan_load.catalog = shared_catalog;
+   scan_load.identifier.emplace("db", "tbl");
+   ScanContextBuilder scan_builder;
+   scan_builder.SetReadFieldNames({"name", "phone"})
        .SetPredicate(predicate);
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan,
-                          TableScan::Create(std::move(scan_context)));
+                          TableScan::Create(scan_load, std::move(scan_context)));
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, scan->CreatePlan());
 
    // A worker without the catalog tells the read that the table enables query auth.
-   ReadContextBuilder read_builder(table_path);
-   read_builder.AddOption(Options::QUERY_AUTH_ENABLED, "true")
-       .SetReadFieldNames({"name", "phone"})
+   TableLoadOptions read_load{table_path};
+   ReadContextBuilder read_builder;
+   read_builder.SetReadFieldNames({"name", "phone"})
        .SetPredicate(predicate)
        .EnablePredicateFilter(true);
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read,
-                          TableRead::Create(std::move(read_context)));
+                          TableRead::Create(read_load, std::move(read_context),
+                                            {{Options::QUERY_AUTH_ENABLED, "true"}}));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
 
 The read does not take the branch from the splits or from
 ``query-auth.enabled``: a worker reading a branch names it itself, as the scan
-did. As for a scan, a branch named by the ``branch`` option or ``WithBranch`` is
-carried into the identifier of a read built ``WithCatalog``, so the catalog
+did. As for a scan, a branch named by the dynamic ``branch`` option is
+carried into the identifier supplied in ``TableLoadOptions``, so the catalog
 hands out the credentials of that branch.
 
 .. code-block:: cpp
 
    // Plan branch "dev"; Identifier("db", "tbl", "dev") names it as well.
-   ScanContextBuilder dev_scan_builder(table_path);
-   dev_scan_builder.WithCatalog(shared_catalog, Identifier("db", "tbl"))
-       .AddOption(Options::BRANCH, "dev")
-       .SetReadFieldNames({"name", "phone"});
+   TableLoadOptions dev_load{table_path};
+   dev_load.catalog = shared_catalog;
+   dev_load.identifier.emplace("db", "tbl", "dev");
+   ScanContextBuilder dev_scan_builder;
+   dev_scan_builder.SetReadFieldNames({"name", "phone"});
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> dev_scan_context,
                           dev_scan_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> dev_scan,
-                          TableScan::Create(std::move(dev_scan_context)));
+                          TableScan::Create(dev_load, std::move(dev_scan_context)));
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> dev_plan, dev_scan->CreatePlan());
 
    // The worker reads the same branch.
-   ReadContextBuilder dev_read_builder(table_path);
-   dev_read_builder.AddOption(Options::QUERY_AUTH_ENABLED, "true")
-       .AddOption(Options::BRANCH, "dev")
-       .SetReadFieldNames({"name", "phone"});
+   TableLoadOptions dev_read_load{table_path};
+   ReadContextBuilder dev_read_builder;
+   dev_read_builder.SetReadFieldNames({"name", "phone"});
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> dev_read_context,
                           dev_read_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> dev_read,
-                          TableRead::Create(std::move(dev_read_context)));
+                          TableRead::Create(dev_read_load, std::move(dev_read_context),
+                                            {{Options::QUERY_AUTH_ENABLED, "true"},
+                                             {Options::BRANCH, "dev"}}));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> dev_reader,
                           dev_read->CreateReader(dev_plan->Splits()));
 
@@ -636,14 +621,13 @@ This library creates no branch: one has to exist, with its schema published unde
 
 Naming the branch
 ^^^^^^^^^^^^^^^^^
-A branch is addressed by the identifier of ``WithCatalog``, which
+A branch is addressed by ``TableLoadOptions::identifier`` or the loaded table identifier, which
 ``paimon::Identifier("db", "tbl", "dev")`` builds as ``tbl$branch_dev``, so that
 the catalog answers for the branch: the snapshot it loads is the branch's, and
 the commit request is addressed to that branch by that identifier rather than by
-anything in its body. The ``branch`` option and, for writers, ``WithBranch`` may
-name the same branch as well; naming two different branches is rejected rather
+anything in its body. The dynamic ``branch`` option may name the same branch as well; naming two different branches is rejected rather
 than resolved, and ``tbl$branch_main``, ``branch=main`` and an empty name all
-mean the main branch. Naming a branch only in the option or ``WithBranch`` while
+mean the main branch. Naming a branch only in the option while
 the identifier names the bare table is rejected, as the catalog would then answer
 for the table while the files were written for the branch.
 
@@ -669,7 +653,7 @@ A write or a commit aimed at a branch reads that schema rather than the
 catalog's and asks the catalog for no schema at all, so a catalog serving only
 the table's own current schema still takes the branch's snapshots. A scan or
 read also uses the fields of the schema published under the branch, but through
-``WithCatalog`` it asks for the catalog's branch schema to check
+a bound catalog it asks for the catalog's branch schema to check
 ``query-auth.enabled`` (see `Reading through the catalog`_).
 
 The new snapshot records the schema id published under the branch, which is the
@@ -696,7 +680,7 @@ from a store Paimon has no client for — reach a file system through a
 ``REGISTER_PAIMON_FACTORY``. Build a provider with
 ``CredentialProviderFactory::Get``, wrap it in a ``FileSystem`` of your own that
 calls ``CredentialProvider::GetCredentials`` as it signs each access, and pass
-that file system in through ``Catalog::Create`` or a builder's ``WithFileSystem``.
+that file system in through ``Catalog::Create`` or ``TableLoadOptions::file_system``.
 A file system passed this way is used as-is, so the credentials are reloaded as
 they expire without it being rebuilt.
 

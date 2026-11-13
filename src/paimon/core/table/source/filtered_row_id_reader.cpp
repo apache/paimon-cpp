@@ -30,6 +30,7 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -100,16 +101,17 @@ Result<std::map<std::string, std::string>> PinToSnapshot(const std::string& root
 /// `FilteredRowIdReader` reads with the table that the search loaded, so that a column renamed or
 /// replaced since then cannot point the filter at another field.
 Result<std::unique_ptr<TableRead>> CreateReadWithSchema(
-    std::unique_ptr<ReadContext> read_context, const std::shared_ptr<TableSchema>& table_schema,
+    const TableLoadOptions& load, std::unique_ptr<ReadContext> read_context,
+    const std::shared_ptr<TableSchema>& table_schema,
     const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool,
     const std::shared_ptr<Executor>& executor) {
     // Row ids come from row tracking, which a primary-key table does not support.
     if (!table_schema->PrimaryKeys().empty()) {
         return Status::NotImplemented("cannot evaluate a row filter on a primary-key table");
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<InternalReadContext> internal_context,
-        InternalReadContext::Create(std::move(read_context), table_schema, options));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> internal_context,
+                           InternalReadContext::Create(std::move(read_context), table_schema,
+                                                       options, load.file_system, load.path));
     const CoreOptions& core_options = internal_context->GetCoreOptions();
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
@@ -167,16 +169,19 @@ Result<RoaringBitmap64> FilteredRowIdReader::MatchingRowIds(const RoaringBitmap6
 
     // Unlike the read, the scan may load the latest schema, as it selects files by partition and
     // row id alone.
-    ScanContextBuilder scan_builder(root_path_);
-    scan_builder.SetOptions(pinned_options)
-        .SetPredicate(partition_filter_)
+    TableLoadOptions scan_builder_load{root_path_};
+    std::map<std::string, std::string> scan_builder_options;
+    ScanContextBuilder scan_builder;
+    scan_builder_options = pinned_options;
+    scan_builder_load.file_system = options_.GetFileSystem();
+    scan_builder.SetPredicate(partition_filter_)
         .SetGlobalIndexResult(std::make_shared<BitmapGlobalIndexResult>(rows))
-        .WithFileSystem(options_.GetFileSystem())
         .WithMemoryPool(pool_)
         .WithExecutor(executor_);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
-                           TableScan::Create(std::move(scan_context)));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<TableScan> table_scan,
+        TableScan::Create(scan_builder_load, std::move(scan_context), scan_builder_options));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
     // An empty plan of another snapshot would drop every candidate, so it is checked too.
     if (plan->SnapshotId() != snapshot_id_) {
@@ -202,19 +207,21 @@ Result<RoaringBitmap64> FilteredRowIdReader::MatchingRowIds(const RoaringBitmap6
                            PredicateUtils::CreatePickedFieldFilter(
                                filter_, ObjectUtils::CreateIdentifierToIndexMap(read_fields)));
 
-    ReadContextBuilder read_builder(root_path_);
-    read_builder.SetOptions(pinned_options)
-        .SetReadFieldNames(read_fields)
+    TableLoadOptions read_builder_load{root_path_};
+    std::map<std::string, std::string> read_builder_options;
+    ReadContextBuilder read_builder;
+    read_builder_options = pinned_options;
+    read_builder_load.file_system = options_.GetFileSystem();
+    read_builder.SetReadFieldNames(read_fields)
         .SetPredicate(read_filter)
         .EnablePredicateFilter(true)
         .EnablePrefetch(true)
-        .WithFileSystem(options_.GetFileSystem())
         .WithMemoryPool(pool_)
         .WithExecutor(executor_);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                           CreateReadWithSchema(std::move(read_context), table_schema_,
-                                                pinned_options, pool_, executor_));
+                           CreateReadWithSchema(read_builder_load, std::move(read_context),
+                                                table_schema_, pinned_options, pool_, executor_));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
                            table_read->CreateReader(plan->Splits()));
     ScopeGuard guard([&reader]() { reader->Close(); });

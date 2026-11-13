@@ -71,8 +71,7 @@ class PAIMON_EXPORT Table {
         return uuid_.empty() ? FullName() : uuid_;
     }
 
-    /// Returns the metastore UUID, or null if unavailable, for
-    /// `CommitContextBuilder::WithTableId()`.
+    /// Returns the metastore UUID, or null if unavailable.
     std::optional<std::string> CatalogUuid() const {
         return uuid_.empty() ? std::nullopt : std::optional<std::string>(uuid_);
     }
@@ -82,6 +81,12 @@ class PAIMON_EXPORT Table {
     std::shared_ptr<Schema> GetSchema() const {
         return schema_;
     }
+
+    /// Returns an independent table with dynamic options applied to its bound configuration.
+    /// The original table is unchanged. Type, location, branch, catalog identity and storage
+    /// bindings are retained; load another table to select a different branch.
+    virtual Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const = 0;
 
     /// Creates a scan using this table's schema and options.
     virtual Result<std::unique_ptr<TableScan>> NewScan(

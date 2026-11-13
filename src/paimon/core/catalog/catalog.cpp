@@ -67,7 +67,8 @@ Result<std::unique_ptr<Catalog>> Catalog::Create(
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(options, file_system, fs_scheme_to_identifier_map));
-    return std::make_unique<FileSystemCatalog>(core_options.GetFileSystem(), root_path, options);
+    return std::make_unique<FileSystemCatalog>(core_options.GetFileSystem(), root_path, options,
+                                               fs_scheme_to_identifier_map);
 }
 
 bool Catalog::SupportsVersionManagement() const {

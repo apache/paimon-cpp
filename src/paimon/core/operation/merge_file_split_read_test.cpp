@@ -31,6 +31,7 @@
 #include "arrow/c/abi.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/reader/concat_batch_reader.h"
@@ -91,23 +92,31 @@ class MergeFileSplitReadTest : public ::testing::Test,
     }
 
     std::shared_ptr<InternalReadContext> CreateInternalReadContext(
-        const std::shared_ptr<ReadContext>& read_context, int32_t schema_id = 0) {
-        SchemaManager schema_manager(fs_, read_context->GetPath());
+        const std::shared_ptr<ReadContext>& read_context,
+        const TableLoadOptions& read_context_load_options,
+        const std::map<std::string, std::string>& read_context_options, int32_t schema_id = 0) {
+        SchemaManager schema_manager(fs_, read_context_load_options.path);
         EXPECT_OK_AND_ASSIGN(auto table_schema, schema_manager.ReadSchema(schema_id));
-        EXPECT_OK_AND_ASSIGN(auto context, InternalReadContext::Create(read_context, table_schema,
-                                                                       read_context->GetOptions()));
+        EXPECT_OK_AND_ASSIGN(
+            auto context, InternalReadContext::Create(
+                              read_context, table_schema, read_context_options,
+                              read_context_load_options.file_system, read_context_load_options.path,
+                              read_context_load_options.fs_scheme_to_identifier_map,
+                              read_context_load_options.catalog,
+                              read_context_load_options.identifier, read_context_options));
         return context;
     }
 
-    void AddOptions(ReadContextBuilder* context_builder) const {
+    void AddOptions(ReadContextBuilder* context_builder,
+                    std::map<std::string, std::string>& options) const {
         auto [use_min_heap, enable_io_prefetch, enable_multi_thread_row_to_batch] = GetParam();
         if (use_min_heap) {
-            context_builder->AddOption(Options::SORT_ENGINE, "min-heap");
+            options[Options::SORT_ENGINE] = "min-heap";
         } else {
-            context_builder->AddOption(Options::SORT_ENGINE, "loser-tree");
+            options[Options::SORT_ENGINE] = "loser-tree";
         }
         if (enable_io_prefetch) {
-            context_builder->AddOption("test.enable-adaptive-prefetch-strategy", "false");
+            options["test.enable-adaptive-prefetch-strategy"] = "false";
             context_builder->EnablePrefetch(true);
             context_builder->SetPrefetchBatchCount(/*batch_count=*/3);
         } else {
@@ -609,7 +618,10 @@ TEST_F(MergeFileSplitReadTest, TestGenerateKeyPredicates2) {
 TEST_P(MergeFileSplitReadTest, TestSimple) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
 
     std::vector<DataField> raw_read_fields = {DataField(1, arrow::field("k1", arrow::int32())),
                                               DataField(3, arrow::field("p1", arrow::int32())),
@@ -620,13 +632,17 @@ TEST_P(MergeFileSplitReadTest, TestSimple) {
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"k1", "p1", "s1", "v0", "v1"});
-    context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
-                                {Options::MERGE_ENGINE, "deduplicate"},
-                                {Options::IGNORE_DELETE, "true"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::SEQUENCE_FIELD, "s0,s1"},
+                               {Options::MERGE_ENGINE, "deduplicate"},
+                               {Options::IGNORE_DELETE, "true"}};
+
+    AddOptions(&context_builder, context_builder_options);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
-    auto internal_context = CreateInternalReadContext(read_context);
+    auto internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
 
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<MergeFileSplitRead> split_read,
@@ -675,7 +691,10 @@ TEST_P(MergeFileSplitReadTest, TestSimple) {
 TEST_P(MergeFileSplitReadTest, TestRealtimeReadConcatenatesOrderedDiskSections) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     std::vector<DataField> raw_read_fields = {DataField(0, arrow::field("k0", arrow::int32())),
                                               DataField(1, arrow::field("k1", arrow::int32())),
                                               DataField(5, arrow::field("s1", arrow::utf8())),
@@ -685,11 +704,15 @@ TEST_P(MergeFileSplitReadTest, TestRealtimeReadConcatenatesOrderedDiskSections) 
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"k0", "k1", "s1", "v0"});
-    context_builder.SetOptions(
-        {{Options::SEQUENCE_FIELD, "s0,s1"}, {Options::MERGE_ENGINE, "deduplicate"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::SEQUENCE_FIELD, "s0,s1"},
+                               {Options::MERGE_ENGINE, "deduplicate"}};
+
+    AddOptions(&context_builder, context_builder_options);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
-    std::shared_ptr<InternalReadContext> internal_context = CreateInternalReadContext(read_context);
+    std::shared_ptr<InternalReadContext> internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<MergeFileSplitRead> split_read,
                          CreateMergeFileSplitRead(internal_context));
 
@@ -742,7 +765,10 @@ TEST_P(MergeFileSplitReadTest, TestRealtimeReadConcatenatesOrderedDiskSections) 
 TEST_P(MergeFileSplitReadTest, TestLookUp) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
 
     std::vector<DataField> raw_read_fields = {DataField(1, arrow::field("k1", arrow::int32())),
                                               DataField(3, arrow::field("p1", arrow::int32())),
@@ -753,14 +779,18 @@ TEST_P(MergeFileSplitReadTest, TestLookUp) {
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"k1", "p1", "s1", "v0", "v1"});
-    context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
-                                {Options::MERGE_ENGINE, "deduplicate"},
-                                {Options::IGNORE_DELETE, "true"},
-                                {Options::FORCE_LOOKUP, "true"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::SEQUENCE_FIELD, "s0,s1"},
+                               {Options::MERGE_ENGINE, "deduplicate"},
+                               {Options::IGNORE_DELETE, "true"},
+                               {Options::FORCE_LOOKUP, "true"}};
+
+    AddOptions(&context_builder, context_builder_options);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
-    auto internal_context = CreateInternalReadContext(read_context);
+    auto internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
 
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -790,15 +820,22 @@ TEST_P(MergeFileSplitReadTest, TestLookUp) {
 TEST_P(MergeFileSplitReadTest, TestReadWithLimits) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    ReadContextBuilder context_builder(path);
-    context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
-                                {Options::MERGE_ENGINE, "deduplicate"},
-                                {Options::IGNORE_DELETE, "true"},
-                                {Options::READ_BATCH_SIZE, "1"}});
-    AddOptions(&context_builder);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
+    context_builder_options = {{Options::SEQUENCE_FIELD, "s0,s1"},
+                               {Options::MERGE_ENGINE, "deduplicate"},
+                               {Options::IGNORE_DELETE, "true"},
+                               {Options::READ_BATCH_SIZE, "1"}};
+
+    AddOptions(&context_builder, context_builder_options);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
-    auto internal_context = CreateInternalReadContext(read_context);
+    auto internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
 
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
@@ -816,7 +853,10 @@ TEST_P(MergeFileSplitReadTest, TestReadWithLimits) {
 TEST_P(MergeFileSplitReadTest, TestDeduplicateMergeEngineWithDeleteMsg) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_partial_update.db/pk_table_partial_update";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
 
     std::vector<DataField> raw_read_fields = {DataField(0, arrow::field("k0", arrow::int32())),
                                               DataField(1, arrow::field("k1", arrow::int32())),
@@ -827,11 +867,15 @@ TEST_P(MergeFileSplitReadTest, TestDeduplicateMergeEngineWithDeleteMsg) {
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"k0", "k1", "v0", "v1", "v2"});
-    context_builder.SetOptions({{Options::MERGE_ENGINE, "deduplicate"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::MERGE_ENGINE, "deduplicate"}};
+
+    AddOptions(&context_builder, context_builder_options);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
-    auto internal_context = CreateInternalReadContext(read_context);
+    auto internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit2()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -856,7 +900,10 @@ TEST_P(MergeFileSplitReadTest, TestDeduplicateMergeEngineWithDeleteMsg) {
 TEST_P(MergeFileSplitReadTest, TestReadWithPredicate) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
 
     std::vector<DataField> raw_read_fields = {DataField(1, arrow::field("k1", arrow::int32())),
                                               DataField(3, arrow::field("p1", arrow::int32())),
@@ -868,11 +915,12 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicate) {
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"k1", "p1", "s1", "s0", "v0", "v1"});
-    context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
-                                {Options::MERGE_ENGINE, "deduplicate"},
-                                {Options::IGNORE_DELETE, "true"}});
+    context_builder_options = {{Options::SEQUENCE_FIELD, "s0,s1"},
+                               {Options::MERGE_ENGINE, "deduplicate"},
+                               {Options::IGNORE_DELETE, "true"}};
+
     context_builder.EnableLateMaterializing(false);
-    AddOptions(&context_builder);
+    AddOptions(&context_builder, context_builder_options);
 
     // less_than will be ignore as it is partition predicate
     auto less_than = PredicateBuilder::GreaterThan(/*field_index=*/1, /*field_name=*/"p1",
@@ -888,9 +936,12 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicate) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate_result,
                          PredicateBuilder::And({less_than, greater_or_equal, greater_than}));
     context_builder.SetPredicate(predicate_result);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
-    auto internal_context = CreateInternalReadContext(read_context);
+    auto internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -919,7 +970,10 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicate) {
 TEST_P(MergeFileSplitReadTest, TestReadWithPredicateAndLateMaterializing) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
 
     std::vector<DataField> raw_read_fields = {DataField(1, arrow::field("k1", arrow::int32())),
                                               DataField(3, arrow::field("p1", arrow::int32())),
@@ -931,10 +985,11 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicateAndLateMaterializing) {
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"k1", "p1", "s1", "s0", "v0", "v1"});
-    context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
-                                {Options::MERGE_ENGINE, "deduplicate"},
-                                {Options::IGNORE_DELETE, "true"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::SEQUENCE_FIELD, "s0,s1"},
+                               {Options::MERGE_ENGINE, "deduplicate"},
+                               {Options::IGNORE_DELETE, "true"}};
+
+    AddOptions(&context_builder, context_builder_options);
     context_builder.EnableLateMaterializing(true);
     // key predicate, always pushed down into the data files
     auto greater_or_equal = PredicateBuilder::GreaterOrEqual(/*field_index=*/0, /*field_name=*/"k1",
@@ -946,9 +1001,12 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicateAndLateMaterializing) {
                          PredicateBuilder::And({greater_or_equal, greater_than}));
     context_builder.SetPredicate(predicate_result);
     context_builder.EnablePredicateFilter(true).EnableLateMaterializing(true);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
-    auto internal_context = CreateInternalReadContext(read_context);
+    auto internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -976,7 +1034,10 @@ TEST_P(MergeFileSplitReadTest, TestReadWithPredicateAndLateMaterializing) {
 TEST_P(MergeFileSplitReadTest, TestReadWithAlterTable) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
 
     std::vector<DataField> raw_read_fields = {DataField(0, arrow::field("k1", arrow::int32())),
                                               DataField(1, arrow::field("k0", arrow::int32())),
@@ -991,14 +1052,18 @@ TEST_P(MergeFileSplitReadTest, TestReadWithAlterTable) {
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"k1", "k0", "p0", "p1", "s1", "s0", "v0", "v1", "v2"});
-    context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
-                                {Options::MERGE_ENGINE, "deduplicate"},
-                                {Options::IGNORE_DELETE, "true"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::SEQUENCE_FIELD, "s0,s1"},
+                               {Options::MERGE_ENGINE, "deduplicate"},
+                               {Options::IGNORE_DELETE, "true"}};
 
+    AddOptions(&context_builder, context_builder_options);
+
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
-    auto internal_context = CreateInternalReadContext(read_context, /*schema_id=*/7);
+    auto internal_context = CreateInternalReadContext(read_context, read_context_load_options,
+                                                      read_context_options, /*schema_id=*/7);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -1028,7 +1093,10 @@ TEST_P(MergeFileSplitReadTest, TestReadWithAlterTable) {
 TEST_P(MergeFileSplitReadTest, TestReadWithAlterTableWithReverseSequence) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
 
     std::vector<DataField> raw_read_fields = {DataField(8, arrow::field("v2", arrow::int32())),
                                               DataField(3, arrow::field("p1", arrow::int32())),
@@ -1040,14 +1108,18 @@ TEST_P(MergeFileSplitReadTest, TestReadWithAlterTableWithReverseSequence) {
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"v2", "p1", "k0", "p0", "s0", "v0"});
-    context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
-                                {Options::MERGE_ENGINE, "deduplicate"},
-                                {Options::IGNORE_DELETE, "true"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::SEQUENCE_FIELD, "s0,s1"},
+                               {Options::MERGE_ENGINE, "deduplicate"},
+                               {Options::IGNORE_DELETE, "true"}};
 
+    AddOptions(&context_builder, context_builder_options);
+
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
-    auto internal_context = CreateInternalReadContext(read_context, /*schema_id=*/7);
+    auto internal_context = CreateInternalReadContext(read_context, read_context_load_options,
+                                                      read_context_options, /*schema_id=*/7);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -1077,7 +1149,10 @@ TEST_P(MergeFileSplitReadTest, TestReadWithAlterTableWithReverseSequence) {
 TEST_P(MergeFileSplitReadTest, TestAggregateMergeEngine) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
 
     std::vector<DataField> raw_read_fields = {DataField(1, arrow::field("k1", arrow::int32())),
                                               DataField(3, arrow::field("p1", arrow::int32())),
@@ -1088,14 +1163,18 @@ TEST_P(MergeFileSplitReadTest, TestAggregateMergeEngine) {
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"k1", "p1", "s1", "v0", "v1"});
-    context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
-                                {Options::MERGE_ENGINE, "aggregation"},
-                                {"fields.v1.aggregate-function", "bool_and"},
-                                {"fields.v0.aggregate-function", "sum"},
-                                {Options::IGNORE_DELETE, "true"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::SEQUENCE_FIELD, "s0,s1"},
+                               {Options::MERGE_ENGINE, "aggregation"},
+                               {"fields.v1.aggregate-function", "bool_and"},
+                               {"fields.v0.aggregate-function", "sum"},
+                               {Options::IGNORE_DELETE, "true"}};
+
+    AddOptions(&context_builder, context_builder_options);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
-    auto internal_context = CreateInternalReadContext(read_context);
+    auto internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -1125,7 +1204,10 @@ TEST_P(MergeFileSplitReadTest, TestAggregateMergeEngine) {
 TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngine) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_with_mor.db/pk_table_with_mor";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
 
     std::vector<DataField> raw_read_fields = {DataField(1, arrow::field("k1", arrow::int32())),
                                               DataField(3, arrow::field("p1", arrow::int32())),
@@ -1135,14 +1217,18 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngine) {
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"k1", "p1", "s1", "v0"});
-    context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
-                                {Options::MERGE_ENGINE, "partial-update"},
-                                {"fields.v1.sequence-group", "v0"},
-                                {"fields.v0.aggregate-function", "first_value"},
-                                {Options::IGNORE_DELETE, "true"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::SEQUENCE_FIELD, "s0,s1"},
+                               {Options::MERGE_ENGINE, "partial-update"},
+                               {"fields.v1.sequence-group", "v0"},
+                               {"fields.v0.aggregate-function", "first_value"},
+                               {Options::IGNORE_DELETE, "true"}};
+
+    AddOptions(&context_builder, context_builder_options);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
-    auto internal_context = CreateInternalReadContext(read_context);
+    auto internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -1172,7 +1258,10 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngine) {
 TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithIgnoreDelete) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_partial_update.db/pk_table_partial_update";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
 
     std::vector<DataField> raw_read_fields = {DataField(0, arrow::field("k0", arrow::int32())),
                                               DataField(1, arrow::field("k1", arrow::int32())),
@@ -1183,11 +1272,15 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithIgnoreDelete) {
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"k0", "k1", "v0", "v1", "v2"});
-    context_builder.SetOptions(
-        {{Options::MERGE_ENGINE, "partial-update"}, {Options::IGNORE_DELETE, "true"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::MERGE_ENGINE, "partial-update"},
+                               {Options::IGNORE_DELETE, "true"}};
+
+    AddOptions(&context_builder, context_builder_options);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
-    auto internal_context = CreateInternalReadContext(read_context);
+    auto internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit2()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -1212,7 +1305,10 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithIgnoreDelete) {
 TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithRemoveRecordOnDelete) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_partial_update.db/pk_table_partial_update";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
 
     std::vector<DataField> raw_read_fields = {DataField(0, arrow::field("k0", arrow::int32())),
                                               DataField(1, arrow::field("k1", arrow::int32())),
@@ -1223,11 +1319,15 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithRemoveRecordOnDel
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"k0", "k1", "v0", "v1", "v2"});
-    context_builder.SetOptions({{Options::MERGE_ENGINE, "partial-update"},
-                                {Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE, "true"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::MERGE_ENGINE, "partial-update"},
+                               {Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE, "true"}};
+
+    AddOptions(&context_builder, context_builder_options);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
-    auto internal_context = CreateInternalReadContext(read_context);
+    auto internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, PrepareDataSplit2()));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
@@ -1252,7 +1352,10 @@ TEST_P(MergeFileSplitReadTest, TestPartialUpdateMergeEngineWithRemoveRecordOnDel
 TEST_P(MergeFileSplitReadTest, TestEmptyPlan) {
     std::string path =
         paimon::test::GetDataDir() + "/parquet/pk_table_partial_update.db/pk_table_partial_update";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
 
     std::vector<DataField> raw_read_fields = {DataField(0, arrow::field("k0", arrow::int32())),
                                               DataField(1, arrow::field("k1", arrow::int32())),
@@ -1263,11 +1366,15 @@ TEST_P(MergeFileSplitReadTest, TestEmptyPlan) {
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"k0", "k1", "v0", "v1", "v2"});
-    context_builder.SetOptions({{Options::MERGE_ENGINE, "partial-update"},
-                                {Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE, "true"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::MERGE_ENGINE, "partial-update"},
+                               {Options::PARTIAL_UPDATE_REMOVE_RECORD_ON_DELETE, "true"}};
+
+    AddOptions(&context_builder, context_builder_options);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
-    auto internal_context = CreateInternalReadContext(read_context);
+    auto internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
     std::vector<std::shared_ptr<DataSplit>> empty_data_split;
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, empty_data_split));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> read_result,
@@ -1285,18 +1392,25 @@ TEST_P(MergeFileSplitReadTest, TestIOException) {
                                               DataField(6, arrow::field("v0", arrow::float64())),
                                               DataField(7, arrow::field("v1", arrow::boolean()))};
 
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     auto read_schema = DataField::ConvertDataFieldsToArrowSchema(raw_read_fields);
     ASSERT_TRUE(read_schema);
 
     context_builder.SetReadFieldNames({"k1", "p1", "s1", "v0", "v1"});
-    context_builder.SetOptions({{Options::SEQUENCE_FIELD, "s0,s1"},
-                                {Options::MERGE_ENGINE, "deduplicate"},
-                                {Options::IGNORE_DELETE, "true"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::SEQUENCE_FIELD, "s0,s1"},
+                               {Options::MERGE_ENGINE, "deduplicate"},
+                               {Options::IGNORE_DELETE, "true"}};
+
+    AddOptions(&context_builder, context_builder_options);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
 
-    auto internal_context = CreateInternalReadContext(read_context);
+    auto internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
 
     auto fields_with_row_kind = read_schema->fields();
     fields_with_row_kind.insert(fields_with_row_kind.begin(),
@@ -1336,7 +1450,10 @@ TEST_P(MergeFileSplitReadTest, TestIOException) {
 
 TEST_P(MergeFileSplitReadTest, Test09VersionWithoutInlineFieldId) {
     std::string path = paimon::test::GetDataDir() + "/orc/pk_09.db/pk_09";
-    ReadContextBuilder context_builder(path);
+    TableLoadOptions context_builder_load_options;
+    context_builder_load_options.path = path;
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     std::vector<DataField> raw_read_fields = {DataField(3, arrow::field("f3", arrow::float64())),
                                               DataField(2, arrow::field("f2", arrow::int32())),
                                               DataField(0, arrow::field("f0", arrow::utf8())),
@@ -1344,10 +1461,13 @@ TEST_P(MergeFileSplitReadTest, Test09VersionWithoutInlineFieldId) {
     auto read_schema = DataField::ConvertDataFieldsToArrowSchema(raw_read_fields);
     ASSERT_TRUE(read_schema);
     context_builder.SetReadFieldNames({"f3", "f2", "f0", "f1"});
-    context_builder.SetOptions({{Options::FILE_FORMAT, "orc"},
-                                {Options::MERGE_ENGINE, "deduplicate"},
-                                {"orc.read.enable-metrics", "true"}});
-    AddOptions(&context_builder);
+    context_builder_options = {{Options::FILE_FORMAT, "orc"},
+                               {Options::MERGE_ENGINE, "deduplicate"},
+                               {"orc.read.enable-metrics", "true"}};
+
+    AddOptions(&context_builder, context_builder_options);
+    auto read_context_load_options = context_builder_load_options;
+    auto read_context_options = context_builder_options;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, context_builder.Finish());
     auto meta1 = std::make_shared<DataFileMeta>(
         "data-00e3ed53-16ba-4537-9264-b7dc03fefc65-0.orc", /*file_size=*/803, /*row_count=*/1,
@@ -1391,7 +1511,8 @@ TEST_P(MergeFileSplitReadTest, Test09VersionWithoutInlineFieldId) {
         paimon::test::GetDataDir() + "/orc/pk_09.db/pk_09/f1=10/bucket-1/", {meta1, meta2});
     ASSERT_OK_AND_ASSIGN(auto data_split,
                          builder.WithSnapshot(5).IsStreaming(false).RawConvertible(false).Build());
-    auto internal_context = CreateInternalReadContext(read_context);
+    auto internal_context =
+        CreateInternalReadContext(read_context, read_context_load_options, read_context_options);
     ASSERT_OK_AND_ASSIGN(auto batch_reader, CreateReader(internal_context, {data_split}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
                          ReadResultCollector::CollectResult(batch_reader.get()));

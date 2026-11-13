@@ -97,10 +97,21 @@ Result<std::shared_ptr<arrow::Schema>> BinlogSystemTable::ChangelogSchema(
 
 Result<std::unique_ptr<TableRead>> BinlogSystemTable::NewRead(
     std::unique_ptr<ReadContext> ctx) const {
+    const auto& dynamic_options = options_;
     const std::shared_ptr<ReadContext> context = std::move(ctx);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
     PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
-    return NewChangelogRead(context, CreateBinlogBatchConverter());
+    return NewChangelogRead(context, CreateBinlogBatchConverter(), dynamic_options);
+}
+
+Result<std::shared_ptr<Table>> BinlogSystemTable::Copy(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    using OptionsMap = std::map<std::string, std::string>;
+    PAIMON_ASSIGN_OR_RAISE(OptionsMap options, CopyOptions(options_, dynamic_options));
+    auto table = std::make_shared<BinlogSystemTable>(*this);
+    table->options_ = std::move(options);
+    PAIMON_RETURN_NOT_OK(table->AdoptOwnSchema());
+    return std::shared_ptr<Table>(std::move(table));
 }
 
 }  // namespace paimon

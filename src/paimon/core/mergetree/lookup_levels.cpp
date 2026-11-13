@@ -57,10 +57,8 @@ Result<std::unique_ptr<LookupLevels<T>>> LookupLevels<T>::Create(
     auto partition_schema = DataField::ConvertDataFieldsToArrowSchema(partition_fields);
 
     // TODO(xinyu.lxy): set executor
-    ReadContextBuilder read_context_builder(path_factory->RootPath());
-    read_context_builder.SetOptions(options.ToMap())
-        .WithFileSystem(options.GetFileSystem())
-        .EnablePrefetch(true)
+    ReadContextBuilder read_context_builder;
+    read_context_builder.EnablePrefetch(true)
         .SetPrefetchMaxParallelNum(1)
         .SetPrefetchBatchCount(3)
         .WithMemoryPool(pool);
@@ -68,7 +66,8 @@ Result<std::unique_ptr<LookupLevels<T>>> LookupLevels<T>::Create(
                            read_context_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<InternalReadContext> internal_read_context,
-        InternalReadContext::Create(read_context, table_schema, options.ToMap()));
+        InternalReadContext::Create(read_context, table_schema, options.ToMap(),
+                                    options.GetFileSystem(), path_factory->RootPath()));
     auto split_read = std::make_unique<RawFileSplitRead>(path_factory, internal_read_context, pool,
                                                          CreateDefaultExecutor());
 

@@ -31,6 +31,7 @@
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
+#include "paimon/catalog/table_load_options.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/factories/io_hook.h"
 #include "paimon/common/table/special_fields.h"
@@ -351,15 +352,19 @@ class PkCompactionInteTest : public ::testing::Test {
         int32_t bucket, const std::shared_ptr<arrow::Array>& write_array, int64_t commit_identifier,
         bool is_streaming = true, const std::vector<RecordBatch::RowKind>& row_kinds = {},
         bool write_only = true) const {
-        WriteContextBuilder write_builder(table_path, "commit_user_1");
+        TableLoadOptions write_builder_load_options{table_path};
+        std::map<std::string, std::string> write_builder_options;
+        WriteContextBuilder write_builder("commit_user_1");
         write_builder.WithStreamingMode(is_streaming)
             .WithTempDirectory(PathUtil::JoinPath(dir_->Str(), "tmp"));
         if (write_only) {
-            write_builder.AddOption(Options::WRITE_ONLY, "true");
+            write_builder_options[Options::WRITE_ONLY] = "true";
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto file_store_write,
-                               FileStoreWrite::Create(std::move(write_context)));
+        PAIMON_ASSIGN_OR_RAISE(
+            auto file_store_write,
+            FileStoreWrite::Create(write_builder_load_options, std::move(write_context),
+                                   write_builder_options));
         ArrowArray c_array;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*write_array, &c_array));
         auto record_batch = std::make_unique<RecordBatch>(partition, bucket, row_kinds, &c_array);
@@ -372,11 +377,15 @@ class PkCompactionInteTest : public ::testing::Test {
 
     Status Commit(const std::string& table_path,
                   const std::vector<std::shared_ptr<CommitMessage>>& commit_msgs) const {
-        CommitContextBuilder commit_builder(table_path, "commit_user_1");
+        TableLoadOptions commit_builder_load_options{table_path};
+        std::map<std::string, std::string> commit_builder_options;
+        CommitContextBuilder commit_builder("commit_user_1");
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> commit_context,
                                commit_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileStoreCommit> file_store_commit,
-                               FileStoreCommit::Create(std::move(commit_context)));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<FileStoreCommit> file_store_commit,
+            FileStoreCommit::Create(commit_builder_load_options, std::move(commit_context),
+                                    commit_builder_options));
         return file_store_commit->Commit(commit_msgs);
     }
 
@@ -397,13 +406,18 @@ class PkCompactionInteTest : public ::testing::Test {
         const std::string& table_path, const std::map<std::string, std::string>& partition,
         int32_t bucket, bool full_compaction, int64_t commit_identifier,
         const std::map<std::string, std::string>& options = {}) {
-        WriteContextBuilder write_builder(table_path, "commit_user_1");
-        write_builder.SetOptions(options);
+        TableLoadOptions write_builder_load_options{table_path};
+        std::map<std::string, std::string> write_builder_options;
+        WriteContextBuilder write_builder("commit_user_1");
+        write_builder_options = options;
+
         write_builder.WithStreamingMode(true).WithTempDirectory(
             PathUtil::JoinPath(dir_->Str(), "tmp"));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto file_store_write,
-                               FileStoreWrite::Create(std::move(write_context)));
+        PAIMON_ASSIGN_OR_RAISE(
+            auto file_store_write,
+            FileStoreWrite::Create(write_builder_load_options, std::move(write_context),
+                                   write_builder_options));
         PAIMON_RETURN_NOT_OK(file_store_write->Compact(partition, bucket, full_compaction));
         PAIMON_ASSIGN_OR_RAISE(
             std::vector<std::shared_ptr<CommitMessage>> commit_messages,
@@ -422,16 +436,21 @@ class PkCompactionInteTest : public ::testing::Test {
         std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"}};
         ASSERT_OK_AND_ASSIGN(auto helper,
                              TestHelper::Create(table_path, options, /*is_streaming_mode=*/false));
-        ScanContextBuilder scan_context_builder(table_path);
-        scan_context_builder.WithStreamingMode(false).SetOptions(options).AddOption(
-            Options::SCAN_MODE, StartupMode::LatestFull().ToString());
+        TableLoadOptions scan_context_builder_load_options{table_path};
+        std::map<std::string, std::string> scan_context_builder_options;
+        ScanContextBuilder scan_context_builder;
+        scan_context_builder_options = options;
+        scan_context_builder_options[Options::SCAN_MODE] = StartupMode::LatestFull().ToString();
+        scan_context_builder.WithStreamingMode(false);
         if (predicate) {
             scan_context_builder.SetPredicate(predicate);
         }
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
                              scan_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                             TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TableScan> table_scan,
+            TableScan::Create(scan_context_builder_load_options, std::move(scan_context),
+                              scan_context_builder_options));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> result_plan, table_scan->CreatePlan());
         std::vector<std::shared_ptr<Split>> data_splits = result_plan->Splits();
 
@@ -456,15 +475,20 @@ class PkCompactionInteTest : public ::testing::Test {
             auto iter = expected_data_per_partition_bucket.find(key);
             ASSERT_TRUE(iter != expected_data_per_partition_bucket.end())
                 << "Unexpected partition=" << key.first << " bucket=" << key.second;
-            ReadContextBuilder read_context_builder(table_path);
-            read_context_builder.SetOptions(options);
+            TableLoadOptions read_context_builder_load_options{table_path};
+            std::map<std::string, std::string> read_context_builder_options;
+            ReadContextBuilder read_context_builder;
+            read_context_builder_options = options;
+
             if (predicate) {
                 read_context_builder.SetPredicate(predicate);
             }
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                                  read_context_builder.Finish());
-            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                                 TableRead::Create(std::move(read_context)));
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<TableRead> table_read,
+                TableRead::Create(read_context_builder_load_options, std::move(read_context),
+                                  read_context_builder_options));
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                                  table_read->CreateReader(splits));
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> read_result,
@@ -490,20 +514,30 @@ class PkCompactionInteTest : public ::testing::Test {
     template <typename Fn>
     void ScanAllRows(const std::string& table_path, Fn consume) {
         std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"}};
-        ScanContextBuilder scan_context_builder(table_path);
-        scan_context_builder.WithStreamingMode(false).SetOptions(options).AddOption(
-            Options::SCAN_MODE, StartupMode::LatestFull().ToString());
+        TableLoadOptions scan_context_builder_load_options{table_path};
+        std::map<std::string, std::string> scan_context_builder_options;
+        ScanContextBuilder scan_context_builder;
+        scan_context_builder_options = options;
+        scan_context_builder_options[Options::SCAN_MODE] = StartupMode::LatestFull().ToString();
+        scan_context_builder.WithStreamingMode(false);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
                              scan_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                             TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TableScan> table_scan,
+            TableScan::Create(scan_context_builder_load_options, std::move(scan_context),
+                              scan_context_builder_options));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> result_plan, table_scan->CreatePlan());
-        ReadContextBuilder read_context_builder(table_path);
-        read_context_builder.SetOptions(options);
+        TableLoadOptions read_context_builder_load_options{table_path};
+        std::map<std::string, std::string> read_context_builder_options;
+        ReadContextBuilder read_context_builder;
+        read_context_builder_options = options;
+
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
                              read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                             TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TableRead> table_read,
+            TableRead::Create(read_context_builder_load_options, std::move(read_context),
+                              read_context_builder_options));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                              table_read->CreateReader(result_plan->Splits()));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
@@ -617,13 +651,16 @@ TEST_F(PkCompactionInteTest, TestMetadataOnlyLevelUpgradeKeepsValueStats) {
     ASSERT_FALSE(before->value_stats == SimpleStats::EmptyStats());
     ASSERT_EQ(before->value_stats, after->value_stats);
 
-    ScanContextBuilder scan_context_builder(table_path);
-    scan_context_builder.WithStreamingMode(false)
-        .AddOption(Options::FILE_SYSTEM, "local")
-        .AddOption(Options::SCAN_MODE, StartupMode::LatestFull().ToString());
+    TableLoadOptions scan_context_builder_load_options{table_path};
+    std::map<std::string, std::string> scan_context_builder_options;
+    ScanContextBuilder scan_context_builder;
+    scan_context_builder_options[Options::FILE_SYSTEM] = "local";
+    scan_context_builder_options[Options::SCAN_MODE] = StartupMode::LatestFull().ToString();
+    scan_context_builder.WithStreamingMode(false);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                         TableScan::Create(std::move(scan_context)));
+                         TableScan::Create(scan_context_builder_load_options,
+                                           std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
     ASSERT_EQ(1u, plan->Splits().size());
     auto split = std::dynamic_pointer_cast<DataSplitImpl>(plan->Splits()[0]);
@@ -997,9 +1034,13 @@ TEST_F(PkCompactionInteTest, DeduplicateWithBitmap64HighPositions) {
     ASSERT_TRUE(HasDeletionVectorIndexFiles(compact_msgs));
 
     // Reload committed metadata and DV bytes; no test-created DV or lookup result is injected.
-    ScanContextBuilder scan_builder(table_path);
+    TableLoadOptions scan_builder_load_options{table_path};
+    std::map<std::string, std::string> scan_builder_options;
+    ScanContextBuilder scan_builder;
     ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto scan,
+                         TableScan::Create(scan_builder_load_options, std::move(scan_context),
+                                           scan_builder_options));
     ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
     int32_t dv_count = 0;
     for (const auto& split : plan->Splits()) {
@@ -1746,10 +1787,15 @@ TEST_F(PkCompactionInteTest, CompactWithSchemaEvolution) {
 
     // Step 5: Read and verify using DataSplits from CompactAfter in write CommitMessages.
     {
-        ReadContextBuilder context_builder(table_path);
-        context_builder.AddOption(Options::FILE_FORMAT, "parquet");
+        TableLoadOptions context_builder_load_options{table_path};
+        std::map<std::string, std::string> context_builder_options;
+        ReadContextBuilder context_builder;
+        context_builder_options[Options::FILE_FORMAT] = "parquet";
+
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read,
+                             TableRead::Create(context_builder_load_options,
+                                               std::move(read_context), context_builder_options));
 
         // Use the latest snapshot id for both splits.
         // The original table has 6 snapshots. Each write with force-compact produces
@@ -2011,12 +2057,16 @@ TEST_F(PkCompactionInteTest, ContinuousWriteWithBackgroundCompact) {
 
     // Step 1-4: Streaming writes with background compact in one FileStoreWrite.
     {
-        WriteContextBuilder write_builder(table_path, "commit_user_1");
+        TableLoadOptions write_builder_load_options{table_path};
+        std::map<std::string, std::string> write_builder_options;
+        WriteContextBuilder write_builder("commit_user_1");
         write_builder.WithStreamingMode(true).WithTempDirectory(
             PathUtil::JoinPath(dir_->Str(), "tmp"));
         ASSERT_OK_AND_ASSIGN(auto write_context, write_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto file_store_write,
-                             FileStoreWrite::Create(std::move(write_context)));
+        ASSERT_OK_AND_ASSIGN(
+            auto file_store_write,
+            FileStoreWrite::Create(write_builder_load_options, std::move(write_context),
+                                   write_builder_options));
 
         auto write_batch = [&](const std::string& json_data) -> Status {
             auto array =
@@ -2220,12 +2270,15 @@ TEST_F(PkCompactionInteTest, WriteAndCompactWithBranch) {
     auto data_type = arrow::struct_(fields);
 
     // Step 2: Write data to the branch-rt and compact.
-    WriteContextBuilder write_builder(table_path, "commit_user_1");
-    write_builder.WithStreamingMode(true)
-        .WithTempDirectory(PathUtil::JoinPath(dir_->Str(), "tmp"))
-        .WithBranch("rt");
+    TableLoadOptions write_builder_load_options{table_path};
+    std::map<std::string, std::string> write_builder_options;
+    WriteContextBuilder write_builder("commit_user_1");
+    write_builder_options["branch"] = "rt";
+    write_builder.WithStreamingMode(true).WithTempDirectory(PathUtil::JoinPath(dir_->Str(), "tmp"));
     ASSERT_OK_AND_ASSIGN(auto write_context, write_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(auto file_store_write,
+                         FileStoreWrite::Create(write_builder_load_options,
+                                                std::move(write_context), write_builder_options));
 
     // dt=20240726, bucket-0 only has ["20240726", "cherry", 3] one row
     auto write_array = arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
@@ -2276,11 +2329,17 @@ TEST_F(PkCompactionInteTest, WriteAndCompactWithBranch) {
     ASSERT_EQ(compact_after[0]->row_count, 2);
 
     // Step 4: Commit to branch-rt.
-    CommitContextBuilder commit_builder(table_path, "commit_user_1");
-    commit_builder.AddOption(Options::FILE_SYSTEM, "local").AddOption(Options::BRANCH, "rt");
+    TableLoadOptions commit_builder_load_options{table_path};
+    std::map<std::string, std::string> commit_builder_options;
+    CommitContextBuilder commit_builder("commit_user_1");
+    commit_builder_options[Options::FILE_SYSTEM] = "local";
+    commit_builder_options[Options::BRANCH] = "rt";
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, commit_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> file_store_commit,
-                         FileStoreCommit::Create(std::move(commit_context)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreCommit> file_store_commit,
+        FileStoreCommit::Create(commit_builder_load_options, std::move(commit_context),
+                                commit_builder_options));
     ASSERT_OK(file_store_commit->Commit(commit_msgs));
 
     auto fs = std::make_shared<LocalFileSystem>();
@@ -2299,13 +2358,16 @@ TEST_F(PkCompactionInteTest, WriteAndCompactWithBranch) {
     // Step 5: Scan and read branch-rt.
     std::map<std::string, std::string> branch_options = {{Options::FILE_SYSTEM, "local"},
                                                          {Options::BRANCH, "rt"}};
-    ScanContextBuilder scan_context_builder(table_path);
-    scan_context_builder.WithStreamingMode(false)
-        .SetOptions(branch_options)
-        .AddOption(Options::SCAN_MODE, StartupMode::LatestFull().ToString());
+    TableLoadOptions scan_context_builder_load_options{table_path};
+    std::map<std::string, std::string> scan_context_builder_options;
+    ScanContextBuilder scan_context_builder;
+    scan_context_builder_options = branch_options;
+    scan_context_builder_options[Options::SCAN_MODE] = StartupMode::LatestFull().ToString();
+    scan_context_builder.WithStreamingMode(false);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                         TableScan::Create(std::move(scan_context)));
+                         TableScan::Create(scan_context_builder_load_options,
+                                           std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
 
     std::vector<std::shared_ptr<Split>> splits = plan->Splits();
@@ -2316,11 +2378,15 @@ TEST_F(PkCompactionInteTest, WriteAndCompactWithBranch) {
         ASSERT_EQ(split_impl->SnapshotId(), 3);
     }
 
-    ReadContextBuilder read_context_builder(table_path);
-    read_context_builder.SetOptions(branch_options);
+    TableLoadOptions read_context_builder_load_options{table_path};
+    std::map<std::string, std::string> read_context_builder_options;
+    ReadContextBuilder read_context_builder;
+    read_context_builder_options = branch_options;
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         TableRead::Create(read_context_builder_load_options,
+                                           std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(splits));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,

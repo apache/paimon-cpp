@@ -90,11 +90,15 @@ class SystemTable : public Table, public std::enable_shared_from_this<SystemTabl
     /// Initializes the system schema after construction, when ArrowSchema() can be called.
     Status AdoptOwnSchema();
 
+    /// Applies options without changing the view's table type or branch.
+    static Result<std::map<std::string, std::string>> CopyOptions(
+        const std::map<std::string, std::string>& bound_options,
+        const std::map<std::string, std::string>& overrides);
+
     /// Builds the data table using this view's data schema and options.
     Result<std::shared_ptr<FileStoreTable>> CreateDataTable(
         const std::shared_ptr<TableSchema>& table_schema,
-        const std::map<std::string, std::string>& options,
-        const std::map<std::string, std::string>& fs_scheme_map_overrides = {}) const;
+        const std::map<std::string, std::string>& options) const;
 
     friend class SystemTableLoader;
     friend class GlobalSystemTableLoader;

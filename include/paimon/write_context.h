@@ -19,21 +19,17 @@
 #pragma once
 
 #include <cstdint>
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include "paimon/catalog/identifier.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
 #include "paimon/visibility.h"
 
 namespace paimon {
-class Catalog;
 class Executor;
-class FormatTable;
 class MemoryPool;
 
 /// `WriteContext` is some configuration for write operations.
@@ -43,36 +39,18 @@ class MemoryPool;
 /// @see WriteContextBuilder
 class PAIMON_EXPORT WriteContext {
  public:
-    WriteContext(const std::string& root_path, const std::string& commit_user,
-                 bool is_streaming_mode, bool ignore_num_bucket_check, bool ignore_previous_files,
+    WriteContext(const std::string& commit_user, bool is_streaming_mode,
+                 bool ignore_num_bucket_check, bool ignore_previous_files,
                  bool enable_multi_thread_spill, const std::optional<int32_t>& write_id,
-                 const std::string& branch, const std::vector<std::string>& write_schema,
+                 const std::vector<std::string>& write_schema,
                  const std::shared_ptr<MemoryPool>& memory_pool,
                  const std::shared_ptr<Executor>& executor, const std::string& temp_directory,
-                 const std::shared_ptr<FileSystem>& specific_file_system,
-                 const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
-                 const std::shared_ptr<RealtimeContext>& realtime_context,
-                 const std::map<std::string, std::string>& options,
-                 const std::shared_ptr<FormatTable>& format_table,
-                 const std::shared_ptr<Catalog>& catalog = nullptr,
-                 const std::optional<Identifier>& identifier = std::nullopt);
+                 const std::shared_ptr<RealtimeContext>& realtime_context);
 
     ~WriteContext();
 
-    const std::string& GetRootPath() const {
-        return root_path_;
-    }
-
     const std::string& GetCommitUser() const {
         return commit_user_;
-    }
-
-    const std::map<std::string, std::string>& GetFileSystemSchemeToIdentifierMap() const {
-        return fs_scheme_to_identifier_map_;
-    }
-
-    const std::map<std::string, std::string>& GetOptions() const {
-        return options_;
     }
 
     bool IsStreamingMode() const {
@@ -91,10 +69,6 @@ class PAIMON_EXPORT WriteContext {
         return write_id_;
     }
 
-    const std::string& GetBranch() const {
-        return branch_;
-    }
-
     const std::vector<std::string>& GetWriteSchema() const {
         return write_schema_;
     }
@@ -111,10 +85,6 @@ class PAIMON_EXPORT WriteContext {
         return temp_directory_;
     }
 
-    std::shared_ptr<FileSystem> GetSpecificFileSystem() const {
-        return specific_file_system_;
-    }
-
     bool EnableMultiThreadSpill() const {
         return enable_multi_thread_spill_;
     }
@@ -124,26 +94,8 @@ class PAIMON_EXPORT WriteContext {
         return realtime_context_;
     }
 
-    /// The format table this context was built from, or null when it names a table path and the
-    /// schema under that path says what kind of table it is.
-    const std::shared_ptr<FormatTable>& GetFormatTable() const {
-        return format_table_;
-    }
-
-    /// Returns the catalog supplying table metadata, or null if unset.
-    const std::shared_ptr<Catalog>& GetCatalog() const {
-        return catalog_;
-    }
-
-    /// Returns the table identifier supplied with the catalog.
-    const std::optional<Identifier>& GetIdentifier() const {
-        return identifier_;
-    }
-
  private:
-    std::string root_path_;
     std::string commit_user_;
-    std::string branch_;
     bool is_streaming_mode_;
     bool ignore_num_bucket_check_;
     bool ignore_previous_files_;
@@ -153,52 +105,15 @@ class PAIMON_EXPORT WriteContext {
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<Executor> executor_;
     std::string temp_directory_;
-    std::shared_ptr<FileSystem> specific_file_system_;
-    std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::shared_ptr<RealtimeContext> realtime_context_;
-    std::map<std::string, std::string> options_;
-    std::shared_ptr<FormatTable> format_table_;
-    std::shared_ptr<Catalog> catalog_;
-    std::optional<Identifier> identifier_;
 };
 
 /// `WriteContextBuilder` used to build a `WriteContext`, has input validation.
 class PAIMON_EXPORT WriteContextBuilder {
  public:
-    /// Constructs a `WriteContextBuilder` with required parameters.
-    /// @param root_path The root path of the table.
-    /// @param commit_user The user identifier for commit operations.
-    WriteContextBuilder(const std::string& root_path, const std::string& commit_user);
-
-    /// Constructs a `WriteContextBuilder` for a format table that is already loaded: the only way
-    /// to write one whose schema lives in a metastore rather than under its location, such as a
-    /// table a REST catalog serves. The table carries what such a location does not say, so
-    /// `WithFileSystem()`, `WithFileSystemSchemeToIdentifierMap()`, `WithCatalog()` and a branch
-    /// are refused here rather than ignored.
-    ///
-    /// There is no commit user: a format table keeps no snapshot to record one in.
-    ///
-    /// @param table The format table to write to, as `Catalog::GetFormatTable()` hands it back.
-    explicit WriteContextBuilder(const std::shared_ptr<FormatTable>& table);
+    explicit WriteContextBuilder(const std::string& commit_user);
 
     ~WriteContextBuilder();
-
-    /// Set a configuration options map to set some option entries which are not defined in the
-    /// table schema or whose values you want to overwrite.
-    /// @note The options map will clear the options added by `AddOption()` before.
-    /// @param options The configuration options map.
-    /// @return Reference to this builder for method chaining.
-    WriteContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
-
-    /// Add a single configuration option which is not defined in the table schema or whose value
-    /// you want to overwrite.
-    ///
-    /// If you want to add multiple options, call `AddOption()` multiple times or use `SetOptions()`
-    /// instead.
-    /// @param key The option key.
-    /// @param value The option value.
-    /// @return Reference to this builder for method chaining.
-    WriteContextBuilder& AddOption(const std::string& key, const std::string& value);
 
     /// Set whether to enable streaming mode (default is false)
     /// @return Reference to this builder for method chaining.
@@ -237,68 +152,16 @@ class PAIMON_EXPORT WriteContextBuilder {
     /// @return Reference to this builder for method chaining.
     WriteContextBuilder& WithWriteId(int32_t write_id);
 
-    /// Write to specific branch, default is main.
-    ///
-    /// The identifier of `WithCatalog()` and the `branch` option may name the branch too; naming
-    /// two different ones is refused rather than silently resolved. An empty name is the main
-    /// branch.
-    /// @param branch Name of the branch to write to.
-    /// @return Reference to this builder for method chaining.
-    WriteContextBuilder& WithBranch(const std::string& branch);
-
     /// For data evolution, user can write partial specific fields from table schema.
     /// If not set, write all fields in table.
     /// @return Reference to this builder for method chaining.
     WriteContextBuilder& WithWriteSchema(const std::vector<std::string>& write_schema);
-
-    /// Sets a custom file system instance to be used for all file operations in this write context.
-    /// This bypasses the global file system registry and uses the provided implementation directly.
-    ///
-    /// @param file_system The file system to use.
-    /// @return Reference to this builder for method chaining.
-    /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
-    WriteContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
-
-    /// Loads a native table's schema and, for catalogs with version management, its latest
-    /// snapshot. Use the same catalog and identifier as `CommitContextBuilder` to restore and
-    /// refresh real-time progress.
-    ///
-    /// A branch is addressed by the identifier, as `tbl$branch_dev`, so that the catalog answers
-    /// for that branch. Its schema is read from the branch directory rather than from the catalog,
-    /// just as a read of that branch reads it.
-    /// Data, manifests and historical metadata remain on the file system. The catalog supplies
-    /// that file system unless overridden by `WithFileSystem()` or
-    /// `WithFileSystemSchemeToIdentifierMap()`.
-    /// @param catalog Non-null catalog, kept alive while the writer uses its snapshot loader.
-    /// @param identifier The native table to write to.
-    /// @return Reference to this builder for method chaining.
-    WriteContextBuilder& WithCatalog(const std::shared_ptr<Catalog>& catalog,
-                                     const Identifier& identifier);
 
     /// Enables the real-time write path with the provided shared context.
     /// @param realtime_context Non-null context that owns the real-time stores.
     /// @return Reference to this builder for method chaining.
     WriteContextBuilder& WithRealtimeContext(
         const std::shared_ptr<RealtimeContext>& realtime_context);
-
-    /// Sets a mapping from URI schemes (e.g., "file", "oss") to registered file system
-    /// identifiers. This allows selecting different pre-registered file system implementations
-    /// based on the URI scheme at runtime.
-    ///
-    /// @param fs_scheme_to_identifier_map Map from URI scheme (like "oss") to the corresponding
-    /// file system identifier.
-    /// @return Reference to this builder for method chaining.
-    /// @note
-    ///   - This method is intended for environments where multiple file systems are pre-registered.
-    ///   - The specified identifiers must correspond to file systems that have been registered at
-    ///   compile time or initialization.
-    ///   - Cannot be used together with `WithFileSystem()`.
-    ///   - If not set, use default file system (configured in `Options::FILE_SYSTEM`).
-    /// Example:
-    ///   builder.WithFileSystemSchemeToIdentifierMap({{"oss", "jindo"}, {"file", "local"}});
-    ///
-    WriteContextBuilder& WithFileSystemSchemeToIdentifierMap(
-        const std::map<std::string, std::string>& fs_scheme_to_identifier_map);
 
     /// Set the thread number for write buffer spill operations. (default is 0)
     /// If <= 0, threading is disabled for spill IPC read/write.

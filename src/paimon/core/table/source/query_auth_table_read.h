@@ -101,8 +101,9 @@ class QueryAuthTableRead : public TableRead {
     /// @param create_inner Builds the read the rules are applied around.
     static Result<std::unique_ptr<TableRead>> Create(
         const std::shared_ptr<ReadContext>& context,
-        const std::shared_ptr<TableSchema>& table_schema,
-        const std::shared_ptr<arrow::MemoryPool>& arrow_pool, InnerReadFactory create_inner);
+        const std::shared_ptr<TableSchema>& table_schema, const std::string& table_path,
+        const std::string& branch, const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+        InnerReadFactory create_inner);
 
     Result<std::unique_ptr<BatchReader>> CreateReader(const std::shared_ptr<Split>& split) override;
     Result<std::unique_ptr<BatchReader>> CreateReader(
@@ -111,6 +112,7 @@ class QueryAuthTableRead : public TableRead {
  private:
     QueryAuthTableRead(const std::shared_ptr<ReadContext>& context,
                        const std::shared_ptr<TableSchema>& table_schema,
+                       const std::string& table_path, const std::string& branch,
                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
                        InnerReadFactory create_inner,
                        std::optional<std::vector<std::string>> output_fields);
@@ -129,6 +131,8 @@ class QueryAuthTableRead : public TableRead {
     Result<TableRead*> GetOrCreateInnerRead(const std::vector<std::string>& extra_fields);
 
     std::shared_ptr<ReadContext> context_;
+    std::string table_path_;
+    std::string branch_;
     std::shared_ptr<TableSchema> table_schema_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     InnerReadFactory create_inner_;

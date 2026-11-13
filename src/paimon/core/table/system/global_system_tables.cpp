@@ -598,4 +598,28 @@ Result<std::vector<GenericRow>> PartitionsSystemTable::BuildRows() const {
     return rows;
 }
 
+Result<std::shared_ptr<Table>> CatalogOptionsSystemTable::Copy(
+    const std::map<std::string, std::string>& /*dynamic_options*/) const {
+    auto table = std::make_shared<CatalogOptionsSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
+Result<std::shared_ptr<Table>> AllTableOptionsSystemTable::Copy(
+    const std::map<std::string, std::string>& /*dynamic_options*/) const {
+    auto table = std::make_shared<AllTableOptionsSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
+Result<std::shared_ptr<Table>> TablesSystemTable::Copy(
+    const std::map<std::string, std::string>& /*dynamic_options*/) const {
+    auto table = std::make_shared<TablesSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
+Result<std::shared_ptr<Table>> PartitionsSystemTable::Copy(
+    const std::map<std::string, std::string>& /*dynamic_options*/) const {
+    auto table = std::make_shared<PartitionsSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
 }  // namespace paimon

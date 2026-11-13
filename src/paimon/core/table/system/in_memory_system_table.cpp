@@ -117,7 +117,7 @@ Status InMemorySystemTable::CheckBranch(const std::map<std::string, std::string>
     if (branch_ && branch != options.end() &&
         BranchManager::NormalizeBranch(branch->second) !=
             BranchManager::NormalizeBranch(*branch_)) {
-        return Status::Invalid("context branch contradicts the loaded table");
+        return Status::Invalid("copy branch contradicts the loaded table");
     }
     return Status::OK();
 }
@@ -125,7 +125,6 @@ Status InMemorySystemTable::CheckBranch(const std::map<std::string, std::string>
 Result<std::unique_ptr<TableScan>> InMemorySystemTable::NewScan(
     std::unique_ptr<ScanContext> context) const {
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
-    PAIMON_RETURN_NOT_OK(CheckBranch(context->GetOptions()));
     return std::make_unique<SystemTableScan>(GetRootPath());
 }
 
@@ -134,9 +133,7 @@ Result<std::unique_ptr<TableRead>> InMemorySystemTable::NewRead(
     const std::shared_ptr<ReadContext> context = std::move(ctx);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
     PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
-    PAIMON_RETURN_NOT_OK(CheckBranch(context->GetOptions()));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const InMemorySystemTable> table,
-                           ForRead(context->GetOptions()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const InMemorySystemTable> table, ForRead({}));
     return std::make_unique<InMemorySystemTableRead>(std::move(table), context->GetMemoryPool());
 }
 

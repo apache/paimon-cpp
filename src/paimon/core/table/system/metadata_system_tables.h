@@ -33,6 +33,9 @@ class TableSchema;
 /// System table for `T$options`, exposing the latest base table options as key/value rows.
 class OptionsSystemTable : public InMemorySystemTable {
  public:
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "options";
 
     OptionsSystemTable(const std::shared_ptr<FileSystem>& fs, std::string table_path,
@@ -57,6 +60,9 @@ struct MetadataSystemTableContext {
 /// System table for `T$snapshots`, exposing snapshot commit history.
 class SnapshotsSystemTable : public InMemorySystemTable {
  public:
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "snapshots";
 
     SnapshotsSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
@@ -72,6 +78,9 @@ class SnapshotsSystemTable : public InMemorySystemTable {
 /// System table for `T$schemas`, exposing schema evolution history.
 class SchemasSystemTable : public InMemorySystemTable {
  public:
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "schemas";
 
     SchemasSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path, std::string branch);
@@ -86,6 +95,9 @@ class SchemasSystemTable : public InMemorySystemTable {
 /// System table for `T$tags`, exposing tags and the snapshots they reference.
 class TagsSystemTable : public InMemorySystemTable {
  public:
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "tags";
 
     TagsSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path, std::string branch);
@@ -100,6 +112,9 @@ class TagsSystemTable : public InMemorySystemTable {
 /// System table for `T$branches`, exposing table branches including `main`.
 class BranchesSystemTable : public InMemorySystemTable {
  public:
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "branches";
 
     BranchesSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path, std::string branch);
@@ -114,6 +129,9 @@ class BranchesSystemTable : public InMemorySystemTable {
 /// System table for `T$consumers`, exposing persisted streaming consumer offsets.
 class ConsumersSystemTable : public InMemorySystemTable {
  public:
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "consumers";
 
     ConsumersSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
@@ -129,6 +147,9 @@ class ConsumersSystemTable : public InMemorySystemTable {
 /// System table for `T$manifests`, exposing data manifest metadata in the latest snapshot.
 class ManifestsSystemTable : public InMemorySystemTable {
  public:
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "manifests";
 
     ManifestsSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path, std::string branch,
@@ -148,6 +169,9 @@ class ManifestsSystemTable : public InMemorySystemTable {
 /// System table for `T$files`, exposing data file metadata in the latest snapshot.
 class FilesSystemTable : public InMemorySystemTable {
  public:
+    Result<std::shared_ptr<Table>> Copy(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "files";
 
     FilesSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path, std::string branch,

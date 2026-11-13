@@ -396,18 +396,17 @@ Result<std::shared_ptr<arrow::Schema>> AuditLogSystemTable::ChangelogSchema(
 
 Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
     std::unique_ptr<ScanContext> ctx) const {
+    const auto& dynamic_options = options_;
     const std::shared_ptr<ScanContext> context = std::move(ctx);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
     if (context->GetScanFilters() && context->GetScanFilters()->GetPredicate()) {
         return Status::NotImplemented("audit_log system table predicate pushdown is not supported");
     }
     std::shared_ptr<ScanFilter> scan_filter = context->GetScanFilters();
-    ScanContextBuilder builder(table_path_);
+    ScanContextBuilder builder;
     builder.WithStreamingMode(context->IsStreamingMode())
-        .SetOptions(context->GetOptions())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(GetFileSystem())
         .WithCache(context->GetCache());
     if (scan_filter) {
         if (scan_filter->GetBucketFilter()) {
@@ -423,20 +422,24 @@ Result<std::unique_ptr<TableScan>> AuditLogSystemTable::NewScan(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> data_context, builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
                            CreateDataTable(table_schema_, options_));
-    return data_table->NewScan(std::move(data_context));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table,
+                           data_table->Copy(dynamic_options));
+    return configured_table->NewScan(std::move(data_context));
 }
 
 Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewRead(
     std::unique_ptr<ReadContext> ctx) const {
+    const auto& dynamic_options = options_;
     const std::shared_ptr<ReadContext> context = std::move(ctx);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
     PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
-    return NewChangelogRead(context, std::make_shared<AuditLogBatchConverter>());
+    return NewChangelogRead(context, std::make_shared<AuditLogBatchConverter>(), dynamic_options);
 }
 
 Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewChangelogRead(
     const std::shared_ptr<ReadContext>& context,
-    std::shared_ptr<const ChangelogBatchConverter> converter) const {
+    std::shared_ptr<const ChangelogBatchConverter> converter,
+    const std::map<std::string, std::string>& dynamic_options) const {
     if (table_schema_->PrimaryKeys().empty()) {
         return Status::NotImplemented(Name(), " system table only supports primary key table");
     }
@@ -445,15 +448,16 @@ Result<std::unique_ptr<TableRead>> AuditLogSystemTable::NewChangelogRead(
     }
 
     using StringMap = std::map<std::string, std::string>;
-    PAIMON_ASSIGN_OR_RAISE(StringMap read_options, ReadOptions(context->GetOptions()));
+    PAIMON_ASSIGN_OR_RAISE(StringMap read_options, ReadOptions(dynamic_options));
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> data_context,
                            CreateDataReadContext(context, read_options));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileStoreTable> data_table,
-        CreateDataTable(table_schema_, options_, context->GetFileSystemSchemeToIdentifierMap()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
+                           CreateDataTable(table_schema_, options_));
+    auto options = read_options;
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table, data_table->Copy(options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> data_read,
-                           data_table->NewRead(std::move(data_context)));
+                           configured_table->NewRead(std::move(data_context)));
     auto* key_value_read = dynamic_cast<KeyValueTableRead*>(data_read.get());
     if (!key_value_read) {
         return Status::Invalid("audit_log system table requires key-value table read");
@@ -473,16 +477,10 @@ Result<std::unique_ptr<ReadContext>> AuditLogSystemTable::CreateDataReadContext(
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(read_options));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> base_read_schema,
                            BaseReadSchema(core_options.TableReadSequenceNumberEnabled()));
-    auto options = read_options;
-    if (core_options.TableReadSequenceNumberEnabled()) {
-        options[Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED] = "true";
-    }
-    ReadContextBuilder builder(table_path_);
+    ReadContextBuilder builder;
     builder.SetReadFieldNames(base_read_schema->field_names())
-        .SetOptions(options)
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(GetFileSystem())
         .EnablePrefetch(context->EnablePrefetch())
         .SetPrefetchBatchCount(context->GetPrefetchBatchCount())
         .SetPrefetchMaxParallelNum(context->GetPrefetchMaxParallelNum())
@@ -519,6 +517,16 @@ Result<std::map<std::string, std::string>> AuditLogSystemTable::ReadOptions(
         read_options[Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED] = "true";
     }
     return read_options;
+}
+
+Result<std::shared_ptr<Table>> AuditLogSystemTable::Copy(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    using OptionsMap = std::map<std::string, std::string>;
+    PAIMON_ASSIGN_OR_RAISE(OptionsMap options, CopyOptions(options_, dynamic_options));
+    auto table = std::make_shared<AuditLogSystemTable>(*this);
+    table->options_ = std::move(options);
+    PAIMON_RETURN_NOT_OK(table->AdoptOwnSchema());
+    return std::shared_ptr<Table>(std::move(table));
 }
 
 }  // namespace paimon

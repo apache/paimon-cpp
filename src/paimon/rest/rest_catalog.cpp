@@ -526,9 +526,13 @@ Result<std::shared_ptr<Table>> RestCatalog::GetTable(const Identifier& identifie
     // tokens binds to this table.
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileSystem> table_file_system,
                            GetTableFileSystem(identifier));
+    std::shared_ptr<Catalog> catalog = std::const_pointer_cast<Catalog>(weak_from_this().lock());
+    if (!catalog) {
+        catalog = std::make_shared<RestCatalog>(*this);
+    }
     return FileStoreTable::Create(table_file_system, table_path, schema, identifier, uuid,
                                   branch.value_or(Identifier::kDefaultMainBranch),
-                                  fs_scheme_to_identifier_map_);
+                                  fs_scheme_to_identifier_map_, catalog);
 }
 
 std::string RestCatalog::GetRootPath() const {
