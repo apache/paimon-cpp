@@ -524,6 +524,11 @@ TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
     std::string path =
         paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
     ReadContextBuilder context_builder(path);
+    // Keep payload fetches observable: tiny fixtures otherwise reuse the footer block and
+    // legitimately report zero new range-cache I/O after schema setup resets the counters.
+    CacheConfig cache_config;
+    cache_config.SetBlockCacheLimit(0);
+    context_builder.WithCacheConfig(cache_config);
     context_builder.AddOption(Options::FILE_FORMAT, param.file_format);
     context_builder.EnablePrefetch(param.enable_prefetch)
         .AddOption("test.enable-adaptive-prefetch-strategy", "false")
@@ -555,11 +560,10 @@ TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
     ASSERT_TRUE(result_array);
     ASSERT_EQ(result_array->length(), 2);
 
-    // Verify the read-ahead cache metrics are surfaced through the reader chain. The prefetch
-    // reader merges the cache counters into its reader metrics only when a cache is created,
-    // so the counters must be present and effective exactly in that case.
+    // Cache counters must be present and effective whenever a cache is created, including
+    // synchronous reads with prefetch disabled.
     ASSERT_TRUE(read_metrics);
-    if (param.enable_prefetch && param.read_ahead_cache_enabled) {
+    if (param.read_ahead_cache_enabled) {
         ASSERT_OK_AND_ASSIGN(uint64_t read_count,
                              read_metrics->GetCounter(ReadAheadCacheMetrics::READ_COUNT));
         ASSERT_GT(read_count, 0u);
@@ -574,7 +578,7 @@ TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
         ASSERT_GT(hit_bytes, 0u);
         ASSERT_OK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISSES));
         ASSERT_OK(read_metrics->GetCounter(ReadAheadCacheMetrics::READ_MISS_BYTES));
-        // Serving hits requires prefetch IOs issued to the underlying stream.
+        // Serving hits requires cache IOs issued to the underlying stream.
         ASSERT_OK_AND_ASSIGN(uint64_t io_count,
                              read_metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
         ASSERT_GT(io_count, 0u);

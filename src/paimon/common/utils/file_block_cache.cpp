@@ -19,9 +19,12 @@
 
 #include "paimon/common/utils/file_block_cache.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <shared_mutex>
+#include <vector>
 
 #include "paimon/common/memory/bytes_utils.h"
 
@@ -109,6 +112,35 @@ bool FileBlockCache::Read(const ByteRange& range, char* dest) {
     }
     std::memcpy(dest, block->buffer->data() + (range.offset - block->range.offset), range.length);
     hit_metrics_.Record(range.length);
+    return true;
+}
+
+bool FileBlockCache::ReadCached(const ByteRange& range, char* dest) {
+    if (range.offset > file_size_ || range.length > file_size_ - range.offset) {
+        return false;
+    }
+    std::vector<std::shared_ptr<Block>> covering;
+    const uint64_t end = range.offset + range.length;
+    {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
+        for (uint64_t offset = range.offset; offset < end;) {
+            auto it = blocks_.find(IndexOf(offset));
+            if (it == blocks_.end() ||
+                it->second->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready ||
+                !it->second->future.get().ok()) {
+                return false;
+            }
+            covering.push_back(it->second);
+            offset = std::min(end, it->second->range.offset + it->second->range.length);
+        }
+    }
+    uint64_t offset = range.offset;
+    for (const auto& block : covering) {
+        const uint64_t length = std::min(end, block->range.offset + block->range.length) - offset;
+        std::memcpy(dest + offset - range.offset,
+                    block->buffer->data() + offset - block->range.offset, length);
+        offset += length;
+    }
     return true;
 }
 

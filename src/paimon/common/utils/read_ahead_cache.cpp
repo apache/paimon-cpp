@@ -23,7 +23,9 @@
 #include "paimon/common/utils/read_ahead_cache.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstring>
 #include <future>
 #include <optional>
@@ -50,6 +52,10 @@ struct PendingFetch {
     std::shared_ptr<std::promise<Status>> promise;
 };
 
+struct ReadAheadCacheBudget {
+    std::atomic<uint64_t> resident_bytes{0};
+};
+
 namespace {
 
 // Copy the requested window out of the covering entries into dest. The
@@ -70,8 +76,8 @@ void CopyRangeFromEntries(const std::vector<RangeCacheEntry>& covering, const By
 }  // namespace
 
 Result<std::optional<uint64_t>> ReadAheadCache::AddRanges(std::vector<ByteRange>&& ranges) {
-    // Validate before coalescing can split an invalid range into many entries. Zero retains
-    // the existing unknown-size convention; the combiner still validates integer bounds.
+    // Check before coalescing splits ranges and allocates entries. Zero is the existing
+    // unknown-size convention; integer bounds are still checked by the combiner in that case.
     if (file_size_ > 0) {
         for (const auto& range : ranges) {
             if (range.offset > file_size_ || range.length > file_size_ - range.offset) {
@@ -200,6 +206,18 @@ void ReadAheadCache::PreBuffer(uint64_t offset) {
         }
 
         size_t total_bytes = 0;
+        auto window_end = it;
+        while (bounded_retention_ && window_end != ranges_.end() &&
+               window_end->range.length <= config_.GetPreBufferLimit() - total_bytes) {
+            total_bytes += window_end->range.length;
+            ++window_end;
+        }
+        const uint64_t window_begin_offset = it->range.offset;
+        const uint64_t window_end_offset =
+            window_end == it
+                ? window_begin_offset
+                : std::prev(window_end)->range.offset + std::prev(window_end)->range.length;
+        total_bytes = 0;
         for (auto entry = it; entry != ranges_.end(); ++entry) {
             total_bytes += entry->range.length;
             if (total_bytes > config_.GetPreBufferLimit()) {
@@ -208,16 +226,21 @@ void ReadAheadCache::PreBuffer(uint64_t offset) {
             if (entry->Published()) {
                 continue;
             }
+            if (bounded_retention_ &&
+                !MakeRoomLocked(entry->range.length, window_begin_offset, window_end_offset)) {
+                break;
+            }
             auto promise = std::make_shared<std::promise<Status>>();
             auto future = promise->get_future();
-            auto buffer = AllocateBytesKeepingPoolAlive(entry->range.length, memory_pool_);
+            auto buffer = AllocateRangeBuffer(entry->range.length);
             fetches.push_back({entry->range, buffer, promise});
             // Published IN PLACE under the write lock, before the IO is dispatched below: a
             // reader racing the prefetch then finds the entry and waits on its future instead of
-            // issuing a second fetch for the same bytes. Entries are never evicted, so an
-            // in-flight fetch always keeps its entry and thus its future reachable.
+            // issuing a second fetch for the same bytes. In-flight entries are never evicted,
+            // so every pending fetch remains reachable for Close()/Reset() to wait on.
             entry->buffer = std::move(buffer);
             entry->future = std::move(future).share();
+            resident_ranges_.insert(entry->range.offset);
         }
     }
     // Dispatched OUTSIDE the lock, so that a fetch completing inline does not deadlock against a
@@ -225,10 +248,69 @@ void ReadAheadCache::PreBuffer(uint64_t offset) {
     DispatchFetches(fetches);
 }
 
+void ReadAheadCache::SetBoundedRetention(bool enabled) {
+    std::unique_lock<std::shared_mutex> lock(rw_mutex_);
+    bounded_retention_ = enabled;
+}
+
+bool ReadAheadCache::MakeRoomLocked(uint64_t size, uint64_t window_begin, uint64_t window_end) {
+    const uint64_t limit = config_.GetPreBufferLimit();
+    if (size > limit) {
+        return false;
+    }
+    auto candidate = resident_ranges_.lower_bound(eviction_offset_);
+    const size_t candidate_count = resident_ranges_.size();
+    for (size_t visited = 0; visited < candidate_count; ++visited) {
+        if (budget_->resident_bytes.load(std::memory_order_acquire) <= limit - size) {
+            return true;
+        }
+        if (candidate == resident_ranges_.end()) {
+            candidate = resident_ranges_.begin();
+        }
+        auto current = candidate++;
+        auto it = std::lower_bound(ranges_.begin(), ranges_.end(), *current,
+                                   [](const RangeCacheEntry& entry, uint64_t offset) {
+                                       return entry.range.offset < offset;
+                                   });
+        assert(it != ranges_.end() && it->range.offset == *current && it->Published());
+        auto& entry = *it;
+        eviction_offset_ = candidate == resident_ranges_.end() ? 0 : *candidate;
+        // Keep this window, pending I/O, failed results and buffers being copied or retained by
+        // a filesystem callback. Re-reading an evicted range simply publishes it again.
+        if ((entry.range.offset >= window_begin && entry.range.offset < window_end) ||
+            entry.buffer.use_count() != 1 ||
+            entry.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready ||
+            !entry.future.get().ok()) {
+            continue;
+        }
+        entry.buffer.reset();
+        entry.future = {};
+        resident_ranges_.erase(current);
+    }
+    return budget_->resident_bytes.load(std::memory_order_acquire) <= limit - size;
+}
+
+std::shared_ptr<Bytes> ReadAheadCache::AllocateRangeBuffer(uint64_t size) {
+    auto buffer = AllocateBytesKeepingPoolAlive(size, memory_pool_);
+    budget_->resident_bytes.fetch_add(size, std::memory_order_relaxed);
+    // Account until the LAST owner releases the buffer, even if a callback retains it after
+    // Reset(). The captured buffer also retains the allocating memory pool.
+    return std::shared_ptr<Bytes>(
+        buffer.get(), [buffer, budget = budget_, size](Bytes* bytes) mutable {
+            assert(bytes == buffer.get());
+            buffer.reset();
+            budget->resident_bytes.fetch_sub(size, std::memory_order_release);
+        });
+}
+
 ReadAheadCache::ReadAheadCache(const std::shared_ptr<InputStream>& stream,
                                const CacheConfig& config, uint64_t file_size,
                                const std::shared_ptr<MemoryPool>& memory_pool)
-    : stream_(stream), config_(config), file_size_(file_size), memory_pool_(memory_pool) {
+    : stream_(stream),
+      config_(config),
+      file_size_(file_size),
+      budget_(std::make_shared<ReadAheadCacheBudget>()),
+      memory_pool_(memory_pool) {
     // An unknown file size cannot be aligned to, and a zero limit or block size
     // means the block cache is turned off: leave it null in those cases.
     if (file_size > 0 && config_.GetBlockSize() > 0 && config_.GetBlockCacheLimit() > 0) {
@@ -260,6 +342,15 @@ void ReadAheadCache::Reset() {
     }
 }
 
+Status ReadAheadCache::Close() {
+    if (closed_) {
+        return Status::OK();
+    }
+    ReleaseBuffers();
+    closed_ = true;
+    return stream_->Close();
+}
+
 void ReadAheadCache::ReleaseBuffers() {
     ReleasePrefetchBuffers();
     if (block_cache_ != nullptr) {
@@ -274,11 +365,13 @@ void ReadAheadCache::ReleasePrefetchBuffers() {
         // Swap the entries out under the lock instead of waiting on them in place: an in-flight
         // fetch may take arbitrarily long, and holding the write lock while waiting would stall
         // every concurrent reader. Once swapped, the entries are owned locally and no other thread
-        // can observe or mutate them. Entries are never evicted, so waiting on the published ones
+        // can observe or mutate them. In-flight entries are never evicted, so waiting on these
         // covers every dispatched fetch: no fetch is still writing into an entry buffer when the
         // buffers go away. The buffers keep the memory pool alive themselves, for the callbacks
         // that a stream destroys later than it resolves them.
         to_release.swap(ranges_);
+        resident_ranges_.clear();
+        eviction_offset_ = 0;
     }
     // Wait OUTSIDE the lock; the buffers are released when to_release destructs.
     for (auto& entry : to_release) {
@@ -402,6 +495,10 @@ void ReadAheadCache::DispatchFetches(const std::vector<PendingFetch>& fetches) {
     for (const auto& fetch : fetches) {
         auto promise = fetch.promise;
         auto buffer = fetch.buffer;
+        if (block_cache_ && block_cache_->ReadCached(fetch.range, buffer->data())) {
+            promise->set_value(Status::OK());
+            continue;
+        }
         auto read_size = static_cast<int64_t>(buffer->size());
         auto read_offset = static_cast<int64_t>(fetch.range.offset);
         stream_->ReadAsync(

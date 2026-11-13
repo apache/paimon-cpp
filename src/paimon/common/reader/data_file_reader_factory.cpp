@@ -22,6 +22,7 @@
 
 #include "paimon/common/data/blob_defs.h"
 #include "paimon/common/reader/delegating_prefetch_reader.h"
+#include "paimon/common/reader/file_read_ahead.h"
 #include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
@@ -92,9 +93,10 @@ Result<std::unique_ptr<FileBatchReader>> DataFileReaderFactory::Open(
                 read_options.warmup_level, pool, arrow_pool));
         return std::make_unique<DelegatingPrefetchReader>(std::move(prefetch_reader));
     }
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input_stream,
-                           file_system->Open(FileStatus(file_path, file_size)));
-    return reader_builder->Build(input_stream);
+    return FileReadAhead::OpenSynchronous(
+        file_path, file_size, reader_builder, file_system, read_options.read_ahead_cache_enabled,
+        read_options.cache_config, read_options.prefetch_io_metrics_enabled,
+        read_options.warmup_level, pool, arrow_pool);
 }
 
 }  // namespace paimon

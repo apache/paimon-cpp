@@ -83,11 +83,21 @@ These metrics are C++-only and have no counterparts in Java Paimon.
    "prefetch.reader-read-latency-us", "histogram", "microseconds", "Underlying reader batch latency"
    "prefetch.consumer-wait-latency-us", "histogram", "microseconds", "Consumer wait latency per returned batch or EOF"
 
+Parquet storage reads
+---------------------
+
+For framework-managed Parquet readers, ``parquet.read.storage-read-bytes`` counts
+bytes successfully read from the backing streams, including footer reads and RAW
+warmup. Serving bytes from the shared cache does not increase this counter. Shared
+cache fetches are counted once across parallel readers. The counter remains
+available after ``Close()`` and does not require ``prefetch.io-metrics.enabled``.
+
 Prefetch I/O
 ------------
 
-``PrefetchIoMetrics`` describes only I/O that passes through the prefetch reader's instrumented
-input streams. It is not a whole-query or whole-table I/O total. All counters accumulate for the
+``PrefetchIoMetrics`` describes only I/O that passes through the instrumented
+file input streams, including synchronous reads with batch prefetch disabled.
+It is not a whole-query or whole-table I/O total. All counters accumulate for the
 reader lifetime and are retained across ``SetReadSchema()`` and cache reset. Latency uses relaxed
 atomic count and sum counters instead of per-I/O histograms to reduce hot-path cost. Collection is
 disabled by default; set ``prefetch.io-metrics.enabled`` to ``true`` in the read options to enable

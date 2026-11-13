@@ -34,6 +34,7 @@
 namespace paimon {
 
 class PredicateFilter;
+class FileReadAhead;
 
 // For convenience, we abbreviate `Later Materializing` as `LatMat`.
 // This reader is installed below the prefetch layer (see
@@ -44,6 +45,10 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     static Result<std::unique_ptr<LateMaterializingFileBatchReader>> Create(
         std::unique_ptr<FileBatchReader> inner,
         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
+    static Result<std::unique_ptr<LateMaterializingFileBatchReader>> Create(
+        std::unique_ptr<FileBatchReader> inner,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+        const std::shared_ptr<FileReadAhead>& read_ahead);
 
     Result<FileBatchReader::ReadBatch> NextBatch() override;
 
@@ -93,29 +98,23 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     Status SetReadRanges(const std::vector<std::pair<uint64_t, uint64_t>>& read_ranges) override;
 
     Result<std::vector<std::pair<uint64_t, uint64_t>>> PreBufferRange() override {
-        // Deliberately only the probe ranges: this is asked once before any read, when the payload
-        // pass still has no idea which pages hold the matched rows. The payload ranges are
-        // reported through pre_buffer_range_callback_ once the probe pass has run, see
-        // ReportPayloadPreBufferRanges().
+        // The context queries the probe ranges at warmup and the payload ranges when the
+        // projection changes after probing.
         if (prefetch_inner_ == nullptr) {
             return std::vector<std::pair<uint64_t, uint64_t>>{};
         }
         return prefetch_inner_->PreBufferRange();
     }
 
-    void SetPreBufferRangeCallback(PreBufferRangeCallback callback) override {
-        // Not forwarded to prefetch_inner_: a format reader has no late ranges of its own, and
-        // forwarding would report the same ranges twice.
-        pre_buffer_range_callback_ = std::move(callback);
-    }
-
  private:
     LateMaterializingFileBatchReader(std::unique_ptr<FileBatchReader> inner,
                                      PrefetchFileBatchReader* prefetch_inner,
-                                     std::shared_ptr<arrow::MemoryPool> arrow_pool)
+                                     std::shared_ptr<arrow::MemoryPool> arrow_pool,
+                                     const std::shared_ptr<FileReadAhead>& read_ahead)
         : inner_(std::move(inner)),
           prefetch_inner_(prefetch_inner),
-          arrow_pool_(std::move(arrow_pool)) {}
+          arrow_pool_(std::move(arrow_pool)),
+          read_ahead_(read_ahead) {}
 
     /// Reset the state of the late materializing reader, does not close inner reader.
     void Reset();
@@ -149,10 +148,8 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
                               const std::shared_ptr<Predicate>& predicate,
                               const std::optional<RoaringBitmap32>& selection);
 
-    /// Report the byte ranges the payload pass is about to read to pre_buffer_range_callback_, so
-    /// that the prefetch layer can fetch them ahead of the pass. A no-op without a callback or
-    /// without a prefetch-capable inner reader.
-    Status ReportPayloadPreBufferRanges();
+    /// Prepare payload ranges immediately after switching the inner projection.
+    Status PreparePayloadRanges();
 
     /// Returns the inner reader's prefetch interface, or an error when the format reader does not
     /// implement it (avro and blob do not).
@@ -176,10 +173,7 @@ class LateMaterializingFileBatchReader : public PrefetchFileBatchReader {
     /// inner_ is never reassigned, so the cast is resolved once in Create().
     PrefetchFileBatchReader* prefetch_inner_ = nullptr;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
-    /// Where the payload byte ranges are reported. Part of how this reader is wired into the
-    /// prefetch layer rather than of a read generation, so Reset() leaves it alone.
-    /// TODO(yonghao.fyh): refactor pre buffer cache in the future
-    PreBufferRangeCallback pre_buffer_range_callback_;
+    std::shared_ptr<FileReadAhead> read_ahead_;
     LatMatState state_ = kInit;
     std::shared_ptr<arrow::Schema> full_schema_;
     // projection holding only the predicate fields; nullptr when probing is not applicable
