@@ -24,6 +24,15 @@ File Index
 Interface
 =========
 
+.. doxygenclass:: paimon::FileIndexRead
+   :members:
+
+.. doxygenstruct:: paimon::DataSplit::SimpleDataFileMeta
+   :members:
+
+.. doxygenstruct:: paimon::FileRowSelection
+   :members:
+
 .. doxygenstruct:: paimon::FullTextMatch
    :members:
 

@@ -422,6 +422,9 @@ set(PAIMON_CORE_SRCS
     core/operation/orphan_files_cleaner_impl.cpp
     core/operation/raw_file_split_read.cpp
     core/operation/precise_file_index_read.cpp
+    core/operation/append_dv_context.cpp
+    core/operation/file_index_read.cpp
+    core/operation/deletion_vector_write.cpp
     core/operation/read_context.cpp
     core/operation/scan_context.cpp
     core/manifest/snapshot_live_manifest_entries.cpp
@@ -1024,6 +1027,7 @@ if(PAIMON_BUILD_TESTS)
                     core/operation/key_value_file_store_write_test.cpp
                     core/realtime/precise_realtime_index_read_test.cpp
                     core/operation/precise_file_index_read_test.cpp
+                    core/operation/append_dv_test.cpp
                     core/operation/internal_read_context_test.cpp
                     core/operation/abstract_split_read_test.cpp
                     core/operation/append_only_file_store_write_test.cpp

@@ -38,6 +38,34 @@ Parquet, and Avro, thereby improving write throughput.
   the files it ignored. See :doc:`compaction` for the ``full-compaction`` and
   ``lookup`` producers.
 
+Updates with Append and Deletion Vectors
+---------------------------------------
+
+For fixed-bucket or unaware-bucket managed append tables, enable
+``deletion-vectors.enabled``.
+
+1. Plan batch splits at a base snapshot without limits or pruning by individual
+   keys. Create ``FileIndexRead`` per split and reuse ``Query(predicate)`` to return
+   files and physical positions excluding historical DV, or an empty result.
+   Metadata statistics may exclude whole files. The precise read path uses indexes
+   and data filtering to find exact positions. Index readers and historical DV are reused.
+2. Compute replacement rows externally and append through ``FileStoreWrite``
+   with ``write-only=true``.
+3. Call ``DeletionVectorWrite::PrepareCommit()`` with the table path, branch,
+   options, ``base_snapshot_id``, all deletion positions, file system, memory pool,
+   and executor. The entire batch uses one snapshot; passing ``std::nullopt``
+   selects the latest snapshot for this call.
+4. Combine the returned DV messages with ``FileStoreWrite::PrepareCommit()`` messages in one
+   ``FileStoreCommit::Commit()`` call. Deletes alone need only the DV messages.
+
+Different buckets may be updated concurrently. For the same partition and bucket,
+wait for the previous update to commit before selecting the next base snapshot.
+Do not run compaction or overwrite on that bucket during an update.
+
+Both APIs load table metadata from disk and support bitmap32 only, including
+historical DV. Primary-key, Data Evolution, real-time, query-authorized, and
+format tables are unsupported.
+
 External Data Paths
 -------------------
 
