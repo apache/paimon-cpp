@@ -128,16 +128,16 @@ Result<std::shared_ptr<RangeBitmapFileIndexReader>> RangeBitmapFileIndexTest::Cr
     const std::set<int32_t>& null_indices, const std::map<std::string, std::string>& options,
     PAIMON_UNIQUE_PTR<Bytes>* serialized_bytes_out) {
     // Create Arrow array from test data, replacing values at null_indices with NULL
-    auto builder = std::make_shared<ArrowBuilder>();
+    ArrowBuilder builder;
     for (size_t i = 0; i < test_data.size(); ++i) {
         if (null_indices.count(static_cast<int32_t>(i)) > 0) {
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->AppendNull());
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.AppendNull());
         } else {
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(test_data[i]));
+            PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(test_data[i]));
         }
     }
     std::shared_ptr<arrow::Array> arrow_array;
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Finish(&arrow_array));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Finish(&arrow_array));
     return CreateReaderFromArray(arrow_type, arrow_array, options, serialized_bytes_out);
 }
 

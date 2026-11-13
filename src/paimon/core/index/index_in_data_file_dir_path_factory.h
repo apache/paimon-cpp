@@ -43,7 +43,11 @@ class IndexInDataFileDirPathFactory : public IndexPathFactory {
     std::string NewPath() const override {
         std::string name = IndexPathFactory::INDEX_PREFIX + uuid_ + "-" +
                            std::to_string(index_file_count_->fetch_add(1));
-        return data_file_path_factory_->NewPathFromName(name);
+        return NewPathFromName(name);
+    }
+
+    std::string NewPathFromName(const std::string& file_name) const override {
+        return data_file_path_factory_->NewPathFromName(file_name);
     }
 
     std::string ToPath(const std::shared_ptr<IndexFileMeta>& file) const override {
@@ -51,10 +55,6 @@ class IndexInDataFileDirPathFactory : public IndexPathFactory {
             return file->ExternalPath().value();
         }
         return PathUtil::JoinPath(data_file_path_factory_->Parent(), file->FileName());
-    }
-
-    std::string ToPath(const std::string& file_name) const override {
-        return data_file_path_factory_->NewPathFromName(file_name);
     }
 
     bool IsExternalPath() const override {

@@ -140,6 +140,23 @@ static Result<WriteFunction> WriteBucketRow(int32_t col_id,
             };
             return writer_func;
         }
+        case arrow::Type::type::TIME32: {
+            // Like Java, a TIME bucket key is hashed as its int32 milliseconds of the day, so
+            // another unit would hash to another bucket.
+            if (checked_cast<const arrow::Time32Type&>(*field->type()).unit() !=
+                arrow::TimeUnit::MILLI) {
+                return Status::Invalid(
+                    fmt::format("Only millisecond TIME is supported as a bucket key: {}",
+                                field->type()->ToString()));
+            }
+            const auto* typed_array = checked_cast<const arrow::Time32Array*>(field.get());
+            WriteFunction writer_func = [col_id, typed_array](int32_t row_id,
+                                                              BinaryRowWriter* row_writer) {
+                CHECK_AND_SET_NULL(typed_array, row_writer, row_id, col_id);
+                row_writer->WriteInt(col_id, typed_array->Value(row_id));
+            };
+            return writer_func;
+        }
         case arrow::Type::type::STRING: {
             const auto* typed_array = checked_cast<const arrow::StringArray*>(field.get());
             WriteFunction writer_func = [col_id, typed_array](int32_t row_id,

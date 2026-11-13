@@ -38,11 +38,13 @@ TEST(BinarySerializerUtilsTest, TestSimple) {
                         arrow::field("f7", arrow::float64()), arrow::field("f8", arrow::utf8()),
                         arrow::field("f9", arrow::binary()), arrow::field("f10", arrow::date32()),
                         arrow::field("f11", arrow::timestamp(arrow::TimeUnit::NANO)),
-                        arrow::field("f12", arrow::decimal128(5, 2))});
+                        arrow::field("f12", arrow::decimal128(5, 2)),
+                        arrow::field("f13", arrow::time32(arrow::TimeUnit::MILLI)),
+                        arrow::field("f14", arrow::list(arrow::time32(arrow::TimeUnit::MILLI)))});
 
     std::shared_ptr<arrow::Array> array = arrow::ipc::internal::json::ArrayFromJSON(arrow_type,
                                                                                     R"([
-        [true, 0, 32767, 2147483647, null, 4294967295, 0.5, 1.141, "20250327", "banana", 2026, 5000001, "5.12"]
+        [true, 0, 32767, 2147483647, null, 4294967295, 0.5, 1.141, "20250327", "banana", 2026, 5000001, "5.12", 45296123, [0, null, 86399999]]
     ])")
                                               .ValueOrDie();
     auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(array);
@@ -54,7 +56,7 @@ TEST(BinarySerializerUtilsTest, TestSimple) {
                                               columnar_row, arrow_type, pool.get()));
 
     // check result
-    ASSERT_EQ(binary_row->GetFieldCount(), 13);
+    ASSERT_EQ(binary_row->GetFieldCount(), 15);
     ASSERT_FALSE(binary_row->IsNullAt(0));
 
     ASSERT_EQ(binary_row->GetBoolean(0), true);
@@ -73,6 +75,12 @@ TEST(BinarySerializerUtilsTest, TestSimple) {
               Timestamp(/*millisecond=*/5, /*nano_of_millisecond*/ 1));
     ASSERT_EQ(binary_row->GetDecimal(12, 5, 2),
               Decimal(5, 2, DecimalUtils::StrToInt128("512").value()));
+    ASSERT_EQ(binary_row->GetInt(13), 45296123);
+    auto times = binary_row->GetArray(14);
+    ASSERT_EQ(times->Size(), 3);
+    ASSERT_EQ(times->GetInt(0), 0);
+    ASSERT_TRUE(times->IsNullAt(1));
+    ASSERT_EQ(times->GetInt(2), 86399999);
 }
 
 TEST(BinarySerializerUtilsTest, TestNestedType) {

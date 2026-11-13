@@ -110,6 +110,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_FALSE(core_options.CommitDiscardDuplicateFiles());
     ASSERT_FALSE(core_options.RestCommitLockEnabled());
     ASSERT_FALSE(core_options.RestCommitAcquireLock());
+    ASSERT_FALSE(core_options.QueryAuthEnabled());
     ExpireConfig expire_config = core_options.GetExpireConfig();
     ASSERT_EQ(10, expire_config.GetSnapshotRetainMin());
     ASSERT_EQ(std::numeric_limits<int32_t>::max(), expire_config.GetSnapshotRetainMax());
@@ -182,7 +183,8 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_TRUE(core_options.BlobViewResolveEnabled());
     ASSERT_TRUE(core_options.LegacyPartitionNameEnabled());
     ASSERT_TRUE(core_options.GlobalIndexEnabled());
-    ASSERT_EQ(std::nullopt, core_options.GetGlobalIndexExternalPath());
+    ASSERT_FALSE(core_options.GlobalIndexFilterRefineFromData());
+    ASSERT_EQ(std::nullopt, core_options.GetGlobalIndexExternalPaths());
     ASSERT_EQ(std::nullopt, core_options.GetGlobalIndexThreadNum());
     ASSERT_EQ(std::nullopt, core_options.GetScanTagName());
     ASSERT_EQ(std::nullopt, core_options.GetOptimizedCompactionInterval());
@@ -249,6 +251,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::COMMIT_DISCARD_DUPLICATE_FILES, "true"},
         {Options::REST_COMMIT_LOCK_ENABLED, "true"},
         {Options::REST_COMMIT_ACQUIRE_LOCK, "true"},
+        {Options::QUERY_AUTH_ENABLED, "true"},
         {Options::DYNAMIC_PARTITION_OVERWRITE, "false"},
         {Options::OVERWRITE_UPGRADE, "false"},
         {Options::SCAN_SNAPSHOT_ID, "5"},
@@ -312,6 +315,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::BLOB_VIEW_RESOLVE_ENABLED, "false"},
         {Options::PARTITION_GENERATE_LEGACY_NAME, "false"},
         {Options::GLOBAL_INDEX_ENABLED, "false"},
+        {Options::GLOBAL_INDEX_FILTER_REFINE_FROM_DATA, "true"},
         {Options::GLOBAL_INDEX_THREAD_NUM, "4"},
         {Options::GLOBAL_INDEX_EXTERNAL_PATH, "FILE:///tmp/global_index/"},
         {Options::SCAN_TAG_NAME, "test-tag"},
@@ -405,6 +409,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_TRUE(core_options.CommitDiscardDuplicateFiles());
     ASSERT_TRUE(core_options.RestCommitLockEnabled());
     ASSERT_TRUE(core_options.RestCommitAcquireLock());
+    ASSERT_TRUE(core_options.QueryAuthEnabled());
     ASSERT_EQ(5, core_options.GetScanSnapshotId().value_or(-1));
     ASSERT_EQ(7, core_options.GetScanManifestEntryCacheMaxSnapshots());
     ASSERT_FALSE(core_options.ScanManifestEntryLazyDecodeEnabled());
@@ -487,9 +492,10 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_FALSE(core_options.BlobViewResolveEnabled());
     ASSERT_FALSE(core_options.LegacyPartitionNameEnabled());
     ASSERT_FALSE(core_options.GlobalIndexEnabled());
+    ASSERT_TRUE(core_options.GlobalIndexFilterRefineFromData());
     ASSERT_EQ(core_options.GetGlobalIndexThreadNum(), 4);
-    ASSERT_TRUE(core_options.GetGlobalIndexExternalPath());
-    ASSERT_EQ(core_options.GetGlobalIndexExternalPath().value(), "FILE:///tmp/global_index/");
+    ASSERT_TRUE(core_options.GetGlobalIndexExternalPaths());
+    ASSERT_EQ(core_options.GetGlobalIndexExternalPaths().value(), "FILE:///tmp/global_index/");
     ASSERT_EQ("test-tag", core_options.GetScanTagName().value());
     ASSERT_EQ(StartupMode::FromSnapshotFull(), core_options.GetStartupMode());
     ASSERT_EQ(375809637, core_options.GetCompactionFileSize(/*has_primary_key=*/true));
@@ -860,22 +866,95 @@ TEST(CoreOptionsTest, TestInvalidCreateExternalPath) {
     }
 }
 
-TEST(CoreOptionsTest, TestCreateGlobalIndexExternalPath) {
+TEST(CoreOptionsTest, TestCreateGlobalIndexExternalPaths) {
     std::map<std::string, std::string> options = {
         {Options::GLOBAL_INDEX_EXTERNAL_PATH, " FILE:///tmp/index1"},
     };
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
-    ASSERT_OK_AND_ASSIGN(std::optional<std::string> external_path,
-                         core_options.CreateGlobalIndexExternalPath());
-    ASSERT_EQ("FILE:/tmp/index1", external_path.value());
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> external_paths,
+                         core_options.CreateGlobalIndexExternalPaths());
+    ASSERT_EQ(std::vector<std::string>({"FILE:/tmp/index1"}), external_paths);
 }
 
-TEST(CoreOptionsTest, TestInvalidCreateGlobalIndexExternalPath) {
+TEST(CoreOptionsTest, GlobalIndexExternalPathsList) {
+    for (const std::string value : {"FILE:///a, FILE:///b", ",FILE:///a,,FILE:///b,"}) {
+        ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                             CoreOptions::FromMap({{Options::GLOBAL_INDEX_EXTERNAL_PATH, value}}));
+        ASSERT_OK_AND_ASSIGN(std::vector<std::string> paths,
+                             options.CreateGlobalIndexExternalPaths());
+        ASSERT_EQ(paths, std::vector<std::string>({"FILE:/a", "FILE:/b"}));
+    }
+    for (const std::string value : {",", " ", "FILE:///a,/b", "FILE:///a, ,FILE:///b"}) {
+        ASSERT_OK_AND_ASSIGN(CoreOptions options,
+                             CoreOptions::FromMap({{Options::GLOBAL_INDEX_EXTERNAL_PATH, value}}));
+        ASSERT_NOK(options.CreateGlobalIndexExternalPaths());
+    }
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::string> paths, options.CreateGlobalIndexExternalPaths());
+    ASSERT_TRUE(paths.empty());
+    ASSERT_OK_AND_ASSIGN(options,
+                         CoreOptions::FromMap({{Options::GLOBAL_INDEX_EXTERNAL_PATH, ""}}));
+    ASSERT_OK_AND_ASSIGN(paths, options.CreateGlobalIndexExternalPaths());
+    ASSERT_TRUE(paths.empty());
+}
+
+TEST(CoreOptionsTest, ExternalPathWeights) {
+    for (const std::string value : {"1, 3", "1,3,", "+1,3,,", "1,,3", ",1,3", "1,,3,"}) {
+        ASSERT_OK_AND_ASSIGN(
+            CoreOptions options,
+            CoreOptions::FromMap({{Options::DATA_FILE_EXTERNAL_PATHS, "FILE:///a,FILE:///b"},
+                                  {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "weight-robin"},
+                                  {Options::DATA_FILE_EXTERNAL_PATHS_WEIGHTS, value}}));
+        ASSERT_EQ(options.GetExternalPathStrategy(), ExternalPathStrategy::WEIGHTED);
+        ASSERT_OK_AND_ASSIGN(std::vector<int32_t> weights, options.GetExternalPathWeights());
+        ASSERT_EQ(weights, std::vector<int32_t>({1, 3}));
+    }
+    for (const std::string value : {"0", "-1", " ", "1, ,", "2147483648", "1.5", "abc"}) {
+        ASSERT_OK_AND_ASSIGN(
+            CoreOptions options,
+            CoreOptions::FromMap({{Options::DATA_FILE_EXTERNAL_PATHS, "FILE:///a,FILE:///b"},
+                                  {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "weight-robin"},
+                                  {Options::DATA_FILE_EXTERNAL_PATHS_WEIGHTS, value}}));
+        ASSERT_NOK_WITH_MSG(options.GetExternalPathWeights(),
+                            "External path weight must be a positive integer:");
+    }
+    for (const std::string value : {"", ",", ",,"}) {
+        ASSERT_OK_AND_ASSIGN(
+            CoreOptions options,
+            CoreOptions::FromMap({{Options::DATA_FILE_EXTERNAL_PATHS, "FILE:///a,FILE:///b"},
+                                  {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "weight-robin"},
+                                  {Options::DATA_FILE_EXTERNAL_PATHS_WEIGHTS, value}}));
+        ASSERT_OK_AND_ASSIGN(std::vector<int32_t> weights, options.GetExternalPathWeights());
+        ASSERT_TRUE(weights.empty());
+    }
+    ASSERT_OK_AND_ASSIGN(
+        CoreOptions options,
+        CoreOptions::FromMap({{Options::DATA_FILE_EXTERNAL_PATHS, "FILE:///a,FILE:///b"},
+                              {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, "weight-robin"}}));
+    ASSERT_OK_AND_ASSIGN(std::vector<int32_t> weights, options.GetExternalPathWeights());
+    ASSERT_TRUE(weights.empty());
+}
+
+TEST(CoreOptionsTest, ExternalPathWeightsIgnoredForOtherStrategies) {
+    for (const std::string strategy : {"none", "round-robin"}) {
+        for (const std::string value : {"1,99", "1", "1,2,3", "0", "abc"}) {
+            ASSERT_OK_AND_ASSIGN(
+                CoreOptions options,
+                CoreOptions::FromMap({{Options::DATA_FILE_EXTERNAL_PATHS, "FILE:///a,FILE:///b"},
+                                      {Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY, strategy},
+                                      {Options::DATA_FILE_EXTERNAL_PATHS_WEIGHTS, value}}));
+            ASSERT_OK_AND_ASSIGN(std::vector<int32_t> weights, options.GetExternalPathWeights());
+            ASSERT_TRUE(weights.empty()) << strategy << ": " << value;
+        }
+    }
+}
+
+TEST(CoreOptionsTest, TestInvalidCreateGlobalIndexExternalPaths) {
     std::map<std::string, std::string> options = {
         {Options::GLOBAL_INDEX_EXTERNAL_PATH, "/tmp/index1"},
     };
     ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(options));
-    ASSERT_NOK_WITH_MSG(core_options.CreateGlobalIndexExternalPath(),
+    ASSERT_NOK_WITH_MSG(core_options.CreateGlobalIndexExternalPaths(),
                         "scheme is null, path is /tmp/index1");
 }
 
@@ -1055,26 +1134,36 @@ TEST(CoreOptionsTest, TestParseChangelogProducer) {
                         "invalid changelog producer: invalid");
 }
 
-TEST(CoreOptionsTest, TestParseFullTextIndexSearchMode) {
-    auto search_mode =
-        [](const std::map<std::string, std::string>& options) -> Result<GlobalIndexSearchMode> {
-        PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options));
-        return core_options.GetFullTextIndexSearchMode();
+TEST(CoreOptionsTest, TestParseIndexSearchMode) {
+    struct IndexFamily {
+        std::string key;
+        GlobalIndexSearchMode (CoreOptions::*get_search_mode)() const;
     };
-    ASSERT_OK_AND_ASSIGN(GlobalIndexSearchMode mode, search_mode({}));
-    ASSERT_EQ(mode, GlobalIndexSearchMode::FAST);
-    ASSERT_OK_AND_ASSIGN(mode, search_mode({{Options::GLOBAL_INDEX_SEARCH_MODE, "full"}}));
-    ASSERT_EQ(mode, GlobalIndexSearchMode::FULL);
-    ASSERT_OK_AND_ASSIGN(mode, search_mode({{Options::FULL_TEXT_INDEX_SEARCH_MODE, "DETAIL"}}));
-    ASSERT_EQ(mode, GlobalIndexSearchMode::DETAIL);
-    ASSERT_OK_AND_ASSIGN(mode, search_mode({{Options::FULL_TEXT_INDEX_SEARCH_MODE, "fast"},
-                                            {Options::GLOBAL_INDEX_SEARCH_MODE, "full"}}));
-    ASSERT_EQ(mode, GlobalIndexSearchMode::FAST);
-    ASSERT_NOK_WITH_MSG(search_mode({{Options::FULL_TEXT_INDEX_SEARCH_MODE, "invalid"},
-                                     {Options::GLOBAL_INDEX_SEARCH_MODE, "fast"}}),
-                        "invalid full-text-index.search-mode: invalid");
-    ASSERT_NOK_WITH_MSG(search_mode({{Options::GLOBAL_INDEX_SEARCH_MODE, "invalid"}}),
-                        "invalid global-index.search-mode: invalid");
+    const std::vector<IndexFamily> families = {
+        {Options::FULL_TEXT_INDEX_SEARCH_MODE, &CoreOptions::GetFullTextIndexSearchMode},
+        {Options::SCALAR_INDEX_SEARCH_MODE, &CoreOptions::GetScalarIndexSearchMode}};
+    for (const IndexFamily& family : families) {
+        SCOPED_TRACE(family.key);
+        auto search_mode = [&family](const std::map<std::string, std::string>& options)
+            -> Result<GlobalIndexSearchMode> {
+            PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CoreOptions::FromMap(options));
+            return (core_options.*family.get_search_mode)();
+        };
+        ASSERT_OK_AND_ASSIGN(GlobalIndexSearchMode mode, search_mode({}));
+        ASSERT_EQ(mode, GlobalIndexSearchMode::FAST);
+        ASSERT_OK_AND_ASSIGN(mode, search_mode({{Options::GLOBAL_INDEX_SEARCH_MODE, "full"}}));
+        ASSERT_EQ(mode, GlobalIndexSearchMode::FULL);
+        ASSERT_OK_AND_ASSIGN(mode, search_mode({{family.key, "DETAIL"}}));
+        ASSERT_EQ(mode, GlobalIndexSearchMode::DETAIL);
+        ASSERT_OK_AND_ASSIGN(
+            mode, search_mode({{family.key, "fast"}, {Options::GLOBAL_INDEX_SEARCH_MODE, "full"}}));
+        ASSERT_EQ(mode, GlobalIndexSearchMode::FAST);
+        ASSERT_NOK_WITH_MSG(
+            search_mode({{family.key, "invalid"}, {Options::GLOBAL_INDEX_SEARCH_MODE, "fast"}}),
+            "invalid " + family.key + ": invalid");
+        ASSERT_NOK_WITH_MSG(search_mode({{Options::GLOBAL_INDEX_SEARCH_MODE, "invalid"}}),
+                            "invalid global-index.search-mode: invalid");
+    }
 }
 
 TEST(CoreOptionsTest, TestParseExternalPathStrategy) {

@@ -285,6 +285,10 @@ bool RoaringBitmap64::IsEmpty() const {
     return GetRoaringBitmap(roaring_bitmap_).isEmpty();
 }
 
+void RoaringBitmap64::RunOptimize() {
+    GetRoaringBitmap(roaring_bitmap_).runOptimize();
+}
+
 size_t RoaringBitmap64::GetSizeInBytes() const {
     return GetRoaringBitmap(roaring_bitmap_).getSizeInBytes();
 }

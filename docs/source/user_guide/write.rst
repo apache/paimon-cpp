@@ -38,6 +38,21 @@ Parquet, and Avro, thereby improving write throughput.
   the files it ignored. See :doc:`compaction` for the ``full-compaction`` and
   ``lookup`` producers.
 
+External Data Paths
+-------------------
+
+Set ``data-file.external-paths`` to comma-separated roots and
+``data-file.external-paths.strategy`` to ``round-robin`` to distribute new files
+across them. For weighted random selection, set the strategy to ``weight-robin`` and
+``data-file.external-paths.weights`` to positive integers in the same order as
+the paths. For example, ``10,5,15`` selects three roots with probabilities
+``1/3``, ``1/6``, and ``1/2``. These are probabilities per file, not byte quotas.
+
+Without weights, ``weight-robin`` falls back to round robin. A single external path
+always uses that path. With multiple paths and configured weights, the number
+of weights must equal the number of paths. The default strategy is ``none``,
+which writes to the table directory.
+
 Bucketing Modes
 ---------------
 
@@ -89,8 +104,12 @@ whose values are ``LargeBinary``. Build the BLOB field with
 
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<::ArrowSchema> c_element,
                           paimon::Blob::ArrowField("element", /*nullable=*/true));
-   PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Field> element,
-                                     arrow::ImportField(c_element.get()));
+   arrow::Result<std::shared_ptr<arrow::Field>> element_result =
+       arrow::ImportField(c_element.get());
+   if (!element_result.ok()) {
+       return paimon::Status::Invalid(element_result.status().ToString());
+   }
+   std::shared_ptr<arrow::Field> element = element_result.ValueUnsafe();
    std::shared_ptr<arrow::Schema> schema = arrow::schema(
        {arrow::field("id", arrow::int32()), arrow::field("frames", arrow::list(element)),
         arrow::field("views", arrow::map(arrow::utf8(), element))});

@@ -138,6 +138,22 @@ TEST_F(MultiLiteralsLeafFunctionTest, TestDate) {
     ASSERT_EQ(EvalNotIn(literals, array), std::vector<char>({0, 1, 0, 0}));
 }
 
+TEST_F(MultiLiteralsLeafFunctionTest, TestTime) {
+    const std::vector<Literal> literals = {Literal(FieldType::TIME, 0),
+                                           Literal(FieldType::TIME, 86399999)};
+    auto array = arrow::ipc::internal::json::ArrayFromJSON(arrow::time32(arrow::TimeUnit::MILLI),
+                                                           R"([0, 123, 86399999, null])")
+                     .ValueOrDie();
+    ASSERT_EQ(EvalIn(literals, array), std::vector<char>({1, 0, 1, 0}));
+    ASSERT_EQ(EvalNotIn(literals, array), std::vector<char>({0, 1, 0, 0}));
+
+    auto seconds_array = arrow::ipc::internal::json::ArrayFromJSON(
+                             arrow::time32(arrow::TimeUnit::SECOND), R"([0, 1, null])")
+                             .ValueOrDie();
+    ASSERT_NOK(In::Instance().Test(*seconds_array, literals, arrow::default_memory_pool()));
+    ASSERT_NOK(NotIn::Instance().Test(*seconds_array, literals, arrow::default_memory_pool()));
+}
+
 TEST_F(MultiLiteralsLeafFunctionTest, TestBoolean) {
     auto array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::boolean(), R"([true, false, null])")

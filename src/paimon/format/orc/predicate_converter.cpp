@@ -230,6 +230,7 @@ Result<::orc::PredicateDataType> PredicateConverter::ConvertToOrcPredicateType(
         case FieldType::SMALLINT:
         case FieldType::INT:
         case FieldType::BIGINT:
+        case FieldType::TIME:
             return ::orc::PredicateDataType::LONG;
         case FieldType::FLOAT:
         case FieldType::DOUBLE:
@@ -271,6 +272,7 @@ Result<std::vector<::orc::Literal>> PredicateConverter::ConvertToOrcLiterals(
                 orc_literals.emplace_back(static_cast<int64_t>(literal.GetValue<int16_t>()));
                 break;
             case FieldType::INT:
+            case FieldType::TIME:
                 orc_literals.emplace_back(static_cast<int64_t>(literal.GetValue<int32_t>()));
                 break;
             case FieldType::BIGINT:

@@ -53,7 +53,8 @@ Result<InternalRow::FieldGetterFunc> InternalRow::CreateFieldGetter(
             };
             break;
         }
-        case arrow::Type::type::INT32: {
+        case arrow::Type::type::INT32:
+        case arrow::Type::type::TIME32: {
             field_getter = [field_idx](const InternalRow& row) -> VariantType {
                 return row.GetInt(field_idx);
             };

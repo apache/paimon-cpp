@@ -39,7 +39,8 @@ class MemoryPool;
 /// This split can be a `DataSplit` (for direct data file reads), an `IndexedSplit` (for reads
 /// leveraging global indexes), or a `FormatDataSplit` (for a format table's plain data files).
 /// Only the first two are serializable; a `FormatDataSplit` is in-memory only and `Serialize()`
-/// refuses it.
+/// refuses it. A split of a table with `query-auth.enabled=true` wraps one of the first two with
+/// the row filters and column masks it is read with.
 class PAIMON_EXPORT Split {
  public:
     virtual ~Split() = default;

@@ -253,8 +253,8 @@ class MergeTreeCompactManagerTest : public testing::Test {
             std::make_shared<InlineExecutor>());
 
         ASSERT_OK(manager->TriggerCompaction(/*full_compaction=*/false));
-        ASSERT_OK_AND_ASSIGN(auto compact_result, manager->GetCompactionResult(/*blocking=*/true));
-        (void)compact_result;
+        auto compact_result = manager->GetCompactionResult(/*blocking=*/true);
+        ASSERT_OK(compact_result);
 
         std::vector<LevelMinMax> outputs;
         for (const auto& file : levels->AllFiles()) {

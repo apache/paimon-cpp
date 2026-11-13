@@ -225,19 +225,19 @@ Result<std::vector<GlobalIndexIOMeta>> LuminaIndexWriter::Finish() {
     std::unique_ptr<LuminaIndexBuildContext> build_context = std::move(build_result).value();
 
     // dump index
-    PAIMON_ASSIGN_OR_RAISE(std::string index_file_name,
-                           file_manager_->NewFileName(LuminaDefines::kIdentifier));
+    PAIMON_ASSIGN_OR_RAISE(std::string index_file_path,
+                           file_manager_->NewPath(LuminaDefines::kIdentifier));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> out,
-                           file_manager_->NewOutputStream(index_file_name));
+                           file_manager_->NewOutputStream(index_file_path));
     auto file_writer = std::make_unique<LuminaFileWriter>(out);
     PAIMON_RETURN_NOT_OK_FROM_LUMINA(
         build_context->builder.Dump(std::move(file_writer), io_options_));
     // prepare GlobalIndexIOMeta
-    PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_manager_->GetFileSize(index_file_name));
+    PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_manager_->GetFileSize(index_file_path));
     std::string options_json;
     PAIMON_RETURN_NOT_OK(RapidJsonUtil::ToJsonString(lumina_options_, &options_json));
     auto meta_bytes = std::make_shared<Bytes>(options_json, pool_->GetPaimonPool().get());
-    GlobalIndexIOMeta meta(file_manager_->ToPath(index_file_name), file_size,
+    GlobalIndexIOMeta meta(index_file_path, file_size,
                            /*row_count=*/count_,
                            /*metadata=*/meta_bytes);
     if (checkpoint_file_manager_) {

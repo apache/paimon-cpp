@@ -44,16 +44,18 @@ class FileStorePathFactoryCache {
         auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema_->Fields());
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                                options_.CreateExternalPaths());
-        PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                               options_.CreateGlobalIndexExternalPath());
+        PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
+                               options_.GetExternalPathWeights());
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                               options_.CreateGlobalIndexExternalPaths());
 
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FileStorePathFactory> path_factory,
             FileStorePathFactory::Create(
                 root_, arrow_schema, table_schema_->PartitionKeys(),
                 options_.GetPartitionDefaultName(), format, options_.DataFilePrefix(),
-                options_.LegacyPartitionNameEnabled(), external_paths, global_index_external_path,
-                options_.IndexFileInDataFileDir(), pool_));
+                options_.LegacyPartitionNameEnabled(), external_paths, global_index_external_paths,
+                options_.IndexFileInDataFileDir(), external_path_weights, pool_));
         format_to_path_factory_[format] = path_factory;
         return path_factory;
     }

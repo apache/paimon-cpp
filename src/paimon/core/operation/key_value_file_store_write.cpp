@@ -175,10 +175,10 @@ Result<std::shared_ptr<BatchWriter>> KeyValueFileStoreWrite::CreateWriter(
     if (!realtime_context_) {
         return std::shared_ptr<BatchWriter>(std::move(writer));
     }
-    return RealtimePrimaryKeyWriter::Create(partition_map, bucket, realtime_schema_layout_,
-                                            trimmed_primary_keys, key_comparator_, options_,
-                                            realtime_context_impl, realtime_store_state.value(),
-                                            restore_max_seq_number, writer, pool_);
+    return RealtimePrimaryKeyWriter::Create(
+        partition_map, bucket, realtime_schema_layout_, trimmed_primary_keys,
+        table_schema_->PrimaryKeys(), key_comparator_, options_, realtime_context_impl,
+        realtime_store_state.value(), restore_max_seq_number, writer, pool_);
 }
 
 Status KeyValueFileStoreWrite::RefreshCommittedSnapshot(int64_t snapshot_id) {
@@ -193,10 +193,8 @@ Status KeyValueFileStoreWrite::RefreshCommittedSnapshot(int64_t snapshot_id) {
         RealtimeOffsetMap committed_offsets,
         RealtimeCommitProperties::ReadOffsets(std::optional<Snapshot>(std::move(snapshot)),
                                               options_.GetFileSystem()));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
-                           RealtimeContextImpl::Cast(realtime_context_));
-    return realtime_context_impl->AdvanceCommittedProgress(snapshot_id, committed_offsets,
-                                                           /*committed_data_files=*/{});
+    return RefreshRealtimeCommittedProgress(snapshot_id, committed_offsets,
+                                            /*committed_data_files=*/{});
 }
 
 Status KeyValueFileStoreWrite::Close() {

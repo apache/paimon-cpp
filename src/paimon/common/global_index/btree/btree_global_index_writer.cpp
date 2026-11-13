@@ -61,21 +61,21 @@ Result<std::shared_ptr<BTreeGlobalIndexWriter>> BTreeGlobalIndexWriter::Create(
         PAIMON_ASSIGN_OR_RAISE(bloom_filter_builder,
                                BloomFilter::DynamicBuilder(kBloomFilterFpp, pool));
     }
-    PAIMON_ASSIGN_OR_RAISE(std::string index_file_name,
-                           file_writer->NewFileName(BtreeDefs::kIdentifier));
+    PAIMON_ASSIGN_OR_RAISE(std::string index_file_path,
+                           file_writer->NewPath(BtreeDefs::kIdentifier));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> output_stream,
-                           file_writer->NewOutputStream(index_file_name));
+                           file_writer->NewOutputStream(index_file_path));
     auto sst_file_writer = std::make_unique<SstFileWriter>(output_stream, bloom_filter_builder,
                                                            block_size, compression_factory, pool);
     return std::shared_ptr<BTreeGlobalIndexWriter>(new BTreeGlobalIndexWriter(
-        field_name, arrow_type, key_serializer, file_writer, index_file_name, output_stream,
+        field_name, arrow_type, key_serializer, file_writer, index_file_path, output_stream,
         std::move(sst_file_writer), pool));
 }
 
 BTreeGlobalIndexWriter::BTreeGlobalIndexWriter(
     const std::string& field_name, const std::shared_ptr<arrow::DataType>& arrow_type,
     const std::shared_ptr<KeySerializer>& key_serializer,
-    const std::shared_ptr<GlobalIndexFileWriter>& file_writer, const std::string& index_file_name,
+    const std::shared_ptr<GlobalIndexFileWriter>& file_writer, const std::string& index_file_path,
     const std::shared_ptr<OutputStream>& output_stream, std::unique_ptr<SstFileWriter>&& sst_writer,
     const std::shared_ptr<MemoryPool>& pool)
     : field_name_(field_name),
@@ -83,7 +83,7 @@ BTreeGlobalIndexWriter::BTreeGlobalIndexWriter(
       key_serializer_(key_serializer),
       pool_(pool),
       file_writer_(file_writer),
-      index_file_name_(index_file_name),
+      index_file_path_(index_file_path),
       output_stream_(output_stream),
       sst_writer_(std::move(sst_writer)) {}
 
@@ -219,9 +219,8 @@ Result<std::vector<GlobalIndexIOMeta>> BTreeGlobalIndexWriter::Finish() {
     auto meta_bytes = index_meta->Serialize(pool_.get());
 
     // Create GlobalIndexIOMeta
-    std::string file_path = file_writer_->ToPath(index_file_name_);
-    PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_writer_->GetFileSize(index_file_name_));
-    GlobalIndexIOMeta io_meta(file_path, file_size, row_count_, meta_bytes);
+    PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_writer_->GetFileSize(index_file_path_));
+    GlobalIndexIOMeta io_meta(index_file_path_, file_size, row_count_, meta_bytes);
     return std::vector<GlobalIndexIOMeta>{io_meta};
 }
 

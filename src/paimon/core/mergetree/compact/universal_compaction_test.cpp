@@ -273,7 +273,7 @@ TEST_F(UniversalCompactionTest, TestSizeAmplification) {
         if (unit) {
             auto files = GetFileSizeVecFromCompactUnit(unit.value());
             int64_t total_size = std::accumulate(files.begin(), files.end(), 0l);
-            sizes = {total_size};
+            sizes.assign(1, total_size);
         }
         ASSERT_EQ(sizes, expected_sizes);
     };

@@ -19,10 +19,13 @@
 #include "paimon/format/avro/avro_schema_converter.h"
 
 #include "arrow/api.h"
+#include "arrow/util/key_value_metadata.h"
 #include "avro/Compiler.hh"
+#include "avro/LogicalType.hh"
 #include "avro/ValidSchema.hh"
 #include "gtest/gtest.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/types/data_type.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/core/manifest/manifest_file_meta.h"
 #include "paimon/core/utils/versioned_object_serializer.h"
@@ -245,6 +248,33 @@ TEST(AvroSchemaConverterTest, TestAvroSchemaToArrowDataTypeWithTimestampType) {
         arrow::field("ts_nano_tz", arrow::timestamp(arrow::TimeUnit::NANO, timezone), false),
     };
     ASSERT_TRUE(arrow_type->Equals(arrow::struct_(expected_fields))) << arrow_type->ToString();
+}
+
+TEST(AvroSchemaConverterTest, TestTimeType) {
+    auto time_schema = [](const std::string& precision) {
+        return arrow::schema(
+            {arrow::field("t", arrow::time32(arrow::TimeUnit::MILLI), /*nullable=*/false,
+                          arrow::key_value_metadata({DataType::kTimePrecision}, {precision}))});
+    };
+    auto expected_type =
+        arrow::struct_({arrow::field("t", arrow::time32(arrow::TimeUnit::MILLI), false)});
+    for (const std::string precision : {"0", "3"}) {
+        ASSERT_OK_AND_ASSIGN(::avro::ValidSchema avro_schema,
+                             AvroSchemaConverter::ArrowSchemaToAvroSchema(time_schema(precision)));
+        const ::avro::NodePtr& time_node = avro_schema.root()->leafAt(0);
+        ASSERT_EQ(time_node->type(), ::avro::AVRO_INT);
+        ASSERT_EQ(time_node->logicalType().type(), ::avro::LogicalType::TIME_MILLIS);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::DataType> arrow_type,
+                             AvroSchemaConverter::AvroSchemaToArrowDataType(avro_schema));
+        ASSERT_TRUE(arrow_type->Equals(expected_type)) << arrow_type->ToString();
+    }
+    for (const std::string precision : {"6", "9"}) {
+        ASSERT_NOK_WITH_MSG(AvroSchemaConverter::ArrowSchemaToAvroSchema(time_schema(precision)),
+                            "Avro does not support TIME type with precision: " + precision);
+    }
+    ASSERT_NOK_WITH_MSG(AvroSchemaConverter::ArrowSchemaToAvroSchema(arrow::schema(
+                            {arrow::field("t", arrow::time32(arrow::TimeUnit::SECOND))})),
+                        "Only millisecond TIME is supported");
 }
 
 TEST(AvroSchemaConverterTest, TestVariantNotSupported) {

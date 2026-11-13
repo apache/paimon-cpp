@@ -155,8 +155,9 @@ Status AppendTagValue(const std::shared_ptr<arrow::Array>& array, int64_t index,
     if (array->IsNull(index)) {
         return Status::OK();
     }
-    auto validate_array_type = [&](arrow::Type::type expected_type,
-                                   const char* value_type_name) -> Status {
+    // The int32_t specialization validates its type in the switch below.
+    [[maybe_unused]] auto validate_array_type = [&](arrow::Type::type expected_type,
+                                                    const char* value_type_name) -> Status {
         if (array->type_id() != expected_type) {
             return Status::Invalid(fmt::format("lumina {} tag field has unsupported arrow type {}",
                                                value_type_name, array->type()->ToString()));

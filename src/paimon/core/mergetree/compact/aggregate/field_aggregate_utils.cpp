@@ -160,6 +160,7 @@ Result<VariantType> FieldAggregateUtils::GetValue(const DataGetters& getters, in
         case arrow::Type::DATE32:
             return VariantType(getters.GetDate(pos));
         case arrow::Type::INT32:
+        case arrow::Type::TIME32:
             return VariantType(getters.GetInt(pos));
         case arrow::Type::INT64:
             return VariantType(getters.GetLong(pos));
@@ -210,6 +211,7 @@ Result<bool> FieldAggregateUtils::Equals(const VariantType& lhs, const VariantTy
             return DataDefine::GetVariantValue<int16_t>(lhs) ==
                    DataDefine::GetVariantValue<int16_t>(rhs);
         case arrow::Type::DATE32:
+        case arrow::Type::TIME32:
         case arrow::Type::INT32:
             return DataDefine::GetVariantValue<int32_t>(lhs) ==
                    DataDefine::GetVariantValue<int32_t>(rhs);
@@ -259,6 +261,7 @@ bool FieldAggregateUtils::IsHashableType(const std::shared_ptr<arrow::DataType>&
         case arrow::Type::INT16:
         case arrow::Type::INT32:
         case arrow::Type::DATE32:
+        case arrow::Type::TIME32:
         case arrow::Type::INT64:
         case arrow::Type::FLOAT:
         case arrow::Type::DOUBLE:
@@ -288,6 +291,7 @@ size_t FieldAggregateUtils::Hash(const VariantType& value,
                                std::hash<int16_t>{}(DataDefine::GetVariantValue<int16_t>(value)));
         case arrow::Type::INT32:
         case arrow::Type::DATE32:
+        case arrow::Type::TIME32:
             return CombineHash(result,
                                std::hash<int32_t>{}(DataDefine::GetVariantValue<int32_t>(value)));
         case arrow::Type::INT64:

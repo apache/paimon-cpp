@@ -178,11 +178,10 @@ class ConfigParser {
             "sort engine", sort_engine);
     }
 
-    // Parse GlobalIndexSearchMode of full-text search, as Java `CoreOptions#indexSearchMode` does
-    Status ParseFullTextIndexSearchMode(GlobalIndexSearchMode* search_mode) const {
-        const char* key = config_map_.count(Options::FULL_TEXT_INDEX_SEARCH_MODE) > 0
-                              ? Options::FULL_TEXT_INDEX_SEARCH_MODE
-                              : Options::GLOBAL_INDEX_SEARCH_MODE;
+    // Parse GlobalIndexSearchMode of an index family, as Java `CoreOptions#indexSearchMode` does
+    Status ParseIndexSearchMode(const char* family_key, GlobalIndexSearchMode* search_mode) const {
+        const char* key =
+            config_map_.count(family_key) > 0 ? family_key : Options::GLOBAL_INDEX_SEARCH_MODE;
         return ParseEnum(key,
                          {{"fast", GlobalIndexSearchMode::FAST},
                           {"full", GlobalIndexSearchMode::FULL},
@@ -223,7 +222,8 @@ class ConfigParser {
         return ParseEnum(Options::DATA_FILE_EXTERNAL_PATHS_STRATEGY,
                          {{"none", ExternalPathStrategy::NONE},
                           {"specific-fs", ExternalPathStrategy::SPECIFIC_FS},
-                          {"round-robin", ExternalPathStrategy::ROUND_ROBIN}},
+                          {"round-robin", ExternalPathStrategy::ROUND_ROBIN},
+                          {"weight-robin", ExternalPathStrategy::WEIGHTED}},
                          "external path strategy", external_path_strategy);
     }
 
@@ -404,8 +404,9 @@ struct CoreOptions::Impl {
     std::optional<std::string> field_default_func;
     std::optional<std::string> scan_fallback_branch;
     std::optional<std::string> data_file_external_paths;
+    std::optional<std::string> data_file_external_paths_weights;
     std::optional<std::string> changelog_file_compression;
-    std::optional<std::string> global_index_external_path;
+    std::optional<std::string> global_index_external_paths;
     std::optional<std::string> scan_tag_name;
     CompressOptions lookup_compress_options{"zstd", 1};
     CompressOptions spill_compress_options{"zstd", 1};
@@ -450,6 +451,8 @@ struct CoreOptions::Impl {
     std::optional<int32_t> lookup_compact_max_interval;
     std::optional<int32_t> global_index_thread_num;
     GlobalIndexSearchMode full_text_index_search_mode = GlobalIndexSearchMode::FAST;
+    GlobalIndexSearchMode scalar_index_search_mode = GlobalIndexSearchMode::FAST;
+    bool global_index_filter_refine_from_data = false;
 
     bool realtime_enabled = false;
     bool realtime_spill_enabled = false;
@@ -489,6 +492,7 @@ struct CoreOptions::Impl {
     bool commit_discard_duplicate_files = false;
     bool rest_commit_lock_enabled = false;
     bool rest_commit_acquire_lock = false;
+    bool query_auth_enabled = false;
     bool dynamic_partition_overwrite = true;
     bool overwrite_upgrade = true;
     bool compaction_force_rewrite_all_files = false;
@@ -565,6 +569,8 @@ struct CoreOptions::Impl {
         // Parse data-file.external-paths - external paths for data files, comma separated
         PAIMON_RETURN_NOT_OK(
             parser.Parse(Options::DATA_FILE_EXTERNAL_PATHS, &data_file_external_paths));
+        PAIMON_RETURN_NOT_OK(parser.Parse(Options::DATA_FILE_EXTERNAL_PATHS_WEIGHTS,
+                                          &data_file_external_paths_weights));
         // Parse data-file.external-paths.strategy - strategy for selecting external path
         PAIMON_RETURN_NOT_OK(parser.ParseExternalPathStrategy(&external_path_strategy));
         // Parse data-file.prefix - file name prefix of data files, default "data-"
@@ -725,6 +731,8 @@ struct CoreOptions::Impl {
         // Parse rest.commit.acquire-lock - whether this writer acquires a commit lease
         PAIMON_RETURN_NOT_OK(
             parser.Parse<bool>(Options::REST_COMMIT_ACQUIRE_LOCK, &rest_commit_acquire_lock));
+        // Parse query-auth.enabled - whether the catalog enforces row filters and column masks
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::QUERY_AUTH_ENABLED, &query_auth_enabled));
         // Parse dynamic-partition-overwrite - whether overwrite only dynamic partitions
         // for partitioned table overwrite.
         PAIMON_RETURN_NOT_OK(
@@ -927,10 +935,17 @@ struct CoreOptions::Impl {
         PAIMON_RETURN_NOT_OK(
             parser.Parse<int32_t>(Options::GLOBAL_INDEX_THREAD_NUM, &global_index_thread_num));
         // Parse full-text-index.search-mode, falling back to global-index.search-mode, default fast
-        PAIMON_RETURN_NOT_OK(parser.ParseFullTextIndexSearchMode(&full_text_index_search_mode));
-        // Parse global-index.external-path - global index root directory
+        PAIMON_RETURN_NOT_OK(parser.ParseIndexSearchMode(Options::FULL_TEXT_INDEX_SEARCH_MODE,
+                                                         &full_text_index_search_mode));
+        // Parse scalar-index.search-mode, falling back to global-index.search-mode, default fast
+        PAIMON_RETURN_NOT_OK(parser.ParseIndexSearchMode(Options::SCALAR_INDEX_SEARCH_MODE,
+                                                         &scalar_index_search_mode));
+        // Parse global-index.filter.refine-from-data, default false
+        PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::GLOBAL_INDEX_FILTER_REFINE_FROM_DATA,
+                                                &global_index_filter_refine_from_data));
+        // Parse global-index.external-path - global index root directories
         PAIMON_RETURN_NOT_OK(
-            parser.Parse(Options::GLOBAL_INDEX_EXTERNAL_PATH, &global_index_external_path));
+            parser.Parse(Options::GLOBAL_INDEX_EXTERNAL_PATH, &global_index_external_paths));
         return Status::OK();
     }
 
@@ -1372,6 +1387,10 @@ bool CoreOptions::RestCommitLockEnabled() const {
 
 bool CoreOptions::RestCommitAcquireLock() const {
     return impl_->rest_commit_acquire_lock;
+}
+
+bool CoreOptions::QueryAuthEnabled() const {
+    return impl_->query_auth_enabled;
 }
 
 bool CoreOptions::DynamicPartitionOverwrite() const {
@@ -1854,6 +1873,27 @@ Result<std::vector<std::string>> CoreOptions::CreateExternalPaths() const {
     return external_paths;
 }
 
+Result<std::vector<int32_t>> CoreOptions::GetExternalPathWeights() const {
+    std::vector<int32_t> weights;
+    if (GetExternalPathStrategy() != ExternalPathStrategy::WEIGHTED ||
+        !impl_->data_file_external_paths_weights) {
+        return weights;
+    }
+    for (const auto& w : StringUtils::Split(impl_->data_file_external_paths_weights.value(), ",")) {
+        std::string tmp_weight = w;
+        StringUtils::Trim(&tmp_weight);
+        if (!tmp_weight.empty() && tmp_weight.front() == '+') {
+            tmp_weight.erase(0, 1);
+        }
+        auto weight = StringUtils::StringToValue<int32_t>(tmp_weight);
+        if (!weight || weight.value() <= 0) {
+            return Status::Invalid("External path weight must be a positive integer: ", tmp_weight);
+        }
+        weights.push_back(weight.value());
+    }
+    return weights;
+}
+
 std::string CoreOptions::DataFilePrefix() const {
     return impl_->data_file_prefix;
 }
@@ -1920,22 +1960,36 @@ GlobalIndexSearchMode CoreOptions::GetFullTextIndexSearchMode() const {
     return impl_->full_text_index_search_mode;
 }
 
-std::optional<std::string> CoreOptions::GetGlobalIndexExternalPath() const {
-    return impl_->global_index_external_path;
+GlobalIndexSearchMode CoreOptions::GetScalarIndexSearchMode() const {
+    return impl_->scalar_index_search_mode;
 }
 
-Result<std::optional<std::string>> CoreOptions::CreateGlobalIndexExternalPath() const {
-    std::optional<std::string> global_index_external_path = GetGlobalIndexExternalPath();
-    if (global_index_external_path == std::nullopt || global_index_external_path->empty()) {
-        return std::optional<std::string>();
+bool CoreOptions::GlobalIndexFilterRefineFromData() const {
+    return impl_->global_index_filter_refine_from_data;
+}
+
+std::optional<std::string> CoreOptions::GetGlobalIndexExternalPaths() const {
+    return impl_->global_index_external_paths;
+}
+
+Result<std::vector<std::string>> CoreOptions::CreateGlobalIndexExternalPaths() const {
+    std::vector<std::string> external_paths;
+    std::optional<std::string> global_index_external_paths = GetGlobalIndexExternalPaths();
+    if (!global_index_external_paths || global_index_external_paths->empty()) {
+        return external_paths;
     }
-    std::string tmp_path = global_index_external_path.value();
-    StringUtils::Trim(&tmp_path);
-    PAIMON_ASSIGN_OR_RAISE(Path path, PathUtil::ToPath(tmp_path));
-    if (path.scheme.empty()) {
-        return Status::Invalid(fmt::format("scheme is null, path is {}", tmp_path));
+    for (auto tmp_path : StringUtils::Split(global_index_external_paths.value(), ",")) {
+        StringUtils::Trim(&tmp_path);
+        PAIMON_ASSIGN_OR_RAISE(Path path, PathUtil::ToPath(tmp_path));
+        if (path.scheme.empty()) {
+            return Status::Invalid(fmt::format("scheme is null, path is {}", tmp_path));
+        }
+        external_paths.push_back(path.ToString());
     }
-    return std::optional<std::string>(path.ToString());
+    if (external_paths.empty()) {
+        return Status::Invalid("external paths is empty");
+    }
+    return external_paths;
 }
 
 std::optional<std::string> CoreOptions::GetScanTagName() const {

@@ -28,13 +28,14 @@
 
 #include "arrow/type.h"
 #include "fmt/format.h"
-#include "fmt/ranges.h"
 #include "paimon/common/data/binary_array_writer.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_section.h"
 #include "paimon/common/data/serializer/binary_row_serializer.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/memory/memory_segment_utils.h"
+#include "paimon/common/utils/object_utils.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/index/index_file_meta_serializer.h"
 #include "paimon/core/table/source/data_evolution_full_text_scan.h"
 #include "paimon/core/table/source/index_full_text_search_split_impl.h"
@@ -49,6 +50,12 @@ namespace {
 constexpr int64_t kSearchRowRangeBytes = 2 * sizeof(int64_t);
 /// A serialized index file is a binary row that starts with its int32 length.
 constexpr int64_t kMinIndexFileBytes = sizeof(int32_t);
+
+/// Returns whether [`start`, `end`] is a valid row range: non-negative, ordered, and with a row
+/// count that fits in int64, as reads take its `Range::Count()`.
+bool IsValidRowRange(int64_t start, int64_t end) {
+    return start >= 0 && start <= end && end - start != std::numeric_limits<int64_t>::max();
+}
 
 /// Checks that `count` entries of at least `min_entry_bytes` bytes each fit in the rest of `in`,
 /// so a corrupt count fails before anything is allocated for it.
@@ -206,10 +213,25 @@ Result<std::vector<std::shared_ptr<IndexFileMeta>>> ReadIndexFiles(
 }
 }  // namespace
 
+Status IndexFullTextSearchSplitImpl::CheckScalarIndexFile(
+    const std::shared_ptr<IndexFileMeta>& file) {
+    if (!file || !file->GetGlobalIndexMeta()) {
+        return Status::Invalid("full-text search split requires global index files");
+    }
+    const GlobalIndexMeta& meta = file->GetGlobalIndexMeta().value();
+    if (!IsValidRowRange(meta.row_range_start, meta.row_range_end)) {
+        return Status::Invalid(
+            fmt::format("scalar index file {} covers an invalid row range [{}, {}]",
+                        file->FileName(), meta.row_range_start, meta.row_range_end));
+    }
+    return Status::OK();
+}
+
 Result<std::shared_ptr<IndexFullTextSearchSplitImpl>> IndexFullTextSearchSplitImpl::Create(
     int64_t snapshot_id, const std::string& column_name, int64_t row_range_start,
     int64_t row_range_end, std::vector<std::shared_ptr<IndexFileMeta>> full_text_index_files,
-    std::vector<Range> search_row_ranges) {
+    std::vector<Range> search_row_ranges,
+    std::vector<std::shared_ptr<IndexFileMeta>> scalar_index_files) {
     if (column_name.empty()) {
         return Status::Invalid("full-text search split requires a column name");
     }
@@ -219,9 +241,7 @@ Result<std::shared_ptr<IndexFullTextSearchSplitImpl>> IndexFullTextSearchSplitIm
             "full-text search split requires a column name of at most {} bytes, but got {} bytes",
             std::numeric_limits<uint16_t>::max(), column_name.size()));
     }
-    // The row count of the range must fit in int64, as reads take its `Range::Count()`.
-    if (row_range_start < 0 || row_range_start > row_range_end ||
-        row_range_end - row_range_start == std::numeric_limits<int64_t>::max()) {
+    if (!IsValidRowRange(row_range_start, row_range_end)) {
         return Status::Invalid(
             fmt::format("invalid physical index range [{}, {}]", row_range_start, row_range_end));
     }
@@ -272,45 +292,33 @@ Result<std::shared_ptr<IndexFullTextSearchSplitImpl>> IndexFullTextSearchSplitIm
                             previous.ToString(), range.ToString()));
         }
     }
+    for (const auto& file : scalar_index_files) {
+        PAIMON_RETURN_NOT_OK(CheckScalarIndexFile(file));
+    }
     return std::shared_ptr<IndexFullTextSearchSplitImpl>(new IndexFullTextSearchSplitImpl(
         snapshot_id, column_name, row_range_start, row_range_end, std::move(full_text_index_files),
-        std::move(search_row_ranges)));
+        std::move(search_row_ranges), std::move(scalar_index_files)));
 }
 
 bool IndexFullTextSearchSplitImpl::operator==(const IndexFullTextSearchSplitImpl& other) const {
     if (this == &other) {
         return true;
     }
-    if (snapshot_id_ != other.snapshot_id_ || column_name_ != other.column_name_ ||
-        row_range_start_ != other.row_range_start_ || row_range_end_ != other.row_range_end_ ||
-        search_row_ranges_ != other.search_row_ranges_ ||
-        full_text_index_files_.size() != other.full_text_index_files_.size()) {
-        return false;
-    }
-    for (size_t i = 0; i < full_text_index_files_.size(); ++i) {
-        if (!(*full_text_index_files_[i] == *other.full_text_index_files_[i])) {
-            return false;
-        }
-    }
-    return true;
+    return snapshot_id_ == other.snapshot_id_ && column_name_ == other.column_name_ &&
+           row_range_start_ == other.row_range_start_ && row_range_end_ == other.row_range_end_ &&
+           search_row_ranges_ == other.search_row_ranges_ &&
+           ObjectUtils::Equal(full_text_index_files_, other.full_text_index_files_) &&
+           ObjectUtils::Equal(scalar_index_files_, other.scalar_index_files_);
 }
 
 std::string IndexFullTextSearchSplitImpl::ToString() const {
-    std::vector<std::string> ranges;
-    ranges.reserve(search_row_ranges_.size());
-    for (const auto& range : search_row_ranges_) {
-        ranges.push_back(range.ToString());
-    }
-    std::vector<std::string> files;
-    files.reserve(full_text_index_files_.size());
-    for (const auto& file : full_text_index_files_) {
-        files.push_back(file->ToString());
-    }
     return fmt::format(
         "IndexFullTextSearchSplit{{snapshotId={}, columnName={}, rowRangeStart={}, "
-        "rowRangeEnd={}, searchRowRanges=[{}], fullTextIndexFiles=[{}]}}",
-        snapshot_id_, column_name_, row_range_start_, row_range_end_, fmt::join(ranges, ", "),
-        fmt::join(files, ", "));
+        "rowRangeEnd={}, searchRowRanges={}, fullTextIndexFiles={}, scalarIndexFiles={}}}",
+        snapshot_id_, column_name_, row_range_start_, row_range_end_,
+        StringUtils::VectorToString(search_row_ranges_),
+        StringUtils::VectorToString(full_text_index_files_),
+        StringUtils::VectorToString(scalar_index_files_));
 }
 
 Result<std::string> FullTextSearchSplit::Serialize(
@@ -334,6 +342,7 @@ Result<std::string> FullTextSearchSplit::Serialize(
     }
     IndexFileMetaSerializer serializer(pool);
     PAIMON_RETURN_NOT_OK(serializer.SerializeList(index_split->FullTextIndexFiles(), &out));
+    PAIMON_RETURN_NOT_OK(serializer.SerializeList(index_split->ScalarIndexFiles(), &out));
     PAIMON_UNIQUE_PTR<Bytes> bytes =
         MemorySegmentUtils::CopyToBytes(out.Segments(), 0, out.CurrentSize(), pool.get());
     return std::string(bytes->data(), bytes->size());
@@ -382,6 +391,10 @@ Result<std::shared_ptr<FullTextSearchSplit>> FullTextSearchSplit::Deserialize(
     }
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<IndexFileMeta>> full_text_index_files,
                            ReadIndexFiles(&in, pool));
+    std::vector<std::shared_ptr<IndexFileMeta>> scalar_index_files;
+    if (version >= 2) {
+        PAIMON_ASSIGN_OR_RAISE(scalar_index_files, ReadIndexFiles(&in, pool));
+    }
     PAIMON_ASSIGN_OR_RAISE(int64_t pos, in.GetPos());
     PAIMON_ASSIGN_OR_RAISE(int64_t stream_length, in.Length());
     if (pos != stream_length) {
@@ -392,7 +405,8 @@ Result<std::shared_ptr<FullTextSearchSplit>> FullTextSearchSplit::Deserialize(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<IndexFullTextSearchSplitImpl> split,
                            IndexFullTextSearchSplitImpl::Create(
                                snapshot_id, column_name, row_range_start, row_range_end,
-                               std::move(full_text_index_files), std::move(search_row_ranges)));
+                               std::move(full_text_index_files), std::move(search_row_ranges),
+                               std::move(scalar_index_files)));
     return std::shared_ptr<FullTextSearchSplit>(std::move(split));
 }
 

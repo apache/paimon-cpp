@@ -87,6 +87,8 @@ class FieldTypeUtils {
                 return FieldType::DECIMAL;
             case arrow::Type::type::DATE32:
                 return FieldType::DATE;
+            case arrow::Type::type::TIME32:
+                return FieldType::TIME;
             case arrow::Type::type::LIST:
                 return FieldType::ARRAY;
             case arrow::Type::type::MAP:
@@ -129,6 +131,8 @@ class FieldTypeUtils {
                 return "DECIMAL";
             case FieldType::DATE:
                 return "DATE";
+            case FieldType::TIME:
+                return "TIME";
             case FieldType::ARRAY:
                 return "ARRAY";
             case FieldType::MAP:

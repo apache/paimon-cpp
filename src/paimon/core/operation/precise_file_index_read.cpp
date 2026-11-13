@@ -103,9 +103,9 @@ Status PreparePredicate(
         mapped_leaves->emplace(leaf, nullptr);
         return Status::OK();
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        std::optional<std::shared_ptr<Predicate>> mapped,
-        FieldMappingBuilder::ReconstructPredicateWithDataFields(leaf, read_by_name, data_by_id));
+    std::optional<std::shared_ptr<Predicate>> mapped;
+    PAIMON_ASSIGN_OR_RAISE(mapped, FieldMappingBuilder::ReconstructPredicateWithDataFields(
+                                       leaf, read_by_name, data_by_id));
     std::shared_ptr<LeafPredicate> mapped_leaf;
     if (mapped) {
         mapped_leaf = std::dynamic_pointer_cast<LeafPredicate>(*mapped);

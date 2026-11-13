@@ -31,6 +31,7 @@
 #include "avro/ValidSchema.hh"
 #include "fmt/format.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/types/data_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/format/avro/avro_file_format_factory.h"
@@ -114,6 +115,11 @@ Result<std::shared_ptr<arrow::DataType>> AvroSchemaConverter::GetArrowType(
                 return Status::TypeError("invalid avro date stored as ", toString(type));
             }
             return arrow::date32();
+        case ::avro::LogicalType::Type::TIME_MILLIS:
+            if (type != ::avro::AVRO_INT) {
+                return Status::TypeError("invalid avro time stored as ", toString(type));
+            }
+            return arrow::time32(arrow::TimeUnit::MILLI);
         case ::avro::LogicalType::Type::DECIMAL:
             if (type != ::avro::AVRO_BYTES) {
                 return Status::TypeError("invalid avro decimal stored as ", toString(type));
@@ -276,6 +282,21 @@ Result<::avro::Schema> AvroSchemaConverter::ArrowTypeToAvroSchema(
             ::avro::LogicalType date_type = ::avro::LogicalType(::avro::LogicalType::DATE);
             date_schema.root()->setLogicalType(date_type);
             return nullable ? NullableSchema(date_schema) : date_schema;
+        }
+        case arrow::Type::type::TIME32: {
+            // Like Java `AvroSchemaConverter`, TIME is an Avro int of milliseconds of the day, and
+            // a precision above 3 is rejected.
+            PAIMON_ASSIGN_OR_RAISE(int32_t precision, DataType::GetTimePrecision(*field));
+            if (precision > 3) {
+                return Status::Invalid(fmt::format(
+                    "Avro does not support TIME type with precision: {}, it only supports "
+                    "precision up to 3.",
+                    precision));
+            }
+            ::avro::IntSchema time_schema;
+            time_schema.root()->setLogicalType(
+                ::avro::LogicalType(::avro::LogicalType::TIME_MILLIS));
+            return nullable ? NullableSchema(time_schema) : time_schema;
         }
         case arrow::Type::type::TIMESTAMP: {
             const auto& arrow_timestamp_type =

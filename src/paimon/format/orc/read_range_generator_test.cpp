@@ -203,9 +203,7 @@ TEST_F(ReadRangeGeneratorTest, TestBytesPerGroup) {
 }
 
 TEST_F(ReadRangeGeneratorTest, TestGenReadRanges) {
-    ReadRangeGenerator::ReaderMeta meta;
-    meta.rows_per_group = 10000;
-    meta.rows_per_stripes = {20480, 20480, 20480, 20480, 2080};
+    const ReadRangeGenerator::ReaderMeta meta{10000, {20480, 20480, 20480, 20480, 2080}};
     auto read_ranges_vec = ReadRangeGenerator::DoGenReadRanges(
         /*begin_row_num=*/0, /*end_row_num=*/84000, /*range_size=*/10000, meta);
     ASSERT_TRUE(CheckEqual({{0, 10000},
@@ -225,45 +223,35 @@ TEST_F(ReadRangeGeneratorTest, TestGenReadRanges) {
 }
 
 TEST_F(ReadRangeGeneratorTest, TestGenReadRangesBasic) {
-    ReadRangeGenerator::ReaderMeta meta;
-    meta.rows_per_group = 3;
-    meta.rows_per_stripes = {4, 6};
+    const ReadRangeGenerator::ReaderMeta meta{3, {4, 6}};
     auto read_ranges_vec = ReadRangeGenerator::DoGenReadRanges(
         /*begin_row_num=*/0, /*end_row_num=*/10, /*range_size=*/3, meta);
     ASSERT_TRUE(CheckEqual({{0, 3}, {3, 4}, {4, 7}, {7, 10}}, read_ranges_vec));
 }
 
 TEST_F(ReadRangeGeneratorTest, TestGenReadRangesMultiStripes) {
-    ReadRangeGenerator::ReaderMeta meta;
-    meta.rows_per_group = 4;
-    meta.rows_per_stripes = {10, 15};
+    const ReadRangeGenerator::ReaderMeta meta{4, {10, 15}};
     auto read_ranges_vec = ReadRangeGenerator::DoGenReadRanges(
         /*begin_row_num=*/5, /*end_row_num=*/25, /*range_size=*/5, meta);
     ASSERT_TRUE(CheckEqual({{5, 10}, {10, 15}, {15, 20}, {20, 25}}, read_ranges_vec));
 }
 
 TEST_F(ReadRangeGeneratorTest, TestGenReadRangesInvalid) {
-    ReadRangeGenerator::ReaderMeta meta;
-    meta.rows_per_group = 4;
-    meta.rows_per_stripes = {10, 15};
+    const ReadRangeGenerator::ReaderMeta meta{4, {10, 15}};
     auto read_ranges_vec = ReadRangeGenerator::DoGenReadRanges(
         /*begin_row_num=*/3, /*end_row_num=*/2, /*range_size=*/5, meta);
     ASSERT_TRUE(CheckEqual({}, read_ranges_vec));
 }
 
 TEST_F(ReadRangeGeneratorTest, TestGenReadRangesStripeBound) {
-    ReadRangeGenerator::ReaderMeta meta;
-    meta.rows_per_group = 5;
-    meta.rows_per_stripes = {10, 10};
+    const ReadRangeGenerator::ReaderMeta meta{5, {10, 10}};
     auto read_ranges_vec = ReadRangeGenerator::DoGenReadRanges(
         /*begin_row_num=*/3, /*end_row_num=*/18, /*range_size=*/5, meta);
     ASSERT_TRUE(CheckEqual({{3, 8}, {8, 10}, {10, 15}, {15, 18}}, read_ranges_vec));
 }
 
 TEST_F(ReadRangeGeneratorTest, TestGenReadRangesNotMatch) {
-    ReadRangeGenerator::ReaderMeta meta;
-    meta.rows_per_group = 2;
-    meta.rows_per_stripes = {4, 6};
+    const ReadRangeGenerator::ReaderMeta meta{2, {4, 6}};
     auto read_ranges_vec = ReadRangeGenerator::DoGenReadRanges(
         /*begin_row_num=*/10, /*end_row_num=*/10, /*range_size=*/2, meta);
     ASSERT_TRUE(CheckEqual({}, read_ranges_vec));

@@ -79,7 +79,7 @@ class BTreeGlobalIndexWriter : public GlobalIndexWriter {
                            const std::shared_ptr<arrow::DataType>& arrow_type,
                            const std::shared_ptr<KeySerializer>& key_serializer,
                            const std::shared_ptr<GlobalIndexFileWriter>& file_writer,
-                           const std::string& index_file_name,
+                           const std::string& index_file_path,
                            const std::shared_ptr<OutputStream>& output_stream,
                            std::unique_ptr<SstFileWriter>&& sst_writer,
                            const std::shared_ptr<MemoryPool>& pool);
@@ -95,7 +95,7 @@ class BTreeGlobalIndexWriter : public GlobalIndexWriter {
     std::shared_ptr<MemoryPool> pool_;
 
     std::shared_ptr<GlobalIndexFileWriter> file_writer_;
-    std::string index_file_name_;
+    std::string index_file_path_;
     std::shared_ptr<OutputStream> output_stream_;
     std::unique_ptr<SstFileWriter> sst_writer_;
 

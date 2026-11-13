@@ -127,7 +127,8 @@ Status BinarySerializerUtils::WriteBinaryData(const std::shared_ptr<arrow::DataT
             writer->WriteInt(pos, getter->GetDate(pos));
             break;
         }
-        case arrow::Type::type::INT32: {
+        case arrow::Type::type::INT32:
+        case arrow::Type::type::TIME32: {
             writer->WriteInt(pos, getter->GetInt(pos));
             break;
         }

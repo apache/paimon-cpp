@@ -56,7 +56,7 @@ class LuceneGlobalIndexTest : public ::testing::Test,
             assert(false);
             return "";
         }
-        std::string ToPath(const std::string& file_name) const override {
+        std::string NewPathFromName(const std::string& file_name) const override {
             return PathUtil::JoinPath(index_path_, file_name);
         }
         bool IsExternalPath() const override {

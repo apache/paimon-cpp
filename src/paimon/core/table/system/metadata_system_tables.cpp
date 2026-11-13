@@ -42,7 +42,6 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
 #include "paimon/common/utils/date_time_utils.h"
-#include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/internal_row_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/rapidjson_util.h"
@@ -206,16 +205,18 @@ Result<std::shared_ptr<FileStorePathFactory>> CreatePathFactory(
         DataField::ConvertDataFieldsToArrowSchema(context.table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
                            core_options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                           core_options.CreateGlobalIndexExternalPath());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
+                           core_options.GetExternalPathWeights());
+    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_index_external_paths,
+                           core_options.CreateGlobalIndexExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
         FileStorePathFactory::Create(
             context.table_path, arrow_schema, context.table_schema->PartitionKeys(),
             core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
             core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
-            external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-            pool));
+            external_paths, global_index_external_paths, core_options.IndexFileInDataFileDir(),
+            external_path_weights, pool));
     return path_factory;
 }
 
@@ -330,11 +331,9 @@ Result<std::string> FilePath(const std::shared_ptr<FileStorePathFactory>& path_f
 }
 
 Result<std::string> FieldValueString(const DataField& field, const VariantType& value) {
-    PAIMON_ASSIGN_OR_RAISE(FieldType field_type,
-                           FieldTypeUtils::ConvertToFieldType(field.Type()->id()));
-    std::shared_ptr<CastExecutor> cast_executor =
-        CastExecutorFactory::GetCastExecutorFactory()->GetCastExecutor(field_type,
-                                                                       FieldType::STRING);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<CastExecutor> cast_executor,
+        CastExecutorFactory::GetCastExecutorFactory()->GetCastExecutor(field, FieldType::STRING));
     if (!cast_executor) {
         return DataDefine::VariantValueToString(value);
     }

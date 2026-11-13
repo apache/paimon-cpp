@@ -40,6 +40,7 @@
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/macros.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/testing/utils/blocking_file_system.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
@@ -141,10 +142,14 @@ class ArrowDeduplicateRealtimeStoreTest : public testing::Test {
         });
         pool_ = GetDefaultPool();
         arrow_pool_ = GetArrowPool(pool_);
-        delegate_ = std::make_shared<ArrowRealtimeStore>(
-            schema_, RealtimeStoreMode::APPEND_ONLY, StatisticsMode::NONE,
-            /*temp_directory=*/"", /*spill_file_system=*/nullptr,
-            /*spill_compression=*/"zstd", /*spill_compression_level=*/1, pool_, arrow_pool_);
+        ASSERT_OK_AND_ASSIGN(delegate_,
+                             ArrowRealtimeStore::Create(schema_, RealtimeStoreMode::APPEND_ONLY,
+                                                        StatisticsMode::NONE,
+                                                        /*temp_directory=*/"",
+                                                        /*spill_file_system=*/nullptr,
+                                                        /*spill_compression=*/"zstd",
+                                                        /*spill_compression_level=*/1,
+                                                        /*index_options=*/{}, pool_, arrow_pool_));
         ASSERT_OK_AND_ASSIGN(store_, ArrowDeduplicateRealtimeStore::Create(
                                          schema_, {"id"}, delegate_, pool_, arrow_pool_));
         empty_lookup_ = std::make_shared<EmptyKeyOffsetLookup>();
@@ -173,10 +178,14 @@ class ArrowDeduplicateRealtimeStoreTest : public testing::Test {
     }
 
     void ResetStoreWithBitmap(const RoaringBitmap32& bitmap) {
-        delegate_ = std::make_shared<ArrowRealtimeStore>(
-            schema_, RealtimeStoreMode::APPEND_ONLY, StatisticsMode::NONE,
-            /*temp_directory=*/"", /*spill_file_system=*/nullptr,
-            /*spill_compression=*/"zstd", /*spill_compression_level=*/1, pool_, arrow_pool_);
+        ASSERT_OK_AND_ASSIGN(delegate_,
+                             ArrowRealtimeStore::Create(schema_, RealtimeStoreMode::APPEND_ONLY,
+                                                        StatisticsMode::NONE,
+                                                        /*temp_directory=*/"",
+                                                        /*spill_file_system=*/nullptr,
+                                                        /*spill_compression=*/"zstd",
+                                                        /*spill_compression_level=*/1,
+                                                        /*index_options=*/{}, pool_, arrow_pool_));
         auto selecting = std::make_shared<BitmapSelectingRealtimeStore>(delegate_, bitmap);
         ASSERT_OK_AND_ASSIGN(store_, ArrowDeduplicateRealtimeStore::Create(
                                          schema_, {"id"}, selecting, pool_, arrow_pool_));
@@ -188,7 +197,9 @@ class ArrowDeduplicateRealtimeStoreTest : public testing::Test {
         int32_t batch_size) const {
         auto c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema, c_schema.get()));
-        RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr, batch_size};
+        RealtimeQueryContext context{
+            c_schema.get(),
+            /*predicate=*/nullptr, view->GetOffsetRange().value_or(OffsetRange(0, 0)), batch_size};
         return store_->CreateQueryReaders(view, context);
     }
 
@@ -200,9 +211,15 @@ class ArrowDeduplicateRealtimeStoreTest : public testing::Test {
     }
 
     Result<std::vector<int64_t>> ReadOffsets(const std::shared_ptr<RealtimeReadView>& view) const {
+        return ReadOffsets(view, nullptr, view->GetOffsetRange().value_or(OffsetRange(0, 0)));
+    }
+
+    Result<std::vector<int64_t>> ReadOffsets(const std::shared_ptr<RealtimeReadView>& view,
+                                             const std::shared_ptr<Predicate>& predicate,
+                                             const OffsetRange& offset_range) const {
         auto c_schema = std::make_unique<ArrowSchema>();
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema_, c_schema.get()));
-        RealtimeQueryContext context{c_schema.get(), /*predicate=*/nullptr};
+        RealtimeQueryContext context{c_schema.get(), predicate, offset_range, 1024};
         PAIMON_ASSIGN_OR_RAISE(std::vector<std::unique_ptr<BatchReader>> readers,
                                store_->CreateQueryReaders(view, context));
         std::vector<int64_t> result;
@@ -313,6 +330,46 @@ TEST_F(ArrowDeduplicateRealtimeStoreTest, TestLastWriteWinsAndReadViewIsSnapshot
     ASSERT_TRUE(segment.has_value());
     ASSERT_EQ(2, segment.value()->GetRowCount());
     ASSERT_EQ(OffsetRange(1, 5), segment.value()->GetOffsetRange());
+}
+
+TEST_F(ArrowDeduplicateRealtimeStoreTest, TestHashPostingsCombineWithPinnedDvWithoutIndexCopies) {
+    ASSERT_OK_AND_ASSIGN(
+        delegate_, ArrowRealtimeStore::Create(schema_, RealtimeStoreMode::APPEND_ONLY,
+                                              StatisticsMode::NONE, "", nullptr, "zstd", 1,
+                                              {{"realtime.index.hash.columns", "id,value"}}, pool_,
+                                              arrow_pool_));
+    ASSERT_OK_AND_ASSIGN(store_, ArrowDeduplicateRealtimeStore::Create(schema_, {"id"}, delegate_,
+                                                                       pool_, arrow_pool_));
+    ASSERT_OK(store_->AttachCommittedKeyOffsetLookup(empty_lookup_));
+    ASSERT_OK(store_->WriteAndLookup(MakeBatch(R"([[10, 1, "old"]])"),
+                                     {RecordBatch::RowKind::INSERT}, OffsetRange(10, 11),
+                                     RoaringBitmap64()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> old_view, store_->AcquireReadView());
+    ASSERT_OK(store_->WriteAndLookup(MakeBatch(R"([[20, 1, "new"]])"),
+                                     {RecordBatch::RowKind::UPDATE_AFTER}, OffsetRange(20, 21),
+                                     RoaringBitmap64()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> new_view, store_->AcquireReadView());
+    ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
+                         store_->SealForCommit());
+    ASSERT_TRUE(segment.has_value());
+    ASSERT_OK(store_->RetireCommittedOffsetAndLookup(21, empty_lookup_));
+
+    const std::shared_ptr<Predicate> key =
+        PredicateBuilder::Equal(1, "id", FieldType::BIGINT, Literal(int64_t{1}));
+    const std::shared_ptr<Predicate> old_value = PredicateBuilder::Equal(
+        2, "value", FieldType::STRING, Literal(FieldType::STRING, "old", 3));
+    ASSERT_OK_AND_ASSIGN(std::vector<int64_t> old_offsets,
+                         ReadOffsets(old_view, key, OffsetRange(0, 100)));
+    ASSERT_EQ((std::vector<int64_t>{10}), old_offsets);
+    ASSERT_OK_AND_ASSIGN(std::vector<int64_t> new_offsets,
+                         ReadOffsets(new_view, key, OffsetRange(0, 100)));
+    ASSERT_EQ((std::vector<int64_t>{20}), new_offsets);
+    ASSERT_OK_AND_ASSIGN(old_offsets, ReadOffsets(old_view, old_value, OffsetRange(0, 100)));
+    ASSERT_EQ((std::vector<int64_t>{10}), old_offsets);
+    ASSERT_OK_AND_ASSIGN(new_offsets, ReadOffsets(new_view, old_value, OffsetRange(0, 100)));
+    ASSERT_TRUE(new_offsets.empty());
+    ASSERT_OK_AND_ASSIGN(new_offsets, ReadOffsets(new_view, key, OffsetRange(10, 20)));
+    ASSERT_TRUE(new_offsets.empty());
 }
 
 TEST_F(ArrowDeduplicateRealtimeStoreTest, TestDeleteProducesNoLiveRows) {
@@ -450,9 +507,10 @@ TEST_F(ArrowDeduplicateRealtimeStoreTest, TestSpilledBitmapFilteringPreservesRaw
     auto directory = UniqueTestDirectory::Create();
     ASSERT_NE(nullptr, directory);
     auto fs = std::make_shared<LocalFileSystem>();
-    delegate_ = std::make_shared<ArrowRealtimeStore>(schema_, RealtimeStoreMode::APPEND_ONLY,
-                                                     StatisticsMode::NONE, directory->Str(), fs,
-                                                     "zstd", 1, pool_, arrow_pool_);
+    ASSERT_OK_AND_ASSIGN(
+        delegate_, ArrowRealtimeStore::Create(schema_, RealtimeStoreMode::APPEND_ONLY,
+                                              StatisticsMode::NONE, directory->Str(), fs, "zstd", 1,
+                                              /*index_options=*/{}, pool_, arrow_pool_));
     ASSERT_OK_AND_ASSIGN(store_, ArrowDeduplicateRealtimeStore::Create(schema_, {"id"}, delegate_,
                                                                        pool_, arrow_pool_));
     ASSERT_OK(store_->AttachCommittedKeyOffsetLookup(empty_lookup_));
@@ -557,9 +615,11 @@ TEST_F(ArrowDeduplicateRealtimeStoreTest, TestOffsetMergeScanMatchesContains) {
 TEST_F(ArrowDeduplicateRealtimeStoreTest, TestFreezePreservesCheckpointWithoutSpilling) {
     auto directory = UniqueTestDirectory::Create();
     ASSERT_NE(nullptr, directory);
-    delegate_ = std::make_shared<ArrowRealtimeStore>(
-        schema_, RealtimeStoreMode::APPEND_ONLY, StatisticsMode::NONE, directory->Str(),
-        directory->GetFileSystem(), "zstd", 1, pool_, arrow_pool_);
+    ASSERT_OK_AND_ASSIGN(
+        delegate_,
+        ArrowRealtimeStore::Create(schema_, RealtimeStoreMode::APPEND_ONLY, StatisticsMode::NONE,
+                                   directory->Str(), directory->GetFileSystem(), "zstd", 1,
+                                   /*index_options=*/{}, pool_, arrow_pool_));
     ASSERT_OK_AND_ASSIGN(store_, ArrowDeduplicateRealtimeStore::Create(schema_, {"id"}, delegate_,
                                                                        pool_, arrow_pool_));
     ASSERT_OK(store_->AttachCommittedKeyOffsetLookup(empty_lookup_));
@@ -642,9 +702,10 @@ TEST_F(ArrowDeduplicateRealtimeStoreTest, TestSpillDoesNotBlockWriteAndPreserves
             auto close_gate = fs->BlockNext(BlockingFileSystem::Operation::CLOSE, /*path=*/"");
             close_gate->Release(Status::IOError("injected spill close failure"));
         }
-        delegate_ = std::make_shared<ArrowRealtimeStore>(schema_, RealtimeStoreMode::APPEND_ONLY,
-                                                         StatisticsMode::NONE, directory->Str(), fs,
-                                                         "zstd", 1, pool_, arrow_pool_);
+        ASSERT_OK_AND_ASSIGN(delegate_, ArrowRealtimeStore::Create(
+                                            schema_, RealtimeStoreMode::APPEND_ONLY,
+                                            StatisticsMode::NONE, directory->Str(), fs, "zstd", 1,
+                                            /*index_options=*/{}, pool_, arrow_pool_));
         ASSERT_OK_AND_ASSIGN(store_, ArrowDeduplicateRealtimeStore::Create(
                                          schema_, {"id"}, delegate_, pool_, arrow_pool_));
         ASSERT_OK(store_->AttachCommittedKeyOffsetLookup(empty_lookup_));

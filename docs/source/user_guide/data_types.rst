@@ -160,14 +160,129 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
        stored as milliseconds of the day whatever p is, so ``TIME(6)`` and
        ``TIME(9)`` values keep only millisecond precision.
 
-       Paimon C++ reads TIME columns from Parquet, Lance and Vortex data files
-       and writes them to Lance and Vortex data files. ORC and Avro data files
-       do not support TIME.
+       Both append-only and primary-key tables support TIME columns, as value
+       columns, primary keys, partition keys and bucket keys:
 
-       **Note:** Only append-only tables support TIME columns. Primary-key
-       tables do not support TIME, whether as a primary key or as a value
-       column. A TIME column also cannot be a partition or bucket key, and
-       predicates cannot reference TIME columns.
+       - A TIME partition value is written like Paimon Java: ``HH:mm:ss``
+         followed by at most p fractional digits with trailing zeros dropped,
+         except that a whole second keeps one digit when p is greater than 0.
+         For example ``12:34:56.123`` and ``01:02:03.0`` for ``TIME(3)``, and
+         ``01:02:03`` for ``TIME(0)``. With ``partition.legacy-name`` set to
+         true, it is the milliseconds of the day.
+       - A TIME bucket key is hashed as its int32 milliseconds of the day, like
+         Paimon Java.
+       - Predicates can reference TIME columns. A TIME literal is created with
+         ``Literal(FieldType::TIME, millis)``, where ``millis`` is the
+         milliseconds of the day and must be in ``[0, 86400000)``. A query auth
+         row filter of a REST catalog table reads a TIME literal like Paimon
+         Java ``LocalTime.parse``, such as ``12:34:56.123``.
+
+       An Arrow time column of any unit other than milliseconds is rejected by
+       predicates, by partition and bucket keys, and when writing ORC and Avro
+       files. ``variant_get`` rejects such a target type too, including one
+       nested in a ROW, ARRAY or MAP. Reading ORC and Avro files rejects it
+       too, including a read schema such as ``time32[s]`` passed to
+       ``SetReadSchema``, so a value is never written or read in another unit.
+
+       TIME statistics are int statistics. A format stats extractor returns an
+       ``IntColumnStats`` for a TIME column, and manifest files keep its int32
+       values and read them back with the TIME type of the table schema. The
+       following table shows the TIME support of each data file format:
+
+       .. list-table::
+          :header-rows: 1
+
+          * - Format
+            - Physical type, same as Paimon Java
+            - Statistics
+            - Tested in Paimon C++
+            - Verified against Paimon Java
+          * - Parquet
+            - ``INT32`` annotated as ``TIME(MILLIS)``
+            - min and max
+            - append-only and primary-key tables
+            - read only
+          * - ORC
+            - ``int``
+            - min and max
+            - append-only and primary-key tables
+            - read only
+          * - Avro
+            - ``int`` annotated as ``time-millis``; ``TIME(p)`` with p greater
+              than 3 is rejected, like Paimon Java
+            - empty
+            - append-only and primary-key tables
+            - read only
+          * - Lance
+            - ``time32[ms]``
+            - empty
+            - append-only and primary-key tables
+            - no
+          * - Vortex
+            - ``time32[ms]``
+            - empty
+            - append-only and primary-key tables, without deletion vectors
+            - no
+          * - Mosaic
+            - ``time32[ms]``
+            - min and max of the columns in ``mosaic.stats-columns``, decoded as
+              big-endian int32 like Paimon Java
+            - append-only and primary-key tables
+            - no
+
+       The tests of Paimon C++ cover:
+
+       - Append-only tables: TIME partition keys read with predicates that
+         combine the partition key, a TIME value column and ``IS [NOT] NULL``.
+       - Primary-key tables: TIME partition, primary and bucket keys with
+         several buckets, updates, deletes, full compaction, bucket pruning
+         and deletion vectors. Key statistics pruning is tested for Parquet and
+         ORC only.
+
+       Lance, Vortex and Mosaic are only tested when Paimon C++ is built with
+       them enabled.
+
+       Across languages, "read only" means that Paimon C++ reads append-only
+       tables with TIME columns that Paimon Java writes. The following is
+       implemented following Paimon Java but not verified against it yet:
+
+       - Paimon Java reading tables that Paimon C++ writes.
+       - Paimon C++ reading primary-key tables that Paimon Java writes,
+         including TIME partitions, buckets, updates, deletes and compaction.
+       - TIME partition values and bucket ids computed by Paimon Java. The tests
+         of Paimon C++ compute the expected bucket ids with Paimon C++ itself.
+
+       A TIME string, such as a partition value, is parsed like Paimon Java
+       ``BinaryStringUtils.toTime``: an integer number of milliseconds, or
+       ``H[H][:m[m][:s[s][.f...]]]`` whose fraction is rounded half up to
+       milliseconds, optionally followed by an offset ``[+|-]hh[:mm]`` that is
+       added to the time, so ``12:34:56+01:00`` is ``13:34:56``. A string whose
+       components are all in range gives the same value as in Paimon Java.
+       Unlike Paimon Java, which may return an out-of-range value, Paimon C++
+       rejects an hour above 23, a minute, second or offset minute above 59, an
+       offset hour above 23, a non-digit in the fraction and a result outside
+       the day. It also accepts an ``hh:mm`` offset after ``H`` or ``H:m``,
+       such as ``12:34+01:00``, which Paimon Java rejects.
+
+       As in Paimon Java, schema evolution can change a column between TIME
+       and ``STRING``, ``TIMESTAMP`` or ``TIMESTAMP WITH LOCAL TIME ZONE``, and
+       reading older files casts their values:
+
+       - A string is parsed as described above, and a TIME value is formatted
+         as a partition value is, with the precision of the TIME type it was
+         written with.
+       - A timestamp gives its time of day, and a TIME value becomes that time
+         on 1970-01-01, both in the local time zone for ``TIMESTAMP WITH LOCAL
+         TIME ZONE``.
+
+       System tables, such as ``$files``, format TIME values in the same way as
+       a cast to ``STRING``.
+
+       **Note:** The following are not supported for TIME yet:
+
+       - Column default values (``fields.<name>.default-value``). Paimon C++
+         does not validate or apply default values for any type yet.
+       - File or global indexes on TIME columns.
 
    * - ``TIMESTAMP``
 

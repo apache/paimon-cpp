@@ -19,7 +19,9 @@ Data Cleanup
 ===================================
 .. note::
 
-  The entire data cleanup feature supports only append tables, and cleanup of index manifests, changelog, statistics are not supported. Do not use this feature with primary key tables.
+  Cleanup supports append and primary-key tables, subject to the restrictions
+  below. Index manifests and index payloads are included. Cleanup of changelog
+  and statistics files is not supported.
 
 This document describes three cleanup capabilities:
 
@@ -35,9 +37,15 @@ Orphan File Cleanup
 Description
 ~~~~~~~~~~~~~~~~~~~
 
-- Orphan file cleanup currently supports only append tables.
+- Orphan file cleanup supports append and primary-key tables.
 - It runs as an independent task: construct a ``CleanContext`` and
   launch an ``OrphanFilesCleaner``.
+- It covers table-local index manifests and payloads as well as data files,
+  preserving files referenced by retained snapshots. It does not enumerate a
+  potentially shared ``global-index.external-path``.
+- Tables with tags or branches, or snapshots with a changelog manifest list,
+  are rejected with ``NotImplemented``. Tag retention during snapshot expiration
+  is supported separately, as described below.
 
 Detailed Steps
 ~~~~~~~~~~~~~~
@@ -62,7 +70,7 @@ Performance Considerations
 .. admonition:: TODO
   :class: tip
 
-  - Support cleanup of index manifests, changelog, statistics, etc.
+  - Support cleanup of changelog and statistics files.
 
 .. _expiring-partitions:
 
@@ -109,10 +117,17 @@ Description
   - ``snapshot.time-retained``: The maximum age of completed snapshots
     to retain. Default: 1 hour.
   - ``snapshot.expire.limit``: The maximum number of snapshots allowed
-    to expire at a time. Default: 10.
+    to expire at a time. Default: 50.
+  - ``snapshot.clean-empty-directories``: Remove empty bucket and partition
+    directories after deleting their data files, without deleting the table
+    directory. Default: false.
 
 - The snapshot expiration interface deletes data files according to the
   expiration policy and returns the number of snapshots deleted.
+- Data files, index manifests and index payloads referenced by retained
+  snapshots or current-branch tags are preserved. Retired index payloads are
+  deleted before their index manifests, including payloads stored under
+  ``global-index.external-path``.
 - Expiration on a branch other than main, or on a table with such a branch under
   ``branch/branch-<name>``, is not supported: branches share the table's data
   files, so expiration returns ``NotImplemented`` before deleting anything.
@@ -149,7 +164,7 @@ Detailed Steps
      * ``DELETE`` then ``ADD`` → the initial ``DELETE`` does not apply (file did not exist yet); the subsequent ``ADD`` ensures the file remains.
 
 5. Clean meta files:
-   - Preserve manifests used by the last snapshot in the cleanup range (``end_exclusive_id``).
+   - Preserve manifests used by retained snapshots and current-branch tags.
    - Delete manifest files used by snapshots from ``begin_inclusive_id`` to ``end_exclusive_id`` (exclusive) and delete the snapshot files themselves.
 6. Rewrite ``EarliestHint`` to ``end_exclusive_id``.
 7. Return the number of snapshots deleted, i.e., ``end_exclusive_id - begin_inclusive_id``.
@@ -164,6 +179,4 @@ Performance Considerations
 .. admonition:: TODO
   :class: tip
 
-  - Preserve tag (savepoint) data via ``tagManager``.
   - Delete changelog files.
-  - Remove empty directories.

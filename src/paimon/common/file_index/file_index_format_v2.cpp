@@ -21,10 +21,10 @@
 #include <utility>
 
 #include "paimon/common/io/data_output_stream.h"
-#include "paimon/common/io/offset_output_stream.h"
 #include "paimon/common/utils/math.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/io/data_input_stream.h"
+#include "paimon/io/offset_output_stream.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/status.h"
 

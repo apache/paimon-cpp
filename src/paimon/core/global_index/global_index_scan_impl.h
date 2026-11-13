@@ -29,6 +29,7 @@
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/global_index/global_index_evaluator.h"
+#include "paimon/core/global_index/global_index_evaluator_impl.h"
 #include "paimon/core/global_index/global_index_file_manager.h"
 #include "paimon/core/global_index/live_row_global_index_reader.h"
 #include "paimon/core/index/index_file_meta.h"
@@ -47,12 +48,29 @@ class GlobalIndexScanImpl : public GlobalIndexScan {
         const CoreOptions& options, const std::shared_ptr<Executor>& executor,
         const std::shared_ptr<MemoryPool>& pool);
 
+    /// Creates a scan of `index_files` alone, to pre-filter the rows of a search, as Java
+    /// `DataEvolutionGlobalIndexScanner#createForScalarFilters` does. Files of multi-field indexes
+    /// are left out, as the coverage of a filter is decided per column.
+    static std::unique_ptr<GlobalIndexScanImpl> CreateForScalarFilters(
+        const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& options,
+        const std::shared_ptr<IndexPathFactory>& path_factory,
+        const std::vector<std::shared_ptr<IndexFileMeta>>& index_files,
+        const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool);
+
     /// Returns `executor` if it is not null, or else creates an executor with
     /// `global-index.thread-num` threads, which defaults to the number of CPUs.
     static Result<std::shared_ptr<Executor>> GetOrCreateExecutor(
         const std::shared_ptr<Executor>& executor, const CoreOptions& options);
 
     Result<std::shared_ptr<GlobalIndexResult>> Scan(const std::shared_ptr<Predicate>& predicate);
+
+    /// Evaluates `predicate` and reports the fields that decided the result, as Java
+    /// `DataEvolutionGlobalIndexScanner#scanWithCoverage` does. Unlike `Scan()`, the indexes of a
+    /// field are read as one union: indexes of different types may cover different rows, so
+    /// intersecting them would drop the rows that only one of them covers.
+    /// @return The evaluation, or nullopt if the indexes cannot evaluate the predicate.
+    Result<std::optional<GlobalIndexEvaluatorImpl::Evaluation>> ScanWithCoverage(
+        const std::shared_ptr<Predicate>& predicate) const;
 
     Result<std::vector<std::shared_ptr<GlobalIndexReader>>> CreateReaders(
         const std::string& field_name,

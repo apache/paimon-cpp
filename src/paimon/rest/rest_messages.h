@@ -532,4 +532,53 @@ class CommitLockResponse : public Jsonizable<CommitLockResponse> {
     std::optional<Snapshot> snapshot_;
 };
 
+/// Asks for the row filters and column masks a query of one table is subject to.
+class AuthTableQueryRequest : public Jsonizable<AuthTableQueryRequest> {
+ public:
+    /// @param select Columns the query reads, or null for all of them.
+    explicit AuthTableQueryRequest(const std::optional<std::vector<std::string>>& select)
+        : select_(select) {}
+
+    rapidjson::Value ToJson(rapidjson::Document::AllocatorType* allocator) const
+        noexcept(false) override;
+    void FromJson(const rapidjson::Value& obj) noexcept(false) override;
+
+    const std::optional<std::vector<std::string>>& GetSelect() const {
+        return select_;
+    }
+
+    AuthTableQueryRequest() = default;
+
+ private:
+    std::optional<std::vector<std::string>> select_;
+};
+
+/// The row filters and column masks a query of one table is subject to. Both are kept as the
+/// JSON the server sent: `filter` holds serialized predicates that all apply, and
+/// `columnMasking` maps a column to the serialized transform that replaces its values. An absent
+/// member is read as no rules of that kind.
+class AuthTableQueryResponse : public Jsonizable<AuthTableQueryResponse> {
+ public:
+    AuthTableQueryResponse(const std::vector<std::string>& filter,
+                           const std::map<std::string, std::string>& column_masking)
+        : filter_(filter), column_masking_(column_masking) {}
+
+    rapidjson::Value ToJson(rapidjson::Document::AllocatorType* allocator) const
+        noexcept(false) override;
+    void FromJson(const rapidjson::Value& obj) noexcept(false) override;
+
+    const std::vector<std::string>& GetFilter() const {
+        return filter_;
+    }
+    const std::map<std::string, std::string>& GetColumnMasking() const {
+        return column_masking_;
+    }
+
+    AuthTableQueryResponse() = default;
+
+ private:
+    std::vector<std::string> filter_;
+    std::map<std::string, std::string> column_masking_;
+};
+
 }  // namespace paimon

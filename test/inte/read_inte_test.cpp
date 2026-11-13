@@ -35,6 +35,7 @@
 #include "arrow/array/array_base.h"
 #include "arrow/c/abi.h"
 #include "arrow/ipc/json_simple.h"
+#include "arrow/util/key_value_metadata.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
@@ -45,6 +46,7 @@
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/types/data_type.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/read_ahead_cache.h"
@@ -172,8 +174,12 @@ class ReadInteTest : public testing::Test, public ::testing::WithParamInterface<
             EXPECT_TRUE(schema_ids.empty() || schema_ids.size() == data_files.size());
             for (uint32_t j = 0; j < data_files.size(); j++) {
                 const auto& data_file = data_files[j];
+                EXPECT_OK_AND_ASSIGN(
+                    FileStatus file_status,
+                    LocalFileSystem().GetFileStatus(PathUtil::JoinPath(bucket_path, data_file)));
                 data_file_metas.push_back(std::make_shared<DataFileMeta>(
-                    data_file, /*file_size=*/1, /*row_count=*/1, /*min_key=*/BinaryRow::EmptyRow(),
+                    data_file, /*file_size=*/file_status.GetLen(), /*row_count=*/1,
+                    /*min_key=*/BinaryRow::EmptyRow(),
                     /*max_key=*/BinaryRow::EmptyRow(), /*key_stats=*/SimpleStats::EmptyStats(),
                     /*value_stats=*/SimpleStats::EmptyStats(), /*min_sequence_number=*/0,
                     /*max_sequence_number=*/0, /*schema_id=*/schema_ids.empty() ? 0 : schema_ids[j],
@@ -1302,6 +1308,45 @@ TEST(SystemTableReadInteTest, TestReadFilesSystemTableForPartitionedTable) {
     ASSERT_EQ(null_value_counts_array->GetString(0), "{dt=0, pk=0, v=0}");
     ASSERT_EQ(min_value_stats_array->GetString(0), "{dt=20260527, pk=a, v=1}");
     ASSERT_EQ(max_value_stats_array->GetString(0), "{dt=20260527, pk=a, v=1}");
+}
+
+TEST(SystemTableReadInteTest, TestReadFilesSystemTableWithTimeColumns) {
+    auto time_field = [](const std::string& name, const std::string& precision) {
+        return arrow::field(name, arrow::time32(arrow::TimeUnit::MILLI), /*nullable=*/false,
+                            arrow::key_value_metadata({DataType::kTimePrecision}, {precision}));
+    };
+    arrow::FieldVector fields = {time_field("dt", "3"), time_field("pk", "0"),
+                                 time_field("v", "9")};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_SYSTEM, "local"}, {Options::FILE_FORMAT, "parquet"}, {Options::BUCKET, "1"}};
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(auto helper, TestHelper::Create(dir->Str(), arrow::schema(fields),
+                                                         /*partition_keys=*/{"dt"},
+                                                         /*primary_keys=*/{"dt", "pk"}, options,
+                                                         /*is_streaming_mode=*/true));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([[3723000, 45296000, 45296123]])",
+                                    /*partition_map=*/{{"dt", "01:02:03.0"}},
+                                    /*bucket=*/0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+
+    std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(auto files_result, ReadSystemTable(table_path + "$files", options));
+    auto files_array = SingleStructChunk(files_result);
+    ASSERT_EQ(files_array->length(), 1);
+    auto partition_array = std::dynamic_pointer_cast<arrow::StringArray>(files_array->field(0));
+    auto min_key_array = std::dynamic_pointer_cast<arrow::StringArray>(files_array->field(8));
+    auto min_value_stats_array =
+        std::dynamic_pointer_cast<arrow::StringArray>(files_array->field(11));
+    ASSERT_TRUE(partition_array);
+    ASSERT_TRUE(min_key_array);
+    ASSERT_TRUE(min_value_stats_array);
+    ASSERT_EQ(partition_array->GetString(0), "{01:02:03.0}");
+    ASSERT_EQ(min_key_array->GetString(0), "[12:34:56]");
+    ASSERT_EQ(min_value_stats_array->GetString(0), "{dt=01:02:03.0, pk=12:34:56, v=12:34:56.123}");
 }
 
 TEST(SystemTableReadInteTest, TestReadFilesSystemTableForPartitionedPartialWrite) {
@@ -4544,6 +4589,26 @@ TEST(SystemTableReadInteTest, TestReadGlobalPartitions) {
                                      /*expected_commit_messages=*/std::nullopt));
 
     ASSERT_OK_AND_ASSIGN(auto catalog, Catalog::Create(warehouse, options));
+    std::map<std::string, std::string> query_auth_options = options;
+    query_auth_options[Options::QUERY_AUTH_ENABLED] = "true";
+    const Identifier query_auth_table("foo", "query_auth");
+    ::ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+    ASSERT_OK(catalog->CreateTable(query_auth_table, &c_schema, /*partition_keys=*/{"dt", "region"},
+                                   /*primary_keys=*/{}, query_auth_options,
+                                   /*ignore_if_exists=*/false));
+    ArrowSchemaRelease(&c_schema);
+    ASSERT_OK_AND_ASSIGN(std::string query_auth_path, catalog->GetTableLocation(query_auth_table));
+    ASSERT_OK_AND_ASSIGN(auto query_auth_helper,
+                         TestHelper::Create(query_auth_path, query_auth_options,
+                                            /*is_streaming_mode=*/true));
+    ASSERT_OK_AND_ASSIGN(batch, TestHelper::MakeRecordBatch(
+                                    arrow::struct_(fields), R"([["2026-07-13", "secret", 2]])",
+                                    /*partition_map=*/{{"dt", "2026-07-13"}, {"region", "secret"}},
+                                    /*bucket=*/0, {}));
+    ASSERT_OK(query_auth_helper->WriteAndCommit(std::move(batch), /*commit_identifier=*/0,
+                                                /*expected_commit_messages=*/std::nullopt));
+
     auto fs = catalog->GetFileSystem();
     ASSERT_OK_AND_ASSIGN(auto part_result, ReadGlobalSystemTable("partitions", catalog.get(), fs,
                                                                  warehouse, options));

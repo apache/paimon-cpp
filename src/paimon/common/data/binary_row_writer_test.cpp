@@ -39,7 +39,7 @@
 #include "paimon/testing/utils/testharness.h"
 namespace paimon::test {
 TEST(BinaryRowWriterTest, TestFieldSetter) {
-    int32_t arity = 24;
+    int32_t arity = 25;
     BinaryRow row(arity);
     BinaryRowWriter writer(&row, /*initial_size=*/0, GetDefaultPool().get());
     writer.Reset();
@@ -106,6 +106,9 @@ TEST(BinaryRowWriterTest, TestFieldSetter) {
     ASSERT_OK_AND_ASSIGN(
         BinaryRowWriter::FieldSetterFunc setter23,
         BinaryRowWriter::CreateFieldSetter(23, arrow::timestamp(arrow::TimeUnit::NANO, timezone)));
+    ASSERT_OK_AND_ASSIGN(
+        BinaryRowWriter::FieldSetterFunc setter24,
+        BinaryRowWriter::CreateFieldSetter(24, arrow::time32(arrow::TimeUnit::MILLI)));
 
     setter0(true, &writer);
     setter1(static_cast<char>(1), &writer);
@@ -135,6 +138,7 @@ TEST(BinaryRowWriterTest, TestFieldSetter) {
     setter21(Timestamp(1758030902002l, 0), &writer);
     setter22(Timestamp(1758030902002l, 2000), &writer);
     setter23(Timestamp(1758030902002l, 2002), &writer);
+    setter24(45296123, &writer);
 
     writer.Complete();
 
@@ -208,6 +212,9 @@ TEST(BinaryRowWriterTest, TestFieldSetter) {
     ASSERT_OK_AND_ASSIGN(InternalRow::FieldGetterFunc getter23,
                          InternalRow::CreateFieldGetter(23, arrow::timestamp(arrow::TimeUnit::NANO),
                                                         /*use_view=*/true));
+    ASSERT_OK_AND_ASSIGN(InternalRow::FieldGetterFunc getter24,
+                         InternalRow::CreateFieldGetter(24, arrow::time32(arrow::TimeUnit::MILLI),
+                                                        /*use_view=*/true));
 
     ASSERT_EQ(DataDefine::GetVariantValue<bool>(getter0(row)), true);
     ASSERT_EQ(DataDefine::GetVariantValue<char>(getter1(row)), static_cast<char>(1));
@@ -240,6 +247,7 @@ TEST(BinaryRowWriterTest, TestFieldSetter) {
               Timestamp(1758030902002l, 2000));
     ASSERT_EQ(DataDefine::GetVariantValue<Timestamp>(getter23(row)),
               Timestamp(1758030902002l, 2002));
+    ASSERT_EQ(DataDefine::GetVariantValue<int32_t>(getter24(row)), 45296123);
 }
 
 TEST(BinaryRowWriterTest, TestFieldSetterWithNull) {

@@ -1,0 +1,11 @@
+diff --git a/sdk/src/internal/ClientImplBase.cpp b/sdk/src/internal/ClientImplBase.cpp
+--- a/sdk/src/internal/ClientImplBase.cpp
++++ b/sdk/src/internal/ClientImplBase.cpp
+@@ -354,6 +354,6 @@
+     context.signingContext.expirationInEpoch = 0;
+     if (input.opMetadata.find("EXPIRATION_TIME") != input.opMetadata.end()) {
+-        auto value = input.opMetadata.at("EXPIRATION_TIME");
++        const auto& value = input.opMetadata.at("EXPIRATION_TIME");
+         if (auto* val = std::get_if<std::int64_t>(&value)) {
+             context.signingContext.expirationInEpoch = static_cast<std::time_t>(*val);
+         }

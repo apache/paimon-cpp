@@ -145,6 +145,16 @@ class PAIMON_EXPORT StringUtils {
 
     static Result<int32_t> StringToDate(const std::string& str);
 
+    /// Parses a TIME string into milliseconds of the day like Java `BinaryStringUtils#toTime`:
+    /// an integer number of milliseconds, or `H[H][:m[m][:s[s][.f...]]]` with the fraction
+    /// rounded half up to milliseconds and an optional `[+|-]hh[:mm]` offset added to the time.
+    ///
+    /// Unlike Java, which keeps whatever the arithmetic gives, an hour above 23, a minute or
+    /// second above 59, an offset above 23:59, a non-digit in the fraction and a result outside
+    /// [0, 86400000) are rejected, while an `hh:mm` offset after `H` or `H:m` (`12:34+01:00`),
+    /// which Java rejects, is accepted.
+    static Result<int32_t> StringToTime(const std::string& str);
+
     static Result<int64_t> StringToTimestampMillis(const std::string& str);
 
     template <typename T>

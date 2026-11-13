@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "arrow/api.h"
+#include "arrow/array/concatenate.h"
 #include "arrow/c/bridge.h"
 #include "arrow/compute/api.h"
 #include "paimon/common/reader/reader_utils.h"
@@ -181,17 +182,23 @@ class ReadResultCollector {
     static Result<std::shared_ptr<arrow::ChunkedArray>> SortArray(
         const std::shared_ptr<arrow::ChunkedArray>& array,
         const std::shared_ptr<arrow::Schema>& schema) {
+        if (array->num_chunks() == 0) {
+            return array;
+        }
         std::vector<arrow::compute::SortKey> sort_keys;
         for (const auto& name : schema->field_names()) {
             sort_keys.emplace_back(name, arrow::compute::SortOrder::Ascending);
         }
         auto sort_options = arrow::compute::SortOptions(sort_keys);
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> concatenated,
+                                          arrow::Concatenate(array->chunks()));
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-            auto sorted_indices, arrow::compute::SortIndices(arrow::Datum(array), sort_options));
+            std::shared_ptr<arrow::Array> sorted_indices,
+            arrow::compute::SortIndices(arrow::Datum(concatenated), sort_options));
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-            auto sorted_batch,
-            arrow::compute::Take(arrow::Datum(array), arrow::Datum(sorted_indices)));
-        return sorted_batch.chunked_array();
+            arrow::Datum sorted_batch,
+            arrow::compute::Take(arrow::Datum(concatenated), arrow::Datum(sorted_indices)));
+        return std::make_shared<arrow::ChunkedArray>(sorted_batch.make_array());
     }
 
  private:

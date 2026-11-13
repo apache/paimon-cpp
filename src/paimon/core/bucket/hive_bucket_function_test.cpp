@@ -440,8 +440,8 @@ TEST_F(HiveBucketFunctionTest, TestCompatibleWithJava) {
         ASSERT_EQ(97, func->Bucket(CreateStringRow("a"), num_buckets));
     }
 
-    // Case 7: Single DATE field (same as INT)
-    // Java: hashInt(daysSinceEpoch)
+    // Case 7: Single DATE or TIME field (same as INT)
+    // Java: hashInt(daysSinceEpoch) or hashInt(millisOfDay)
     {
         std::vector<HiveFieldInfo> field_infos = {HiveFieldInfo(FieldType::DATE)};
         ASSERT_OK_AND_ASSIGN(auto func, HiveBucketFunction::Create(field_infos));
@@ -449,6 +449,13 @@ TEST_F(HiveBucketFunctionTest, TestCompatibleWithJava) {
         // DATE is stored as int32 days since epoch, hashed same as INT
         // date = 2000 (days), hashInt(2000) = 2000, 2000 % 128 = 80
         ASSERT_EQ(80, func->Bucket(CreateIntRow(2000), num_buckets));
+    }
+    {
+        std::vector<HiveFieldInfo> field_infos = {HiveFieldInfo(FieldType::TIME)};
+        ASSERT_OK_AND_ASSIGN(auto func, HiveBucketFunction::Create(field_infos));
+
+        // time = 45296123 (12:34:56.123), hashInt(45296123) = 45296123, 45296123 % 128 = 123
+        ASSERT_EQ(123, func->Bucket(CreateIntRow(45296123), num_buckets));
     }
 
     // Case 8: Multi-field row (INT, STRING, BINARY, DECIMAL)

@@ -51,10 +51,18 @@ class PAIMON_EXPORT FullTextRead {
     /// ranks only its search row ranges, and with deletion vectors enabled only the rows that are
     /// live in the snapshot the splits were planned from; BM25 statistics still come from its whole
     /// index shard.
-    /// @param splits Splits planned by a `FullTextScan` of the same column, all from one snapshot.
+    ///
+    /// With a row filter (`FullTextSearchBuilder::WithFilter()`), a split ranks only the rows that
+    /// satisfy it, as resolved before ranking by the scalar indexes that the splits carry. Rows
+    /// that no scalar index can evaluate are not ranked. Candidates that the indexes cannot decide
+    /// exactly, as for `Contains`, `EndsWith` and `Like`, are excluded too, so the result may hold
+    /// fewer than `limit` rows, unless `global-index.filter.refine-from-data` verifies them against
+    /// the data of the planned snapshot on this thread.
+    /// @param splits Splits planned by a `FullTextScan` of the same column and filter, all from one
+    ///               snapshot.
     /// @return The rows found, or an error if a split is invalid, its index files do not index the
     ///         column of the latest schema (for example, after the column was replaced), or an
-    ///         index cannot be read.
+    ///         index or data file cannot be read.
     virtual Result<std::shared_ptr<ScoredGlobalIndexResult>> Read(
         const std::vector<std::shared_ptr<FullTextSearchSplit>>& splits) = 0;
 };

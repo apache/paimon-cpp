@@ -796,6 +796,45 @@ TEST(FormatTableTest, TestTheGenericEntryPointsValidateOptionsGivenAtTheCall) {
                         "metastore.partitioned-table");
 }
 
+TEST(FormatTableTest, TestQueryAuthInTheSchemaCannotBeDisabledAtTheCall) {
+    std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> schema,
+                         TableSchema::Create(/*schema_id=*/0, MakeSchema(), /*partition_keys=*/{},
+                                             /*primary_keys=*/{},
+                                             {{Options::TYPE, "format-table"},
+                                              {Options::FILE_FORMAT, "parquet"},
+                                              {Options::QUERY_AUTH_ENABLED, "true"}}));
+    ASSERT_OK_AND_ASSIGN(std::string schema_json, schema->ToJsonString());
+    SchemaManager schema_manager(dir->GetFileSystem(), dir->Str());
+    ASSERT_OK(dir->GetFileSystem()->Mkdirs(schema_manager.SchemaDirectory()));
+    ASSERT_OK(dir->GetFileSystem()->WriteFile(
+        PathUtil::JoinPath(schema_manager.SchemaDirectory(), "schema-0"), schema_json,
+        /*overwrite=*/false));
+    const std::map<std::string, std::string> disabling = {{Options::QUERY_AUTH_ENABLED, "false"}};
+    const std::string refused = "query-auth.enabled is not supported on a format table";
+
+    Status created =
+        FormatTable::Create(dir->GetFileSystem(), dir->Str(), Identifier("db", "tbl"), disabling)
+            .status();
+    ASSERT_TRUE(created.IsInvalid()) << created.ToString();
+    ASSERT_NOK_WITH_MSG(created, refused);
+
+    ScanContextBuilder scan_builder(dir->Str());
+    scan_builder.SetOptions(disabling);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_builder.Finish());
+    Status scanned = TableScan::Create(std::move(scan_context)).status();
+    ASSERT_TRUE(scanned.IsInvalid()) << scanned.ToString();
+    ASSERT_NOK_WITH_MSG(scanned, refused);
+
+    ReadContextBuilder read_builder(dir->Str());
+    read_builder.SetOptions(disabling);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+    Status read = TableRead::Create(std::move(read_context)).status();
+    ASSERT_TRUE(read.IsInvalid()) << read.ToString();
+    ASSERT_NOK_WITH_MSG(read, refused);
+}
+
 TEST(FormatTableTest, TestValueOnlyPartitionCannotBeNamedAfterThisTablesMetadata) {
     // Under the value-only layout a value becomes a directory name unchanged, so `dt` of
     // `schema` would be written over this table's own schema, and an overwrite would delete it.

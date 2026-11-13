@@ -27,6 +27,7 @@
 #include "arrow/util/decimal.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/data/decimal.h"
 #include "paimon/defs.h"
@@ -104,6 +105,8 @@ class PredicateValidator {
             if (schema_type->id() == arrow::Type::DECIMAL128) {
                 PAIMON_RETURN_NOT_OK(ValidateDecimalLiterals(
                     *checked_pointer_cast<arrow::Decimal128Type>(schema_type), *leaf_predicate));
+            } else if (schema_type->id() == arrow::Type::TIME32) {
+                PAIMON_RETURN_NOT_OK(ValidateTimeLiterals(*leaf_predicate));
             }
         } else if (auto compound_predicate =
                        std::dynamic_pointer_cast<CompoundPredicate>(predicate)) {
@@ -133,6 +136,21 @@ class PredicateValidator {
                 return Status::Invalid(fmt::format(
                     "decimal literal {} for field {} does not fit field type DECIMAL({}, {})",
                     decimal.ToString(), field_name, field_type.precision(), field_type.scale()));
+            }
+        }
+        return Status::OK();
+    }
+
+    static Status ValidateTimeLiterals(const LeafPredicate& predicate) {
+        for (const Literal& literal : predicate.Literals()) {
+            if (literal.IsNull()) {
+                continue;
+            }
+            auto millis = literal.GetValue<int32_t>();
+            if (millis < 0 || millis >= DateTimeUtils::MILLIS_PER_DAY) {
+                return Status::Invalid(fmt::format(
+                    "time literal {} for field {} is out of range [0, {}) milliseconds of the day",
+                    millis, predicate.FieldName(), DateTimeUtils::MILLIS_PER_DAY));
             }
         }
         return Status::OK();
@@ -201,6 +219,20 @@ class PredicateValidator {
                     return Status::OK();
                 }
                 break;
+            }
+            case arrow::Type::type::TIME32: {
+                if (field_type != FieldType::TIME) {
+                    break;
+                }
+                // TIME literals hold milliseconds of the day, so only time32[ms] matches them.
+                if (checked_cast<const arrow::Time32Type&>(schema_type).unit() !=
+                    arrow::TimeUnit::MILLI) {
+                    return Status::Invalid(
+                        fmt::format("schema type {} mismatches predicate field type TIME, TIME "
+                                    "requires time32[ms]",
+                                    schema_type.ToString()));
+                }
+                return Status::OK();
             }
             case arrow::Type::type::DECIMAL128:
                 if (field_type == FieldType::DECIMAL) {

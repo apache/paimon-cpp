@@ -116,7 +116,9 @@ class FieldsComparatorTest : public ::testing::Test {
             }
         }
 
-        BinaryRow negative_nan_row = BinaryRowGenerator::GenerateRow({-nan}, pool.get());
+        // Work around a GCC 13.3 ICE when a negated constant initializes a variant.
+        const T negative_nan = -nan;
+        BinaryRow negative_nan_row = BinaryRowGenerator::GenerateRow({negative_nan}, pool.get());
         ASSERT_EQ(0, ascending_comparator->CompareTo(rows.back(), negative_nan_row));
         ASSERT_EQ(0, ascending_comparator->CompareTo(negative_nan_row, rows.back()));
     }
@@ -239,6 +241,14 @@ TEST_F(FieldsComparatorTest, TestSimple) {
              static_cast<int32_t>(20)},
             pool.get());
         CheckResult(row1, row2, {arrow::decimal128(38, 10), arrow::date32()});
+    }
+    {
+        BinaryRow row1 = BinaryRowGenerator::GenerateRow(
+            {static_cast<int32_t>(45296123), static_cast<int32_t>(123)}, pool.get());
+        BinaryRow row2 = BinaryRowGenerator::GenerateRow(
+            {static_cast<int32_t>(45296123), static_cast<int32_t>(86399999)}, pool.get());
+        CheckResult(row1, row2,
+                    {arrow::time32(arrow::TimeUnit::MILLI), arrow::time32(arrow::TimeUnit::MILLI)});
     }
 }
 

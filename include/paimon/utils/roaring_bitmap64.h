@@ -118,6 +118,9 @@ class PAIMON_EXPORT RoaringBitmap64 {
     /// Contain any value in the half-open interval [min, max).
     bool ContainsAny(int64_t min, int64_t max) const;
 
+    /// Optimizes container encodings in place without changing the stored row ids.
+    void RunOptimize();
+
     /// Serialize bitmap to bytes.
     PAIMON_UNIQUE_PTR<Bytes> Serialize(MemoryPool* pool) const;
 

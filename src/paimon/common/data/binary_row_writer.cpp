@@ -96,7 +96,8 @@ Result<BinaryRowWriter::FieldSetterFunc> BinaryRowWriter::CreateFieldSetter(
             };
             break;
         }
-        case arrow::Type::type::DATE32: {
+        case arrow::Type::type::DATE32:
+        case arrow::Type::type::TIME32: {
             field_setter = [field_idx](const VariantType& field, BinaryRowWriter* writer) -> void {
                 return writer->WriteInt(field_idx, DataDefine::GetVariantValue<int32_t>(field));
             };

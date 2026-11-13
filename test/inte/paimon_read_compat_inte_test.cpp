@@ -408,18 +408,23 @@ TEST_P(PaimonReadCompatInteTest, ReadsCompatibleTypeValues) {
 
 TEST_P(PaimonReadCompatInteTest, ReadsTimeValues) {
     const CompatibilityParam& param = GetParam();
-    if (param.file_format != "parquet") {
-        GTEST_SKIP() << "TIME reading is only supported for Parquet";
-    }
-    for (int32_t precision : {0, 3, 6, 9}) {
+    std::vector<int32_t> precisions =
+        param.file_format == "avro" ? std::vector<int32_t>{0, 3} : std::vector<int32_t>{0, 3, 6, 9};
+    for (int32_t precision : precisions) {
+        SCOPED_TRACE(precision);
         std::string field_name = "f_time_" + std::to_string(precision);
         ASSERT_OK_AND_ASSIGN(auto result,
                              ReadTable(param, param.writer_prefix + "_time_types", {field_name}));
         auto rows = GetOnlyStructChunk(result);
         ASSERT_TRUE(rows);
-        ASSERT_EQ(rows->length(), 2);
+        std::string expected = precision == 0 ? "45296000, null" : "45296123, null";
+        if (param.file_format == "orc") {
+            expected += ", 0";
+        } else if (param.file_format == "avro") {
+            expected += ", null";
+        }
         AssertFieldEqualsJson(rows, field_name, arrow::time32(arrow::TimeUnit::MILLI),
-                              precision == 0 ? "[45296000, null]" : "[45296123, null]");
+                              "[" + expected + "]");
     }
 }
 
@@ -586,67 +591,6 @@ INSTANTIATE_TEST_SUITE_P(FormatsAndWriters, PaimonReadCompatInteTest,
                          ::testing::ValuesIn(CompatibilityParams()),
                          [](const ::testing::TestParamInfo<CompatibilityParam>& info) {
                              return info.param.file_format + "_" + info.param.writer_prefix;
-                         });
-
-struct UnsupportedReadCase {
-    std::string name;
-    std::string table_suffix;
-    std::string field_name;
-    std::string expected_error;
-};
-
-struct UnsupportedReadParam {
-    std::string file_format;
-    std::string writer_prefix;
-    UnsupportedReadCase read_case;
-};
-
-class PaimonUnsupportedTypeInteTest : public ::testing::TestWithParam<UnsupportedReadParam> {};
-
-TEST_P(PaimonUnsupportedTypeInteTest, ReportsExpectedError) {
-    const UnsupportedReadParam& test_case = GetParam();
-    ASSERT_NOK_WITH_MSG(ReadTable(test_case.file_format,
-                                  test_case.writer_prefix + "_" + test_case.read_case.table_suffix,
-                                  {test_case.read_case.field_name}),
-                        test_case.read_case.expected_error);
-}
-
-std::vector<UnsupportedReadParam> UnsupportedReadParams() {
-    const std::vector<UnsupportedReadCase> read_cases = {
-        {"TimePrecision0", "time_types", "f_time_0", ""},
-        {"TimePrecision3", "time_types", "f_time_3", ""},
-        {"TimePrecision6", "time_types", "f_time_6", ""},
-        {"TimePrecision9", "time_types", "f_time_9", ""},
-    };
-    std::vector<UnsupportedReadParam> result;
-    for (const CompatibilityParam& param : CompatibilityParams()) {
-        for (const UnsupportedReadCase& read_case : read_cases) {
-            bool is_time = read_case.table_suffix == "time_types";
-            if (is_time && param.file_format == "parquet") {
-                continue;
-            }
-            // Java Avro cannot create TIME(6/9), so its negative table contains TIME(0/3) only.
-            if (param.file_format == "avro" &&
-                (read_case.name == "TimePrecision6" || read_case.name == "TimePrecision9")) {
-                continue;
-            }
-            auto expected_case = read_case;
-            if (is_time) {
-                expected_case.expected_error = param.file_format == "orc"
-                                                   ? "Unknown or unsupported Arrow type: time32[ms]"
-                                                   : "invalid avro logical type";
-            }
-            result.push_back({param.file_format, param.writer_prefix, expected_case});
-        }
-    }
-    return result;
-}
-
-INSTANTIATE_TEST_SUITE_P(UnsupportedTypes, PaimonUnsupportedTypeInteTest,
-                         ::testing::ValuesIn(UnsupportedReadParams()),
-                         [](const ::testing::TestParamInfo<UnsupportedReadParam>& info) {
-                             return info.param.file_format + "_" + info.param.writer_prefix + "_" +
-                                    info.param.read_case.name;
                          });
 
 }  // namespace paimon::test

@@ -29,11 +29,10 @@
 #include "paimon/visibility.h"
 
 namespace paimon {
-/// Represents a global index query result that **lazily materializes** its matching row ids as a
-/// Roaring bitmap. The underlying 64-bit Roaring bitmap is **not constructed during object
-/// creation**; instead, it is built on-demand the first time GetBitmap() is called. This design
-/// avoids unnecessary computation and memory allocation when the bitmap is not needed (e.g., during
-/// early stopping).
+/// Represents a global index query result backed by a Roaring bitmap. Supplier-backed results
+/// materialize their matching row ids on the first GetBitmap() call, avoiding unnecessary work
+/// when the result is not used. OR between bitmap results materializes both operands immediately
+/// and returns a cached bitmap without retaining the input results.
 class PAIMON_EXPORT BitmapGlobalIndexResult : public GlobalIndexResult {
  public:
     using BitmapSupplier = std::function<Result<RoaringBitmap64>()>;
@@ -76,11 +75,9 @@ class PAIMON_EXPORT BitmapGlobalIndexResult : public GlobalIndexResult {
 
     /// @return A non-owning, const pointer to the bitmap. The returned pointer is valid as long as
     ///         this BitmapGlobalIndexResult object is alive. The caller must not modify the bitmap.
-    /// @note **Lazy initialization**: The bitmap is constructed only on the first call to this
-    /// method.
-    ///       Subsequent calls return the cached instance. Construction may involve non-trivial
-    ///       CPU/IO cost (e.g., read indexes or merging bitmap), so avoid calling this if the
-    ///       bitmap is not actually required. **Not thread-safe**.
+    /// @note Supplier-backed results construct the bitmap on the first call to this method.
+    ///       Precomputed results and subsequent calls return the cached instance.
+    ///       Materialization may involve non-trivial CPU/IO cost. **Not thread-safe**.
     Result<const RoaringBitmap64*> GetBitmap() const;
 
     /// Creates `BitmapGlobalIndexResult` for all row ids in the given ranges.

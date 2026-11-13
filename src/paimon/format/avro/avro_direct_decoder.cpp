@@ -43,8 +43,9 @@ AvroDirectDecoder::DecodeContext::GetBuilderMetadata(const arrow::ArrayBuilder* 
     std::shared_ptr<arrow::DataType> data_type = builder->type();
     BuilderMetadata metadata{data_type->id(), std::nullopt};
     if (data_type->id() == arrow::Type::TIMESTAMP) {
-        metadata.timestamp_unit =
-            checked_cast<const arrow::TimestampType*>(data_type.get())->unit();
+        metadata.time_unit = checked_cast<const arrow::TimestampType*>(data_type.get())->unit();
+    } else if (data_type->id() == arrow::Type::TIME32) {
+        metadata.time_unit = checked_cast<const arrow::Time32Type*>(data_type.get())->unit();
     }
     return builder_metadata_.emplace(builder, metadata).first->second;
 }
@@ -328,6 +329,19 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
                     return Status::OK();
                 }
+                case arrow::Type::TIME32: {
+                    // Avro time-millis holds milliseconds of the day, so only a time32[ms]
+                    // builder can take the value as is.
+                    if (logical_type.type() != ::avro::LogicalType::Type::TIME_MILLIS ||
+                        builder_metadata.time_unit != arrow::TimeUnit::MILLI) {
+                        return Status::TypeError(
+                            fmt::format("Unexpected avro type [{}] with arrow type [{}].",
+                                        ::avro::toString(type), array_builder->type()->ToString()));
+                    }
+                    auto* builder = checked_cast<arrow::Time32Builder*>(array_builder);
+                    PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));
+                    return Status::OK();
+                }
                 default:
                     return Status::TypeError(
                         fmt::format("Unexpected avro type [{}] with arrow type [{}].",
@@ -352,7 +366,7 @@ Status DecodeAvroValueToBuilder(const ::avro::NodePtr& avro_node,
                     auto* builder = checked_cast<arrow::TimestampBuilder*>(array_builder);
                     // for arrow second, we need to convert it from avro millisecond
                     const auto& builder_metadata = ctx->GetBuilderMetadata(builder);
-                    if (builder_metadata.timestamp_unit == arrow::TimeUnit::type::SECOND) {
+                    if (builder_metadata.time_unit == arrow::TimeUnit::type::SECOND) {
                         value /= DateTimeUtils::CONVERSION_FACTORS[DateTimeUtils::MILLISECOND];
                     }
                     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder->Append(value));

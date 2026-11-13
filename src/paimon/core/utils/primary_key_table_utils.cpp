@@ -103,13 +103,20 @@ Status PrimaryKeyTableUtils::ValidateRealtimeOptions(const CoreOptions& options,
     if (options.GetBucket() <= 0) {
         return Status::NotImplemented("PK realtime requires fixed buckets");
     }
-    if (options.GetMergeEngine() != MergeEngine::DEDUPLICATE) {
-        return Status::NotImplemented("PK realtime supports only the DEDUPLICATE merge engine");
+    if (options.GetMergeEngine() != MergeEngine::DEDUPLICATE &&
+        options.GetMergeEngine() != MergeEngine::PARTIAL_UPDATE) {
+        return Status::NotImplemented(
+            "PK realtime supports only the DEDUPLICATE and PARTIAL_UPDATE merge engines");
+    }
+    if (options.GetMergeEngine() == MergeEngine::PARTIAL_UPDATE &&
+        options.DeletionVectorsEnabled()) {
+        return Status::NotImplemented(
+            "PK realtime partial-update does not support deletion vectors");
     }
     if (options.DataEvolutionEnabled()) {
         return Status::NotImplemented("PK realtime does not support data evolution");
     }
-    if (options.IgnoreDelete()) {
+    if (options.GetMergeEngine() == MergeEngine::DEDUPLICATE && options.IgnoreDelete()) {
         return Status::NotImplemented("PK realtime requires default delete behavior");
     }
     if (!options.GetSequenceField().empty()) {

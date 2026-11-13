@@ -101,6 +101,8 @@ Result<std::unique_ptr<ColumnStats>> AvroStatsExtractor::FetchColumnStatistics(
 
         case arrow::Type::type::DATE32:
             return ColumnStats::CreateDateColumnStats(std::nullopt, std::nullopt, std::nullopt);
+        case arrow::Type::type::TIME32:
+            return ColumnStats::CreateIntColumnStats(std::nullopt, std::nullopt, std::nullopt);
         case arrow::Type::type::TIMESTAMP: {
             auto ts_type = checked_pointer_cast<::arrow::TimestampType>(type);
             int32_t precision = DateTimeUtils::GetPrecisionFromType(ts_type);

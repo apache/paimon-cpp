@@ -50,8 +50,7 @@ TEST(IndexInDataFileDirPathFactoryTest, TestSimple) {
                                         /*dv_ranges=*/std::nullopt, /*external_path=*/std::nullopt);
     ASSERT_EQ(factory.ToPath(meta), "/tmp/p0=1/p1=0/bucket-0/deletion_file");
 
-    // test ToPath with file_name
-    ASSERT_EQ(factory.ToPath("bitmap.index"), "/tmp/p0=1/p1=0/bucket-0/bitmap.index");
+    ASSERT_EQ(factory.NewPathFromName("bitmap.index"), "/tmp/p0=1/p1=0/bucket-0/bitmap.index");
     // test external path
     ASSERT_FALSE(factory.IsExternalPath());
 }
@@ -60,9 +59,9 @@ TEST(IndexInDataFileDirPathFactoryTest, TestWithExternalPath) {
     auto count = std::make_shared<std::atomic<int32_t>>();
     count->store(1);
 
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<ExternalPathProvider> external_path_provider,
-        ExternalPathProvider::Create({"/tmp/external_path/"}, "p0=1/p1=0/bucket-0"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ExternalPathProvider> external_path_provider,
+                         ExternalPathProvider::Create({"/tmp/external_path/"}, "p0=1/p1=0/bucket-0",
+                                                      /*weights=*/{}));
 
     auto data_file_path_factory = std::make_shared<DataFilePathFactory>();
     ASSERT_OK(

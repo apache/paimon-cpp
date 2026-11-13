@@ -50,10 +50,14 @@ TEST(RealtimeDeduplicateStateTest, TestAttachAndInstallSnapshot) {
     });
     const std::shared_ptr<MemoryPool> pool = GetDefaultPool();
     const std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(pool);
-    auto delegate = std::make_shared<ArrowRealtimeStore>(
-        schema, RealtimeStoreMode::APPEND_ONLY, StatisticsMode::NONE,
-        /*temp_directory=*/"", /*spill_file_system=*/nullptr,
-        /*spill_compression=*/"zstd", /*spill_compression_level=*/1, pool, arrow_pool);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<ArrowRealtimeStore> delegate,
+        ArrowRealtimeStore::Create(schema, RealtimeStoreMode::APPEND_ONLY, StatisticsMode::NONE,
+                                   /*temp_directory=*/"",
+                                   /*spill_file_system=*/nullptr,
+                                   /*spill_compression=*/"zstd",
+                                   /*spill_compression_level=*/1,
+                                   /*index_options=*/{}, pool, arrow_pool));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<ArrowDeduplicateRealtimeStore> store,
         ArrowDeduplicateRealtimeStore::Create(schema, {"id"}, delegate, pool, arrow_pool));

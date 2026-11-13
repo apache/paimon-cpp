@@ -19,7 +19,16 @@
 
 #include "paimon/core/casting/cast_executor_factory.h"
 
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "arrow/type.h"
+#include "arrow/util/key_value_metadata.h"
 #include "gtest/gtest.h"
+#include "paimon/common/types/data_field.h"
+#include "paimon/common/types/data_type.h"
 #include "paimon/core/casting/binary_to_blob_cast_executor.h"
 #include "paimon/core/casting/binary_to_string_cast_executor.h"
 #include "paimon/core/casting/boolean_to_decimal_cast_executor.h"
@@ -39,12 +48,20 @@
 #include "paimon/core/casting/string_to_date_cast_executor.h"
 #include "paimon/core/casting/string_to_decimal_cast_executor.h"
 #include "paimon/core/casting/string_to_numeric_primitive_cast_executor.h"
+#include "paimon/core/casting/string_to_time_cast_executor.h"
 #include "paimon/core/casting/string_to_timestamp_cast_executor.h"
+#include "paimon/core/casting/time_to_string_cast_executor.h"
+#include "paimon/core/casting/time_to_timestamp_cast_executor.h"
 #include "paimon/core/casting/timestamp_to_date_cast_executor.h"
 #include "paimon/core/casting/timestamp_to_numeric_primitive_cast_executor.h"
 #include "paimon/core/casting/timestamp_to_string_cast_executor.h"
+#include "paimon/core/casting/timestamp_to_time_cast_executor.h"
 #include "paimon/core/casting/timestamp_to_timestamp_cast_executor.h"
+#include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
+#include "paimon/predicate/literal.h"
+#include "paimon/testing/utils/testharness.h"
+#include "paimon/testing/utils/timezone_guard.h"
 
 namespace paimon::test {
 TEST(CastExecutorFactoryTest, TestRegister) {
@@ -239,6 +256,57 @@ TEST(CastExecutorFactoryTest, TestRegister) {
         ASSERT_FALSE(factory->executor_map_.empty());
         auto cast_executor = factory->GetCastExecutor(FieldType::ARRAY, FieldType::MAP);
         ASSERT_FALSE(cast_executor);
+    }
+}
+
+TEST(CastExecutorFactoryTest, TestTimeCastExecutors) {
+    auto* factory = CastExecutorFactory::GetCastExecutorFactory();
+    ASSERT_TRUE(std::dynamic_pointer_cast<StringToTimeCastExecutor>(
+        factory->GetCastExecutor(FieldType::STRING, FieldType::TIME)));
+    ASSERT_TRUE(std::dynamic_pointer_cast<TimeToStringCastExecutor>(
+        factory->GetCastExecutor(FieldType::TIME, FieldType::STRING)));
+    ASSERT_TRUE(std::dynamic_pointer_cast<TimestampToTimeCastExecutor>(
+        factory->GetCastExecutor(FieldType::TIMESTAMP, FieldType::TIME)));
+    ASSERT_TRUE(std::dynamic_pointer_cast<TimeToTimestampCastExecutor>(
+        factory->GetCastExecutor(FieldType::TIME, FieldType::TIMESTAMP)));
+    ASSERT_FALSE(factory->GetCastExecutor(FieldType::INT, FieldType::TIME));
+    ASSERT_FALSE(factory->GetCastExecutor(FieldType::TIME, FieldType::DATE));
+
+    auto time_field = [](const std::string& precision) {
+        return DataField(
+            0, arrow::field("t", arrow::time32(arrow::TimeUnit::MILLI),
+                            /*nullable=*/true,
+                            arrow::key_value_metadata({DataType::kTimePrecision}, {precision})));
+    };
+    std::vector<std::pair<std::string, std::string>> cases = {{"0", "01:02:03"},
+                                                              {"3", "01:02:03.0"}};
+    for (const auto& [precision, expected] : cases) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<CastExecutor> executor,
+                             factory->GetCastExecutor(time_field(precision), FieldType::STRING));
+        ASSERT_TRUE(executor);
+        ASSERT_OK_AND_ASSIGN(Literal literal,
+                             executor->Cast(Literal(FieldType::TIME, 3723000), arrow::utf8()));
+        ASSERT_EQ(expected, literal.GetValue<std::string>());
+    }
+    ASSERT_NOK(factory->GetCastExecutor(time_field("x"), FieldType::STRING));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<CastExecutor> executor,
+                         factory->GetCastExecutor(DataField(1, arrow::field("i", arrow::int32())),
+                                                  FieldType::STRING));
+    ASSERT_TRUE(std::dynamic_pointer_cast<NumericToStringCastExecutor>(executor));
+
+    TimezoneGuard tz_guard("Asia/Shanghai");
+    std::vector<std::pair<std::shared_ptr<arrow::DataType>, int32_t>> ts_cases = {
+        {arrow::timestamp(arrow::TimeUnit::MILLI), 0},
+        {arrow::timestamp(arrow::TimeUnit::MILLI, "Asia/Shanghai"), 28800000}};
+    for (const auto& [type, expected] : ts_cases) {
+        ASSERT_OK_AND_ASSIGN(
+            executor,
+            factory->GetCastExecutor(DataField(2, arrow::field("ts", type)), FieldType::TIME));
+        ASSERT_TRUE(std::dynamic_pointer_cast<TimestampToTimeCastExecutor>(executor));
+        ASSERT_OK_AND_ASSIGN(
+            Literal literal,
+            executor->Cast(Literal(Timestamp(0, 0)), arrow::time32(arrow::TimeUnit::MILLI)));
+        ASSERT_EQ(Literal(FieldType::TIME, expected), literal) << type->ToString();
     }
 }
 }  // namespace paimon::test

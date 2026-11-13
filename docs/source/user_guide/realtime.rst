@@ -58,7 +58,8 @@ The table schema and options select the mode; there is no separate
      - Batches sorted by primary key and sequence number
      - Merge disk runs, sealed batches, and building batches by primary key
    * - PK DV
-     - Primary key; ``deletion-vectors.enabled=true``
+     - Primary key; ``merge-engine=deduplicate``;
+       ``deletion-vectors.enabled=true``
      - The same sorted PK store as PK MOR
      - Apply committed DVs, then merge disk and memory by primary key
    * - Append deduplicate
@@ -78,10 +79,12 @@ and exact residual filtering follow the mode-specific rules below.
 
 Append accepts ``INSERT`` only. PK and append deduplicate also accept
 ``UPDATE_AFTER``, ``DELETE``, and ``UPDATE_BEFORE``. PK supports composite
-primary keys, but its real-time merge engine is currently limited to
-``merge-engine=deduplicate``. Append deduplicate currently accepts exactly one
-non-null, non-nested key field and is experimental: its persisted index format
-may change.
+primary keys with ``merge-engine=deduplicate`` or ``merge-engine=partial-update``.
+PK realtime partial-update requires deletion vectors disabled
+(``deletion-vectors.enabled=false``). Partial update uses the existing merge
+function and its sequence-group, field-aggregation, and delete options. Append deduplicate currently
+accepts exactly one non-null, non-nested key field and is experimental: its
+persisted index format may change.
 
 PK DV and append deduplicate are different designs. PK DV retains primary-key
 merge semantics; append deduplicate uses a persisted stable row offset and
@@ -115,6 +118,11 @@ Common Options
      - ``none``
      - ``none`` or ``full``. Full mode collects per-batch min/max and null counts
        for conservative predicate pruning, including retained spill metadata.
+   * - ``realtime.index.<index_name>.columns``
+     - Unset
+     - Comma-separated fields indexed in memory by the default Arrow store.
+       Available in append and append deduplicate modes; independent of
+       ``realtime.store.stats-mode``.
    * - ``realtime.deduplicate-key-fields``
      - Unset
      - Selects append deduplicate mode. Although expressed as a comma-separated
@@ -398,6 +406,37 @@ context's reclaimed progress for relevant active stores. It does not restore
 an old in-memory state and is not unrestricted historical time travel. For a
 disk-only historical query, do not attach the real-time context.
 
+In-memory Predicate Indexes
+--------------------------
+
+The default Arrow store supports optional predicate indexes on key or value fields
+in append and append deduplicate modes. PK modes are unsupported. For example:
+
+.. code-block:: text
+
+   realtime.enabled = true
+   realtime.index.hash.columns = id,payload
+   realtime.store.stats-mode = full
+
+The built-in ``hash`` plugin is **experimental**; its implementation and supported
+capabilities may change. It supports equality and ``IN`` predicates on boolean,
+integer, floating-point, string, binary, and date fields. Decimal, timestamp, and
+nested types are currently unsupported. Use a comma-separated list to index
+multiple fields; indexing ``_REALTIME_OFFSET`` is unsupported.
+
+Note that this index does not currently handle hash collisions.
+
+Indexes and batch statistics work independently and can be enabled together.
+For ``id = 7 AND score > 100``, an index supporting equality on ``id`` selects
+candidate offsets; statistics can then skip batches whose maximum ``score``
+is at most 100.
+Statistics cover entire batches, so mixed batches still need row-level
+filtering. Keep predicate fields in the read schema and enable
+``ReadContextBuilder::EnablePredicateFilter(true)`` for exact filtering.
+
+In-memory and disk indexes are configured independently. Use
+``file-index.<type>.columns`` to enable indexes for committed files.
+
 Implementation by Mode
 ----------------------
 
@@ -406,9 +445,10 @@ Append
 
 ``RealtimeAppendOnlyWriter`` validates offsets and writes to an
 ``APPEND_ONLY`` store. The default ``ArrowRealtimeStore`` retains building
-batches and immutable sealed segments in write order. Query readers project
-the requested fields, optionally prune stored batches using statistics, and
-apply the visible offset range before removing the hidden offset column.
+batches and immutable sealed segments in write order. Query readers use
+optional predicate indexes and batch statistics to prune candidates, project
+the requested fields, and apply the visible offset range before removing the
+hidden offset column.
 
 Preparing reads sealed segments through the ordinary ``AppendOnlyWriter``,
 removing the internal offset prefix before writing table files. Queries do not
@@ -422,10 +462,14 @@ number, row kind, and offset. Each sorted batch is an independent merge input;
 multiple stored batches do not form a single globally sorted stream.
 
 Query construction merges sorted disk sections and the memory readers, applies
-deduplicate merge semantics, and drops final delete records. It collects all
+the configured merge engine, and drops final delete records. It collects all
 disk splits belonging to the active partition-bucket, rather than merging
 memory against only one disk split. Preparing similarly merges the sealed
 streams before handing them to ``MergeTreeWriter`` to write normal PK files.
+
+Partial update reuses the existing framework merge logic and options. The store
+continues to hold sorted batches and spill them without merging. Real-time
+compaction remains disabled.
 
 Only primary-key predicates are safe to push into unresolved versions. A
 predicate on a value column must be evaluated after version merge: filtering
@@ -467,8 +511,10 @@ are marked deleted, and within-batch duplicates are resolved in row order.
 Add rows are appended to the store; delete events update only the key/DV state,
 without persisting a delete row.
 
-Key indexes and DV bitmaps use copy-on-write snapshots, so later writes do not
-change the state held by existing lookups, read views, or seal checkpoints.
+Deduplicate key-to-latest-offset lookups and DV bitmaps use copy-on-write
+snapshots, so later writes do not change the state held by existing lookups,
+read views, or seal checkpoints. The optional predicate indexes share
+append-only postings instead.
 
 Memory reads use the read view's DV to exclude rows whose offsets are marked
 deleted.
@@ -511,8 +557,9 @@ still terminal for the owning writer/context.
 Old views can retain the memory representation after spill or reclamation;
 new views use the published representation. Spill files are deleted when the
 store and all remaining handles/readers have released them. They are temporary
-storage, not a recoverable log after process restart. Deduplicate key indexes
-and DVs remain in memory; full-mode statistics also remain resident after spill.
+storage, not a recoverable log after process restart. Predicate indexes,
+deduplicate key indexes, DVs, and full-mode statistics remain in memory after
+spill. Predicate index memory is included in store memory accounting.
 
 ``RealtimeContext::GetMetrics()`` and real-time writer metrics expose:
 
@@ -580,7 +627,7 @@ Extension Points and Current Limits
 Custom stores manage buffering, read views, and spill while following the
 ``RealtimeStore`` contracts. Paimon manages table files, indexes, merge semantics,
 and commits. Append deduplicate also keeps key indexes and DVs in the framework;
-custom delegates need ``RealtimeStoreTwoPhaseSeal`` to enable its spill.
+custom delegates need ``TwoPhaseSealableRealtimeStore`` to enable its spill.
 
 Current restrictions include:
 
@@ -589,15 +636,16 @@ Current restrictions include:
 * Process-local batch union scans only. Streaming scans, limit pushdown,
   global-index result splits, vector/full-text search, and count-only real-time
   readers are unsupported.
-* PK mode supports the deduplicate merge engine with default delete handling,
-  ascending sequence order, and ``changelog-producer=none``. Custom
+* PK mode supports deduplicate with default delete handling, or partial update
+  with deletion vectors disabled and its existing delete and sequence-group
+  options. Both require ascending sequence order and ``changelog-producer=none``. Custom
   ``sequence.field``, floating-point keys, PK global indexes, lookup without DVs,
   and read-optimized union scans are unsupported.
 * Append deduplicate requires a single non-null scalar key, a persisted offset
   column, exact offset file-index reads, and non-bitmap64 DVs. Existing ordinary
   append files are not migrated automatically.
-* Spill covers Arrow data, not key indexes or DVs, and provides neither a hard
-  memory limit nor crash recovery.
+* Spill covers Arrow data, not predicate indexes, key indexes, or DVs, and
+  provides neither a hard memory limit nor crash recovery.
 
 Code Map
 --------

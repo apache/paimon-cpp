@@ -34,6 +34,7 @@
 #include "paimon/common/global_index/btree/btree_defs.h"
 #include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
 #include "paimon/common/utils/fields_comparator.h"
@@ -42,6 +43,7 @@
 #include "paimon/core/catalog/catalog_snapshot_commit.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/catalog/commit_lock.h"
+#include "paimon/core/catalog/query_auth_catalog.h"
 #include "paimon/core/catalog/renaming_snapshot_commit.h"
 #include "paimon/core/catalog/snapshot_commit.h"
 #include "paimon/core/catalog/version_managed_catalog.h"
@@ -74,6 +76,7 @@
 #include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/bucket_mode.h"
+#include "paimon/core/table/file_store.h"
 #include "paimon/core/table/format/format_table_file_store_commit.h"
 #include "paimon/core/table/format/format_table_file_store_write.h"
 #include "paimon/core/table/format/format_table_loader.h"
@@ -90,6 +93,8 @@
 #include "paimon/core/table/source/key_value_table_read.h"
 #include "paimon/core/table/source/merge_tree_split_generator.h"
 #include "paimon/core/table/source/primary_key_index_batch_scan.h"
+#include "paimon/core/table/source/query_auth_table_read.h"
+#include "paimon/core/table/source/query_auth_table_scan.h"
 #include "paimon/core/table/source/read_optimized_scan_options.h"
 #include "paimon/core/table/source/realtime_table_scan.h"
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
@@ -98,7 +103,6 @@
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
-#include "paimon/core/utils/index_file_path_factories.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
@@ -330,29 +334,14 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,
                            FieldMapping::GetPartitionSchema(arrow_schema, schema->PartitionKeys()));
 
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                           options.CreateGlobalIndexExternalPath());
-
+    FileStore file_store(ctx->GetRootPath(), options);
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> file_store_path_factory,
-        FileStorePathFactory::Create(ctx->GetRootPath(), arrow_schema, schema->PartitionKeys(),
-                                     options.GetPartitionDefaultName(),
-                                     options.GetWriteFileFormat(/*level=*/0)->Identifier(),
-                                     options.DataFilePrefix(), options.LegacyPartitionNameEnabled(),
-                                     external_paths, global_index_external_path,
-                                     options.IndexFileInDataFileDir(), ctx->GetMemoryPool()));
-    auto snapshot_manager =
-        std::make_shared<SnapshotManager>(options.GetFileSystem(), ctx->GetRootPath(), branch);
-    if (VersionManagedCatalog* versioned = AsVersionManaged(ctx->GetCatalog())) {
-        std::shared_ptr<Catalog> catalog = ctx->GetCatalog();
-        Identifier identifier = catalog_identifier.value();
-        // Keep the catalog alive while the writer uses its snapshot loader.
-        snapshot_manager->SetSnapshotLoader(
-            [catalog, versioned, identifier]() -> Result<std::optional<Snapshot>> {
-                return versioned->LoadSnapshot(identifier);
-            });
-    }
+        file_store.NewPathFactory(arrow_schema, schema->PartitionKeys(),
+                                  options.GetWriteFileFormat(/*level=*/0)->Identifier(),
+                                  ctx->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotManager> snapshot_manager,
+                           file_store.NewSnapshotManager(ctx->GetCatalog(), catalog_identifier));
     std::shared_ptr<IOManager> io_manager;
     const auto& io_temp_dir = ctx->GetTempDirectory();
     if (!io_temp_dir.empty()) {
@@ -423,15 +412,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         std::shared_ptr<BucketedDvMaintainer::Factory> dv_maintainer_factory;
         if (need_dv_maintainer_factory) {
             PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<IndexManifestFile> index_manifest_file,
-                IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                                          options.GetManifestCompression(), file_store_path_factory,
-                                          ResolveBucketMode(options.GetBucket(), schema),
-                                          ctx->GetMemoryPool(), options));
-            auto index_file_handler = std::make_shared<IndexFileHandler>(
-                options.GetFileSystem(), std::move(index_manifest_file),
-                std::make_shared<IndexFilePathFactories>(file_store_path_factory),
-                options.DeletionVectorsBitmap64(), ctx->GetMemoryPool());
+                std::shared_ptr<IndexFileHandler> index_file_handler,
+                file_store.NewIndexFileHandler(ResolveBucketMode(options.GetBucket(), schema),
+                                               file_store_path_factory, ctx->GetMemoryPool()));
             dv_maintainer_factory =
                 std::make_shared<BucketedDvMaintainer::Factory>(index_file_handler);
         }
@@ -525,15 +508,9 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
         std::shared_ptr<IndexFileHandler> index_file_handler;
         if (options.DeletionVectorsEnabled() || has_btree_index || has_existing_index_manifest) {
             PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<IndexManifestFile> index_manifest_file,
-                IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                                          options.GetManifestCompression(), file_store_path_factory,
-                                          ResolveBucketMode(options.GetBucket(), schema),
-                                          ctx->GetMemoryPool(), options));
-            index_file_handler = std::make_shared<IndexFileHandler>(
-                options.GetFileSystem(), std::move(index_manifest_file),
-                std::make_shared<IndexFilePathFactories>(file_store_path_factory),
-                options.DeletionVectorsBitmap64(), ctx->GetMemoryPool());
+                index_file_handler,
+                file_store.NewIndexFileHandler(ResolveBucketMode(options.GetBucket(), schema),
+                                               file_store_path_factory, ctx->GetMemoryPool()));
         }
         bool has_restored_btree_index = false;
         if (!has_btree_index && has_existing_index_manifest) {
@@ -589,23 +566,21 @@ class TableScanImpl {
         const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& memory_pool,
         const ScanContext* context) {
         auto fs = core_options.GetFileSystem();
-        auto manifest_file_format = core_options.GetManifestFormat();
         std::string branch = BranchManager::NormalizeBranch(core_options.GetBranch());
-        auto snapshot_manager = std::make_shared<SnapshotManager>(fs, context->GetPath(), branch);
+        FileStore file_store(context->GetPath(), core_options);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotManager> snapshot_manager,
+                               file_store.NewSnapshotManager(/*catalog=*/nullptr,
+                                                             /*catalog_identifier=*/std::nullopt));
         // TODO(liancheng.lsz): support fallback branch in scan
         auto schema_manager = std::make_shared<SchemaManager>(fs, context->GetPath(), branch);
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<ManifestList> manifest_list,
-            ManifestList::Create(fs, manifest_file_format, core_options.GetManifestCompression(),
-                                 path_factory, core_options.GetCache(), memory_pool));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ManifestList> manifest_list,
+                               file_store.NewManifestList(path_factory, memory_pool));
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<arrow::Schema> partition_schema,
             FieldMapping::GetPartitionSchema(arrow_schema, table_schema->PartitionKeys()));
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<ManifestFile> manifest_file,
-            ManifestFile::Create(fs, manifest_file_format, core_options.GetManifestCompression(),
-                                 path_factory, core_options.GetManifestTargetFileSize(),
-                                 memory_pool, core_options, partition_schema));
+            file_store.NewManifestFile(path_factory, partition_schema, memory_pool));
         std::unique_ptr<FileStoreScan> scan;
         if (table_schema->PrimaryKeys().empty()) {
             if (core_options.DataEvolutionEnabled()) {
@@ -667,28 +642,110 @@ class TableScanImpl {
                 key_comparator);
         }
     }
-
-    static Result<std::unique_ptr<IndexFileHandler>> CreateIndexFileHandler(
-        const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& core_options,
-        const std::shared_ptr<FileStorePathFactory>& path_factory,
-        const std::shared_ptr<MemoryPool>& memory_pool) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexManifestFile> index_manifest_file,
-                               IndexManifestFile::Create(
-                                   core_options.GetFileSystem(), core_options.GetManifestFormat(),
-                                   core_options.GetManifestCompression(), path_factory,
-                                   ResolveBucketMode(core_options.GetBucket(), table_schema),
-                                   memory_pool, core_options));
-        return std::make_unique<IndexFileHandler>(
-            core_options.GetFileSystem(), std::move(index_manifest_file),
-            std::make_shared<IndexFilePathFactories>(path_factory),
-            core_options.DeletionVectorsBitmap64(), memory_pool);
-    }
 };
+
+/// Returns `options` with `query-auth.enabled` turned on when the current settings of `branch`
+/// enable it: the options of the schema the catalog holds for that branch, as Java loads the table
+/// of the branch it reads, or, when the caller hands in a cached schema, those of the latest schema
+/// of the branch under `path`, so a stale cache cannot skip the rules. A system table path naming
+/// a branch, as `tbl$branch_dev$files`, reads that branch, so its settings are the ones looked up.
+/// @param operation The operation reading `path`, as "scan", named in the error messages.
+Result<std::map<std::string, std::string>> ResolveQueryAuthReadOptions(
+    const std::shared_ptr<Catalog>& catalog, const std::optional<Identifier>& identifier,
+    const std::map<std::string, std::string>& options, const std::string& branch,
+    const std::shared_ptr<FileSystem>& file_system, const std::string& path,
+    bool has_specific_table_schema, const std::string& operation) {
+    PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
+                           SystemTableLoader::TryParsePath(path));
+    std::string read_branch = branch;
+    std::string table_path = path;
+    if (system_table_path && !system_table_path->is_global) {
+        table_path = system_table_path->table_path;
+        if (system_table_path->branch) {
+            // Resolved as `SystemTableLoader::LoadFromPath()` resolves the branch it loads.
+            std::map<std::string, std::string> named_branch;
+            if (!BranchManager::IsMainBranch(branch)) {
+                named_branch[Options::BRANCH] = branch;
+            }
+            PAIMON_ASSIGN_OR_RAISE(read_branch,
+                                   BranchManager::ResolveBranch(
+                                       /*identifier=*/std::nullopt, named_branch,
+                                       system_table_path->branch, "system table read"));
+        }
+    }
+    bool enabled = false;
+    if (catalog != nullptr) {
+        PAIMON_RETURN_NOT_OK(BranchManager::CheckCatalogAddressableBranch(read_branch));
+        if (!identifier) {
+            return Status::Invalid("a catalog read requires a table identifier");
+        }
+        if (CatalogUtils::IsSystemDatabase(identifier.value().GetDatabaseName())) {
+            // Only a global system table has no data table policy to load from the catalog.
+            if (!system_table_path || !system_table_path->is_global) {
+                return Status::Invalid(fmt::format(
+                    "Catalog identifier {} names a global system table, but the {} targets {}. "
+                    "Use the identifier of the data table being read.",
+                    identifier.value().ToString(), operation, path));
+            }
+        } else {
+            PAIMON_ASSIGN_OR_RAISE(Identifier table_identifier,
+                                   CatalogUtils::BranchIdentifier(identifier.value(), read_branch));
+            // A catalog that serves query auth hands the location back with the schema, so the
+            // two cannot come from different generations of a recreated table.
+            const QueryAuthCatalog* auth_catalog = AsQueryAuthCatalog(catalog);
+            std::shared_ptr<Schema> schema;
+            std::optional<std::string> location;
+            if (auth_catalog != nullptr) {
+                PAIMON_ASSIGN_OR_RAISE(schema, auth_catalog->LoadTableSchemaAndLocation(
+                                                   table_identifier, &location.emplace()));
+            } else {
+                PAIMON_ASSIGN_OR_RAISE(schema, catalog->LoadTableSchema(table_identifier));
+            }
+            std::shared_ptr<DataSchema> data_schema = std::dynamic_pointer_cast<DataSchema>(schema);
+            if (data_schema == nullptr) {
+                return Status::Invalid(
+                    fmt::format("the catalog did not hand back a data table schema for {}",
+                                table_identifier.ToString()));
+            }
+            PAIMON_ASSIGN_OR_RAISE(
+                enabled, SchemaValidation::QueryAuthReadEnabled(data_schema->Options(), options));
+            // An enabled setting needs no check here: the query auth scan checks the location and
+            // the read takes only its splits. A disabled one would leave another table unguarded.
+            if (!enabled) {
+                PAIMON_RETURN_NOT_OK(CatalogUtils::CheckPathIsTableLocation(
+                    table_identifier,
+                    location ? Result<std::string>(location.value())
+                             : catalog->GetTableLocation(table_identifier),
+                    table_path, operation));
+            }
+        }
+    }
+    if (!enabled && has_specific_table_schema &&
+        read_branch == BranchManager::DEFAULT_MAIN_BRANCH && !system_table_path) {
+        SchemaManager schema_manager(file_system, path, read_branch);
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
+                               schema_manager.Latest());
+        if (latest_schema) {
+            PAIMON_ASSIGN_OR_RAISE(enabled, SchemaValidation::QueryAuthReadEnabled(
+                                                latest_schema.value()->Options(), options));
+        }
+    }
+    if (!enabled) {
+        return options;
+    }
+    std::map<std::string, std::string> read_options = options;
+    read_options[Options::QUERY_AUTH_ENABLED] = "true";
+    return read_options;
+}
 
 /// @param loaded_schema The table's schema, when the caller already read it, or null when it has
 ///        to be read here. `TableScan::Create()` reads one to dispatch on its table type.
+/// @param read_options The options of the scan with `ResolveQueryAuthReadOptions()` applied.
+/// @param query_auth_applied Whether a `QueryAuthTableScan` applies the rules around this scan, so
+///        a table with `query-auth.enabled=true` is planned as it is.
 Result<std::unique_ptr<TableScan>> NewDataTableScan(
-    const std::shared_ptr<ScanContext>& context, const std::shared_ptr<TableSchema>& loaded_schema);
+    const std::shared_ptr<ScanContext>& context, const std::shared_ptr<TableSchema>& loaded_schema,
+    const std::map<std::string, std::string>& read_options, bool query_auth_applied = false);
 
 /// Maps a `ScanContext` onto `FormatTableScan`, which takes one partition filter and a limit and
 /// nothing else.
@@ -765,13 +822,21 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
     if (shared_context->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(tmp_options.GetBranch()));
     }
+    std::map<std::string, std::string> read_options;
+    PAIMON_ASSIGN_OR_RAISE(
+        read_options,
+        ResolveQueryAuthReadOptions(shared_context->GetCatalog(), shared_context->GetIdentifier(),
+                                    shared_context->GetOptions(),
+                                    BranchManager::NormalizeBranch(tmp_options.GetBranch()),
+                                    tmp_options.GetFileSystem(), shared_context->GetPath(),
+                                    shared_context->GetSpecificTableSchema().has_value(), "scan"));
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(shared_context->GetPath()));
     if (system_table_path) {
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<SystemTable> system_table,
             SystemTableLoader::LoadFromPath(tmp_options.GetFileSystem(), shared_context->GetPath(),
-                                            shared_context->GetOptions()));
+                                            read_options));
         return system_table->NewScan(shared_context);
     }
     // A format table is planned by listing directories, so it never reaches the manifest path
@@ -782,14 +847,13 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
         std::shared_ptr<FormatTable> format_table,
         FormatTableLoader::TryLoad(tmp_options.GetFileSystem(), shared_context->GetPath(),
                                    BranchManager::NormalizeBranch(tmp_options.GetBranch()),
-                                   shared_context->GetOptions(),
-                                   shared_context->GetSpecificTableSchema(),
+                                   read_options, shared_context->GetSpecificTableSchema(),
                                    /*schema_manager=*/nullptr, &latest_schema));
     if (format_table != nullptr) {
         return NewFormatTableScan(format_table, shared_context);
     }
     // With the schema the dispatch already read, so the managed path does not read it again.
-    return NewDataTableScan(shared_context, latest_schema);
+    return NewDataTableScan(shared_context, latest_schema, read_options);
 }
 
 namespace {
@@ -837,8 +901,8 @@ Status ValidateRealtimeScan(const TableSchema& table_schema, const CoreOptions& 
 }
 
 Result<std::unique_ptr<TableScan>> NewDataTableScan(
-    const std::shared_ptr<ScanContext>& context,
-    const std::shared_ptr<TableSchema>& loaded_schema) {
+    const std::shared_ptr<ScanContext>& context, const std::shared_ptr<TableSchema>& loaded_schema,
+    const std::map<std::string, std::string>& read_options, bool query_auth_applied) {
     PAIMON_ASSIGN_OR_RAISE(
         CoreOptions tmp_options,
         CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(), {}));
@@ -858,6 +922,16 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
             return Status::Invalid("not found latest schema");
         }
         table_schema = latest_table_schema.value();
+    }
+    PAIMON_ASSIGN_OR_RAISE(bool query_auth, SchemaValidation::QueryAuthReadEnabled(
+                                                table_schema->Options(), read_options));
+    if (query_auth && !query_auth_applied) {
+        return QueryAuthTableScan::Create(
+            context, table_schema, tmp_options.GetFileSystem(), branch,
+            [table_schema, read_options](const std::shared_ptr<ScanContext>& inner_context) {
+                return NewDataTableScan(inner_context, table_schema, read_options,
+                                        /*query_auth_applied=*/true);
+            });
     }
     PAIMON_ASSIGN_OR_RAISE(bool read_optimized,
                            OptionsUtils::GetValueFromMap<bool>(context->GetOptions(),
@@ -894,19 +968,11 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
             *arrow_schema, context->GetScanFilters()->GetPredicate(),
             /*validate_field_idx=*/false));
     }
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
-                           core_options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                           core_options.CreateGlobalIndexExternalPath());
-
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileStorePathFactory> path_factory,
-        FileStorePathFactory::Create(
-            context->GetPath(), arrow_schema, table_schema->PartitionKeys(),
-            core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
-            core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
-            external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-            context->GetMemoryPool()));
+    FileStore file_store(context->GetPath(), core_options);
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
+                           file_store.NewPathFactory(arrow_schema, table_schema->PartitionKeys(),
+                                                     core_options.GetFileFormat()->Identifier(),
+                                                     context->GetMemoryPool()));
 
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreScan> file_store_scan,
                            TableScanImpl::CreateFileStoreScan(
@@ -915,9 +981,10 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<SplitGenerator> split_generator,
         TableScanImpl::CreateSplitGenerator(table_schema, core_options, context.get()));
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexFileHandler> index_file_handler,
-                           TableScanImpl::CreateIndexFileHandler(
-                               table_schema, core_options, path_factory, context->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<IndexFileHandler> index_file_handler,
+        file_store.NewIndexFileHandler(ResolveBucketMode(core_options.GetBucket(), table_schema),
+                                       path_factory, context->GetMemoryPool()));
     auto snapshot_reader = std::make_shared<SnapshotReader>(
         file_store_scan, path_factory, std::move(split_generator), std::move(index_file_handler));
     const bool pk_table = !table_schema->PrimaryKeys().empty();
@@ -964,13 +1031,12 @@ namespace {
 /// @param loaded_schema The schema of `branch`, when the caller already read it, or null when it
 ///        has to be read here: `TableRead::Create()` reads one to dispatch on the table type, and
 ///        reading it again would cost a second listing and read.
-Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
+Result<std::shared_ptr<TableSchema>> LoadReadSchema(
     const std::shared_ptr<ReadContext>& context, const std::string& branch,
     const std::shared_ptr<TableSchema>& loaded_schema) {
     if (context->GetRealtimeContext()) {
         PAIMON_RETURN_NOT_OK(RealtimeUtils::ValidateBranch(branch));
     }
-    std::map<std::string, std::string> tmp_options = context->GetOptions();
     std::shared_ptr<TableSchema> table_schema;
     const auto& specific_table_schema = context->GetSpecificTableSchema();
     if (loaded_schema != nullptr) {
@@ -979,9 +1045,10 @@ Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
         PAIMON_ASSIGN_OR_RAISE(table_schema,
                                TableSchema::CreateFromJson(specific_table_schema.value()));
     } else {
-        PAIMON_ASSIGN_OR_RAISE(CoreOptions tmp_core_options,
-                               CoreOptions::FromMap(tmp_options, context->GetSpecificFileSystem(),
-                                                    context->GetFileSystemSchemeToIdentifierMap()));
+        PAIMON_ASSIGN_OR_RAISE(
+            CoreOptions tmp_core_options,
+            CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(),
+                                 context->GetFileSystemSchemeToIdentifierMap()));
         SchemaManager schema_manager(tmp_core_options.GetFileSystem(), context->GetPath(), branch);
         PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
                                schema_manager.Latest());
@@ -992,10 +1059,16 @@ Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
         table_schema = latest_schema.value();
     }
     assert(table_schema);
+    return table_schema;
+}
 
+/// @param table_schema The schema of `branch`, as `LoadReadSchema()` returns it.
+Result<std::unique_ptr<InternalReadContext>> CreateInternalReadContext(
+    const std::shared_ptr<ReadContext>& context, const std::string& branch,
+    const std::shared_ptr<TableSchema>& table_schema) {
     // merge options
     auto options = table_schema->Options();
-    for (const auto& [key, value] : tmp_options) {
+    for (const auto& [key, value] : context->GetOptions()) {
         options[key] = value;
     }
     if (branch != BranchManager::DEFAULT_MAIN_BRANCH) {
@@ -1014,19 +1087,11 @@ Result<std::unique_ptr<TableRead>> CreateTableRead(
     }
     PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateRealtime(*table_schema, core_options));
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
-                           core_options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                           core_options.CreateGlobalIndexExternalPath());
-
+    FileStore file_store(internal_context->GetPath(), core_options);
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
-        FileStorePathFactory::Create(
-            internal_context->GetPath(), arrow_schema, table_schema->PartitionKeys(),
-            core_options.GetPartitionDefaultName(), core_options.GetFileFormat()->Identifier(),
-            core_options.DataFilePrefix(), core_options.LegacyPartitionNameEnabled(),
-            external_paths, global_index_external_path, core_options.IndexFileInDataFileDir(),
-            memory_pool));
+        file_store.NewPathFactory(arrow_schema, table_schema->PartitionKeys(),
+                                  core_options.GetFileFormat()->Identifier(), memory_pool));
 
     if (internal_context->GetPrimaryKeys().empty()) {
         return std::make_unique<AppendOnlyTableRead>(path_factory, internal_context, memory_pool,
@@ -1035,11 +1100,27 @@ Result<std::unique_ptr<TableRead>> CreateTableRead(
     return KeyValueTableRead::Create(path_factory, internal_context, memory_pool, executor);
 }
 
+/// @param read_options The options of the read with `ResolveQueryAuthReadOptions()` applied.
+/// @param query_auth_applied Whether a `QueryAuthTableRead` applies the rules around this read, so
+///        a table with `query-auth.enabled=true` is read as it is.
 Result<std::unique_ptr<TableRead>> NewDataTableRead(
-    const std::shared_ptr<ReadContext>& context,
-    const std::shared_ptr<TableSchema>& loaded_schema) {
+    const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& loaded_schema,
+    const std::map<std::string, std::string>& read_options, bool query_auth_applied = false) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
+                           LoadReadSchema(context, context->GetBranch(), loaded_schema));
+    PAIMON_ASSIGN_OR_RAISE(bool query_auth, SchemaValidation::QueryAuthReadEnabled(
+                                                table_schema->Options(), read_options));
+    // Dispatched before the read context is built, which consumes the read schema.
+    if (query_auth && !query_auth_applied) {
+        return QueryAuthTableRead::Create(
+            context, table_schema, GetArrowPool(context->GetMemoryPool()),
+            [table_schema, read_options](std::unique_ptr<ReadContext> inner_context) {
+                return NewDataTableRead(std::move(inner_context), table_schema, read_options,
+                                        /*query_auth_applied=*/true);
+            });
+    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> internal_context,
-                           CreateInternalReadContext(context, context->GetBranch(), loaded_schema));
+                           CreateInternalReadContext(context, context->GetBranch(), table_schema));
 
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<TableRead> table_read,
@@ -1052,10 +1133,34 @@ Result<std::unique_ptr<TableRead>> NewDataTableRead(
         return std::move(table_read);
     }
 
+    if (query_auth_applied) {
+        return Status::NotImplemented(
+            "Fallback reads are not supported on a query-auth table: each branch requires its "
+            "own authorized splits and schema validation.");
+    }
+    // A fallback branch may enable query auth only in the catalog or in a schema newer than the
+    // cached one, so its setting is resolved as for the branch read.
+    std::map<std::string, std::string> fallback_read_options;
+    PAIMON_ASSIGN_OR_RAISE(
+        fallback_read_options,
+        ResolveQueryAuthReadOptions(
+            context->GetCatalog(), context->GetIdentifier(), context->GetOptions(),
+            scan_fallback_branch.value(), internal_context->GetCoreOptions().GetFileSystem(),
+            context->GetPath(), context->GetSpecificTableSchema().has_value(), "read"));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> fallback_schema,
+                           LoadReadSchema(context, /*branch=*/scan_fallback_branch.value(),
+                                          /*loaded_schema=*/nullptr));
+    PAIMON_ASSIGN_OR_RAISE(
+        bool fallback_query_auth,
+        SchemaValidation::QueryAuthReadEnabled(fallback_schema->Options(), fallback_read_options));
+    if (fallback_query_auth) {
+        return Status::NotImplemented(fmt::format(
+            "Cannot read fallback branch '{}', which enables '{}', of a table that does not.",
+            scan_fallback_branch.value(), Options::QUERY_AUTH_ENABLED));
+    }
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<InternalReadContext> fallback_context,
-        CreateInternalReadContext(context, /*branch=*/scan_fallback_branch.value(),
-                                  /*loaded_schema=*/nullptr));
+        CreateInternalReadContext(context, scan_fallback_branch.value(), fallback_schema));
 
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<TableRead> fallback_table_read,
@@ -1105,6 +1210,13 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
         CoreOptions tmp_core_options,
         CoreOptions::FromMap(context->GetOptions(), context->GetSpecificFileSystem(),
                              context->GetFileSystemSchemeToIdentifierMap()));
+    std::map<std::string, std::string> read_options;
+    PAIMON_ASSIGN_OR_RAISE(
+        read_options,
+        ResolveQueryAuthReadOptions(context->GetCatalog(), context->GetIdentifier(),
+                                    context->GetOptions(), context->GetBranch(),
+                                    tmp_core_options.GetFileSystem(), context->GetPath(),
+                                    context->GetSpecificTableSchema().has_value(), "read"));
     PAIMON_ASSIGN_OR_RAISE(std::optional<SystemTablePath> system_table_path,
                            SystemTableLoader::TryParsePath(context->GetPath()));
     if (system_table_path) {
@@ -1112,10 +1224,13 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
             return Status::NotImplemented(
                 "Precise file-index evaluation is not supported for system tables");
         }
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<SystemTable> system_table,
-            SystemTableLoader::LoadFromPath(tmp_core_options.GetFileSystem(), context->GetPath(),
-                                            context->GetOptions()));
+        // WithBranch() is kept apart from the options, so hand the branch to the system table.
+        if (!BranchManager::IsMainBranch(context->GetBranch())) {
+            read_options[Options::BRANCH] = context->GetBranch();
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
+                               SystemTableLoader::LoadFromPath(tmp_core_options.GetFileSystem(),
+                                                               context->GetPath(), read_options));
         return system_table->NewRead(context);
     }
 
@@ -1126,7 +1241,7 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FormatTable> format_table,
         FormatTableLoader::TryLoad(tmp_core_options.GetFileSystem(), context->GetPath(),
-                                   context->GetBranch(), context->GetOptions(),
+                                   context->GetBranch(), read_options,
                                    context->GetSpecificTableSchema(),
                                    /*schema_manager=*/nullptr, &latest_schema));
     if (format_table != nullptr) {
@@ -1134,7 +1249,7 @@ Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext
     }
 
     // With the schema the dispatch already read, so the managed path does not read it again.
-    return NewDataTableRead(context, latest_schema);
+    return NewDataTableRead(context, latest_schema, read_options);
 }
 
 namespace {
@@ -1365,55 +1480,27 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
         return Status::NotImplemented(
             "commit operation does not support object store file system for now");
     }
+    FileStore file_store(root_path, options);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BinaryRowPartitionComputer> partition_computer,
-                           BinaryRowPartitionComputer::Create(schema->PartitionKeys(), arrow_schema,
-                                                              options.GetPartitionDefaultName(),
-                                                              options.LegacyPartitionNameEnabled(),
-                                                              ctx->GetMemoryPool()));
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::string> global_index_external_path,
-                           options.CreateGlobalIndexExternalPath());
-
+                           file_store.NewPartitionComputer(arrow_schema, schema->PartitionKeys(),
+                                                           ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<FileStorePathFactory> path_factory,
-        FileStorePathFactory::Create(
-            root_path, arrow_schema, schema->PartitionKeys(), options.GetPartitionDefaultName(),
-            options.GetFileFormat()->Identifier(), options.DataFilePrefix(),
-            options.LegacyPartitionNameEnabled(), external_paths, global_index_external_path,
-            options.IndexFileInDataFileDir(), ctx->GetMemoryPool()));
-
-    auto snapshot_manager =
-        std::make_shared<SnapshotManager>(options.GetFileSystem(), root_path, branch);
-    if (IsCatalogCommit(*ctx)) {
-        std::shared_ptr<Catalog> catalog = ctx->GetCatalog();
-        VersionManagedCatalog* versioned = AsVersionManaged(catalog);
-        Identifier identifier = catalog_identifier.value();
-        // Capture the catalog to keep the versioned interface alive.
-        snapshot_manager->SetSnapshotLoader(
-            [catalog, versioned, identifier]() -> Result<std::optional<Snapshot>> {
-                return versioned->LoadSnapshot(identifier);
-            });
-    }
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<ManifestList> manifest_list,
-        ManifestList::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                             options.GetManifestCompression(), path_factory, options.GetCache(),
-                             ctx->GetMemoryPool()));
-
+        file_store.NewPathFactory(arrow_schema, schema->PartitionKeys(),
+                                  options.GetFileFormat()->Identifier(), ctx->GetMemoryPool()));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SnapshotManager> snapshot_manager,
+                           file_store.NewSnapshotManager(ctx->GetCatalog(), catalog_identifier));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ManifestList> manifest_list,
+                           file_store.NewManifestList(path_factory, ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> partition_schema,
                            FieldMapping::GetPartitionSchema(arrow_schema, schema->PartitionKeys()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<ManifestFile> manifest_file,
-        ManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                             options.GetManifestCompression(), path_factory,
-                             options.GetManifestTargetFileSize(), ctx->GetMemoryPool(), options,
-                             partition_schema));
+        file_store.NewManifestFile(path_factory, partition_schema, ctx->GetMemoryPool()));
     PAIMON_ASSIGN_OR_RAISE(
         std::shared_ptr<IndexManifestFile> index_manifest_file,
-        IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
-                                  options.GetManifestCompression(), path_factory,
-                                  ResolveBucketMode(options.GetBucket(), schema),
-                                  ctx->GetMemoryPool(), options));
+        file_store.NewIndexManifestFile(ResolveBucketMode(options.GetBucket(), schema),
+                                        path_factory, ctx->GetMemoryPool()));
 
     auto expire_snapshots = std::make_shared<ExpireSnapshots>(
         snapshot_manager, path_factory, manifest_list, manifest_file, index_manifest_file,
