@@ -1,3 +1,20 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 diff --git a/vortex-ffi/src/lib.rs b/vortex-ffi/src/lib.rs
 index f4ce314c07373fa5b89f9225da1e6162ce956443..af526729ba3672eb1d507e54ebf14c750c83f8e1 100644
 --- a/vortex-ffi/src/lib.rs
@@ -96,7 +113,7 @@ index 26c7b409cd982abce17fbb41a131814b7613018c..75da718b9ae99bdf4420893374af862d
 
  #ifdef __cplusplus
 diff --git a/vortex-ffi/Cargo.toml b/vortex-ffi/Cargo.toml
-index 6407f97fe46303f6dc9bd6b7f1f0f44392f5e534..426a840263dc6513187c7bd6ae8f24433b4a440f 100644
+index 6407f97fe46303f6dc9bd6b7f1f0f44392f5e534..80b62d2b5b8446bbac6379ac2384fd23c216e241 100644
 --- a/vortex-ffi/Cargo.toml
 +++ b/vortex-ffi/Cargo.toml
 @@ -25,6 +25,7 @@ arrow-schema = { workspace = true }
@@ -107,31 +124,20 @@ index 6407f97fe46303f6dc9bd6b7f1f0f44392f5e534..426a840263dc6513187c7bd6ae8f2443
  mimalloc = { workspace = true, optional = true }
  object_store = { workspace = true, features = ["aws", "azure", "gcp"] }
  paste = { workspace = true }
-@@ -35,6 +36,7 @@ url = { workspace = true, features = [] }
- vortex = { workspace = true, features = ["object_store"] }
-
- [dev-dependencies]
-+parking_lot = { workspace = true }
- rand = { workspace = true }
- tempfile = { workspace = true }
- vortex-array = { workspace = true, features = ["_test-harness"] }
 diff --git a/Cargo.lock b/Cargo.lock
-index fd66ecc567062fe122290bdb541bb3fa4420babe..731e2f40c163e9ef5b1feae672aceeccb8760308 100644
+index fd66ecc567062fe122290bdb541bb3fa4420babe..55a0bdc4ad1c9ccaf85d19946f01465c25ef76a8 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
-@@ -9747,8 +9747,10 @@ dependencies = [
+@@ -9747,6 +9747,7 @@ dependencies = [
   "cbindgen",
   "futures",
   "itertools 0.14.0",
 + "jiff",
   "mimalloc",
   "object_store 0.13.2",
-+ "parking_lot",
   "paste",
-  "prost 0.14.4",
-  "rand 0.10.1",
 diff --git a/vortex-array/src/executor.rs b/vortex-array/src/executor.rs
-index d6070ac1a4db34380f8aca8b463e8d513f5d1757..071591448281f19bd770f02e74ad0d839acc1801 100644
+index d6070ac1a4db34380f8aca8b463e8d513f5d1757..72159ee38465ede1d09489c0074d666908f0e4d5 100644
 --- a/vortex-array/src/executor.rs
 +++ b/vortex-array/src/executor.rs
 @@ -26,7 +26,6 @@ use vortex_error::VortexResult;
@@ -195,64 +201,6 @@ index d6070ac1a4db34380f8aca8b463e8d513f5d1757..071591448281f19bd770f02e74ad0d83
              ctx.log(format_args!(
                  "execute_parent: slot[{}]({}) rewrote {} -> {}",
                  slot_idx,
-@@ -818,3 +809,57 @@ impl VortexSessionExecute for VortexSession {
-         ExecutionCtx::new(self.clone())
-     }
- }
-+
-+#[cfg(test)]
-+mod tests {
-+    use std::sync::atomic::AtomicUsize;
-+    use std::sync::atomic::Ordering;
-+
-+    use vortex_buffer::buffer;
-+
-+    use super::*;
-+    use crate::arrays::ScalarFnArray;
-+    use crate::assert_arrays_eq;
-+    use crate::scalar_fn::TypedScalarFnInstance;
-+    use crate::scalar_fn::fns::binary::Binary;
-+    use crate::scalar_fn::fns::operators::Operator;
-+
-+    static REENTRANT_KERNEL_CALLS: AtomicUsize = AtomicUsize::new(0);
-+
-+    fn reentrant_kernel(
-+        _child: &ArrayRef,
-+        _parent: &ArrayRef,
-+        _child_idx: usize,
-+        ctx: &mut ExecutionCtx,
-+    ) -> VortexResult<Option<ArrayRef>> {
-+        // Reacquiring this exact SessionVar for writing must not inherit the registry's read lock.
-+        // Unlike relying on two TypeIds sharing a shard, this fails deterministically if it does.
-+        drop(ctx.session().get_mut::<ArrayKernels>());
-+        REENTRANT_KERNEL_CALLS.fetch_add(1, Ordering::SeqCst);
-+        Ok(Some(buffer![11_i32, 22].into_array()))
-+    }
-+
-+    #[test]
-+    fn execute_parent_kernel_can_reenter_session() -> VortexResult<()> {
-+        let lhs = buffer![1_i32, 2].into_array();
-+        let rhs = buffer![10_i32, 20].into_array();
-+        let scalar_fn = TypedScalarFnInstance::new(Binary, Operator::Add).erased();
-+        let parent = ScalarFnArray::try_new(scalar_fn, vec![lhs.clone(), rhs])?.into_array();
-+        let session = VortexSession::empty().with::<ArrayKernels>();
-+        session.get::<ArrayKernels>().register_execute_parent(
-+            parent.encoding_id(),
-+            lhs.encoding_id(),
-+            &[reentrant_kernel],
-+        );
-+        let mut ctx = ExecutionCtx::new(session);
-+        let expected = buffer![11_i32, 22].into_array();
-+
-+        // Cover both the single-step executor and the matcher-driven execution loop.
-+        let single_step = parent.clone().execute::<ArrayRef>(&mut ctx)?;
-+        assert_arrays_eq!(single_step, expected);
-+        let canonical = parent.execute::<Canonical>(&mut ctx)?.into_array();
-+        assert_arrays_eq!(canonical, expected);
-+        assert_eq!(REENTRANT_KERNEL_CALLS.load(Ordering::SeqCst), 2);
-+        Ok(())
-+    }
-+}
 diff --git a/vortex-buffer/src/trusted_len.rs b/vortex-buffer/src/trusted_len.rs
 index 13cf25d0546428dfc719e077b696d352242a0b9e..f8ce4fc04d68085c5aba75494e98a447f13826b4 100644
 --- a/vortex-buffer/src/trusted_len.rs
@@ -469,3 +417,84 @@ index e8bf95e14cdd3faed26d9fcc464da8276b523001..a002d7926eded2941863f94968329345
  #[cfg(test)]
  mod tests {
      use std::sync::Arc;
+diff --git a/vortex-layout/src/layouts/dict/reader.rs b/vortex-layout/src/layouts/dict/reader.rs
+index 002b4b1e9029a2fa0cf2b7044fe7ee2db062bb82..e9cd0e843443951a8022223db86c5f8935cae496 100644
+--- a/vortex-layout/src/layouts/dict/reader.rs
++++ b/vortex-layout/src/layouts/dict/reader.rs
+@@ -45,8 +45,8 @@ pub struct DictReader {
+     values_len: usize,
+     /// Cached dict values array
+     values_array: OnceLock<SharedArrayFuture>,
+-    /// Cache of expression evaluation results on the values array by expression
+-    values_evals: DashMap<Expression, SharedArrayFuture>,
++    /// Expression results are only cached for filtering, not payload projection.
++    values_evals: OnceLock<DashMap<Expression, SharedArrayFuture>>,
+
+     values: LayoutReaderRef,
+     codes: LayoutReaderRef,
+@@ -135,12 +135,13 @@ impl DictReader {
+         // shouldn't.
+         // TODO(joe): fixme
+
++        let values_evals = self.values_evals.get_or_init(DashMap::default);
+         // Check cache first with read-only lock
+-        if let Some(fut) = self.values_evals.get(&expr) {
++        if let Some(fut) = values_evals.get(&expr) {
+             return fut.clone();
+         }
+
+-        self.values_evals
++        values_evals
+             .entry(expr.clone())
+             .or_insert_with(|| {
+                 self.values_array_uncanonical()
+diff --git a/vortex-ffi/src/session.rs b/vortex-ffi/src/session.rs
+index 2af3d99744475fcbe94b060f3700cb75c417c946..305262ec98fb4f87677bcc68eb2dcc23cf74ac52 100644
+--- a/vortex-ffi/src/session.rs
++++ b/vortex-ffi/src/session.rs
+@@ -1,7 +1,10 @@
+ // SPDX-License-Identifier: Apache-2.0
+ // SPDX-FileCopyrightText: Copyright the Vortex contributors
+
++use std::sync::LazyLock;
++
+ use vortex::VortexSessionDefault;
++use vortex::array::arrow::ArrowSessionExt;
+ use vortex::error::VortexResult;
+ use vortex::error::vortex_ensure;
+ use vortex::io::runtime::BlockingRuntime;
+@@ -17,6 +20,34 @@ box_wrapper!(
+     vx_session
+ );
+
++// This session is private to the Paimon callback reader. Public/configurable
++// sessions must remain fresh: VortexSession::clone shares mutable SessionVars.
++// Single-file callback opens keep file metadata, caches and execution contexts
++// outside this default session. Initialize the only lazy read-path registry
++// before publishing it, and never configure/register against these handles.
++static PAIMON_READ_SESSION: LazyLock<VortexSession> = LazyLock::new(|| {
++    let session = VortexSession::default().with_handle(RUNTIME.handle());
++    drop(session.arrow());
++    session
++});
++
++/// Create an owned handle to Paimon's shared default callback-reader session.
++///
++/// This private integration entry point does not change the isolation of
++/// [`vx_session_new`] or [`vx_session_new_with`]. Free the owned handle with
++/// [`vx_session_free`]; other reader handles remain valid.
++///
++/// # Safety
++///
++/// The handle is only for Paimon's fixed-runtime, single-file callback read and
++/// Arrow export paths. The caller must not configure it, register plugins, change
++/// session variables/allocators/runtime, or pass it to a writer or multi-file
++/// source. Those operations require a fresh [`vx_session_new`] session.
++#[unsafe(no_mangle)]
++pub unsafe extern "C-unwind" fn vx_paimon_read_session_new() -> *mut vx_session {
++    vx_session::new(PAIMON_READ_SESSION.clone())
++}
++
+ /// Create an FFI session from a configured default session.
+ pub fn vx_session_new_with(
+     configure: impl FnOnce(VortexSession) -> VortexSession,

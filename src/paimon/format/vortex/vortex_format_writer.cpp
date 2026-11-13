@@ -169,9 +169,8 @@ Result<std::unique_ptr<VortexFormatWriter>> VortexFormatWriter::Create(
     for (auto& field : fields) {
         field = field->WithType(NormalizeTimestampTimezones(field->type()));
     }
-    const auto write_schema =
-        std::make_shared<arrow::Schema>(fields, schema->endianness(), schema->metadata());
-    VxSessionPtr session(vx_session_new(), vx_session_free);
+    const auto write_schema = arrow::schema(std::move(fields), schema->metadata());
+    VxSessionPtr session(vx_session_new());
     if (session == nullptr) {
         return Status::IOError("failed to create Vortex session");
     }
@@ -179,7 +178,7 @@ Result<std::unique_ptr<VortexFormatWriter>> VortexFormatWriter::Create(
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*write_schema, &ffi_schema));
     vx_error* error = nullptr;
     // vx_dtype_from_arrow_schema consumes ffi_schema on both success and failure.
-    VxDtypePtr dtype(vx_dtype_from_arrow_schema(&ffi_schema, &error), vx_dtype_free);
+    VxDtypePtr dtype(vx_dtype_from_arrow_schema(&ffi_schema, &error));
     if (dtype == nullptr) {
         return VortexFfiError("convert Arrow schema to Vortex dtype", error);
     }
@@ -235,8 +234,7 @@ Status VortexFormatWriter::AddBatch(::ArrowArray* batch) {
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema_, &ffi_schema));
     vx_error* error = nullptr;
     // vx_array_from_arrow consumes both `vortex_batch` and `ffi_schema` on success and on failure.
-    VxArrayPtr array(vx_array_from_arrow(&rebased_batch, &ffi_schema, /*nullable=*/false, &error),
-                     vx_array_free);
+    VxArrayPtr array(vx_array_from_arrow(&rebased_batch, &ffi_schema, /*nullable=*/false, &error));
     if (array == nullptr) {
         return VortexFfiError("convert Arrow batch to Vortex array", error);
     }

@@ -78,8 +78,15 @@ NOT IN predicate and counts the original list entries, including duplicates.
 
 A positive value permits lists of up to that length, subject to type and value
 safety checks. ``0`` disables only IN/NOT IN pushdown. A list exceeding the limit
-is not pushed down and is never truncated. Other eligible predicates may still
-be pushed down; an OR expression requires every branch to be convertible.
+is not pushed down and is never truncated. Vortex also skips native pushdown for
+empty IN/NOT IN lists. ``TableRead`` rejects IN/NOT IN predicates containing a
+``NULL`` literal during predicate validation.
+
+An ``AND`` expression can push down its eligible children. An ``OR`` expression
+can be pushed down when each direct child yields a native candidate expression.
+For example, Vortex can use ``A OR C`` as a candidate filter for
+``(A AND B) OR C`` when ``A`` and ``C`` are eligible and ``B`` requires residual
+filtering.
 
 Increasing the membership limit does not bypass these fallback conditions:
 
@@ -93,7 +100,7 @@ Increasing the membership limit does not bypass these fallback conditions:
   timezone label ``UTC``. Other stored labels fall back, independently of the
   timezone requested by the reader.
 - Decimal constants must normalize to the file's precision and scale without
-  rounding or overflow. Empty or NULL-containing IN/NOT IN lists also fall back.
+  rounding or overflow.
 
 ``IS NULL`` and ``IS NOT NULL`` remain eligible for floating-point and timestamp
 fields. If the file contains a top-level user column named ``_row_idx``, however,
@@ -121,6 +128,7 @@ accept decimal byte counts without unit suffixes, up to
 ``9223372036854775807`` (``INT64_MAX``). Their defaults are ``1048576``
 (1 MiB) and ``16777216`` (16 MiB), respectively. ``max-gap`` must be non-negative,
 ``max-size`` must be positive, and ``max-gap`` must not exceed ``max-size``.
+The limits are validated when the reader opens its data source.
 
 ``max-size`` is a threshold for merging requested ranges. An individual original
 request may exceed it, so it does not impose a hard read-size or memory limit.

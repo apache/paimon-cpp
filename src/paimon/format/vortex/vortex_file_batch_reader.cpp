@@ -259,16 +259,14 @@ Result<std::unique_ptr<VortexFileBatchReader>> VortexFileBatchReader::Create(
     auto length = static_cast<uint64_t>(signed_length);
     auto input_context = std::make_shared<VortexInputContext>(input);
 
-    VxSessionPtr session(vx_paimon_read_session_new(), vx_session_free);
+    VxSessionPtr session(vx_paimon_read_session_new());
     if (session == nullptr) {
         return Status::IOError("failed to create Vortex session");
     }
     vx_error* error = nullptr;
-    VxDataSourcePtr data_source(
-        vx_data_source_new_callback_with_coalesce(
-            session.get(), VortexInputContext::MakeCallbacks(input_context), length,
-            coalesce_options.max_gap, coalesce_options.max_size, &error),
-        vx_data_source_free);
+    VxDataSourcePtr data_source(vx_data_source_new_callback_with_coalesce(
+        session.get(), VortexInputContext::MakeCallbacks(input_context), length,
+        coalesce_options.max_gap, coalesce_options.max_size, &error));
     if (data_source == nullptr) {
         return VortexCallbackError("open Vortex callback data source", error,
                                    input_context->GetCallbackStatus());
@@ -301,7 +299,7 @@ Result<std::unique_ptr<VortexFileBatchReader>> VortexFileBatchReader::Create(
     // scan may be consumed only once.
     return std::unique_ptr<VortexFileBatchReader>(new VortexFileBatchReader(
         input, batch_size, std::move(input_context), std::move(session), std::move(data_source),
-        VxScanPtr(nullptr, vx_scan_free), file_schema, total_rows, predicate_options, arrow_pool));
+        VxScanPtr(), file_schema, total_rows, predicate_options, arrow_pool));
 }
 
 VortexFileBatchReader::~VortexFileBatchReader() {
@@ -315,8 +313,8 @@ Status VortexFileBatchReader::CreateScan() {
     vx_scan_options options{};
     options.ordered = true;
     // The scan clones the projection, so these expressions need only outlive scan creation.
-    VxExpressionPtr root(nullptr, vx_expression_free);
-    VxExpressionPtr projection(nullptr, vx_expression_free);
+    VxExpressionPtr root;
+    VxExpressionPtr projection;
     std::vector<const char*> name_ptrs;
     if (read_schema_ != nullptr) {
         name_ptrs.reserve(read_schema_->num_fields());
@@ -324,18 +322,17 @@ Status VortexFileBatchReader::CreateScan() {
         for (const std::shared_ptr<arrow::Field>& field : read_schema_->fields()) {
             name_ptrs.push_back(field->name().c_str());
         }
-        root = VxExpressionPtr(vx_expression_root(), vx_expression_free);
+        root = VxExpressionPtr(vx_expression_root());
         // The FFI requires non-null names even for an explicit zero-column projection.
         const char* empty_name = nullptr;
         const char* const* names = name_ptrs.empty() ? &empty_name : name_ptrs.data();
-        projection = VxExpressionPtr(vx_expression_select(names, name_ptrs.size(), root.get()),
-                                     vx_expression_free);
+        projection = VxExpressionPtr(vx_expression_select(names, name_ptrs.size(), root.get()));
         options.projection = projection.get();
     }
     selection_.ApplyToScan(&options);
     // Filtering drops rows; include_row_idx preserves their original physical positions.
     // The scan clones the filter, so it can be freed after scan creation.
-    VxExpressionPtr filter(nullptr, vx_expression_free);
+    VxExpressionPtr filter;
     // SetReadSchema validates requested fields against the file schema, so checking the
     // file alone also protects the hidden index from collisions with requested fields.
     const bool has_row_idx_column = !file_schema_->GetAllFieldIndices(kRowIdxColumn).empty();
@@ -348,8 +345,7 @@ Status VortexFileBatchReader::CreateScan() {
         options.include_row_idx = true;
         row_position_.EnableFilterRowIds();
     }
-    VxScanPtr scan(vx_data_source_scan(data_source_.get(), &options, /*estimate=*/nullptr, &error),
-                   vx_scan_free);
+    VxScanPtr scan(vx_data_source_scan(data_source_.get(), &options, /*estimate=*/nullptr, &error));
     if (scan == nullptr) {
         return VortexCallbackError("create Vortex scan", error,
                                    input_context_->GetCallbackStatus());
@@ -366,7 +362,7 @@ Result<bool> VortexFileBatchReader::OpenNextPartitionStream() {
         PAIMON_RETURN_NOT_OK(CreateScan());
     }
     vx_error* error = nullptr;
-    VxPartitionPtr partition(vx_scan_next_partition(scan_.get(), &error), vx_partition_free);
+    VxPartitionPtr partition(vx_scan_next_partition(scan_.get(), &error));
     if (error != nullptr) {
         return VortexCallbackError("advance Vortex scan partition", error,
                                    input_context_->GetCallbackStatus());
@@ -520,8 +516,6 @@ Status VortexFileBatchReader::SetReadSchema(
     read_schema_ = std::move(imported_read_schema);
     predicate_filter_ = std::dynamic_pointer_cast<PredicateFilter>(predicate);
     selection_ = std::move(selection);
-    metrics_->SetCounter(VortexMetrics::kSelectionRowCount, selection_.SelectedRowCount());
-    metrics_->SetCounter(VortexMetrics::kSelectionBufferRowCount, selection_.IndexCount());
     ReleaseStream();
     current_batch_.reset();
     current_batch_offset_ = 0;

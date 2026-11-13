@@ -25,7 +25,6 @@
 #include "paimon/format/reader_builder.h"
 #include "paimon/format/vortex/vortex_defs.h"
 #include "paimon/format/vortex/vortex_file_batch_reader.h"
-#include "paimon/format/vortex/vortex_predicate_converter.h"
 #include "paimon/memory/memory_pool.h"
 
 namespace paimon::vortex {

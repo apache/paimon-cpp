@@ -76,8 +76,8 @@ struct vx_input_callbacks {
 };
 
 /// Create a callback data source with explicit I/O coalescing. `size` is the total file length
-/// in bytes. max_size must be positive and max_gap must not exceed max_size. Returns null and
-/// sets `err` on failure. The callback context is released exactly once, even on error.
+/// in bytes. `max_size` must be in [1, INT64_MAX] and `max_gap` must not exceed it. Returns null
+/// and sets `err` on failure. The callback context is released exactly once, even on error.
 const vx_data_source* vx_data_source_new_callback_with_coalesce(const vx_session* session,
                                                                 vx_input_callbacks callbacks,
                                                                 uint64_t size, uint64_t max_gap,
@@ -128,6 +128,7 @@ void vx_callback_sink_close(vx_callback_sink* sink, vx_error** error_out);
 /// Discard the sink without writing a footer, leaving whatever the host received invalid.
 void vx_callback_sink_abort(vx_callback_sink* sink);
 
+/// TODO: use `vx_scalar_new_extension(dtype, storage, err)` interface when update vortex version.
 /// Timestamp literal unit. Values must match vx_time_unit in callback_io.rs.
 enum vx_time_unit {
     VX_TIME_UNIT_SECOND = 0,

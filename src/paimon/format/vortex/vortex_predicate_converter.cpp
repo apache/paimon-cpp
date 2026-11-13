@@ -44,10 +44,6 @@
 namespace paimon::vortex {
 namespace {
 
-VxExpressionPtr NullExpr() {
-    return VxExpressionPtr(nullptr, vx_expression_free);
-}
-
 Status CheckNativeResult(const std::string& operation, const void* handle,
                          vx_error* error = nullptr) {
     PAIMON_RETURN_NOT_OK(VortexFfiError(operation, error));
@@ -59,8 +55,7 @@ Status CheckNativeResult(const std::string& operation, const void* handle,
 
 // vx_expression_not returns an owned handle typed const; reclaim it as an owned non-const pointer.
 Result<VxExpressionPtr> MakeNotExpr(const vx_expression* child) {
-    VxExpressionPtr expression(const_cast<vx_expression*>(vx_expression_not(child)),
-                               vx_expression_free);
+    VxExpressionPtr expression(const_cast<vx_expression*>(vx_expression_not(child)));
     PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex NOT expression", expression.get()));
     return expression;
 }
@@ -157,7 +152,7 @@ Result<std::optional<Decimal>> NormalizeDecimalLiteral(
 
 Result<VxScalarPtr> MakeLiteralScalar(const Literal& literal,
                                       const std::shared_ptr<arrow::DataType>& arrow_type) {
-    VxScalarPtr scalar(nullptr, vx_scalar_free);
+    VxScalarPtr scalar;
     if (literal.IsNull()) {
         return scalar;
     }
@@ -247,29 +242,23 @@ Result<VxExpressionPtr> MakeLiteralExpr(const Literal& literal,
                                         const std::shared_ptr<arrow::DataType>& arrow_type) {
     PAIMON_ASSIGN_OR_RAISE(VxScalarPtr scalar, MakeLiteralScalar(literal, arrow_type));
     if (scalar == nullptr) {
-        return NullExpr();
+        return VxExpressionPtr();
     }
     vx_error* error = nullptr;
-    VxExpressionPtr expression(vx_expression_literal(scalar.get(), &error), vx_expression_free);
+    VxExpressionPtr expression(vx_expression_literal(scalar.get(), &error));
     PAIMON_RETURN_NOT_OK(
         CheckNativeResult("create Vortex literal expression", expression.get(), error));
     return expression;
 }
 
-// Type mismatches violate the predicate contract; valid but unsafe conversions fall back.
-// True passes basic type eligibility only; scalar construction still checks value safety.
-Result<bool> CheckLiteralTypePushdownEligibility(
-    const Literal& literal, const std::shared_ptr<LeafPredicate>& leaf,
-    const std::shared_ptr<arrow::DataType>& arrow_type) {
-    if (literal.IsNull() || arrow_type == nullptr) {
+// Literal types are validated by the caller. Check the actual file type once per leaf;
+// scalar construction still checks value safety against its parameters.
+Result<bool> CheckFieldTypePushdownEligibility(const std::shared_ptr<LeafPredicate>& leaf,
+                                               const std::shared_ptr<arrow::DataType>& arrow_type) {
+    if (arrow_type == nullptr) {
         return false;
     }
     const FieldType field_type = leaf->GetFieldType();
-    if (literal.GetType() != field_type) {
-        return Status::Invalid("Literal type mismatch for field '", leaf->FieldName(),
-                               "': expected ", FieldTypeUtils::FieldTypeToString(field_type),
-                               ", actual ", FieldTypeUtils::FieldTypeToString(literal.GetType()));
-    }
     const Result<FieldType> file_type = FieldTypeUtils::ConvertToFieldType(arrow_type->id());
     if (!file_type.ok()) {
         // Arrow types outside the Paimon type mapping cannot be pushed.
@@ -289,34 +278,13 @@ Result<bool> CheckLiteralTypePushdownEligibility(
         case FieldType::BIGINT:
         case FieldType::STRING:
         case FieldType::DATE:
-            return true;
         case FieldType::DECIMAL:
-            // Parameter normalization and lossless-value checks run once when building the scalar.
+        case FieldType::TIMESTAMP:
             return true;
-        case FieldType::TIMESTAMP: {
-            const auto& timestamp_type = checked_cast<const arrow::TimestampType&>(*arrow_type);
-            return timestamp_type.timezone().empty() || timestamp_type.timezone() == "UTC";
-        }
         default:
             // NaN and signed-zero equivalence needs separate validation; keep the residual path.
             return false;
     }
-}
-
-// Check every basic type even when a value or the list budget requires fallback.
-Result<bool> CheckMembershipTypePushdownEligibility(
-    const std::shared_ptr<LeafPredicate>& leaf,
-    const std::shared_ptr<arrow::DataType>& arrow_type) {
-    bool all_literal_types_eligible = true;
-    for (const Literal& literal : leaf->Literals()) {
-        PAIMON_ASSIGN_OR_RAISE(bool type_eligible,
-                               CheckLiteralTypePushdownEligibility(literal, leaf, arrow_type));
-        if (!type_eligible) {
-            all_literal_types_eligible = false;
-            continue;
-        }
-    }
-    return all_literal_types_eligible;
 }
 
 Result<VxExpressionPtr> ConvertInList(const std::vector<Literal>& literals,
@@ -329,22 +297,20 @@ Result<VxExpressionPtr> ConvertInList(const std::vector<Literal>& literals,
     for (const Literal& literal : literals) {
         PAIMON_ASSIGN_OR_RAISE(VxScalarPtr scalar, MakeLiteralScalar(literal, arrow_type));
         if (scalar == nullptr) {
-            return NullExpr();
+            return VxExpressionPtr();
         }
         raw.push_back(scalar.get());
         scalars.push_back(std::move(scalar));
     }
     vx_error* error = nullptr;
     VxScalarPtr list(
-        vx_scalar_new_list(vx_scalar_dtype(raw[0]), raw.data(), raw.size(), false, &error),
-        vx_scalar_free);
+        vx_scalar_new_list(vx_scalar_dtype(raw[0]), raw.data(), raw.size(), false, &error));
     PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex list scalar", list.get(), error));
     error = nullptr;
-    VxExpressionPtr literal_expr(vx_expression_literal(list.get(), &error), vx_expression_free);
+    VxExpressionPtr literal_expr(vx_expression_literal(list.get(), &error));
     PAIMON_RETURN_NOT_OK(
         CheckNativeResult("create Vortex literal expression", literal_expr.get(), error));
-    VxExpressionPtr expression(vx_expression_list_contains(literal_expr.get(), column),
-                               vx_expression_free);
+    VxExpressionPtr expression(vx_expression_list_contains(literal_expr.get(), column));
     PAIMON_RETURN_NOT_OK(
         CheckNativeResult("create Vortex list membership expression", expression.get()));
     return expression;
@@ -355,35 +321,26 @@ Result<VxExpressionPtr> ConvertMembership(const std::shared_ptr<LeafPredicate>& 
                                           const vx_expression* column, bool negate,
                                           const VortexPredicateOptions& options) {
     const std::vector<Literal>& literals = leaf->Literals();
-    PAIMON_ASSIGN_OR_RAISE(bool all_literal_types_eligible,
-                           CheckMembershipTypePushdownEligibility(leaf, arrow_type));
     // The query engine owns deduplication and integer-range rewrites. Apply value conversions
-    // and create native scalars only within the original-list limit, after type validation.
-    if (!all_literal_types_eligible || literals.empty() ||
-        literals.size() > options.max_in_values) {
-        return NullExpr();
+    // and create native scalars only within the original-list limit.
+    if (literals.empty() || literals.size() > options.max_in_values) {
+        return VxExpressionPtr();
     }
-    if (leaf->GetFieldType() == FieldType::TIMESTAMP) {
-        // Preserve whole-list fallback for unsafe timestamp values before native construction.
-        for (const Literal& literal : literals) {
-            int64_t value = 0;
-            vx_time_unit unit = VX_TIME_UNIT_MILLISECOND;
-            if (!GetTimestampValue(literal, arrow_type, &value, &unit)) {
-                return NullExpr();
-            }
-        }
+    PAIMON_ASSIGN_OR_RAISE(bool type_eligible, CheckFieldTypePushdownEligibility(leaf, arrow_type));
+    if (!type_eligible) {
+        return VxExpressionPtr();
     }
     PAIMON_ASSIGN_OR_RAISE(VxExpressionPtr expression, ConvertInList(literals, arrow_type, column));
     if (expression == nullptr || !negate) {
         return expression;
     }
     PAIMON_ASSIGN_OR_RAISE(expression, MakeNotExpr(expression.get()));
-    VxExpressionPtr is_null(vx_expression_is_null(column), vx_expression_free);
+    VxExpressionPtr is_null(vx_expression_is_null(column));
     PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex IS NULL expression", is_null.get()));
     PAIMON_ASSIGN_OR_RAISE(VxExpressionPtr is_not_null, MakeNotExpr(is_null.get()));
     // Neither IN nor NOT IN may retain null rows. Validation also rejects null/empty lists.
     const vx_expression* children[] = {is_not_null.get(), expression.get()};
-    VxExpressionPtr combined(vx_expression_and(children, 2), vx_expression_free);
+    VxExpressionPtr combined(vx_expression_and(children, 2));
     PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex AND expression", combined.get()));
     return combined;
 }
@@ -428,14 +385,13 @@ Result<VxExpressionPtr> ConvertLeaf(const std::shared_ptr<LeafPredicate>& leaf,
         file_schema != nullptr ? file_schema->GetFieldIndex(leaf->FieldName()) : -1;
     if (field_index < 0) {
         // Missing fields are null-filled by the reader, but cannot bind to a native file scan.
-        return NullExpr();
+        return VxExpressionPtr();
     }
     const std::shared_ptr<arrow::DataType>& arrow_type = file_schema->field(field_index)->type();
-    VxExpressionPtr column(vx_expression_get_item(leaf->FieldName().c_str(), root),
-                           vx_expression_free);
+    VxExpressionPtr column(vx_expression_get_item(leaf->FieldName().c_str(), root));
     PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex field expression", column.get()));
     if (type == Function::Type::IS_NULL || type == Function::Type::IS_NOT_NULL) {
-        VxExpressionPtr is_null(vx_expression_is_null(column.get()), vx_expression_free);
+        VxExpressionPtr is_null(vx_expression_is_null(column.get()));
         PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex IS NULL expression", is_null.get()));
         if (type == Function::Type::IS_NULL) {
             return is_null;
@@ -449,20 +405,18 @@ Result<VxExpressionPtr> ConvertLeaf(const std::shared_ptr<LeafPredicate>& leaf,
         return ConvertMembership(leaf, arrow_type, column.get(), true, options);
     }
     if (!is_comparison) {
-        return NullExpr();
+        return VxExpressionPtr();
     }
-    PAIMON_ASSIGN_OR_RAISE(bool type_eligible, CheckLiteralTypePushdownEligibility(
-                                                   leaf->Literals()[0], leaf, arrow_type));
+    PAIMON_ASSIGN_OR_RAISE(bool type_eligible, CheckFieldTypePushdownEligibility(leaf, arrow_type));
     if (!type_eligible) {
-        return NullExpr();
+        return VxExpressionPtr();
     }
     PAIMON_ASSIGN_OR_RAISE(VxExpressionPtr literal_expr,
                            MakeLiteralExpr(leaf->Literals()[0], arrow_type));
     if (literal_expr == nullptr) {
-        return NullExpr();
+        return VxExpressionPtr();
     }
-    VxExpressionPtr expression(vx_expression_binary(op, column.get(), literal_expr.get()),
-                               vx_expression_free);
+    VxExpressionPtr expression(vx_expression_binary(op, column.get(), literal_expr.get()));
     PAIMON_RETURN_NOT_OK(
         CheckNativeResult("create Vortex comparison expression", expression.get()));
     return expression;
@@ -473,7 +427,7 @@ Result<VxExpressionPtr> ConvertImpl(const std::shared_ptr<Predicate>& predicate,
                                     const vx_expression* root,
                                     const VortexPredicateOptions& options) {
     if (predicate == nullptr) {
-        return NullExpr();
+        return VxExpressionPtr();
     }
     const Function::Type type = predicate->GetFunction().GetType();
     if (type == Function::Type::AND || type == Function::Type::OR) {
@@ -502,7 +456,7 @@ Result<VxExpressionPtr> ConvertImpl(const std::shared_ptr<Predicate>& predicate,
         }
         // AND can retain supported children; dropping any OR branch could exclude matching rows.
         if (children.empty() || (type == Function::Type::OR && !all_children_pushed)) {
-            return NullExpr();
+            return VxExpressionPtr();
         }
         std::vector<const vx_expression*> raw;
         raw.reserve(children.size());
@@ -511,8 +465,7 @@ Result<VxExpressionPtr> ConvertImpl(const std::shared_ptr<Predicate>& predicate,
         }
         VxExpressionPtr combined(type == Function::Type::AND
                                      ? vx_expression_and(raw.data(), raw.size())
-                                     : vx_expression_or(raw.data(), raw.size()),
-                                 vx_expression_free);
+                                     : vx_expression_or(raw.data(), raw.size()));
         PAIMON_RETURN_NOT_OK(
             CheckNativeResult("create Vortex compound expression", combined.get()));
         return combined;
@@ -525,7 +478,7 @@ Result<VxExpressionPtr> ConvertImpl(const std::shared_ptr<Predicate>& predicate,
             type == Function::Type::NOT_IN) {
             return Status::Invalid("Leaf predicate must be a LeafPredicate");
         }
-        return NullExpr();
+        return VxExpressionPtr();
     }
     return ConvertLeaf(leaf, file_schema, root, options);
 }
@@ -536,9 +489,9 @@ Result<VxExpressionPtr> VortexPredicateConverter::Convert(
     const std::shared_ptr<Predicate>& predicate, const std::shared_ptr<arrow::Schema>& file_schema,
     const VortexPredicateOptions& options) {
     if (predicate == nullptr) {
-        return NullExpr();
+        return VxExpressionPtr();
     }
-    VxExpressionPtr root(vx_expression_root(), vx_expression_free);
+    VxExpressionPtr root(vx_expression_root());
     PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex root expression", root.get()));
     return ConvertImpl(predicate, file_schema, root.get(), options);
 }

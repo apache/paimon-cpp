@@ -1502,7 +1502,7 @@ macro(build_vortex)
     # Vortex's C API can only read a whole file already in memory or a path it resolves itself,
     # neither of which can go through paimon's filesystem. `callback_io.rs` adds an entry point
     # backed by host callbacks; it is maintained in this repository and injected into the Vortex
-    # source tree, and the patch only declares the module.
+    # source tree. The patch declares the module.
     set(VORTEX_PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/vortex.diff")
     set(VORTEX_CALLBACK_IO_SRC
         "${CMAKE_SOURCE_DIR}/crates/vortex_callback_io/callback_io.rs")
@@ -1533,13 +1533,9 @@ macro(build_vortex)
                         # returns immediately when nothing changed, and copy_if_different keeps
                         # the archive's timestamp stable so dependents do not relink.
                         BUILD_ALWAYS TRUE
-                        BUILD_COMMAND ${CMAKE_COMMAND} "-DVORTEX_SOURCE_DIR=<SOURCE_DIR>"
-                                      "-DVORTEX_READ_PATCH=${CMAKE_CURRENT_LIST_DIR}/vortex-point-read.diff"
-                                      -P
-                                      "${CMAKE_CURRENT_LIST_DIR}/ApplyVortexReadPatch.cmake"
-                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                                "${VORTEX_CALLBACK_IO_SRC}"
-                                "<SOURCE_DIR>/vortex-ffi/src/callback_io.rs"
+                        BUILD_COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                                      "${VORTEX_CALLBACK_IO_SRC}"
+                                      "<SOURCE_DIR>/vortex-ffi/src/callback_io.rs"
                         COMMAND ${CMAKE_COMMAND} -E env "FLATC=${VORTEX_FLATC}"
                                 "RUSTUP_TOOLCHAIN=stable" "CC=${CMAKE_C_COMPILER}"
                                 "CXX=${CMAKE_CXX_COMPILER}"

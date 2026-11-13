@@ -47,16 +47,4 @@ struct VortexIoCoalesceOptions {
     uint64_t max_size = kDefaultVortexReadIoCoalesceMaxSize;
 };
 
-/// Names for bitmap-selection counters set after a successful read-schema update.
-class VortexMetrics {
- public:
-    VortexMetrics() = delete;
-    ~VortexMetrics() = delete;
-
-    /// Rows selected by the bitmap, before predicate filtering; no bitmap selects all rows.
-    static inline const char kSelectionRowCount[] = "vortex.selection-row-count";
-    /// Stored selected or excluded row ids, using whichever side is smaller.
-    static inline const char kSelectionBufferRowCount[] = "vortex.selection-buffer-row-count";
-};
-
 }  // namespace paimon::vortex
