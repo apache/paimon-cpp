@@ -163,7 +163,9 @@ storage binding and supplied metadata. Operation Contexts hold execution setting
 finishing an operation Context performs no table metadata I/O.
 ``CopyWithoutTimeTravel`` preserves the bound table schema, matching Java's
 ``copyWithoutTimeTravel``. It does not resolve a historical schema from snapshot
-or timestamp options:
+or timestamp options. When ``scan.mode`` is absent, the copy stores Java-compatible
+scan-mode defaults inferred from the options. Later copies retain that mode unless
+it is explicitly overridden:
 
 .. code-block:: cpp
 

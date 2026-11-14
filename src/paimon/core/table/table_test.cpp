@@ -178,6 +178,59 @@ TEST(TableTest, TestCopyRetainsBindingsAndMergesOptionsIndependently) {
     ASSERT_TRUE(weak_catalog.expired());
 }
 
+TEST(TableTest, TestChainedCopiesRetainMaterializedScanMode) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto fs = dir->GetFileSystem();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
+                         CreateManagedTable(fs, dir->Str(), Identifier("db", "tbl")));
+    const auto original_options = checked_pointer_cast<DataSchema>(table->GetSchema())->Options();
+    using OptionsMap = std::map<std::string, std::string>;
+    const std::vector<std::pair<OptionsMap, std::string>> cases = {
+        {{{Options::SCAN_TIMESTAMP_MILLIS, "1000"}}, "from-timestamp"},
+        {{{Options::SCAN_TIMESTAMP, "2023-06-01"}}, "from-timestamp"},
+        {{{Options::SCAN_SNAPSHOT_ID, "1"}}, "from-snapshot"},
+        {{{Options::SCAN_TIMESTAMP_MILLIS, "1000"}, {Options::SCAN_MODE, "latest-full"}},
+         "latest-full"},
+    };
+    for (const auto& [first_options, expected_mode] : cases) {
+        SCOPED_TRACE(expected_mode);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> first,
+                             table->CopyWithoutTimeTravel(first_options));
+        const auto& first_schema_options =
+            checked_pointer_cast<DataSchema>(first->GetSchema())->Options();
+        ASSERT_EQ(first_schema_options.at(Options::SCAN_MODE), expected_mode);
+        // A later snapshot option must not change a mode inferred by an earlier copy.
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> second,
+                             first->CopyWithoutTimeTravel({{Options::SCAN_SNAPSHOT_ID, "2"}}));
+        const auto& second_options =
+            checked_pointer_cast<DataSchema>(second->GetSchema())->Options();
+        ASSERT_EQ(second_options.at(Options::SCAN_MODE), expected_mode);
+        ASSERT_EQ(second_options.at(Options::SCAN_SNAPSHOT_ID), "2");
+        ASSERT_OK_AND_ASSIGN(CoreOptions core_options, CoreOptions::FromMap(second_options, fs));
+        ASSERT_EQ(core_options.GetStartupMode().ToString(), expected_mode);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> third,
+                             second->CopyWithoutTimeTravel({{Options::SCAN_MODE, "latest"}}));
+        ASSERT_EQ(
+            checked_pointer_cast<DataSchema>(third->GetSchema())->Options().at(Options::SCAN_MODE),
+            "latest");
+        ASSERT_EQ(first_schema_options.at(Options::SCAN_MODE), expected_mode);
+        ASSERT_EQ(checked_pointer_cast<DataSchema>(table->GetSchema())->Options(),
+                  original_options);
+    }
+    // A supplied schema already containing a selector receives the same defaults on an empty copy.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema,
+                         checked_pointer_cast<TableSchema>(table->GetSchema())
+                             ->MergeOptions({{Options::SCAN_TIMESTAMP_MILLIS, "1000"}}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStoreTable> loaded,
+        FileStoreTable::Create(fs, dir->Str(), schema, Identifier("db", "tbl"), "", "main"));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> copied, loaded->CopyWithoutTimeTravel({}));
+    ASSERT_EQ(
+        checked_pointer_cast<DataSchema>(copied->GetSchema())->Options().at(Options::SCAN_MODE),
+        "from-timestamp");
+}
+
 TEST(TableTest, TestCopyRejectsBucketKeyChangesWithoutLosingRows) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);

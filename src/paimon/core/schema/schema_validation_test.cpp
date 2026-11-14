@@ -2158,6 +2158,47 @@ TEST(SchemaValidationTest, TestMapSharedShreddingRejectsPostponeBucketMode) {
                         "MAP shared-shredding currently does not support postpone bucket mode.");
 }
 
+TEST(SchemaValidationTest, TestMaterializeScanModeDefaults) {
+    using OptionsMap = std::map<std::string, std::string>;
+    const std::vector<std::pair<OptionsMap, std::optional<std::string>>> cases = {
+        {{}, std::nullopt},
+        {{{Options::SCAN_TIMESTAMP_MILLIS, "1000"}}, "from-timestamp"},
+        {{{Options::SCAN_TIMESTAMP, "2023-06-01"}}, "from-timestamp"},
+        {{{"scan.file-creation-time-millis", "1000"}}, "from-file-creation-time"},
+        {{{Options::SCAN_SNAPSHOT_ID, "1"}}, "from-snapshot"},
+        {{{"incremental-between-timestamp", "1000,2000"}}, "incremental"},
+        {{{"incremental-between", "1,2"}}, "incremental"},
+        {{{"incremental-to-auto-tag", "daily"}}, "incremental"},
+        {{{Options::SCAN_TAG_NAME, "tag1"}}, std::nullopt},
+        {{{Options::SCAN_TIMESTAMP_MILLIS, "1000"}, {Options::SCAN_SNAPSHOT_ID, "1"}},
+         "from-timestamp"},
+        {{{"scan.file-creation-time-millis", "1000"}, {Options::SCAN_SNAPSHOT_ID, "1"}},
+         "from-file-creation-time"},
+        {{{Options::SCAN_SNAPSHOT_ID, "1"}, {"incremental-between", "1,2"}}, "from-snapshot"},
+        {{{Options::SCAN_TIMESTAMP_MILLIS, "1000"}, {Options::SCAN_MODE, "latest-full"}},
+         "latest-full"},
+        {{{Options::SCAN_TIMESTAMP_MILLIS, "1000"}, {Options::SCAN_MODE, "default"}}, "default"},
+        {{{Options::SCAN_TIMESTAMP_MILLIS, "1000"}, {Options::SCAN_MODE, ""}}, ""},
+    };
+    auto arrow_schema = arrow::schema({arrow::field("a", arrow::int32())});
+    for (size_t i = 0; i < cases.size(); ++i) {
+        SCOPED_TRACE(i);
+        auto options = cases[i].first;
+        auto expected = options;
+        if (cases[i].second) {
+            expected[Options::SCAN_MODE] = *cases[i].second;
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema,
+                             TableSchema::Create(0, arrow_schema, {}, {}, options));
+        ASSERT_OK_AND_ASSIGN(OptionsMap merged, SchemaValidation::MergeDynamicOptions(*schema, {}));
+        ASSERT_EQ(merged, expected);
+        ASSERT_OK_AND_ASSIGN(schema, schema->Copy(merged));
+        ASSERT_OK_AND_ASSIGN(OptionsMap repeated,
+                             SchemaValidation::MergeDynamicOptions(*schema, {}));
+        ASSERT_EQ(repeated, expected);
+    }
+}
+
 TEST(SchemaValidationTest, TestCopyImmutableOptions) {
     const std::map<std::string, std::pair<std::string, std::string>> changes = {
         {"bucket-key", {"a", "b"}},

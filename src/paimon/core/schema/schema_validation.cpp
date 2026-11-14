@@ -326,6 +326,21 @@ Result<std::map<std::string, std::string>> SchemaValidation::MergeDynamicOptions
         }
         options[key] = value;
     }
+    if (!options.count(Options::SCAN_MODE)) {
+        // Java CoreOptions.setDefaultValues: the first matching rule wins.
+        if (options.count(Options::SCAN_TIMESTAMP_MILLIS) ||
+            options.count(Options::SCAN_TIMESTAMP)) {
+            options[Options::SCAN_MODE] = "from-timestamp";
+        } else if (options.count("scan.file-creation-time-millis")) {
+            options[Options::SCAN_MODE] = "from-file-creation-time";
+        } else if (options.count(Options::SCAN_SNAPSHOT_ID)) {
+            options[Options::SCAN_MODE] = "from-snapshot";
+        } else if (options.count("incremental-between-timestamp") ||
+                   options.count("incremental-between") ||
+                   options.count("incremental-to-auto-tag")) {
+            options[Options::SCAN_MODE] = "incremental";
+        }
+    }
     return options;
 }
 
