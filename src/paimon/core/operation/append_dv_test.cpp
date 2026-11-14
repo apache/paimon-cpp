@@ -410,7 +410,7 @@ TEST_P(AppendDvTest, AddedColumnIsAllNullInHistoricalFiles) {
     ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<TableSchema>> schema, manager.Latest());
     ASSERT_TRUE(schema);
     auto fields = (*schema)->Fields();
-    const int32_t field_index = static_cast<int32_t>(fields.size());
+    const auto field_index = static_cast<int32_t>(fields.size());
     const int32_t field_id = (*schema)->HighestFieldId() + 1;
     fields.emplace_back(field_id, arrow::field("added", arrow::int32()));
     ASSERT_OK(TestHelper::WriteNextSchema(fs, helper_->TablePath(), fields, field_id,
