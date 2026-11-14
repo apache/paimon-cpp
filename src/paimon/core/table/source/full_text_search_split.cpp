@@ -39,6 +39,7 @@
 #include "paimon/core/index/index_file_meta_serializer.h"
 #include "paimon/core/table/source/data_evolution_full_text_scan.h"
 #include "paimon/core/table/source/index_full_text_search_split_impl.h"
+#include "paimon/core/table/source/raw_full_text_search_split_impl.h"
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/io/data_input_stream.h"
 #include "paimon/memory/bytes.h"
@@ -71,6 +72,56 @@ Status CheckEntryCount(const DataInputStream& in, int32_t count, int64_t min_ent
         return Status::Invalid(
             fmt::format("invalid full-text search split, {} {} exceed the remaining {} bytes",
                         count, entries, length - pos));
+    }
+    return Status::OK();
+}
+
+Status CheckSerializableName(const std::string& value, const char* what) {
+    if (value.empty()) {
+        return Status::Invalid(fmt::format("full-text search split requires {}", what));
+    }
+    if (value.size() > std::numeric_limits<uint16_t>::max()) {
+        return Status::Invalid(
+            fmt::format("full-text search split requires {} of at most {} bytes, but got {} bytes",
+                        what, std::numeric_limits<uint16_t>::max(), value.size()));
+    }
+    return Status::OK();
+}
+
+void WriteRowRanges(const std::vector<Range>& ranges, MemorySegmentOutputStream* out) {
+    out->WriteValue<int32_t>(static_cast<int32_t>(ranges.size()));
+    for (const Range& range : ranges) {
+        out->WriteValue<int64_t>(range.from);
+        out->WriteValue<int64_t>(range.to);
+    }
+}
+
+Result<std::vector<Range>> ReadRowRanges(DataInputStream* in, const std::string& entry) {
+    std::string entries = entry + "s";
+    PAIMON_ASSIGN_OR_RAISE(int32_t range_count, in->ReadValue<int32_t>());
+    PAIMON_RETURN_NOT_OK(CheckEntryCount(*in, range_count, kSearchRowRangeBytes, entries.c_str()));
+    std::vector<Range> ranges;
+    ranges.reserve(range_count);
+    for (int32_t i = 0; i < range_count; ++i) {
+        PAIMON_ASSIGN_OR_RAISE(int64_t from, in->ReadValue<int64_t>());
+        PAIMON_ASSIGN_OR_RAISE(int64_t to, in->ReadValue<int64_t>());
+        if (from > to) {
+            return Status::Invalid(
+                fmt::format("invalid full-text search split, {} [{}, {}] ends before it starts",
+                            entry, from, to));
+        }
+        ranges.emplace_back(from, to);
+    }
+    return ranges;
+}
+
+Status CheckFullyRead(const DataInputStream& in) {
+    PAIMON_ASSIGN_OR_RAISE(int64_t pos, in.GetPos());
+    PAIMON_ASSIGN_OR_RAISE(int64_t stream_length, in.Length());
+    if (pos != stream_length) {
+        return Status::Invalid(
+            fmt::format("invalid full-text search split, remaining {} bytes after deserializing",
+                        stream_length - pos));
     }
     return Status::OK();
 }
@@ -231,15 +282,11 @@ Result<std::shared_ptr<IndexFullTextSearchSplitImpl>> IndexFullTextSearchSplitIm
     int64_t snapshot_id, const std::string& column_name, int64_t row_range_start,
     int64_t row_range_end, std::vector<std::shared_ptr<IndexFileMeta>> full_text_index_files,
     std::vector<Range> search_row_ranges,
-    std::vector<std::shared_ptr<IndexFileMeta>> scalar_index_files) {
-    if (column_name.empty()) {
-        return Status::Invalid("full-text search split requires a column name");
-    }
-    // `Serialize()` writes the column name with a 16-bit length.
-    if (column_name.size() > std::numeric_limits<uint16_t>::max()) {
-        return Status::Invalid(fmt::format(
-            "full-text search split requires a column name of at most {} bytes, but got {} bytes",
-            std::numeric_limits<uint16_t>::max(), column_name.size()));
+    std::vector<std::shared_ptr<IndexFileMeta>> scalar_index_files,
+    std::optional<int64_t> schema_id) {
+    PAIMON_RETURN_NOT_OK(CheckSerializableName(column_name, "a column name"));
+    if (schema_id && *schema_id < 0) {
+        return Status::Invalid("full-text search split requires a non-negative schema id");
     }
     if (!IsValidRowRange(row_range_start, row_range_end)) {
         return Status::Invalid(
@@ -297,7 +344,7 @@ Result<std::shared_ptr<IndexFullTextSearchSplitImpl>> IndexFullTextSearchSplitIm
     }
     return std::shared_ptr<IndexFullTextSearchSplitImpl>(new IndexFullTextSearchSplitImpl(
         snapshot_id, column_name, row_range_start, row_range_end, std::move(full_text_index_files),
-        std::move(search_row_ranges), std::move(scalar_index_files)));
+        std::move(search_row_ranges), std::move(scalar_index_files), schema_id));
 }
 
 bool IndexFullTextSearchSplitImpl::operator==(const IndexFullTextSearchSplitImpl& other) const {
@@ -306,7 +353,7 @@ bool IndexFullTextSearchSplitImpl::operator==(const IndexFullTextSearchSplitImpl
     }
     return snapshot_id_ == other.snapshot_id_ && column_name_ == other.column_name_ &&
            row_range_start_ == other.row_range_start_ && row_range_end_ == other.row_range_end_ &&
-           search_row_ranges_ == other.search_row_ranges_ &&
+           schema_id_ == other.schema_id_ && search_row_ranges_ == other.search_row_ranges_ &&
            ObjectUtils::Equal(full_text_index_files_, other.full_text_index_files_) &&
            ObjectUtils::Equal(scalar_index_files_, other.scalar_index_files_);
 }
@@ -314,35 +361,101 @@ bool IndexFullTextSearchSplitImpl::operator==(const IndexFullTextSearchSplitImpl
 std::string IndexFullTextSearchSplitImpl::ToString() const {
     return fmt::format(
         "IndexFullTextSearchSplit{{snapshotId={}, columnName={}, rowRangeStart={}, "
-        "rowRangeEnd={}, searchRowRanges={}, fullTextIndexFiles={}, scalarIndexFiles={}}}",
+        "rowRangeEnd={}, searchRowRanges={}, fullTextIndexFiles={}, scalarIndexFiles={}, "
+        "schemaId={}}}",
         snapshot_id_, column_name_, row_range_start_, row_range_end_,
         StringUtils::VectorToString(search_row_ranges_),
         StringUtils::VectorToString(full_text_index_files_),
-        StringUtils::VectorToString(scalar_index_files_));
+        StringUtils::VectorToString(scalar_index_files_),
+        schema_id_ ? fmt::format("{}", *schema_id_) : "unknown");
+}
+
+Result<std::shared_ptr<RawFullTextSearchSplitImpl>> RawFullTextSearchSplitImpl::Create(
+    int64_t snapshot_id, const std::string& column_name, const std::string& index_type,
+    std::vector<Range> row_ranges, std::optional<int32_t> field_id,
+    std::optional<int64_t> schema_id) {
+    if (schema_id && (*schema_id < 0 || !field_id)) {
+        return Status::Invalid(
+            "a raw full-text split with a schema id requires a non-negative "
+            "schema id and a field id");
+    }
+    PAIMON_RETURN_NOT_OK(CheckSerializableName(column_name, "a column name"));
+    PAIMON_RETURN_NOT_OK(CheckSerializableName(index_type, "an index type"));
+    if (row_ranges.empty()) {
+        return Status::Invalid("raw full-text search split requires at least one row range");
+    }
+    for (size_t i = 0; i < row_ranges.size(); ++i) {
+        const Range& range = row_ranges[i];
+        if (!IsValidRowRange(range.from, range.to)) {
+            return Status::Invalid(
+                fmt::format("invalid raw full-text search row range {}", range.ToString()));
+        }
+        if (i == 0) {
+            continue;
+        }
+        const Range& previous = row_ranges[i - 1];
+        if (range.from <= previous.to || range.from - 1 == previous.to) {
+            return Status::Invalid(
+                fmt::format("row ranges {} and {} are not sorted, disjoint and non-adjacent",
+                            previous.ToString(), range.ToString()));
+        }
+    }
+    return std::shared_ptr<RawFullTextSearchSplitImpl>(new RawFullTextSearchSplitImpl(
+        snapshot_id, column_name, index_type, std::move(row_ranges), field_id, schema_id));
+}
+
+bool RawFullTextSearchSplitImpl::operator==(const RawFullTextSearchSplitImpl& other) const {
+    return snapshot_id_ == other.snapshot_id_ && column_name_ == other.column_name_ &&
+           index_type_ == other.index_type_ && row_ranges_ == other.row_ranges_ &&
+           field_id_ == other.field_id_ && schema_id_ == other.schema_id_;
+}
+
+std::string RawFullTextSearchSplitImpl::ToString() const {
+    return fmt::format(
+        "RawFullTextSearchSplit{{snapshotId={}, columnName={}, indexType={}, rowRanges={}, "
+        "fieldId={}, schemaId={}}}",
+        snapshot_id_, column_name_, index_type_, StringUtils::VectorToString(row_ranges_),
+        field_id_ ? fmt::format("{}", *field_id_) : "unknown",
+        schema_id_ ? fmt::format("{}", *schema_id_) : "unknown");
 }
 
 Result<std::string> FullTextSearchSplit::Serialize(
     const std::shared_ptr<FullTextSearchSplit>& split, const std::shared_ptr<MemoryPool>& pool) {
-    auto index_split = std::dynamic_pointer_cast<IndexFullTextSearchSplitImpl>(split);
-    if (!index_split) {
-        return Status::Invalid("invalid full-text search split, cannot cast to an index split");
-    }
     MemorySegmentOutputStream out(MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool);
-    out.WriteValue<int64_t>(IndexFullTextSearchSplitImpl::MAGIC);
-    out.WriteValue<int32_t>(IndexFullTextSearchSplitImpl::VERSION);
-    out.WriteValue<int64_t>(index_split->SnapshotId());
-    out.WriteString(index_split->ColumnName());
-    out.WriteValue<int64_t>(index_split->RowRangeStart());
-    out.WriteValue<int64_t>(index_split->RowRangeEnd());
-    const std::vector<Range>& search_row_ranges = index_split->SearchRowRanges();
-    out.WriteValue<int32_t>(static_cast<int32_t>(search_row_ranges.size()));
-    for (const auto& range : search_row_ranges) {
-        out.WriteValue<int64_t>(range.from);
-        out.WriteValue<int64_t>(range.to);
+    if (auto raw_split = std::dynamic_pointer_cast<RawFullTextSearchSplitImpl>(split)) {
+        out.WriteValue<int64_t>(RawFullTextSearchSplitImpl::MAGIC);
+        int32_t version = raw_split->FieldId() ? 2 : 1;
+        out.WriteValue<int32_t>(raw_split->SchemaId() ? RawFullTextSearchSplitImpl::VERSION
+                                                      : version);
+        out.WriteValue<int64_t>(raw_split->SnapshotId());
+        out.WriteString(raw_split->ColumnName());
+        if (raw_split->FieldId()) {
+            out.WriteValue<int32_t>(*raw_split->FieldId());
+        }
+        out.WriteString(raw_split->IndexType());
+        WriteRowRanges(raw_split->RowRanges(), &out);
+        if (raw_split->SchemaId()) {
+            out.WriteValue<int64_t>(*raw_split->SchemaId());
+        }
+    } else if (auto index_split = std::dynamic_pointer_cast<IndexFullTextSearchSplitImpl>(split)) {
+        out.WriteValue<int64_t>(IndexFullTextSearchSplitImpl::MAGIC);
+        out.WriteValue<int32_t>(index_split->SchemaId() ? IndexFullTextSearchSplitImpl::VERSION
+                                                        : 2);
+        out.WriteValue<int64_t>(index_split->SnapshotId());
+        out.WriteString(index_split->ColumnName());
+        out.WriteValue<int64_t>(index_split->RowRangeStart());
+        out.WriteValue<int64_t>(index_split->RowRangeEnd());
+        WriteRowRanges(index_split->SearchRowRanges(), &out);
+        IndexFileMetaSerializer serializer(pool);
+        PAIMON_RETURN_NOT_OK(serializer.SerializeList(index_split->FullTextIndexFiles(), &out));
+        PAIMON_RETURN_NOT_OK(serializer.SerializeList(index_split->ScalarIndexFiles(), &out));
+        if (index_split->SchemaId()) {
+            out.WriteValue<int64_t>(*index_split->SchemaId());
+        }
+    } else {
+        return Status::Invalid(
+            "invalid full-text search split, cannot cast to an index or raw split");
     }
-    IndexFileMetaSerializer serializer(pool);
-    PAIMON_RETURN_NOT_OK(serializer.SerializeList(index_split->FullTextIndexFiles(), &out));
-    PAIMON_RETURN_NOT_OK(serializer.SerializeList(index_split->ScalarIndexFiles(), &out));
     PAIMON_UNIQUE_PTR<Bytes> bytes =
         MemorySegmentUtils::CopyToBytes(out.Segments(), 0, out.CurrentSize(), pool.get());
     return std::string(bytes->data(), bytes->size());
@@ -362,6 +475,31 @@ Result<std::shared_ptr<FullTextSearchSplit>> FullTextSearchSplit::Deserialize(
         std::make_shared<ByteArrayInputStream>(buffer, static_cast<int64_t>(length));
     DataInputStream in(input_stream);
     PAIMON_ASSIGN_OR_RAISE(int64_t magic, in.ReadValue<int64_t>());
+    if (magic == RawFullTextSearchSplitImpl::MAGIC) {
+        PAIMON_ASSIGN_OR_RAISE(int32_t version, in.ReadValue<int32_t>());
+        if (version < 1 || version > RawFullTextSearchSplitImpl::VERSION) {
+            return Status::Invalid(
+                fmt::format("unsupported RawFullTextSearchSplit version: {}", version));
+        }
+        PAIMON_ASSIGN_OR_RAISE(int64_t snapshot_id, in.ReadValue<int64_t>());
+        PAIMON_ASSIGN_OR_RAISE(std::string column_name, in.ReadString());
+        std::optional<int32_t> field_id;
+        if (version >= 2) {
+            PAIMON_ASSIGN_OR_RAISE(field_id, in.ReadValue<int32_t>());
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::string index_type, in.ReadString());
+        PAIMON_ASSIGN_OR_RAISE(std::vector<Range> row_ranges, ReadRowRanges(&in, "row range"));
+        std::optional<int64_t> schema_id;
+        if (version >= 3) {
+            PAIMON_ASSIGN_OR_RAISE(schema_id, in.ReadValue<int64_t>());
+        }
+        PAIMON_RETURN_NOT_OK(CheckFullyRead(in));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<RawFullTextSearchSplitImpl> split,
+            RawFullTextSearchSplitImpl::Create(snapshot_id, column_name, index_type,
+                                               std::move(row_ranges), field_id, schema_id));
+        return std::shared_ptr<FullTextSearchSplit>(std::move(split));
+    }
     if (magic != IndexFullTextSearchSplitImpl::MAGIC) {
         return Status::Invalid("invalid full-text search split, unknown magic number");
     }
@@ -374,39 +512,24 @@ Result<std::shared_ptr<FullTextSearchSplit>> FullTextSearchSplit::Deserialize(
     PAIMON_ASSIGN_OR_RAISE(std::string column_name, in.ReadString());
     PAIMON_ASSIGN_OR_RAISE(int64_t row_range_start, in.ReadValue<int64_t>());
     PAIMON_ASSIGN_OR_RAISE(int64_t row_range_end, in.ReadValue<int64_t>());
-    PAIMON_ASSIGN_OR_RAISE(int32_t range_count, in.ReadValue<int32_t>());
-    PAIMON_RETURN_NOT_OK(
-        CheckEntryCount(in, range_count, kSearchRowRangeBytes, "search row ranges"));
-    std::vector<Range> search_row_ranges;
-    search_row_ranges.reserve(range_count);
-    for (int32_t i = 0; i < range_count; ++i) {
-        PAIMON_ASSIGN_OR_RAISE(int64_t from, in.ReadValue<int64_t>());
-        PAIMON_ASSIGN_OR_RAISE(int64_t to, in.ReadValue<int64_t>());
-        if (from > to) {
-            return Status::Invalid(fmt::format(
-                "invalid full-text search split, search row range [{}, {}] ends before it starts",
-                from, to));
-        }
-        search_row_ranges.emplace_back(from, to);
-    }
+    PAIMON_ASSIGN_OR_RAISE(std::vector<Range> search_row_ranges,
+                           ReadRowRanges(&in, "search row range"));
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<IndexFileMeta>> full_text_index_files,
                            ReadIndexFiles(&in, pool));
     std::vector<std::shared_ptr<IndexFileMeta>> scalar_index_files;
     if (version >= 2) {
         PAIMON_ASSIGN_OR_RAISE(scalar_index_files, ReadIndexFiles(&in, pool));
     }
-    PAIMON_ASSIGN_OR_RAISE(int64_t pos, in.GetPos());
-    PAIMON_ASSIGN_OR_RAISE(int64_t stream_length, in.Length());
-    if (pos != stream_length) {
-        return Status::Invalid(
-            fmt::format("invalid full-text search split, remaining {} bytes after deserializing",
-                        stream_length - pos));
+    std::optional<int64_t> schema_id;
+    if (version >= 3) {
+        PAIMON_ASSIGN_OR_RAISE(schema_id, in.ReadValue<int64_t>());
     }
+    PAIMON_RETURN_NOT_OK(CheckFullyRead(in));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<IndexFullTextSearchSplitImpl> split,
                            IndexFullTextSearchSplitImpl::Create(
                                snapshot_id, column_name, row_range_start, row_range_end,
                                std::move(full_text_index_files), std::move(search_row_ranges),
-                               std::move(scalar_index_files)));
+                               std::move(scalar_index_files), schema_id));
     return std::shared_ptr<FullTextSearchSplit>(std::move(split));
 }
 

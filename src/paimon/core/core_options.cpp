@@ -452,6 +452,7 @@ struct CoreOptions::Impl {
     std::optional<int32_t> global_index_thread_num;
     GlobalIndexSearchMode full_text_index_search_mode = GlobalIndexSearchMode::FAST;
     GlobalIndexSearchMode scalar_index_search_mode = GlobalIndexSearchMode::FAST;
+    GlobalIndexSearchMode vector_index_search_mode = GlobalIndexSearchMode::FAST;
     bool global_index_filter_refine_from_data = false;
 
     bool realtime_enabled = false;
@@ -934,12 +935,12 @@ struct CoreOptions::Impl {
         // index, no default value
         PAIMON_RETURN_NOT_OK(
             parser.Parse<int32_t>(Options::GLOBAL_INDEX_THREAD_NUM, &global_index_thread_num));
-        // Parse full-text-index.search-mode, falling back to global-index.search-mode, default fast
         PAIMON_RETURN_NOT_OK(parser.ParseIndexSearchMode(Options::FULL_TEXT_INDEX_SEARCH_MODE,
                                                          &full_text_index_search_mode));
-        // Parse scalar-index.search-mode, falling back to global-index.search-mode, default fast
         PAIMON_RETURN_NOT_OK(parser.ParseIndexSearchMode(Options::SCALAR_INDEX_SEARCH_MODE,
                                                          &scalar_index_search_mode));
+        PAIMON_RETURN_NOT_OK(parser.ParseIndexSearchMode(Options::VECTOR_INDEX_SEARCH_MODE,
+                                                         &vector_index_search_mode));
         // Parse global-index.filter.refine-from-data, default false
         PAIMON_RETURN_NOT_OK(parser.Parse<bool>(Options::GLOBAL_INDEX_FILTER_REFINE_FROM_DATA,
                                                 &global_index_filter_refine_from_data));
@@ -1962,6 +1963,10 @@ GlobalIndexSearchMode CoreOptions::GetFullTextIndexSearchMode() const {
 
 GlobalIndexSearchMode CoreOptions::GetScalarIndexSearchMode() const {
     return impl_->scalar_index_search_mode;
+}
+
+GlobalIndexSearchMode CoreOptions::GetVectorIndexSearchMode() const {
+    return impl_->vector_index_search_mode;
 }
 
 bool CoreOptions::GlobalIndexFilterRefineFromData() const {

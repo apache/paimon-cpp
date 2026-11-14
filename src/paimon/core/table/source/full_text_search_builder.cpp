@@ -63,8 +63,7 @@ class FullTextSearchBuilder::Impl {
         DataField text_field;
     };
 
-    /// Loads the table and checks the settings shared by scans and reads.
-    Result<ResolvedSearch> Resolve() const;
+    Result<ResolvedSearch> Resolve(bool validate_data_filter) const;
 
     Status CheckLimit() const;
 
@@ -154,7 +153,8 @@ struct SearchFilters {
 /// Validates `filters` and splits their conjunction.
 Result<SearchFilters> ResolveFilters(const std::vector<std::shared_ptr<Predicate>>& filters,
                                      const arrow::Schema& schema,
-                                     const std::vector<std::string>& partition_keys) {
+                                     const std::vector<std::string>& partition_keys,
+                                     bool validate_data_filter) {
     if (filters.empty()) {
         return SearchFilters();
     }
@@ -162,9 +162,6 @@ Result<SearchFilters> ResolveFilters(const std::vector<std::shared_ptr<Predicate
     if (PredicateUtils::ContainsFullTextMatch(filter)) {
         return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
     }
-    PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
-        schema, filter, /*validate_field_idx=*/false));
-
     std::map<std::string, int32_t> partition_key_to_idx =
         ObjectUtils::CreateIdentifierToIndexMap(partition_keys);
     std::vector<std::shared_ptr<Predicate>> partition_conjuncts;
@@ -192,11 +189,17 @@ Result<SearchFilters> ResolveFilters(const std::vector<std::shared_ptr<Predicate
     if (!data_conjuncts.empty()) {
         PAIMON_ASSIGN_OR_RAISE(search_filters.data_filter, PredicateBuilder::And(data_conjuncts));
     }
+    const auto& to_validate = validate_data_filter ? filter : search_filters.partition_predicate;
+    if (to_validate) {
+        PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
+            schema, to_validate, /*validate_field_idx=*/false));
+    }
     return search_filters;
 }
 }  // namespace
 
-Result<FullTextSearchBuilder::Impl::ResolvedSearch> FullTextSearchBuilder::Impl::Resolve() const {
+Result<FullTextSearchBuilder::Impl::ResolvedSearch> FullTextSearchBuilder::Impl::Resolve(
+    bool validate_data_filter) const {
     if (!field_name_) {
         return Status::Invalid("Query must be set via SetQuery()");
     }
@@ -222,13 +225,6 @@ Result<FullTextSearchBuilder::Impl::ResolvedSearch> FullTextSearchBuilder::Impl:
         merged_options[key] = value;
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(merged_options, file_system_));
-    if (options.GetFullTextIndexSearchMode() != GlobalIndexSearchMode::FAST) {
-        return Status::NotImplemented(fmt::format(
-            "full-text search only supports the fast {} (or {}), which searches only the rows "
-            "that an index covers; full and detail are not supported yet",
-            Options::FULL_TEXT_INDEX_SEARCH_MODE, Options::GLOBAL_INDEX_SEARCH_MODE));
-    }
-
     Result<DataField> text_field = table_schema->GetField(field_name_.value());
     if (!text_field.ok()) {
         return Status::Invalid(
@@ -239,15 +235,8 @@ Result<FullTextSearchBuilder::Impl::ResolvedSearch> FullTextSearchBuilder::Impl:
 
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(SearchFilters search_filters,
-                           ResolveFilters(filters_, *arrow_schema, table_schema->PartitionKeys()));
-    if (search_filters.data_filter &&
-        options.GetScalarIndexSearchMode() != GlobalIndexSearchMode::FAST) {
-        return Status::NotImplemented(fmt::format(
-            "a full-text search with a row filter only supports the fast {} (or {}), which "
-            "evaluates only the rows that a scalar index covers; full and detail are not "
-            "supported yet",
-            Options::SCALAR_INDEX_SEARCH_MODE, Options::GLOBAL_INDEX_SEARCH_MODE));
-    }
+                           ResolveFilters(filters_, *arrow_schema, table_schema->PartitionKeys(),
+                                          validate_data_filter));
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
                            options.GetExternalPathWeights());
@@ -299,7 +288,7 @@ std::unique_ptr<FullTextScan> FullTextSearchBuilder::Impl::CreateScan(
     const ResolvedSearch& search) const {
     return std::make_unique<DataEvolutionFullTextScan>(
         search.root_path, search.table_schema, search.options, search.path_factory,
-        search.partition_filter, search.filter, search.text_field, memory_pool_);
+        search.partition_filter, search.filter, search.text_field, executor_, memory_pool_);
 }
 
 Result<std::unique_ptr<FullTextRead>> FullTextSearchBuilder::Impl::CreateRead(
@@ -376,20 +365,23 @@ FullTextSearchBuilder& FullTextSearchBuilder::WithFileSystem(
 }
 
 Result<std::unique_ptr<FullTextScan>> FullTextSearchBuilder::NewFullTextScan() const {
-    PAIMON_ASSIGN_OR_RAISE(Impl::ResolvedSearch search, impl_->Resolve());
+    PAIMON_ASSIGN_OR_RAISE(Impl::ResolvedSearch search,
+                           impl_->Resolve(/*validate_data_filter=*/true));
     return impl_->CreateScan(search);
 }
 
 Result<std::unique_ptr<FullTextRead>> FullTextSearchBuilder::NewFullTextRead() const {
     PAIMON_RETURN_NOT_OK(impl_->CheckLimit());
-    PAIMON_ASSIGN_OR_RAISE(Impl::ResolvedSearch search, impl_->Resolve());
+    PAIMON_ASSIGN_OR_RAISE(Impl::ResolvedSearch search,
+                           impl_->Resolve(/*validate_data_filter=*/false));
     return impl_->CreateRead(search);
 }
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> FullTextSearchBuilder::ExecuteLocal() const {
     PAIMON_RETURN_NOT_OK(impl_->CheckLimit());
     // The scan and the read share one load of the table, so they see the same schema.
-    PAIMON_ASSIGN_OR_RAISE(Impl::ResolvedSearch search, impl_->Resolve());
+    PAIMON_ASSIGN_OR_RAISE(Impl::ResolvedSearch search,
+                           impl_->Resolve(/*validate_data_filter=*/true));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FullTextRead> read, impl_->CreateRead(search));
     std::unique_ptr<FullTextScan> scan = impl_->CreateScan(search);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FullTextScan::Plan> plan, scan->CreatePlan());

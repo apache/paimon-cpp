@@ -31,7 +31,9 @@
 #include "paimon/core/index/global_index_meta.h"
 #include "paimon/core/index/index_file_meta.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/snapshot.h"
 #include "paimon/core/utils/file_store_path_factory.h"
+#include "paimon/executor.h"
 #include "paimon/global_index/global_indexer.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/predicate.h"
@@ -39,9 +41,8 @@
 #include "paimon/utils/range.h"
 
 namespace paimon {
-/// `FullTextScan` of a data-evolution table, aligned with Java `DataEvolutionFullTextScan`: one
-/// split per index shard of the searched column, planned from the global index files of one
-/// snapshot.
+class RawFullTextSearchSplitImpl;
+
 class DataEvolutionFullTextScan : public FullTextScan {
  public:
     /// The index shard chosen to rank some rows of the searched column.
@@ -63,6 +64,8 @@ class DataEvolutionFullTextScan : public FullTextScan {
     /// @param partition_filter Predicate over the partition fields, or null for all partitions.
     /// @param filter           Row filter beyond the partition filter, or null for all rows.
     /// @param text_field       The searched column.
+    /// @param executor         Executor to read manifests on in the `detail` search mode, or null
+    ///                         to create one with `global-index.thread-num` threads if needed.
     /// @param pool             Memory pool for reading index manifests.
     DataEvolutionFullTextScan(const std::string& root_path,
                               const std::shared_ptr<TableSchema>& table_schema,
@@ -70,6 +73,7 @@ class DataEvolutionFullTextScan : public FullTextScan {
                               const std::shared_ptr<FileStorePathFactory>& path_factory,
                               const std::shared_ptr<PredicateFilter>& partition_filter,
                               const std::shared_ptr<Predicate>& filter, const DataField& text_field,
+                              const std::shared_ptr<Executor>& executor,
                               const std::shared_ptr<MemoryPool>& pool);
 
     Result<std::shared_ptr<Plan>> CreatePlan() override;
@@ -123,6 +127,11 @@ class DataEvolutionFullTextScan : public FullTextScan {
                                              const std::string& table_path, int64_t snapshot_id);
 
  private:
+    Result<std::shared_ptr<RawFullTextSearchSplitImpl>> PlanRawSplit(
+        const Snapshot& snapshot,
+        const std::vector<std::shared_ptr<IndexFileMeta>>& full_text_index_files,
+        const std::vector<IndexRangeSelection>& selections) const;
+
     std::string root_path_;
     std::shared_ptr<TableSchema> table_schema_;
     CoreOptions options_;
@@ -130,6 +139,7 @@ class DataEvolutionFullTextScan : public FullTextScan {
     std::shared_ptr<PredicateFilter> partition_filter_;
     std::shared_ptr<Predicate> filter_;
     DataField text_field_;
+    std::shared_ptr<Executor> executor_;
     std::shared_ptr<MemoryPool> pool_;
 };
 

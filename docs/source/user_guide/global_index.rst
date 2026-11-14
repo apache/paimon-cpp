@@ -140,7 +140,7 @@ a column name containing only such whitespace selects the indexed field.
 
 - **Option**: ``lucene-fts.write.tmp.directory``
 
-  - **Description**: Specifies the temporary directory used during Lucene index writing. No default value; must be explicitly set.
+  - **Description**: Required when building a persistent Lucene index. Full-text searches build their temporary indexes in memory.
 
 - **Environment Variable**: ``PAIMON_JIEBA_DICT_DIR``
 
@@ -298,12 +298,8 @@ Table-Level Full-Text Search
 full-text indexes of one column of a data-evolution table, as Java Paimon's
 ``FullTextSearchBuilder`` does, so a caller does not create index readers or choose index types and
 shard ranges. It searches the index files whose indexer supports full-text search
-(``GlobalIndexer::SupportsFullTextSearch()``): ``full-text`` and ``lucene-fts``. Only the rows that
-an index shard covers are searched, as in the default ``fast`` ``full-text-index.search-mode`` of
-Java Paimon, so rows written since the index was last built are not found until it is built for
-them. A search whose ``full-text-index.search-mode``, or else ``global-index.search-mode``, is
-``full`` or ``detail``, which also search the rows that no index covers, fails with
-``NotImplemented``.
+(``GlobalIndexer::SupportsFullTextSearch()``): ``full-text`` and ``lucene-fts``. By default it
+searches only indexed rows. To include rows appended since the last build, see `Search Modes`_.
 
 .. code-block:: cpp
 
@@ -330,11 +326,10 @@ them. A search whose ``full-text-index.search-mode``, or else ``global-index.sea
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::BatchReader> reader,
                           read->CreateReader(data_plan->Splits()));
 
-The result holds the ``limit`` highest-scoring rows among the candidates of all index shards, and
-a read of the rows returns their scores in the ``_INDEX_SCORE`` field. Each shard returns at most
-``limit`` candidates, chosen by its index, so ties are broken by ascending row id among the
-candidates only: which of the rows tied at the ``limit``-th score of a shard become candidates is up
-to its index.
+The search keeps the ``limit`` highest-scoring candidates across the stored shards and any
+temporary index built for unindexed rows. Read ``_INDEX_SCORE`` to retrieve their scores.
+Each index returns up to ``limit`` candidates and decides which rows to return when scores tie
+at its cutoff. The merge breaks ties among the returned candidates by ascending row id.
 
 - ``SetPartitionFilter()`` restricts the search to some partitions, as in ``ScanContextBuilder``.
 - ``WithFilter()`` restricts the search to the rows matching a predicate; see
@@ -345,8 +340,8 @@ to its index.
   options may be set, and it must agree with an explicit ``scan.mode``: ``from-snapshot`` needs
   ``scan.snapshot-id`` or ``scan.tag-name``, ``from-snapshot-full`` needs ``scan.snapshot-id``,
   ``from-timestamp`` needs ``scan.timestamp`` or ``scan.timestamp-millis``, and ``latest-full`` and
-  ``latest`` take none of them. The search still uses the latest schema of the table, not the
-  schema of that snapshot.
+  ``latest`` take none of them. Planning resolves column names against the table schema current
+  at planning time, including for historical snapshots.
 - A shard whose indexed field is the column or that carries it as an extra field is searched.
   When shards overlap, each row is ranked by one of them: an index whose indexed field is the
   column comes first, then the order of the index type and fields, then the start and end of the
@@ -359,6 +354,53 @@ to its index.
   search fails instead of skipping the index and leaving its rows out of the result.
 - A column with a primary-key full-text index (``pk-full-text.index.columns``) cannot be searched
   yet.
+
+Search Modes
+~~~~~~~~~~~~
+
+``full-text-index.search-mode``, or else ``global-index.search-mode``, selects the rows that a
+search covers, as in Java Paimon:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 15 85
+
+   * - Mode
+     - Rows searched
+   * - ``fast`` (default)
+     - Only the rows that an index shard covers.
+   * - ``full``
+     - Also the rows below the next row id of the snapshot that no single-field full-text index
+       covers. Planning reads no data manifest, and the read skips the rows outside the searched
+       partitions.
+   * - ``detail``
+     - Also the rows of the data files in the searched partitions that no single-field full-text
+       index covers. Planning reads the data manifests to find them.
+
+If the selected partitions have no full-text index for the column, the search returns no rows.
+Otherwise, ``full`` and ``detail`` add one ``RawFullTextSearchSplit`` for the gaps in coverage when
+the snapshot has a positive next row id.
+As in Java Paimon, this coverage counts only single-field full-text index definitions. Multi-field
+indexes can serve the searched column as their primary or extra field, but do not reduce the raw
+ranges. Coverage includes every single-field definition, even if shard selection chooses another
+index to rank its rows.
+The worker combines the raw ranges and reads the text column, ``_ROW_ID``, and any filter columns
+from the planned snapshot. If the ranges contain live, non-null text, the worker builds one
+in-memory index with the first selected shard's backend and searches it with the same query and
+limit. Both ``full-text`` and ``lucene-fts`` keep the temporary index segments and archive in memory.
+A worker can search these rows without a writable local temporary directory.
+Set analyzer options such as ``full-text.tokenizer`` in the table or search options to
+match the existing index.
+
+The temporary index scores against its own corpus of live, non-null text. Planning excludes raw
+ranges from every stored split's search ranges and omits stored splits with no remaining search
+rows. It preserves physical shard ranges for row id translation. A row in a raw range therefore
+appears only if its current text matches, even when workers read the splits independently.
+The final top-k combines hits from the temporary index and the remaining indexed rows.
+
+.. code-block:: cpp
+
+   search_builder.AddOption("full-text-index.search-mode", "full");
 
 Row Filters
 ~~~~~~~~~~~
@@ -378,20 +420,21 @@ implies: ``(p = 1 AND a > 0) OR (p = 2 AND a > 0)`` searches only partitions ``p
                                                  paimon::FieldType::INT, paimon::Literal(7));
    search_builder.WithFilter(filter);
 
-The scan keeps the scalar global index files that index a field of the filter, and the read
-resolves the filter with them before ranking:
+On a full-text index shard, ``scalar-index.search-mode`` controls how the reader finds rows that
+satisfy the filter before ranking. It falls back to ``global-index.search-mode``, then to ``fast``.
 
-- If the indexes decide the whole filter, the rows they return are searched.
-- If they can only narrow the filter down to candidates, because a conjunct has no index or the
-  filter has a ``Contains``, ``EndsWith`` or ``Like`` predicate, the candidates are excluded and a
-  warning is logged. The search then never returns a non-matching row, but may return fewer rows
-  than ``limit``. With ``global-index.filter.refine-from-data=true``, the read instead verifies the
-  candidates by reading their filter columns and ``_ROW_ID`` in the planned snapshot, on the caller
-  and possibly for every candidate.
-- Rows that no scalar index covers are excluded. If no index can evaluate the filter at all, no row
-  is searched and a warning is logged. This is the default ``fast`` ``scalar-index.search-mode``,
-  which falls back on ``global-index.search-mode``. A row filter in ``full`` or ``detail`` mode,
-  which decide such rows by reading their filter columns, fails with ``NotImplemented``.
+- In ``fast`` mode, only rows identified by a scalar index can qualify. If no index can evaluate
+  the filter, the reader skips the shard's rows and logs a warning.
+- In ``full`` and ``detail``, the reader checks the filter directly against the data wherever a
+  filter column lacks index coverage. If no index can evaluate the filter, the reader checks the
+  covered rows against the data as well. See `Search Modes`_ for how each mode finds gaps.
+- In any mode, an index may return candidates that still need verification, for example for a
+  ``Contains``, ``EndsWith`` or ``Like`` predicate. By default the reader excludes those candidates
+  and logs a warning. Set ``global-index.filter.refine-from-data=true`` to check them against the
+  planned snapshot. This option does not affect rows read directly to fill gaps.
+
+A raw split always evaluates the filter on its data. All its live, non-null text contributes to
+the temporary index's scores, even when the filter excludes a row from the results.
 
 Only single-field indexes that do not support full-text search evaluate a filter. A filter with a
 ``PredicateBuilder::FullTextMatch`` predicate fails with ``NotImplemented``.
@@ -426,13 +469,21 @@ outlive the snapshot.
 ``ExecuteLocal()`` plans and searches in one process. To plan in one process and search in others,
 plan with ``NewFullTextScan()``, ship the splits with ``FullTextSearchSplit::Serialize()`` and
 ``FullTextSearchSplit::Deserialize()``, and search them with the ``NewFullTextRead()`` of a builder
-for the same table, column, query and filter. The serialized form is versioned and specific to
-Paimon C++: Java Paimon serializes its splits with Java serialization, so splits cannot be exchanged
-with it. Each split records the snapshot it was planned from, and the read ranks the rows live in
-that snapshot. The read rejects a split whose index files do not index the column of the latest
-schema, such as after the column was replaced. A read returns the top rows of the splits it is
-given, so keep the ``limit`` highest-scoring rows of all reads if the splits are searched by several
-of them.
+for the same table, column, query, limit, partitions, row filter and search options. The serialized
+form is versioned and specific to Paimon C++. Each split records its snapshot. A tag can retain the
+snapshot after the snapshot file expires. Version 3 splits also carry the planning schema ID.
+Workers use the planning schema to open multi-field indexes, validate row filters, evaluate
+scalar indexes and read filter columns from data. If a filter column is replaced with one of the
+same name, workers still search the original field, even when the replacement has a different
+type. If none of the supplied splits carries a schema ID, workers validate filters against their
+own schema. A raw split from version 2 onward also identifies
+the searched text field by ID, so the worker can detect a same-name replacement.
+For stored index splits, a worker reads deletion vectors only for data files that intersect its
+assigned row ranges.
+When several workers search the splits, merge their results and keep the ``limit`` highest-scoring
+rows. Stored and raw search ranges in a new plan are disjoint before serialization. If using
+overlapping splits from an older planner, supply the raw and stored splits to the same read so
+it can exclude the raw ranges from the stored search before ranking.
 
 .. code-block:: cpp
 

@@ -37,6 +37,7 @@
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/table/source/full_text_read.h"
+#include "paimon/utils/range.h"
 #include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon {
@@ -90,24 +91,25 @@ class DataEvolutionFullTextRead : public FullTextRead {
                               const std::shared_ptr<Executor>& executor,
                               const std::shared_ptr<MemoryPool>& pool);
 
-    /// Returns the rows live in snapshot `snapshot_id`, or nullopt if every row counts as live.
-    Result<std::optional<RoaringBitmap64>> LiveRows(int64_t snapshot_id) const;
+    Result<std::optional<RoaringBitmap64>> LiveRows(
+        const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits,
+        int64_t snapshot_id) const;
 
-    /// Resolves the row filter into the rows of `index_splits` that satisfy it, as Java
-    /// `DataEvolutionFullTextRead#matchedRows` does in the `fast` `scalar-index.search-mode`, the
-    /// only one supported so far: rows that no scalar index can evaluate are excluded. Candidates
-    /// that the indexes cannot decide exactly are verified against the data with
-    /// `global-index.filter.refine-from-data`, and excluded without it.
-    /// @return The matched rows, all of them live, or nullopt if there is no row filter.
+    /// Returns nullopt when the live-row filter alone determines which indexed rows can rank.
     Result<std::optional<RoaringBitmap64>> MatchedRows(
         const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits,
-        int64_t snapshot_id, const std::optional<RoaringBitmap64>& live_rows) const;
+        int64_t snapshot_id, const std::optional<RoaringBitmap64>& live_rows,
+        const std::shared_ptr<TableSchema>& read_schema) const;
+
+    static std::vector<Range> CollectSearchRanges(
+        const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits);
 
     /// Searches the index shard of `split` among `include_row_ids`, or all of its rows if not set,
     /// and returns at most `limit_` rows with global row ids.
     Result<std::shared_ptr<ScoredGlobalIndexResult>> SearchSplit(
         const IndexFullTextSearchSplitImpl& split,
-        const std::optional<RoaringBitmap64>& include_row_ids) const;
+        const std::optional<RoaringBitmap64>& include_row_ids,
+        const TableSchema& read_schema) const;
 
     std::string root_path_;
     std::shared_ptr<TableSchema> table_schema_;

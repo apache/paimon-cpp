@@ -45,12 +45,9 @@ std::vector<Range> Range::SortAndMergeOverlap(const std::vector<Range>& ranges, 
 
     for (size_t i = 1; i < sorted_ranges.size(); ++i) {
         Range next = sorted_ranges[i];
-        // Check if current and next overlap (not just adjacent)
-        if (current.to + (adjacent ? 1 : 0) >= next.from) {
-            // Merge: extend current range
+        if (current.to >= next.from || (adjacent && current.to + 1 == next.from)) {
             current = Range(current.from, std::max(current.to, next.to));
         } else {
-            // No overlap: add current to result and move to next
             results.push_back(current);
             current = next;
         }
@@ -127,16 +124,12 @@ std::vector<Range> Range::Exclude(const std::vector<Range>& ranges) const {
         if (current < intersect.value().from) {
             result.emplace_back(current, intersect.value().from - 1);
         }
-        // Move current position past the intersection
-        current = intersect.value().to + 1;
-        if (current > to) {
-            break;
+        if (intersect->to == to) {
+            return result;
         }
+        current = intersect->to + 1;
     }
-    // Add the remaining part after all exclusions (if any)
-    if (current <= to) {
-        result.emplace_back(current, to);
-    }
+    result.emplace_back(current, to);
 
     return result;
 }

@@ -1141,7 +1141,8 @@ TEST(CoreOptionsTest, TestParseIndexSearchMode) {
     };
     const std::vector<IndexFamily> families = {
         {Options::FULL_TEXT_INDEX_SEARCH_MODE, &CoreOptions::GetFullTextIndexSearchMode},
-        {Options::SCALAR_INDEX_SEARCH_MODE, &CoreOptions::GetScalarIndexSearchMode}};
+        {Options::SCALAR_INDEX_SEARCH_MODE, &CoreOptions::GetScalarIndexSearchMode},
+        {Options::VECTOR_INDEX_SEARCH_MODE, &CoreOptions::GetVectorIndexSearchMode}};
     for (const IndexFamily& family : families) {
         SCOPED_TRACE(family.key);
         auto search_mode = [&family](const std::map<std::string, std::string>& options)

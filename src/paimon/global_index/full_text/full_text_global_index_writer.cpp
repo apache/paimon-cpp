@@ -31,6 +31,7 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/rapidjson_util.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/global_index/full_text/full_text_defs.h"
 #include "paimon/memory/bytes.h"
@@ -105,23 +106,31 @@ Result<std::shared_ptr<FullTextGlobalIndexWriter>> FullTextGlobalIndexWriter::Cr
         keys.push_back(key.c_str());
         values.push_back(value.c_str());
     }
-    FtindexWriterPtr writer(paimon_ftindex_writer_open(keys.data(), values.data(), keys.size()));
+    PAIMON_ASSIGN_OR_RAISE(std::string file_path, file_writer->NewPath(kFileNamePrefix));
+    // Tantivy writes its segments before it streams the finished archive to the output.
+    auto open_writer = StringUtils::StartsWith(file_path, "memory://")
+                           ? paimon_ftindex_writer_open_in_memory
+                           : paimon_ftindex_writer_open;
+    FtindexWriterPtr writer(open_writer(keys.data(), values.data(), keys.size()));
     if (!writer) {
         return LastFtindexError(
             fmt::format("open full-text index writer for field {}", field_name));
     }
-    return std::shared_ptr<FullTextGlobalIndexWriter>(new FullTextGlobalIndexWriter(
-        field_name, arrow_type, std::move(writer), file_writer, options, pool));
+    return std::shared_ptr<FullTextGlobalIndexWriter>(
+        new FullTextGlobalIndexWriter(field_name, arrow_type, std::move(writer),
+                                      std::move(file_path), file_writer, options, pool));
 }
 
 FullTextGlobalIndexWriter::FullTextGlobalIndexWriter(
     const std::string& field_name, const std::shared_ptr<arrow::DataType>& arrow_type,
-    FtindexWriterPtr writer, const std::shared_ptr<GlobalIndexFileWriter>& file_writer,
+    FtindexWriterPtr writer, std::string file_path,
+    const std::shared_ptr<GlobalIndexFileWriter>& file_writer,
     const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool)
     : pool_(pool ? pool : GetDefaultPool()),
       field_name_(field_name),
       arrow_type_(arrow_type),
       writer_(std::move(writer)),
+      file_path_(std::move(file_path)),
       file_writer_(file_writer),
       options_(options),
       logger_(Logger::GetLogger("FullTextGlobalIndexWriter")) {}
@@ -194,15 +203,14 @@ Result<std::vector<GlobalIndexIOMeta>> FullTextGlobalIndexWriter::Finish() {
 
 Result<GlobalIndexIOMeta> FullTextGlobalIndexWriter::WriteIndex(
     PaimonFtindexWriterHandle* writer) const {
-    PAIMON_ASSIGN_OR_RAISE(std::string file_path, file_writer_->NewPath(kFileNamePrefix));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<OutputStream> out,
-                           file_writer_->NewOutputStream(file_path));
+                           file_writer_->NewOutputStream(file_path_));
     // Closes the stream on every error path, keeping the original error.
     ScopeGuard close_guard([&]() {
         Status status = out->Close();
         if (!status.ok()) {
             PAIMON_LOG_WARN(logger_, "failed to close full-text index file %s: %s",
-                            file_path.c_str(), status.ToString().c_str());
+                            file_path_.c_str(), status.ToString().c_str());
         }
     });
     OutputContext ctx;
@@ -210,17 +218,17 @@ Result<GlobalIndexIOMeta> FullTextGlobalIndexWriter::WriteIndex(
     PaimonFtindexOutputFile output{static_cast<void*>(&ctx), &WriteToOutputStream,
                                    &FlushOutputStream};
     if (paimon_ftindex_writer_write_index(writer, output) != 0) {
-        return LastFtindexError(fmt::format("write full-text index {}", file_path), ctx.status);
+        return LastFtindexError(fmt::format("write full-text index {}", file_path_), ctx.status);
     }
     PAIMON_RETURN_NOT_OK(out->Flush());
     close_guard.Release();
     PAIMON_RETURN_NOT_OK(out->Close());
 
-    PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_writer_->GetFileSize(file_path));
+    PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_writer_->GetFileSize(file_path_));
     std::string options_json;
     PAIMON_RETURN_NOT_OK(RapidJsonUtil::ToJsonString(options_, &options_json));
     auto metadata = std::make_shared<Bytes>(options_json, pool_.get());
-    return GlobalIndexIOMeta(file_path, file_size, row_count_, metadata);
+    return GlobalIndexIOMeta(file_path_, file_size, row_count_, metadata);
 }
 
 }  // namespace paimon::full_text

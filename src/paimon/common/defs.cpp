@@ -167,6 +167,7 @@ const char Options::GLOBAL_INDEX_EXTERNAL_PATH[] = "global-index.external-path";
 const char Options::GLOBAL_INDEX_SEARCH_MODE[] = "global-index.search-mode";
 const char Options::FULL_TEXT_INDEX_SEARCH_MODE[] = "full-text-index.search-mode";
 const char Options::SCALAR_INDEX_SEARCH_MODE[] = "scalar-index.search-mode";
+const char Options::VECTOR_INDEX_SEARCH_MODE[] = "vector-index.search-mode";
 const char Options::GLOBAL_INDEX_FILTER_REFINE_FROM_DATA[] = "global-index.filter.refine-from-data";
 const char Options::PK_BTREE_INDEX_COLUMNS[] = "pk-btree.index.columns";
 const char Options::PK_BITMAP_INDEX_COLUMNS[] = "pk-bitmap.index.columns";

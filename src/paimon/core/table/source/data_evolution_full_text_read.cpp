@@ -19,9 +19,12 @@
 
 #include "paimon/core/table/source/data_evolution_full_text_read.h"
 
+#include <algorithm>
 #include <functional>
 #include <future>
 #include <map>
+#include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,18 +37,21 @@
 #include "paimon/common/global_index/global_index_utils.h"
 #include "paimon/common/global_index/offset_global_index_reader.h"
 #include "paimon/common/global_index/scored_global_index_result_utils.h"
+#include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/common/utils/string_utils.h"
+#include "paimon/core/global_index/data_evolution_global_index_coverage.h"
 #include "paimon/core/global_index/global_index_evaluator_impl.h"
 #include "paimon/core/global_index/global_index_live_row_filter.h"
 #include "paimon/core/global_index/global_index_scan_impl.h"
+#include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/source/data_evolution_full_text_scan.h"
 #include "paimon/core/table/source/filtered_row_id_reader.h"
-#include "paimon/core/tag/tag.h"
+#include "paimon/core/table/source/raw_full_text_read_impl.h"
+#include "paimon/core/table/source/raw_full_text_search_split_impl.h"
 #include "paimon/core/utils/branch_manager.h"
-#include "paimon/core/utils/snapshot_manager.h"
-#include "paimon/core/utils/tag_manager.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/bitmap_scored_global_index_result.h"
 #include "paimon/global_index/global_index_io_meta.h"
@@ -65,45 +71,7 @@ Logger* FullTextReadLogger() {
 /// live rows: at most 65536 run containers, cheaper than copying the live rows of a large table for
 /// every split. A wider span trims the live rows instead.
 constexpr int64_t kMaxExpandedSearchRows = static_cast<int64_t>(1) << 32;
-
-/// Loads snapshot `snapshot_id`, or the copy that a tag keeps of it once the snapshot has expired,
-/// since a plan of `scan.tag-name` may come from a tag that outlives its snapshot.
-Result<Snapshot> LoadPlannedSnapshot(const CoreOptions& options, const std::string& root_path,
-                                     int64_t snapshot_id) {
-    std::string branch = BranchManager::NormalizeBranch(options.GetBranch());
-    SnapshotManager snapshot_manager(options.GetFileSystem(), root_path, branch);
-    Result<Snapshot> snapshot = snapshot_manager.LoadSnapshot(snapshot_id);
-    if (snapshot.ok()) {
-        return snapshot;
-    }
-    // The snapshot may expire between planning and loading, or even while it is loaded, so a
-    // failed load falls back to the tags unless the snapshot is still there.
-    PAIMON_ASSIGN_OR_RAISE(bool exists, snapshot_manager.SnapshotExists(snapshot_id));
-    if (exists) {
-        return snapshot.status();
-    }
-    TagManager tag_manager(options.GetFileSystem(), root_path, branch);
-    PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> tag_names, tag_manager.ListTagNames());
-    for (const std::string& tag_name : tag_names) {
-        // A tag deleted after it was listed, even while it is read, is skipped, as it no longer
-        // keeps the snapshot; any other failure to read a tag is an error.
-        Result<std::optional<Tag>> tag = tag_manager.Get(tag_name);
-        if (!tag.ok()) {
-            PAIMON_ASSIGN_OR_RAISE(bool tag_exists,
-                                   options.GetFileSystem()->Exists(tag_manager.TagPath(tag_name)));
-            if (tag_exists) {
-                return tag.status();
-            }
-            continue;
-        }
-        if (tag.value() && tag.value()->Id() == snapshot_id) {
-            return tag.value()->TrimToSnapshot();
-        }
-    }
-    return Status::NotExist(fmt::format(
-        "snapshot {} that the full-text search splits were planned from no longer exists",
-        snapshot_id));
-}
+constexpr size_t kMaxReportedRanges = 3;
 
 Result<RoaringBitmap64> ToBitmap(const std::shared_ptr<GlobalIndexResult>& result) {
     if (auto bitmap_result = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(result)) {
@@ -126,11 +94,64 @@ std::string Describe(const IndexFullTextSearchSplitImpl& split) {
     for (const auto& file : split.FullTextIndexFiles()) {
         file_names.push_back(file->FileName());
     }
+    const auto& ranges = split.SearchRowRanges();
+    std::vector<Range> sample(ranges.begin(),
+                              ranges.begin() + std::min(ranges.size(), kMaxReportedRanges));
     return fmt::format(
         "while searching the split of column {} in snapshot {} over rows [{}, {}] with {} index "
-        "files [{}]",
+        "files [{}], schema {}, {} search ranges, first {}",
         split.ColumnName(), split.SnapshotId(), split.RowRangeStart(), split.RowRangeEnd(),
-        split.FullTextIndexFiles().front()->IndexType(), fmt::join(file_names, ", "));
+        split.FullTextIndexFiles().front()->IndexType(), fmt::join(file_names, ", "),
+        split.SchemaId() ? fmt::format("{}", *split.SchemaId()) : "unknown", ranges.size(),
+        StringUtils::VectorToString(sample));
+}
+
+Result<std::vector<Range>> ScalarIndexCoverage(
+    const std::vector<std::shared_ptr<IndexFileMeta>>& files, const std::set<int32_t>& field_ids,
+    const CoreOptions& options) {
+    // A worker may have fewer index backends than the process that planned its splits.
+    std::map<std::string, bool> readable_types;
+    std::vector<std::shared_ptr<IndexFileMeta>> readable_files;
+    for (const auto& file : files) {
+        const auto& meta = file->GetGlobalIndexMeta().value();
+        if (meta.extra_field_ids && !meta.extra_field_ids->empty()) {
+            continue;
+        }
+        auto [type, inserted] = readable_types.try_emplace(file->IndexType(), false);
+        if (inserted) {
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<GlobalIndexer> indexer,
+                                   GlobalIndexerFactory::Get(type->first, options.ToMap()));
+            type->second = indexer && !indexer->SupportsFullTextSearch();
+        }
+        if (type->second) {
+            readable_files.push_back(file);
+        }
+    }
+    return DataEvolutionGlobalIndexCoverage::IndexedRanges(readable_files, field_ids);
+}
+
+// Preserve raw precedence before top-k for overlapping legacy splits supplied to the same read.
+Status ExcludeRawRanges(const RowRangeIndex& raw_rows,
+                        std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>* index_splits) {
+    for (auto& split : *index_splits) {
+        if (!raw_rows.Intersects(split->RowRangeStart(), split->RowRangeEnd())) {
+            continue;
+        }
+        std::vector<Range> remaining =
+            DataEvolutionGlobalIndexCoverage::ExcludeRanges(split->SearchRowRanges(), raw_rows);
+        if (remaining.empty()) {
+            split.reset();
+        } else if (remaining != split->SearchRowRanges()) {
+            PAIMON_ASSIGN_OR_RAISE(
+                split, IndexFullTextSearchSplitImpl::Create(
+                           split->SnapshotId(), split->ColumnName(), split->RowRangeStart(),
+                           split->RowRangeEnd(), split->FullTextIndexFiles(), std::move(remaining),
+                           split->ScalarIndexFiles(), split->SchemaId()));
+        }
+    }
+    index_splits->erase(std::remove(index_splits->begin(), index_splits->end(), nullptr),
+                        index_splits->end());
+    return Status::OK();
 }
 }  // namespace
 
@@ -208,23 +229,26 @@ std::optional<RoaringBitmap64> DataEvolutionFullTextRead::IncludeRowIds(
 }
 
 Result<std::optional<RoaringBitmap64>> DataEvolutionFullTextRead::LiveRows(
+    const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits,
     int64_t snapshot_id) const {
-    // Without deletion vectors or row tracking every row is live, so the planned snapshot, which
-    // may be gone, is not loaded.
-    if (!options_.DeletionVectorsEnabled() || !options_.RowTrackingEnabled()) {
+    if (index_splits.empty() || !options_.DeletionVectorsEnabled() ||
+        !options_.RowTrackingEnabled()) {
         return std::optional<RoaringBitmap64>();
     }
     PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot,
-                           LoadPlannedSnapshot(options_, root_path_, snapshot_id));
+                           FilteredRowIdReader::LoadSnapshot(options_, root_path_, snapshot_id));
+    PAIMON_ASSIGN_OR_RAISE(RowRangeIndex search_rows,
+                           RowRangeIndex::Create(CollectSearchRanges(index_splits)));
     return GlobalIndexLiveRowFilter::LiveRows(root_path_, table_schema_, snapshot,
-                                              partition_filter_, /*row_range_index=*/std::nullopt,
-                                              options_, executor_, pool_);
+                                              partition_filter_, std::move(search_rows), options_,
+                                              executor_, pool_);
 }
 
 Result<std::optional<RoaringBitmap64>> DataEvolutionFullTextRead::MatchedRows(
     const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits,
-    int64_t snapshot_id, const std::optional<RoaringBitmap64>& live_rows) const {
-    if (!filter_) {
+    int64_t snapshot_id, const std::optional<RoaringBitmap64>& live_rows,
+    const std::shared_ptr<TableSchema>& read_schema) const {
+    if (!filter_ || index_splits.empty() || (live_rows && live_rows->IsEmpty())) {
         return std::optional<RoaringBitmap64>();
     }
     // Keyed by file name: a scalar index file may intersect more than one split.
@@ -239,65 +263,136 @@ Result<std::optional<RoaringBitmap64>> DataEvolutionFullTextRead::MatchedRows(
     for (const auto& [file_name, file] : files_by_name) {
         scalar_index_files.push_back(file);
     }
-    std::unique_ptr<GlobalIndexScanImpl> index_scan = GlobalIndexScanImpl::CreateForScalarFilters(
-        table_schema_, options_, index_path_factory_, scalar_index_files, executor_, pool_);
-    PAIMON_ASSIGN_OR_RAISE(std::optional<GlobalIndexEvaluatorImpl::Evaluation> evaluation,
-                           index_scan->ScanWithCoverage(filter_));
-    if (!evaluation) {
-        PAIMON_LOG_WARN(FullTextReadLogger(),
-                        "Full-text search on table %s in snapshot %ld has a row filter %s that no "
-                        "scalar global index can evaluate; indexed rows are excluded from the "
-                        "result because %s is fast. Build a scalar index on the filtered columns.",
-                        root_path_.c_str(), snapshot_id, filter_->ToString().c_str(),
-                        Options::SCALAR_INDEX_SEARCH_MODE);
-        return std::optional<RoaringBitmap64>(RoaringBitmap64());
+
+    const GlobalIndexSearchMode search_mode = options_.GetScalarIndexSearchMode();
+    std::vector<Range> search_ranges;
+    std::vector<Range> unindexed_ranges;
+    bool use_scalar_indexes = !scalar_index_files.empty();
+    if (search_mode != GlobalIndexSearchMode::FAST) {
+        search_ranges = Range::SortAndMergeOverlap(CollectSearchRanges(index_splits), true);
+        PAIMON_ASSIGN_OR_RAISE(std::set<int32_t> filter_field_ids,
+                               GlobalIndexEvaluatorImpl::CollectFieldIds(*read_schema, filter_));
+        PAIMON_ASSIGN_OR_RAISE(std::vector<Range> indexed_ranges,
+                               ScalarIndexCoverage(scalar_index_files, filter_field_ids, options_));
+        const std::vector<Range> covered = Range::And(search_ranges, indexed_ranges);
+        use_scalar_indexes =
+            std::any_of(covered.begin(), covered.end(), [&live_rows](const Range& range) {
+                if (!live_rows) {
+                    return true;
+                }
+                auto first = live_rows->EqualOrLarger(range.from);
+                return first != live_rows->End() && *first <= range.to;
+            });
+        if (use_scalar_indexes && covered != search_ranges) {
+            PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, FilteredRowIdReader::LoadSnapshot(
+                                                          options_, root_path_, snapshot_id));
+            auto data_ranges = [&]() {
+                return GlobalIndexLiveRowFilter::DataRowRanges(root_path_, read_schema, snapshot,
+                                                               partition_filter_, options_,
+                                                               executor_, pool_);
+            };
+            PAIMON_ASSIGN_OR_RAISE(std::vector<Range> gaps,
+                                   DataEvolutionGlobalIndexCoverage::UnindexedRanges(
+                                       search_mode, snapshot.NextRowId(), covered, data_ranges));
+            unindexed_ranges = Range::And(search_ranges, gaps);
+        }
     }
 
+    std::optional<GlobalIndexEvaluatorImpl::Evaluation> evaluation;
+    if (use_scalar_indexes) {
+        std::unique_ptr<GlobalIndexScanImpl> index_scan =
+            GlobalIndexScanImpl::CreateForScalarFilters(read_schema, options_, index_path_factory_,
+                                                        scalar_index_files, executor_, pool_);
+        PAIMON_ASSIGN_OR_RAISE(evaluation, index_scan->ScanWithCoverage(filter_));
+    }
+    FilteredRowIdReader row_id_reader(root_path_, read_schema, options_, partition_filter_, filter_,
+                                      snapshot_id, executor_, pool_);
+    auto read_matches = [&](const std::vector<Range>& ranges) -> Result<RoaringBitmap64> {
+        PAIMON_ASSIGN_OR_RAISE(RowRangeIndex rows, RowRangeIndex::Create(ranges));
+        PAIMON_ASSIGN_OR_RAISE(RoaringBitmap64 matches, row_id_reader.MatchingRowIds(rows));
+        if (live_rows) {
+            matches &= *live_rows;
+        }
+        return matches;
+    };
+    if (!evaluation) {
+        if (search_mode == GlobalIndexSearchMode::FAST) {
+            PAIMON_LOG_WARN(
+                FullTextReadLogger(),
+                "Full-text search on table %s in snapshot %ld excluded indexed rows because no "
+                "scalar global index can evaluate the row filter %s in fast mode. Build a scalar "
+                "index on the filtered columns or set %s to full or detail.",
+                root_path_.c_str(), snapshot_id, filter_->ToString().c_str(),
+                Options::SCALAR_INDEX_SEARCH_MODE);
+            return std::optional<RoaringBitmap64>(RoaringBitmap64());
+        }
+        PAIMON_ASSIGN_OR_RAISE(RoaringBitmap64 matches, read_matches(search_ranges));
+        return std::optional<RoaringBitmap64>(std::move(matches));
+    }
     PAIMON_ASSIGN_OR_RAISE(RoaringBitmap64 index_rows, ToBitmap(evaluation->result));
     if (live_rows) {
         index_rows &= live_rows.value();
     }
-    PAIMON_ASSIGN_OR_RAISE(
-        bool exact,
-        FilteredRowIdReader::IsExact(*table_schema_, filter_, evaluation->contributing_field_ids));
-    if (exact) {
-        return std::optional<RoaringBitmap64>(std::move(index_rows));
-    }
-
-    // Only the candidates that a split ranks are worth verifying.
-    RoaringBitmap64 candidates;
-    for (const auto& split : index_splits) {
-        std::optional<RoaringBitmap64> split_rows = IncludeRowIds(*split, &index_rows);
-        if (split_rows) {
-            candidates |= split_rows.value();
+    for (const Range& range : unindexed_ranges) {
+        if (range.to == RoaringBitmap64::MAX_VALUE) {
+            index_rows.RemoveRange(range.from, range.to);
+            index_rows -= RoaringBitmap64::From({range.to});
         } else {
-            candidates |=
-                GlobalIndexUtils::RowIdsOf(Range(split->RowRangeStart(), split->RowRangeEnd()));
+            index_rows.RemoveRange(range.from, range.to + 1);
         }
     }
-    if (candidates.IsEmpty()) {
-        return std::optional<RoaringBitmap64>(std::move(candidates));
+    PAIMON_ASSIGN_OR_RAISE(
+        bool exact,
+        FilteredRowIdReader::IsExact(*read_schema, filter_, evaluation->contributing_field_ids));
+    if (!exact) {
+        RoaringBitmap64 candidates;
+        for (const auto& split : index_splits) {
+            std::optional<RoaringBitmap64> split_rows = IncludeRowIds(*split, &index_rows);
+            if (split_rows) {
+                candidates |= split_rows.value();
+            } else {
+                candidates |=
+                    GlobalIndexUtils::RowIdsOf(Range(split->RowRangeStart(), split->RowRangeEnd()));
+            }
+        }
+        if (candidates.IsEmpty()) {
+            index_rows = std::move(candidates);
+        } else if (!options_.GlobalIndexFilterRefineFromData()) {
+            PAIMON_LOG_WARN(FullTextReadLogger(),
+                            "The scalar global index can only answer the row filter %s on table "
+                            "%s in snapshot %ld with candidates, and %s is false, so those %ld "
+                            "rows are excluded from the search; the result may hold fewer rows "
+                            "than requested. Set the option to true to verify the candidates "
+                            "against the data, or build an index that answers the predicate "
+                            "exactly.",
+                            filter_->ToString().c_str(), root_path_.c_str(), snapshot_id,
+                            Options::GLOBAL_INDEX_FILTER_REFINE_FROM_DATA,
+                            candidates.Cardinality());
+            index_rows = RoaringBitmap64();
+        } else {
+            PAIMON_ASSIGN_OR_RAISE(index_rows, row_id_reader.MatchingRowIds(std::move(candidates)));
+        }
     }
-    if (!options_.GlobalIndexFilterRefineFromData()) {
-        PAIMON_LOG_WARN(FullTextReadLogger(),
-                        "The scalar global index can only answer the row filter %s on table %s "
-                        "in snapshot %ld with candidates, and %s is false, so those %ld rows "
-                        "are excluded from the search; the result may hold fewer rows than "
-                        "requested. Set the option to true to verify the candidates against the "
-                        "data, or build an index that answers the predicate exactly.",
-                        filter_->ToString().c_str(), root_path_.c_str(), snapshot_id,
-                        Options::GLOBAL_INDEX_FILTER_REFINE_FROM_DATA, candidates.Cardinality());
-        return std::optional<RoaringBitmap64>(RoaringBitmap64());
+    if (!unindexed_ranges.empty()) {
+        PAIMON_ASSIGN_OR_RAISE(RoaringBitmap64 unindexed_matches, read_matches(unindexed_ranges));
+        index_rows |= unindexed_matches;
     }
-    FilteredRowIdReader row_id_reader(root_path_, table_schema_, options_, partition_filter_,
-                                      filter_, snapshot_id, executor_, pool_);
-    PAIMON_ASSIGN_OR_RAISE(RoaringBitmap64 matched_rows, row_id_reader.MatchingRowIds(candidates));
-    return std::optional<RoaringBitmap64>(std::move(matched_rows));
+    return std::optional<RoaringBitmap64>(std::move(index_rows));
+}
+
+std::vector<Range> DataEvolutionFullTextRead::CollectSearchRanges(
+    const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits) {
+    std::vector<Range> ranges;
+    for (const auto& split : index_splits) {
+        const std::vector<Range>& search_ranges = split->SearchRowRanges();
+        ranges.insert(ranges.end(), search_ranges.begin(), search_ranges.end());
+    }
+    return ranges;
 }
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> DataEvolutionFullTextRead::SearchSplit(
     const IndexFullTextSearchSplitImpl& split,
-    const std::optional<RoaringBitmap64>& include_row_ids) const {
+    const std::optional<RoaringBitmap64>& include_row_ids, const TableSchema& read_schema) const {
     // The splits of a column may come from different indexes, so each split is read with the
     // indexer and fields of its own files.
     const std::shared_ptr<IndexFileMeta>& first_file = split.FullTextIndexFiles().front();
@@ -312,10 +407,10 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> DataEvolutionFullTextRead::Sear
     std::vector<DataField> indexed_fields;
     if (first_meta.extra_field_ids) {
         PAIMON_ASSIGN_OR_RAISE(DataField index_field,
-                               table_schema_->GetField(first_meta.index_field_id));
+                               read_schema.GetField(first_meta.index_field_id));
         indexed_fields.push_back(std::move(index_field));
         for (int32_t extra_field_id : first_meta.extra_field_ids.value()) {
-            PAIMON_ASSIGN_OR_RAISE(DataField extra_field, table_schema_->GetField(extra_field_id));
+            PAIMON_ASSIGN_OR_RAISE(DataField extra_field, read_schema.GetField(extra_field_id));
             indexed_fields.push_back(std::move(extra_field));
         }
     } else {
@@ -355,17 +450,62 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> DataEvolutionFullTextRead::Read
     const std::vector<std::shared_ptr<FullTextSearchSplit>>& splits) {
     std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>> index_splits;
     index_splits.reserve(splits.size());
+    std::string raw_index_type;
+    std::vector<Range> raw_ranges;
     std::optional<int64_t> snapshot_id;
-    for (const auto& split : splits) {
-        auto index_split = std::dynamic_pointer_cast<IndexFullTextSearchSplitImpl>(split);
-        if (!index_split) {
-            return Status::Invalid("invalid full-text search split, cannot cast to an index split");
-        }
-        if (index_split->ColumnName() != text_field_.Name()) {
+    std::optional<int64_t> schema_id;
+    auto check_split = [&](const std::string& column_name, int64_t split_snapshot_id,
+                           std::optional<int64_t> split_schema_id) -> Status {
+        if (column_name != text_field_.Name()) {
             return Status::Invalid(fmt::format(
                 "a split of column {} cannot be read by a full-text search of column {}",
-                index_split->ColumnName(), text_field_.Name()));
+                column_name, text_field_.Name()));
         }
+        if (snapshot_id && snapshot_id.value() != split_snapshot_id) {
+            return Status::Invalid(fmt::format(
+                "full-text search splits planned from snapshots {} and {} cannot be read together",
+                snapshot_id.value(), split_snapshot_id));
+        }
+        snapshot_id = split_snapshot_id;
+        if (split_schema_id) {
+            if (schema_id && schema_id != split_schema_id) {
+                return Status::Invalid(
+                    fmt::format("full-text search splits planned with schemas {} and {} cannot be "
+                                "read together",
+                                *schema_id, *split_schema_id));
+            }
+            schema_id = split_schema_id;
+        }
+        return Status::OK();
+    };
+    for (const auto& split : splits) {
+        if (auto raw_split = std::dynamic_pointer_cast<RawFullTextSearchSplitImpl>(split)) {
+            PAIMON_RETURN_NOT_OK(check_split(raw_split->ColumnName(), raw_split->SnapshotId(),
+                                             raw_split->SchemaId()));
+            if (raw_split->FieldId() && *raw_split->FieldId() != text_field_.Id()) {
+                return Status::Invalid(fmt::format(
+                    "a raw split of column {} was planned for field id {}, but the column now has "
+                    "field id {}",
+                    text_field_.Name(), *raw_split->FieldId(), text_field_.Id()));
+            }
+            if (!raw_index_type.empty() && raw_index_type != raw_split->IndexType()) {
+                return Status::Invalid(
+                    fmt::format("cannot combine raw full-text splits with "
+                                "index types {} and {}",
+                                raw_index_type, raw_split->IndexType()));
+            }
+            raw_index_type = raw_split->IndexType();
+            const auto& ranges = raw_split->RowRanges();
+            raw_ranges.insert(raw_ranges.end(), ranges.begin(), ranges.end());
+            continue;
+        }
+        auto index_split = std::dynamic_pointer_cast<IndexFullTextSearchSplitImpl>(split);
+        if (!index_split) {
+            return Status::Invalid(
+                "invalid full-text search split, cannot cast to an index or raw split");
+        }
+        PAIMON_RETURN_NOT_OK(check_split(index_split->ColumnName(), index_split->SnapshotId(),
+                                         index_split->SchemaId()));
         // A column of the same name may have replaced the planned one, so match field ids too.
         const GlobalIndexMeta& meta =
             index_split->FullTextIndexFiles().front()->GetGlobalIndexMeta().value();
@@ -375,27 +515,35 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> DataEvolutionFullTextRead::Read
                 "replaced after the split was planned",
                 text_field_.Name(), text_field_.Id()));
         }
-        if (snapshot_id && snapshot_id.value() != index_split->SnapshotId()) {
-            return Status::Invalid(fmt::format(
-                "full-text search splits planned from snapshots {} and {} cannot be read together",
-                snapshot_id.value(), index_split->SnapshotId()));
-        }
-        snapshot_id = index_split->SnapshotId();
         index_splits.push_back(std::move(index_split));
     }
-    if (index_splits.empty()) {
+    if (!snapshot_id) {
         return std::shared_ptr<ScoredGlobalIndexResult>(
             std::make_shared<BitmapScoredGlobalIndexResult>(RoaringBitmap64(),
                                                             std::vector<float>()));
     }
 
-    // Live rows are read on this thread before the searches fan out, so a read of manifests on
-    // `executor_` never waits for it from one of its own threads. They are pinned to the snapshot
-    // the splits were planned from (apache/paimon#9031).
-    PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap64> live_rows, LiveRows(snapshot_id.value()));
-    // Likewise for the row filter, which reads indexes and possibly data.
+    PAIMON_ASSIGN_OR_RAISE(RowRangeIndex raw_rows, RowRangeIndex::Create(raw_ranges));
+    if (!raw_ranges.empty()) {
+        PAIMON_RETURN_NOT_OK(ExcludeRawRanges(raw_rows, &index_splits));
+    }
+    // Predicate names and multi-field index layouts refer to the coordinator's schema.
+    std::shared_ptr<TableSchema> read_schema = table_schema_;
+    if (schema_id && *schema_id != table_schema_->Id()) {
+        SchemaManager schemas(options_.GetFileSystem(), root_path_,
+                              BranchManager::NormalizeBranch(options_.GetBranch()));
+        PAIMON_ASSIGN_OR_RAISE(read_schema, schemas.ReadSchema(*schema_id));
+    }
+    if (filter_) {
+        PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
+            *DataField::ConvertDataFieldsToArrowSchema(read_schema->Fields()), filter_,
+            /*validate_field_idx=*/false));
+    }
+    // Keep data reads on the caller: they can submit work to the same executor as the shards.
+    PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap64> live_rows,
+                           LiveRows(index_splits, snapshot_id.value()));
     PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap64> matched_rows,
-                           MatchedRows(index_splits, snapshot_id.value(), live_rows));
+                           MatchedRows(index_splits, snapshot_id.value(), live_rows, read_schema));
     const std::optional<RoaringBitmap64>& eligible_rows = matched_rows ? matched_rows : live_rows;
     using SearchResult = Result<std::shared_ptr<ScoredGlobalIndexResult>>;
     std::vector<std::function<SearchResult()>> searches;
@@ -406,8 +554,8 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> DataEvolutionFullTextRead::Read
         if (include_row_ids->has_value() && include_row_ids->value().IsEmpty()) {
             continue;
         }
-        searches.emplace_back([this, index_split, include_row_ids]() -> SearchResult {
-            SearchResult result = SearchSplit(*index_split, *include_row_ids);
+        searches.emplace_back([this, index_split, include_row_ids, read_schema]() -> SearchResult {
+            SearchResult result = SearchSplit(*index_split, *include_row_ids, *read_schema);
             if (!result.ok()) {
                 return result.status().WithMessage(
                     fmt::format("{}; {}", result.status().message(), Describe(*index_split)));
@@ -416,20 +564,42 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> DataEvolutionFullTextRead::Read
         });
     }
     std::vector<SearchResult> results;
+    std::vector<std::future<SearchResult>> futures;
     if (searches.size() <= 1) {
         for (const auto& search : searches) {
             results.push_back(search());
         }
     } else {
-        std::vector<std::future<SearchResult>> futures;
         futures.reserve(searches.size());
         for (const auto& search : searches) {
             futures.push_back(Via(executor_.get(), search));
         }
+    }
+    std::optional<SearchResult> raw_result;
+    if (!raw_ranges.empty()) {
+        RawFullTextReadImpl raw_read(root_path_, read_schema, options_, partition_filter_, filter_,
+                                     text_field_, query_, limit_, executor_, pool_);
+        raw_result = raw_read.Search(*snapshot_id, raw_index_type, raw_rows);
+    }
+    if (!futures.empty()) {
         results = CollectAll(futures);
     }
     std::vector<std::shared_ptr<ScoredGlobalIndexResult>> scored_results;
-    scored_results.reserve(results.size());
+    scored_results.reserve(results.size() + 1);
+    if (raw_result) {
+        if (!raw_result->ok()) {
+            const Status& status = raw_result->status();
+            const auto& ranges = raw_rows.Ranges();
+            std::vector<Range> sample(ranges.begin(),
+                                      ranges.begin() + std::min(ranges.size(), kMaxReportedRanges));
+            return status.WithMessage(fmt::format(
+                "{}; while searching column {} in snapshot {} with a temporary {} index "
+                "over {} unindexed row ranges, first {}, schema {}, field id {}",
+                status.message(), text_field_.Name(), *snapshot_id, raw_index_type, ranges.size(),
+                StringUtils::VectorToString(sample), read_schema->Id(), text_field_.Id()));
+        }
+        scored_results.push_back(std::move(*raw_result).value());
+    }
     for (auto& result : results) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredGlobalIndexResult> scored_result,
                                std::move(result));

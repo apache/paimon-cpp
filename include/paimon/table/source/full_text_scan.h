@@ -69,7 +69,7 @@ class PAIMON_EXPORT FullTextScan {
     /// `from-timestamp` needs `scan.timestamp` or `scan.timestamp-millis`, and `latest-full` and
     /// `latest` take none of them.
     ///
-    /// Each index shard of the searched column becomes one split. The scan considers only the
+    /// Each index shard assigned search rows becomes one split. The scan considers only the
     /// index files that are in the partitions of the partition filter, that index the column as
     /// their indexed field or as one of their extra fields, and whose indexer supports full-text
     /// search (`GlobalIndexer::SupportsFullTextSearch()`). The plan fails if Paimon C++ is built
@@ -79,9 +79,18 @@ class PAIMON_EXPORT FullTextScan {
     /// by index type and fields, then by the start and end of the shard. With a row filter, each
     /// split also carries the files of single-field scalar indexes that intersect its shard and
     /// index a field of the filter.
+    ///
+    /// If a selected partition has a full-text index for the column, `full` and `detail` add a
+    /// `RawFullTextSearchSplit` for gaps in single-field full-text index coverage, as in Java.
+    /// Multi-field indexes do not reduce these gaps. `full` finds gaps below the snapshot's next
+    /// row id. `detail` reads the data manifests to find gaps in the selected partitions.
+    /// Raw ranges are excluded from each index split's search ranges before serialization, and
+    /// index splits with no remaining search rows are omitted. Physical shard ranges are kept
+    /// for row id translation, so workers may read the planned splits independently.
     /// @return The plan, or an error if more than one time-travel option is set, the option does
     ///         not agree with `scan.mode`, the selected snapshot or tag does not exist, or reading
-    ///         the index manifests fails; `NotImplemented` for an index whose backend is not built.
+    ///         the index or data manifests fails; `NotImplemented` for an index whose backend is
+    ///         not built.
     virtual Result<std::shared_ptr<Plan>> CreatePlan() = 0;
 };
 

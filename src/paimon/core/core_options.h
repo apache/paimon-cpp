@@ -306,12 +306,9 @@ class PAIMON_EXPORT CoreOptions {
 
     BucketFunctionType GetBucketFunctionType() const;
     std::optional<int32_t> GetGlobalIndexThreadNum() const;
-    /// Returns `full-text-index.search-mode`, or else `global-index.search-mode`, or else
-    /// `GlobalIndexSearchMode::FAST`, as Java `CoreOptions#fullTextIndexSearchMode` does.
     GlobalIndexSearchMode GetFullTextIndexSearchMode() const;
-    /// Returns `scalar-index.search-mode`, or else `global-index.search-mode`, or else
-    /// `GlobalIndexSearchMode::FAST`, as Java `CoreOptions#scalarIndexSearchMode` does.
     GlobalIndexSearchMode GetScalarIndexSearchMode() const;
+    GlobalIndexSearchMode GetVectorIndexSearchMode() const;
     bool GlobalIndexFilterRefineFromData() const;
 
     const std::vector<std::string>& GetBlobFields() const;

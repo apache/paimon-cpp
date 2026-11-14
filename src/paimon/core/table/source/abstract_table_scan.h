@@ -43,6 +43,15 @@ class AbstractTableScan : public TableScan {
         return snapshot_reader_->GetMetrics();
     }
 
+    /// Plans data files directly from a retained snapshot for a row-id lookup.
+    Result<std::shared_ptr<Plan>> PlanSnapshotRanges(const Snapshot& snapshot,
+                                                     const RowRangeIndex& row_ranges) {
+        return snapshot_reader_->WithMode(ScanMode::ALL)
+            ->WithSnapshot(snapshot)
+            ->WithRowRangeIndex(row_ranges)
+            ->Read();
+    }
+
  protected:
     Result<std::shared_ptr<StartingScanner>> CreateStartingScanner(bool is_streaming) const {
         const auto& snapshot_manager = snapshot_reader_->GetSnapshotManager();

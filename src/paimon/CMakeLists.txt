@@ -281,6 +281,7 @@ set(PAIMON_CORE_SRCS
     core/deletionvectors/bitmap64_deletion_vector.cpp
     core/deletionvectors/deletion_vectors_index_file.cpp
     core/deletionvectors/deletion_vector_index_file_writer.cpp
+    core/global_index/data_evolution_global_index_coverage.cpp
     core/global_index/global_index_evaluator_impl.cpp
     core/global_index/global_index_live_row_filter.cpp
     core/global_index/global_index_scan.cpp
@@ -507,6 +508,7 @@ set(PAIMON_CORE_SRCS
     core/table/source/filtered_row_id_reader.cpp
     core/table/source/full_text_search_builder.cpp
     core/table/source/full_text_search_split.cpp
+    core/table/source/raw_full_text_read_impl.cpp
     core/table/source/primary_key_sorted_index_scan.cpp
     core/table/source/primary_key_sorted_index_result.cpp
     core/table/source/primary_key_index_batch_scan.cpp
@@ -912,6 +914,7 @@ if(PAIMON_BUILD_TESTS)
                     core/io/rolling_blob_file_writer_test.cpp
                     core/io/rolling_vector_file_writer_test.cpp
                     core/global_index/global_index_file_manager_test.cpp
+                    core/global_index/data_evolution_global_index_coverage_test.cpp
                     core/global_index/global_index_evaluator_impl_test.cpp
                     core/global_index/indexed_split_test.cpp
                     core/global_index/live_row_global_index_reader_test.cpp

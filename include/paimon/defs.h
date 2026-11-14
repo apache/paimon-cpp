@@ -632,20 +632,21 @@ struct PAIMON_EXPORT Options {
     /// and checkpoints use independent round robin. If not set, the global index
     /// files will be stored under the index directory.
     static const char GLOBAL_INDEX_EXTERNAL_PATH[];
-    /// "global-index.search-mode" - Fallback search mode for global index queries, used when the
-    /// search mode of the index family is not set: "fast", "full" or "detail". No default value.
-    /// Paimon C++ reads it only for full-text search so far.
+    /// "global-index.search-mode" - Fallback for full-text, scalar and vector index search modes.
+    /// Accepts "fast", "full" or "detail". Families default to "fast" when neither option is set.
     static const char GLOBAL_INDEX_SEARCH_MODE[];
-    /// "full-text-index.search-mode" - Search mode for full-text index queries: "fast" searches
-    /// only the rows that an index covers, while "full" and "detail" also search the rows that no
-    /// index covers. Default value is "global-index.search-mode", or else "fast". Paimon C++
-    /// supports only "fast" so far, and a full-text search in another mode fails.
+    /// "full-text-index.search-mode" - "fast" searches indexed rows. "full" finds gaps below the
+    /// snapshot's next row id. "detail" finds gaps in the selected partitions' data files. Both
+    /// search the gaps if a selected partition has a full-text index for the column.
+    /// Defaults to "global-index.search-mode", then "fast".
     static const char FULL_TEXT_INDEX_SEARCH_MODE[];
-    /// "scalar-index.search-mode" - Search mode for scalar index queries: "fast" evaluates only the
-    /// rows that an index covers, while "full" and "detail" also evaluate the rows that no index
-    /// covers. Default value is "global-index.search-mode", or else "fast". Paimon C++ supports
-    /// only "fast" so far, and a full-text search with a row filter in another mode fails.
+    /// "scalar-index.search-mode" - Controls row filtering on full-text index shards. "fast"
+    /// uses scalar index candidates. "full" and "detail" also read the filter columns for gaps
+    /// in scalar index coverage. Defaults to "global-index.search-mode", then "fast".
     static const char SCALAR_INDEX_SEARCH_MODE[];
+    /// "vector-index.search-mode" - Reserved for table-level vector search. Accepts "fast",
+    /// "full" or "detail". Defaults to "global-index.search-mode", then "fast".
+    static const char VECTOR_INDEX_SEARCH_MODE[];
     /// "global-index.filter.refine-from-data" - Whether a vector, hybrid or full-text search may
     /// read the filter columns of candidate rows to verify a row filter that the scalar global
     /// index can only answer with a superset, such as contains, ends-with or like on a BTree index
