@@ -37,6 +37,7 @@
 #include "benchmark/cli_option_parsing.h"
 #include "paimon/api.h"
 #include "paimon/catalog/catalog.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/testing/utils/testharness.h"
 
 #if __has_include("parquet/arrow/reader.h")
@@ -434,25 +435,33 @@ Status WriteSourceDataToWriter(paimon::FileStoreWrite* writer, const SourceDataS
 Status WriteAndCommit(const std::string& table_path,
                       const std::map<std::string, std::string>& options,
                       const SourceDataSpec& source_spec) {
-    paimon::WriteContextBuilder write_builder(table_path, "benchmark-writer");
+    paimon::TableLoadContext write_builder_load_context{table_path};
+    std::map<std::string, std::string> write_builder_options;
+    paimon::WriteContextBuilder write_builder("benchmark-writer");
+    write_builder_options = options;
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::WriteContext> write_ctx,
+                           AddContext(write_builder.Finish(), "create write context"));
     PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<paimon::WriteContext> write_ctx,
-        AddContext(write_builder.SetOptions(options).Finish(), "create write context"));
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::FileStoreWrite> writer,
-                           AddContext(paimon::FileStoreWrite::Create(std::move(write_ctx)),
-                                      "create file store writer"));
+        std::unique_ptr<paimon::FileStoreWrite> writer,
+        AddContext(paimon::FileStoreWrite::Create(write_builder_load_context, std::move(write_ctx),
+                                                  write_builder_options),
+                   "create file store writer"));
 
     PAIMON_RETURN_NOT_OK(WriteSourceDataToWriter(writer.get(), source_spec));
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<paimon::CommitMessage>> messages,
                            AddContext(writer->PrepareCommit(), "prepare commit"));
 
-    paimon::CommitContextBuilder commit_builder(table_path, "benchmark-writer");
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<paimon::CommitContext> commit_ctx,
-        AddContext(commit_builder.SetOptions(options).Finish(), "create commit context"));
+    paimon::TableLoadContext commit_builder_load_context{table_path};
+    std::map<std::string, std::string> commit_builder_options;
+    paimon::CommitContextBuilder commit_builder("benchmark-writer");
+    commit_builder_options = options;
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::CommitContext> commit_ctx,
+                           AddContext(commit_builder.Finish(), "create commit context"));
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<paimon::FileStoreCommit> committer,
-        AddContext(paimon::FileStoreCommit::Create(std::move(commit_ctx)), "create committer"));
+        AddContext(paimon::FileStoreCommit::Create(commit_builder_load_context,
+                                                   std::move(commit_ctx), commit_builder_options),
+                   "create committer"));
     PAIMON_RETURN_NOT_OK(AddContext(committer->Commit(messages), "commit write"));
     return Status::OK();
 }
@@ -562,20 +571,26 @@ Result<const SharedReadTableCache*> GetOrCreateSharedReadTable(const std::string
 Result<int64_t> ReadRows(const std::string& table_path,
                          const std::map<std::string, std::string>& options,
                          int32_t prefetch_parallel_num) {
-    paimon::ScanContextBuilder scan_builder(table_path);
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<paimon::ScanContext> scan_ctx,
-        AddContext(scan_builder.SetOptions(options).Finish(), "create scan context"));
+    paimon::TableLoadContext scan_builder_load_context{table_path};
+    std::map<std::string, std::string> scan_builder_options;
+    paimon::ScanContextBuilder scan_builder;
+    scan_builder_options = options;
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_ctx,
+                           AddContext(scan_builder.Finish(), "create scan context"));
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<paimon::TableScan> scanner,
-        AddContext(paimon::TableScan::Create(std::move(scan_ctx)), "create scanner"));
+        AddContext(paimon::TableScan::Create(scan_builder_load_context, std::move(scan_ctx),
+                                             scan_builder_options),
+                   "create scanner"));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Plan> plan,
                            AddContext(scanner->CreatePlan(), "create plan"));
 
-    paimon::ReadContextBuilder read_builder(table_path);
+    paimon::TableLoadContext read_builder_load_context{table_path};
+    std::map<std::string, std::string> read_builder_options;
+    paimon::ReadContextBuilder read_builder;
     constexpr int32_t kPrefetchBatchCount = 600;
-    read_builder.SetOptions(options)
-        .EnablePrefetch(true)
+    read_builder_options = options;
+    read_builder.EnablePrefetch(true)
         .SetPrefetchBatchCount(kPrefetchBatchCount)
         .SetPrefetchMaxParallelNum(prefetch_parallel_num)
         .EnableMultiThreadRowToBatch(GetRowToBatchThreadNumber() > 1)
@@ -584,7 +599,9 @@ Result<int64_t> ReadRows(const std::string& table_path,
                            AddContext(read_builder.Finish(), "create read context"));
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<paimon::TableRead> reader,
-        AddContext(paimon::TableRead::Create(std::move(read_ctx)), "create table reader"));
+        AddContext(paimon::TableRead::Create(read_builder_load_context, std::move(read_ctx),
+                                             read_builder_options),
+                   "create table reader"));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::BatchReader> batch_reader,
                            AddContext(reader->CreateReader(plan->Splits()), "create batch reader"));
 

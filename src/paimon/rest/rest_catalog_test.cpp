@@ -40,6 +40,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/table.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/catalog_options.h"
 #include "paimon/commit_context.h"
 #include "paimon/commit_message.h"
@@ -890,16 +891,26 @@ TEST_F(RestCatalogTest, GlobalSystemTableRetainsFactoryCatalog) {
     std::weak_ptr<Catalog> weak_catalog = catalog;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
                          catalog->GetTable(Identifier("sys", "tables")));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
-                         ScanContextBuilder(table->GetRootPath()).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(scan_context)));
+    std::map<std::string, std::string> scan_context_builder_options;
+    ScanContextBuilder scan_context_builder;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_1,
+                         table->CopyWithoutTimeTravel(scan_context_builder_options));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                         configured_table_1->NewScan(std::move(scan_context)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
-                         ReadContextBuilder(table->GetRootPath()).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, table->NewRead(std::move(read_context)));
+    std::map<std::string, std::string> read_context_builder_options;
+    ReadContextBuilder read_context_builder;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured_table_2,
+                         table->CopyWithoutTimeTravel(read_context_builder_options));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                         configured_table_2->NewRead(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
     catalog.reset();
     table.reset();
+    configured_table_1.reset();
+    configured_table_2.reset();
     ASSERT_FALSE(weak_catalog.expired());
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
     ASSERT_TRUE(BatchReader::IsEofBatch(batch));
@@ -1192,7 +1203,7 @@ TEST_F(RestCatalogTest, SystemTableSchema) {
 }
 
 TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RestCatalog> catalog, CreateRestCatalog());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RestCatalog> catalog, CreateRestCatalog());
     ASSERT_OK(catalog->CreateDatabase("db1", {}, /*ignore_if_exists=*/false));
     ASSERT_OK(CreateSampleTable(catalog.get(), Identifier("db1", "t1")));
 
@@ -1229,6 +1240,13 @@ TEST_F(RestCatalogTest, BranchTableLoadsBranchSchemaFromServer) {
     ASSERT_EQ((std::vector<std::string>{"b0"}), schema->FieldNames());
     ASSERT_EQ(3, schema->Id());
     ASSERT_EQ("b1", schema->Options().at(Options::BRANCH));
+
+    TableLoadContext load;
+    load.catalog = catalog;
+    load.identifier.emplace(branch_identifier);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
+                         ReadContextBuilder().SetReadFieldNames({"b0"}).Finish());
+    ASSERT_OK(TableRead::Create(load, std::move(read_context), {}));
 
     // the default branch is addressed as the bare table: "t1$branch_main" resolves to
     // "t1" and carries no branch option
@@ -1441,8 +1459,8 @@ TEST_F(RestCatalogTest, FormatTableUsesBoundFileSystemForStorageAccess) {
             ASSERT_NE(catalog->GetFileSystem(), table->GetFileSystem());
         }
         ASSERT_TRUE(TokenRequests().empty());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context,
-                             ScanContextBuilder(dir->Str()).Finish());
+
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, ScanContextBuilder().Finish());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, table->NewScan(std::move(context)));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
         ASSERT_TRUE(plan->Splits().empty());
@@ -1824,10 +1842,13 @@ TEST_F(RestCatalogTest, FileStoreCommitIsBuiltFromTheCatalog) {
         requests_before = state_->get_table_requests;
     }
     std::shared_ptr<Catalog> shared_catalog(std::move(rest_catalog));
-    CommitContextBuilder builder(dir->Str(), "commit-user");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
-                         builder.WithCatalog(shared_catalog, Identifier("db1", "t1")).Finish());
-    ASSERT_OK(FileStoreCommit::Create(std::move(context)));
+    TableLoadContext builder_load_context{dir->Str()};
+    std::map<std::string, std::string> builder_options;
+    CommitContextBuilder builder("commit-user");
+    builder_load_context.catalog = shared_catalog;
+    builder_load_context.identifier.emplace(Identifier("db1", "t1"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context, builder.Finish());
+    ASSERT_OK(FileStoreCommit::Create(builder_load_context, std::move(context), builder_options));
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
         ASSERT_GT(state_->get_table_requests, requests_before);
@@ -1889,16 +1910,19 @@ TEST_F(RestCatalogTest, ReadThroughTheCatalogAppliesItsQueryAuth) {
         ASSERT_EQ(1, state_->get_table_requests);
     }
 
+    TableLoadContext scan_context_load_2{dir->Str()};
+
+    scan_context_load_2.catalog = catalog;
+    scan_context_load_2.identifier.emplace(identifier);
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<ScanContext> scan_context,
-        ScanContextBuilder(dir->Str())
-            .WithCatalog(catalog, identifier)
+        ScanContextBuilder()
             .SetReadFieldNames({"f1"})
             .SetPredicate(PredicateBuilder::GreaterThan(/*field_index=*/0, "f0", FieldType::INT,
                                                         Literal(static_cast<int32_t>(0))))
             .Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
-                         TableScan::Create(std::move(scan_context)));
+                         TableScan::Create(scan_context_load_2, std::move(scan_context), {}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
@@ -1912,11 +1936,13 @@ TEST_F(RestCatalogTest, ReadThroughTheCatalogAppliesItsQueryAuth) {
                   sent.GetSelect());
     }
 
+    TableLoadContext read_context_load_3{dir->Str()};
+    std::map<std::string, std::string> read_context_options_3;
+    read_context_options_3[Options::QUERY_AUTH_ENABLED] = "true";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, ReadContextBuilder().Finish());
     ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<ReadContext> read_context,
-        ReadContextBuilder(dir->Str()).AddOption(Options::QUERY_AUTH_ENABLED, "true").Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
-                         TableRead::Create(std::move(read_context)));
+        std::unique_ptr<TableRead> read,
+        TableRead::Create(read_context_load_3, std::move(read_context), read_context_options_3));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> chunks,
                          ReadResultCollector::CollectResult(std::move(reader)));
@@ -1927,61 +1953,86 @@ TEST_F(RestCatalogTest, ReadThroughTheCatalogAppliesItsQueryAuth) {
     ASSERT_EQ("***",
               checked_pointer_cast<arrow::StringArray>(rows->GetFieldByName("f1"))->GetString(0));
 
+    TableLoadContext disabling_read_context_load_4{dir->Str()};
+    std::map<std::string, std::string> disabling_read_context_options_4;
+    disabling_read_context_load_4.catalog = catalog;
+    disabling_read_context_load_4.identifier.emplace(identifier);
+    disabling_read_context_options_4[Options::QUERY_AUTH_ENABLED] = "false";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> disabling_read_context,
-                         ReadContextBuilder(dir->Str())
-                             .WithCatalog(catalog, identifier)
-                             .AddOption(Options::QUERY_AUTH_ENABLED, "false")
-                             .Finish());
+                         ReadContextBuilder().Finish());
     ASSERT_NOK_WITH_MSG(
-        TableRead::Create(std::move(disabling_read_context)),
+        TableRead::Create(disabling_read_context_load_4, std::move(disabling_read_context),
+                          disabling_read_context_options_4),
         "Invalid: Option 'query-auth.enabled' is not allowed to be disabled dynamically");
 
+    TableLoadContext files_scan_context_load_5{dir->Str() + "$files"};
+
+    files_scan_context_load_5.catalog = catalog;
+    files_scan_context_load_5.identifier.emplace(Identifier("db1", "t1$files"));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> files_scan_context,
-                         ScanContextBuilder(dir->Str() + "$files")
-                             .WithCatalog(catalog, Identifier("db1", "t1$files"))
-                             .Finish());
-    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(files_scan_context)),
-                        "NotImplemented: System table 'files' is not supported on a table with "
-                        "'query-auth.enabled=true'");
+                         ScanContextBuilder().Finish());
+    ASSERT_NOK_WITH_MSG(
+        TableScan::Create(files_scan_context_load_5, std::move(files_scan_context), {}),
+        "NotImplemented: System table 'files' is not supported on a table with "
+        "'query-auth.enabled=true'");
+    TableLoadContext options_scan_context_load_6{dir->Str() + "$options"};
+
+    options_scan_context_load_6.catalog = catalog;
+    options_scan_context_load_6.identifier.emplace(Identifier("db1", "t1$options"));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> options_scan_context,
-                         ScanContextBuilder(dir->Str() + "$options")
-                             .WithCatalog(catalog, Identifier("db1", "t1$options"))
-                             .Finish());
-    ASSERT_OK(TableScan::Create(std::move(options_scan_context)).status());
+                         ScanContextBuilder().Finish());
+    ASSERT_OK(TableScan::Create(options_scan_context_load_6, std::move(options_scan_context), {})
+                  .status());
 
     // A global system table identifier must not skip the catalog policy of a data table,
     // including a table whose published schema does not enable query auth.
     const Identifier system_identifier("sys", "tables");
     for (const std::string& suffix : {std::string(), std::string("$files")}) {
         SCOPED_TRACE(suffix);
+        TableLoadContext mismatched_scan_context_load_7{dir->Str() + suffix};
+
+        mismatched_scan_context_load_7.catalog = catalog;
+        mismatched_scan_context_load_7.identifier.emplace(system_identifier);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> mismatched_scan_context,
-                             ScanContextBuilder(dir->Str() + suffix)
-                                 .WithCatalog(catalog, system_identifier)
-                                 .Finish());
-        Status scan_status = TableScan::Create(std::move(mismatched_scan_context)).status();
+                             ScanContextBuilder().Finish());
+        Status scan_status = TableScan::Create(mismatched_scan_context_load_7,
+                                               std::move(mismatched_scan_context), {})
+                                 .status();
+        TableLoadContext mismatched_read_context_load_8{dir->Str() + suffix};
+
+        mismatched_read_context_load_8.catalog = catalog;
+        mismatched_read_context_load_8.identifier.emplace(system_identifier);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> mismatched_read_context,
-                             ReadContextBuilder(dir->Str() + suffix)
-                                 .WithCatalog(catalog, system_identifier)
-                                 .Finish());
-        Status read_status = TableRead::Create(std::move(mismatched_read_context)).status();
+                             ReadContextBuilder().Finish());
+        Status read_status = TableRead::Create(mismatched_read_context_load_8,
+                                               std::move(mismatched_read_context), {})
+                                 .status();
         ASSERT_NOK_WITH_MSG(scan_status, "names a global system table, but the scan targets");
         ASSERT_NOK_WITH_MSG(read_status, "names a global system table, but the read targets");
     }
 
     const std::string global_path = PathUtil::JoinPath(dir->Str(), "sys/catalog_options");
     const Identifier global_identifier("sys", "catalog_options");
+    TableLoadContext global_scan_context_load_9{global_path};
+    std::map<std::string, std::string> global_scan_context_options_9;
+    global_scan_context_load_9.catalog = catalog;
+    global_scan_context_load_9.identifier.emplace(global_identifier);
+    global_scan_context_options_9[CatalogOptionsSystemTable::kEnabledOption] = "true";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> global_scan_context,
-                         ScanContextBuilder(global_path)
-                             .WithCatalog(catalog, global_identifier)
-                             .AddOption(CatalogOptionsSystemTable::kEnabledOption, "true")
-                             .Finish());
-    ASSERT_OK(TableScan::Create(std::move(global_scan_context)).status());
+                         ScanContextBuilder().Finish());
+    ASSERT_OK(TableScan::Create(global_scan_context_load_9, std::move(global_scan_context),
+                                global_scan_context_options_9)
+                  .status());
+    TableLoadContext global_read_context_load_10{global_path};
+    std::map<std::string, std::string> global_read_context_options_10;
+    global_read_context_load_10.catalog = catalog;
+    global_read_context_load_10.identifier.emplace(global_identifier);
+    global_read_context_options_10[CatalogOptionsSystemTable::kEnabledOption] = "true";
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> global_read_context,
-                         ReadContextBuilder(global_path)
-                             .WithCatalog(catalog, global_identifier)
-                             .AddOption(CatalogOptionsSystemTable::kEnabledOption, "true")
-                             .Finish());
-    ASSERT_OK(TableRead::Create(std::move(global_read_context)).status());
+                         ReadContextBuilder().Finish());
+    ASSERT_OK(TableRead::Create(global_read_context_load_10, std::move(global_read_context),
+                                global_read_context_options_10)
+                  .status());
 }
 
 TEST_F(RestCatalogTest, GlobalPartitionsProtectsQueryAuthPartitionValues) {
@@ -2079,12 +2130,13 @@ TEST_F(RestCatalogTest, QueryAuthRejectsColumnsReplacedOnlyInTheCatalog) {
     std::shared_ptr<Catalog> catalog(std::move(rest_catalog));
     auto new_scan =
         [&](const std::vector<std::string>& fields) -> Result<std::unique_ptr<TableScan>> {
+        TableLoadContext context_load_11{dir->Str()};
+
+        context_load_11.catalog = catalog;
+        context_load_11.identifier.emplace(Identifier("db1", "t1"));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context,
-                               ScanContextBuilder(dir->Str())
-                                   .WithCatalog(catalog, Identifier("db1", "t1"))
-                                   .SetReadFieldNames(fields)
-                                   .Finish());
-        return TableScan::Create(std::move(context));
+                               ScanContextBuilder().SetReadFieldNames(fields).Finish());
+        return TableScan::Create(context_load_11, std::move(context), {});
     };
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan, new_scan({"f1"}));
     ASSERT_OK(scan->CreatePlan().status());
@@ -2163,13 +2215,15 @@ TEST_F(RestCatalogTest, ScanOfABranchFollowsTheQueryAuthOfThatBranch) {
     }
     std::shared_ptr<Catalog> catalog(std::move(rest_catalog));
 
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
-                         ScanContextBuilder(dir->Str())
-                             .WithCatalog(catalog, Identifier("db1", "t1"))
-                             .AddOption(Options::BRANCH, "dev")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
-                         TableScan::Create(std::move(scan_context)));
+    TableLoadContext scan_context_load_12{dir->Str()};
+    std::map<std::string, std::string> scan_context_options_12;
+    scan_context_load_12.catalog = catalog;
+    scan_context_load_12.identifier.emplace(Identifier("db1", "t1"));
+    scan_context_options_12[Options::BRANCH] = "dev";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, ScanContextBuilder().Finish());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableScan> scan,
+        TableScan::Create(scan_context_load_12, std::move(scan_context), scan_context_options_12));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
@@ -2178,14 +2232,15 @@ TEST_F(RestCatalogTest, ScanOfABranchFollowsTheQueryAuthOfThatBranch) {
                   state_->auth_requests);
     }
 
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
-                         ReadContextBuilder(dir->Str())
-                             .WithCatalog(catalog, Identifier("db1", "t1"))
-                             .AddOption(Options::BRANCH, "dev")
-                             .Finish());
-    ASSERT_EQ(Identifier("db1", "t1$branch_dev"), read_context->GetIdentifier().value());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
-                         TableRead::Create(std::move(read_context)));
+    TableLoadContext read_context_load_13{dir->Str()};
+    std::map<std::string, std::string> read_context_options_13;
+    read_context_load_13.catalog = catalog;
+    read_context_load_13.identifier.emplace(Identifier("db1", "t1"));
+    read_context_options_13[Options::BRANCH] = "dev";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, ReadContextBuilder().Finish());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableRead> read,
+        TableRead::Create(read_context_load_13, std::move(read_context), read_context_options_13));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> chunks,
                          ReadResultCollector::CollectResult(std::move(reader)));
@@ -2228,23 +2283,29 @@ TEST_F(RestCatalogTest, ReadRejectsAFallbackBranchProtectedOnlyByTheCatalog) {
         }
     }
     std::shared_ptr<Catalog> catalog(std::move(rest_catalog));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
-                         ReadContextBuilder(dir->Str())
-                             .WithCatalog(catalog, Identifier("db1", "t1"))
-                             .WithBranch("dev")
-                             .AddOption(Options::SCAN_FALLBACK_BRANCH, "main")
-                             .Finish());
-    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
-                        "Cannot read fallback branch 'main', which enables 'query-auth.enabled'");
+    TableLoadContext read_context_load_14{dir->Str()};
+    std::map<std::string, std::string> read_context_options_14;
+    read_context_load_14.catalog = catalog;
+    read_context_load_14.identifier.emplace(Identifier("db1", "t1"));
+    read_context_options_14[Options::BRANCH] = "dev";
+    read_context_options_14[Options::SCAN_FALLBACK_BRANCH] = "main";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, ReadContextBuilder().Finish());
+    ASSERT_NOK_WITH_MSG(
+        TableRead::Create(read_context_load_14, std::move(read_context), read_context_options_14),
+        "Cannot read fallback branch 'main', which enables 'query-auth.enabled'");
     for (const auto& [branch, message] : std::vector<std::pair<std::string, std::string>>{
              {"MAIN", "a catalog names branch 'MAIN' as it names the main branch"},
              {"dev$options", "a branch a catalog addresses cannot contain '$'"}}) {
-        ASSERT_OK_AND_ASSIGN(read_context, ReadContextBuilder(dir->Str())
-                                               .WithCatalog(catalog, Identifier("db1", "t1"))
-                                               .WithBranch("dev")
-                                               .AddOption(Options::SCAN_FALLBACK_BRANCH, branch)
-                                               .Finish());
-        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)), message);
+        TableLoadContext read_context_load_15{dir->Str()};
+        std::map<std::string, std::string> read_context_options_15;
+        read_context_load_15.catalog = catalog;
+        read_context_load_15.identifier.emplace(Identifier("db1", "t1"));
+        read_context_options_15[Options::BRANCH] = "dev";
+        read_context_options_15[Options::SCAN_FALLBACK_BRANCH] = branch;
+        ASSERT_OK_AND_ASSIGN(read_context, ReadContextBuilder().Finish());
+        ASSERT_NOK_WITH_MSG(TableRead::Create(read_context_load_15, std::move(read_context),
+                                              read_context_options_15),
+                            message);
     }
 }
 
@@ -2555,10 +2616,13 @@ TEST_P(RestCatalogCommitRecoveryTest, CommitAcceptedThenLostRecoversAfterRestart
     std::shared_ptr<Catalog> catalog(std::move(rest_catalog));
 
     auto create_commit = [&]() -> Result<std::unique_ptr<FileStoreCommit>> {
-        CommitContextBuilder builder(dir->Str(), "commit-user");
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context,
-                               builder.WithCatalog(catalog, identifier).Finish());
-        return FileStoreCommit::Create(std::move(context));
+        TableLoadContext builder_load_context{dir->Str()};
+        std::map<std::string, std::string> builder_options;
+        CommitContextBuilder builder("commit-user");
+        builder_load_context.catalog = catalog;
+        builder_load_context.identifier.emplace(identifier);
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context, builder.Finish());
+        return FileStoreCommit::Create(builder_load_context, std::move(context), builder_options);
     };
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit, create_commit());
 
@@ -2730,16 +2794,20 @@ class RestCatalogCommitLeaseTest : public RestCatalogTest {
     Result<std::unique_ptr<FileStoreCommit>> CreateCommit(
         const std::shared_ptr<Catalog>& catalog, const std::optional<std::string>& table_id,
         const std::map<std::string, std::string>& options) {
-        CommitContextBuilder builder(dir_->Str(), "commit-user");
-        builder.WithCatalog(catalog, Identifier("db1", "t1"));
+        TableLoadContext builder_load_context{dir_->Str()};
+        std::map<std::string, std::string> builder_options;
+        CommitContextBuilder builder("commit-user");
+        builder_load_context.catalog = catalog;
+        builder_load_context.identifier.emplace(Identifier("db1", "t1"));
+
         if (table_id) {
-            builder.WithTableId(table_id.value());
+            builder_load_context.table_id = table_id.value();
         }
         for (const auto& [key, value] : options) {
-            builder.AddOption(key, value);
+            builder_options[key] = value;
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<CommitContext> context, builder.Finish());
-        return FileStoreCommit::Create(std::move(context));
+        return FileStoreCommit::Create(builder_load_context, std::move(context), builder_options);
     }
 
     std::vector<std::string> TableEvents() {

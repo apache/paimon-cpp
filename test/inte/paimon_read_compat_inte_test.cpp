@@ -29,6 +29,7 @@
 #include "arrow/api.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/data/variant/generic_variant.h"
 #include "paimon/data/blob_descriptor.h"
 #include "paimon/defs.h"
@@ -71,20 +72,30 @@ Result<std::shared_ptr<arrow::ChunkedArray>> ReadTable(
     std::string table_path =
         GetDataDir() + "/" + file_format + "/" + kDatabaseName + ".db/" + table_name;
 
-    ScanContextBuilder scan_context_builder(table_path);
-    scan_context_builder.SetOptions(options);
+    TableLoadContext scan_context_builder_load_context{table_path};
+    std::map<std::string, std::string> scan_context_builder_options;
+    ScanContextBuilder scan_context_builder;
+    scan_context_builder_options = options;
+
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
                            scan_context_builder.Finish());
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
-                           TableScan::Create(std::move(scan_context)));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<TableScan> table_scan,
+        TableScan::Create(scan_context_builder_load_context, std::move(scan_context),
+                          scan_context_builder_options));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
 
-    ReadContextBuilder read_context_builder(table_path);
-    read_context_builder.SetOptions(options).SetReadFieldNames(field_names);
+    TableLoadContext read_context_builder_load_context{table_path};
+    std::map<std::string, std::string> read_context_builder_options;
+    ReadContextBuilder read_context_builder;
+    read_context_builder_options = options;
+    read_context_builder.SetReadFieldNames(field_names);
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                            read_context_builder.Finish());
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                           TableRead::Create(std::move(read_context)));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<TableRead> table_read,
+        TableRead::Create(read_context_builder_load_context, std::move(read_context),
+                          read_context_builder_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                            table_read->CreateReader(plan->Splits()));
     return ReadResultCollector::CollectResult(std::move(batch_reader));

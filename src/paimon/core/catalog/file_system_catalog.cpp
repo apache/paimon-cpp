@@ -56,8 +56,10 @@ struct ArrowSchema;
 namespace paimon {
 FileSystemCatalog::FileSystemCatalog(const std::shared_ptr<FileSystem>& fs,
                                      const std::string& warehouse,
-                                     const std::map<std::string, std::string>& catalog_options)
+                                     const std::map<std::string, std::string>& catalog_options,
+                                     const std::map<std::string, std::string>& fs_scheme_map)
     : fs_(fs),
+      fs_scheme_map_(fs_scheme_map),
       warehouse_(warehouse),
       catalog_options_(catalog_options),
       logger_(Logger::GetLogger("FileSystemCatalog")) {}
@@ -322,9 +324,10 @@ Result<std::shared_ptr<Schema>> FileSystemCatalog::LoadTableSchema(
             dynamic_options[Options::BRANCH] = branch.value();
         }
         PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(data_identifier));
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<SystemTable> system_table,
-                               SystemTableLoader::Load(system_table_name.value(), fs_, table_path,
-                                                       latest_schema.value(), dynamic_options));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<SystemTable> system_table,
+            SystemTableLoader::Load(system_table_name.value(), fs_, table_path,
+                                    latest_schema.value(), dynamic_options, "", fs_scheme_map_));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> arrow_schema,
                                system_table->ArrowSchema());
         return std::make_shared<SystemTableSchema>(std::move(arrow_schema));
@@ -356,7 +359,7 @@ Result<std::shared_ptr<SystemTable>> FileSystemCatalog::LoadSystemTable(
     dynamic_options[Options::BRANCH] = branch;
     PAIMON_ASSIGN_OR_RAISE(std::string table_path, GetTableLocation(data_identifier));
     return SystemTableLoader::Load(identifier, fs_, table_path, latest_schema.value(),
-                                   dynamic_options, {});
+                                   dynamic_options, fs_scheme_map_);
 }
 
 Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& identifier) const {
@@ -404,8 +407,12 @@ Result<std::shared_ptr<Table>> FileSystemCatalog::GetTable(const Identifier& ide
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckManagedTableType(identifier, *latest_schema,
                                                              "FileSystemCatalog::GetTable"));
     PAIMON_ASSIGN_OR_RAISE(std::string branch, identifier.GetBranchNameOrDefault());
+    std::shared_ptr<Catalog> catalog = std::const_pointer_cast<Catalog>(weak_from_this().lock());
+    if (!catalog) {
+        catalog = std::make_shared<FileSystemCatalog>(*this);
+    }
     return FileStoreTable::Create(fs_, table_path, *latest_schema, identifier, /*uuid=*/"", branch,
-                                  {});
+                                  fs_scheme_map_, catalog);
 }
 
 Status FileSystemCatalog::DropDatabase(const std::string& name, bool ignore_if_not_exists,

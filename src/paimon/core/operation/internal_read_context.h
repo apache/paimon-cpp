@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "paimon/catalog/identifier.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/read_context.h"
@@ -35,6 +36,7 @@ class Schema;
 }  // namespace arrow
 
 namespace paimon {
+class Catalog;
 struct CatalogContext;
 class Executor;
 class MemoryPool;
@@ -59,16 +61,29 @@ class InternalReadContext {
     static Result<std::unique_ptr<InternalReadContext>> Create(
         const std::shared_ptr<ReadContext>& read_context,
         const std::shared_ptr<TableSchema>& table_schema,
-        const std::map<std::string, std::string>& options);
+        const std::map<std::string, std::string>& options,
+        const std::shared_ptr<FileSystem>& file_system = nullptr, const std::string& root_path = "",
+        const std::map<std::string, std::string>& fs_scheme_map = {},
+        const std::shared_ptr<Catalog>& catalog = nullptr,
+        const std::optional<Identifier>& identifier = std::nullopt,
+        const std::map<std::string, std::string>& dynamic_options = {});
 
     static Result<std::unique_ptr<InternalReadContext>> CreateForTable(
         const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& schema,
         CoreOptions options, const std::string& root_path,
-        const std::map<std::string, std::string>& fs_scheme_map);
+        const std::map<std::string, std::string>& fs_scheme_map,
+        const std::shared_ptr<Catalog>& catalog = nullptr,
+        const std::optional<Identifier>& identifier = std::nullopt,
+        const std::map<std::string, std::string>& dynamic_options = {});
     static Result<std::unique_ptr<InternalReadContext>> CreateForFallbackBranch(
         const std::shared_ptr<ReadContext>& context, const std::string& branch,
         const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
-        const std::map<std::string, std::string>& fs_scheme_map, bool use_context_load);
+        const std::map<std::string, std::string>& fs_scheme_map,
+        const std::shared_ptr<Catalog>& catalog = nullptr,
+        const std::optional<Identifier>& identifier = std::nullopt,
+        const std::map<std::string, std::string>& dynamic_options = {},
+        const std::optional<std::string>& supplied_main_schema = std::nullopt,
+        const std::optional<std::shared_ptr<FileSystem>>& fallback_file_system = std::nullopt);
 
     /// Maps score output positions in the read schema to their logical search sources.
     const std::map<int32_t, IndexScoreSource>& GetIndexScoreBindings() const {
@@ -88,7 +103,7 @@ class InternalReadContext {
         return table_schema_;
     }
     const std::string& GetPath() const {
-        return path_ ? *path_ : read_context_->GetPath();
+        return path_;
     }
 
     std::shared_ptr<CatalogContext> CreateDependencyCatalogContext() const;
@@ -197,7 +212,10 @@ class InternalReadContext {
     std::shared_ptr<arrow::Schema> read_schema_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     CoreOptions options_;
-    std::optional<std::string> path_;
+    std::string path_;
+    std::shared_ptr<Catalog> catalog_;
+    std::optional<Identifier> identifier_;
+    std::map<std::string, std::string> dynamic_options_;
     std::map<std::string, std::string> fs_scheme_map_;
     std::map<int32_t, IndexScoreSource> index_score_bindings_;
 };

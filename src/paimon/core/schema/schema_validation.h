@@ -52,6 +52,11 @@ class SchemaValidation {
 
     static Status ValidateTableSchema(const TableSchema& schema);
 
+    /// Merges runtime options using Java's Copy immutability rules. Normalized primary-key,
+    /// partition and type no-ops retain their original representation in the schema.
+    static Result<std::map<std::string, std::string>> MergeDynamicOptions(
+        const TableSchema& schema, const std::map<std::string, std::string>& dynamic_options);
+
     /// Validates real-time options after operation-specific options have been merged with the
     /// table schema options.
     static Status ValidateRealtime(const TableSchema& schema, const CoreOptions& options);

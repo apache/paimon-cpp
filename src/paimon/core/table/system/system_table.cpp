@@ -237,18 +237,36 @@ Status SystemTable::AdoptOwnSchema() {
 
 Result<std::shared_ptr<FileStoreTable>> SystemTable::CreateDataTable(
     const std::shared_ptr<TableSchema>& table_schema,
-    const std::map<std::string, std::string>& options,
-    const std::map<std::string, std::string>& fs_scheme_map_overrides) const {
-    auto fs_scheme_map = fs_scheme_map_;
-    for (const auto& [scheme, identifier] : fs_scheme_map_overrides) {
-        fs_scheme_map[scheme] = identifier;
-    }
+    const std::map<std::string, std::string>& options) const {
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> merged_schema,
                            table_schema->MergeOptions(options));
     const std::string branch = BranchManager::NormalizeBranch(LoadBranch(merged_schema->Options()));
     return FileStoreTable::Create(
         GetFileSystem(), GetRootPath(), std::shared_ptr<TableSchema>(std::move(merged_schema)),
-        CatalogUtils::IdentifierFromPath(GetRootPath(), branch), "", branch, fs_scheme_map);
+        CatalogUtils::IdentifierFromPath(GetRootPath(), branch), "", branch, fs_scheme_map_);
+}
+
+Result<std::map<std::string, std::string>> SystemTable::CopyOptions(
+    const TableSchema& table_schema, const std::map<std::string, std::string>& bound_options,
+    const std::map<std::string, std::string>& overrides) {
+    auto options = bound_options;
+    for (const auto& [key, value] : overrides) {
+        options[key] = value;
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::string bound_branch,
+                           OptionsUtils::GetValueFromMap<std::string>(
+                               bound_options, Options::BRANCH, BranchManager::DEFAULT_MAIN_BRANCH));
+    auto branch = overrides.find(Options::BRANCH);
+    if (branch != overrides.end() && BranchManager::NormalizeBranch(branch->second) !=
+                                         BranchManager::NormalizeBranch(bound_branch)) {
+        return Status::Invalid("copy branch contradicts the loaded table");
+    }
+    PAIMON_ASSIGN_OR_RAISE(TableType bound_type, TableTypeDefine::FromOptions(bound_options));
+    PAIMON_ASSIGN_OR_RAISE(TableType type, TableTypeDefine::FromOptions(options));
+    if (type != bound_type) {
+        return Status::Invalid("copy type contradicts the loaded table");
+    }
+    return SchemaValidation::MergeDynamicOptions(table_schema, options);
 }
 
 Result<std::unique_ptr<FileStoreWrite>> SystemTable::NewWrite(

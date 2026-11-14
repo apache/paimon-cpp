@@ -256,7 +256,7 @@ produce a correct ``Snapshot``, which commonly includes (but is not limited to):
    file-system commits for both table types on non-object-store paths.
    Object-store paths need a commit that does not rename: either a catalog that
    manages the versions of its tables, such as the REST catalog, passed to
-   ``CommitContextBuilder::WithCatalog()``, or ``UseRESTCatalogCommit(true)``,
+   a table loaded through a version-managed catalog, or ``UseRESTCatalogCommit(true)``,
    which builds the commit request for the caller to send instead of publishing
    the snapshot itself. The two are mutually exclusive. A catalog without
    version management still commits by renaming, so passing one is rejected on
@@ -301,7 +301,7 @@ Operational Flow
    passes the objects to ``FileStoreCommit`` for either an Append or PK table.
    For a table of a catalog which owns its versions, such as a REST catalog, it
    passes that catalog and the table identifier to
-   ``WriteContextBuilder::WithCatalog`` and ``CommitContextBuilder::WithCatalog``.
+   a shared catalog-loaded Table or matching ``TableLoadContext``.
    The writer loads the latest snapshot from the catalog, and the current schema
    from it as well when it writes to the main branch; a write aimed at another
    branch reads the schema published under ``branch/branch-<name>`` instead. On

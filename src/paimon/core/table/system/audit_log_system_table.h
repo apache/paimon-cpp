@@ -52,6 +52,9 @@ std::unique_ptr<BatchReader> CreateChangelogBatchReader(
 /// System table for `T$audit_log`, exposing row-level changelog records with rowkind.
 class AuditLogSystemTable : public SystemTable {
  public:
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
+        const std::map<std::string, std::string>& dynamic_options) const override;
+
     static constexpr const char* kName = "audit_log";
 
     /// @param data_table_name Logical table name, including any branch suffix.
@@ -71,7 +74,8 @@ class AuditLogSystemTable : public SystemTable {
 
     Result<std::unique_ptr<TableRead>> NewChangelogRead(
         const std::shared_ptr<ReadContext>& context,
-        std::shared_ptr<const ChangelogBatchConverter> converter) const;
+        std::shared_ptr<const ChangelogBatchConverter> converter,
+        const std::map<std::string, std::string>& dynamic_options) const;
     /// Build the context for the data table underneath this changelog view.
     ///
     /// The builder starts from the defaults, so every setting the caller configured has to be

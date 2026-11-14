@@ -223,10 +223,15 @@ to both the index scan and the data scan:
                           reader->VisitFullTextSearch(std::make_shared<paimon::FullTextSearch>(
                               "f0", R"({"match":{"query":"paimon lake"}})", /*limit=*/10)));
 
-   paimon::ScanContextBuilder scan_builder(table_path);
-   scan_builder.AddOption(paimon::Options::SCAN_MODE, "from-snapshot")
-       .AddOption(paimon::Options::SCAN_SNAPSHOT_ID, std::to_string(snapshot_id))
-       .SetGlobalIndexResult(result);
+   paimon::TableLoadContext load_context{table_path};
+   paimon::ScanContextBuilder scan_builder;
+   const std::map<std::string, std::string> scan_options = {
+       {paimon::Options::SCAN_MODE, "from-snapshot"},
+       {paimon::Options::SCAN_SNAPSHOT_ID, std::to_string(snapshot_id)}};
+   scan_builder.SetGlobalIndexResult(result);
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> context, scan_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
+                          paimon::TableScan::Create(load_context, std::move(context), scan_options));
 
 **Configuration:**
 
@@ -313,20 +318,21 @@ them. A search whose ``full-text-index.search-mode``, or else ``global-index.sea
                           search_builder.ExecuteLocal());
 
    // Read the rows found, with their scores.
-   paimon::ScanContextBuilder scan_builder(table_path);
+   paimon::TableLoadContext load_context{table_path};
+   paimon::ScanContextBuilder scan_builder;
    scan_builder.SetGlobalIndexResult(result);
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> scan_context,
                           scan_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
-                          paimon::TableScan::Create(std::move(scan_context)));
+                          paimon::TableScan::Create(load_context, std::move(scan_context), {}));
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Plan> data_plan, scan->CreatePlan());
 
-   paimon::ReadContextBuilder read_builder(table_path);
+   paimon::ReadContextBuilder read_builder;
    read_builder.SetReadFieldNames({"id", "content", "_INDEX_SCORE"});
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ReadContext> read_context,
                           read_builder.Finish());
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> read,
-                          paimon::TableRead::Create(std::move(read_context)));
+                          paimon::TableRead::Create(load_context, std::move(read_context), {}));
    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::BatchReader> reader,
                           read->CreateReader(data_plan->Splits()));
 
@@ -416,12 +422,17 @@ outlive the snapshot.
    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::ScoredGlobalIndexResult> result,
                           search_read->Read(*plan));
 
-   paimon::ScanContextBuilder scan_builder(table_path);
+   paimon::TableLoadContext load_context{table_path};
+   paimon::ScanContextBuilder scan_builder;
    scan_builder.SetGlobalIndexResult(result);
+   std::map<std::string, std::string> scan_options;
    if (plan->SnapshotId()) {
-       scan_builder.AddOption(paimon::Options::SCAN_MODE, "from-snapshot")
-           .AddOption(paimon::Options::SCAN_SNAPSHOT_ID, std::to_string(*plan->SnapshotId()));
+       scan_options[paimon::Options::SCAN_MODE] = "from-snapshot";
+       scan_options[paimon::Options::SCAN_SNAPSHOT_ID] = std::to_string(*plan->SnapshotId());
    }
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> context, scan_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
+                          paimon::TableScan::Create(load_context, std::move(context), scan_options));
 
 ``ExecuteLocal()`` plans and searches in one process. To plan in one process and search in others,
 plan with ``NewFullTextScan()``, ship the splits with ``FullTextSearchSplit::Serialize()`` and

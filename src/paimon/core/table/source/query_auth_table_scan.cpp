@@ -84,14 +84,15 @@ std::string FieldIdOrAbsent(const DataField* field) {
 Result<std::unique_ptr<TableScan>> QueryAuthTableScan::Create(
     const std::shared_ptr<ScanContext>& context, const std::shared_ptr<TableSchema>& table_schema,
     const std::shared_ptr<FileSystem>& file_system, const std::string& branch,
-    InnerScanFactory create_inner) {
-    if (context->GetCatalog() == nullptr || !context->GetIdentifier()) {
+    const std::shared_ptr<Catalog>& catalog, const Identifier& identifier,
+    const std::string& table_path, InnerScanFactory create_inner) {
+    if (catalog == nullptr) {
         return Status::NotImplemented(fmt::format(
             "Cannot read a table with '{}=true' without the catalog that serves its row filters "
-            "and column masks: build the scan with ScanContextBuilder::WithCatalog().",
+            "and column masks: load the table through its catalog.",
             Options::QUERY_AUTH_ENABLED));
     }
-    const QueryAuthCatalog* auth_catalog = AsQueryAuthCatalog(context->GetCatalog());
+    const QueryAuthCatalog* auth_catalog = AsQueryAuthCatalog(catalog);
     if (auth_catalog == nullptr) {
         return Status::NotImplemented(fmt::format(
             "Cannot read a table with '{}=true': its catalog does not support the query auth "
@@ -108,14 +109,11 @@ Result<std::unique_ptr<TableScan>> QueryAuthTableScan::Create(
     }
     // The rules are asked for the branch planned, even when only the options name it.
     PAIMON_ASSIGN_OR_RAISE(std::string resolved_branch,
-                           BranchManager::ResolveBranch(context->GetIdentifier(),
-                                                        context->GetOptions(), branch, "scan"));
-    PAIMON_ASSIGN_OR_RAISE(
-        Identifier auth_identifier,
-        CatalogUtils::ResolvedBranchIdentifier(context->GetIdentifier().value(), resolved_branch));
+                           BranchManager::ResolveBranch(identifier, {}, branch, "scan"));
+    PAIMON_ASSIGN_OR_RAISE(Identifier auth_identifier,
+                           CatalogUtils::ResolvedBranchIdentifier(identifier, resolved_branch));
     PAIMON_RETURN_NOT_OK(CatalogUtils::CheckPathIsTableLocation(
-        auth_identifier, context->GetCatalog()->GetTableLocation(auth_identifier),
-        context->GetPath(), "scan"));
+        auth_identifier, catalog->GetTableLocation(auth_identifier), table_path, "scan"));
     std::set<std::string> user_filter_fields;
     std::set<std::string> partition_filter_fields;
     const std::shared_ptr<ScanFilter>& scan_filter = context->GetScanFilters();
@@ -153,19 +151,23 @@ Result<std::unique_ptr<TableScan>> QueryAuthTableScan::Create(
     if (read_field_names) {
         authorization_columns = std::move(columns);
     }
-    return std::unique_ptr<TableScan>(new QueryAuthTableScan(
-        context, auth_catalog, std::move(auth_identifier), table_schema, file_system,
-        resolved_branch, std::move(create_inner), std::move(authorization_columns),
-        std::move(user_filter_fields), std::move(partition_filter_fields)));
+    return std::unique_ptr<TableScan>(
+        new QueryAuthTableScan(context, auth_catalog, std::move(auth_identifier), table_schema,
+                               file_system, resolved_branch, catalog, table_path,
+                               std::move(create_inner), std::move(authorization_columns),
+                               std::move(user_filter_fields), std::move(partition_filter_fields)));
 }
 
 QueryAuthTableScan::QueryAuthTableScan(
     const std::shared_ptr<ScanContext>& context, const QueryAuthCatalog* auth_catalog,
     Identifier auth_identifier, const std::shared_ptr<TableSchema>& table_schema,
     const std::shared_ptr<FileSystem>& file_system, const std::string& branch,
+    const std::shared_ptr<Catalog>& catalog, const std::string& table_path,
     InnerScanFactory create_inner, std::optional<std::vector<std::string>> authorization_columns,
     std::set<std::string> user_filter_fields, std::set<std::string> partition_filter_fields)
     : context_(context),
+      catalog_(catalog),
+      table_path_(table_path),
       auth_catalog_(auth_catalog),
       auth_identifier_(std::move(auth_identifier)),
       table_schema_(table_schema),
@@ -187,7 +189,7 @@ Status QueryAuthTableScan::AddErrorContext(const Status& status) const {
 }
 
 Status QueryAuthTableScan::ValidateAgainstCurrentSchemas(const TableQueryAuthResult& rules) const {
-    SchemaManager schema_manager(file_system_, context_->GetPath(), branch_);
+    SchemaManager schema_manager(file_system_, table_path_, branch_);
     PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
                            schema_manager.Latest());
     const std::shared_ptr<TableSchema>& latest_schema = latest ? latest.value() : table_schema_;
@@ -232,8 +234,8 @@ Status QueryAuthTableScan::ValidateAgainstCurrentSchemas(const TableQueryAuthRes
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Schema> catalog_schema,
                            auth_catalog_->LoadTableSchemaAndLocation(auth_identifier_, &location));
     // The identifier may have been bound to another table since the scan was created.
-    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckPathIsTableLocation(auth_identifier_, location,
-                                                                context_->GetPath(), "scan"));
+    PAIMON_RETURN_NOT_OK(
+        CatalogUtils::CheckPathIsTableLocation(auth_identifier_, location, table_path_, "scan"));
     auto catalog_data_schema = std::dynamic_pointer_cast<DataSchema>(catalog_schema);
     if (catalog_data_schema == nullptr) {
         return Status::Invalid("Query auth requires a data table schema from the catalog.");
@@ -318,13 +320,10 @@ Result<std::unique_ptr<TableScan>> QueryAuthTableScan::CreateInnerScan(
     // As in Java, a row filter on data columns turns the limit off too: it is pushed down as a
     // predicate, which the inner scan does not push a limit past.
     auto inner_context = std::make_shared<ScanContext>(
-        context_->GetPath(), context_->IsStreamingMode(),
+        context_->IsStreamingMode(),
         masked_conjuncts_excluded ? std::optional<int32_t>() : context_->GetLimit(), pushed_filter,
         /*global_index_result=*/nullptr, /*realtime_context=*/nullptr, context_->GetMemoryPool(),
-        context_->GetExecutor(), context_->GetSpecificFileSystem(),
-        context_->GetSpecificTableSchema(), context_->GetOptions(), context_->GetCache(),
-        context_->GetFormatTable(), context_->GetCatalog(), context_->GetIdentifier(),
-        context_->GetReadFieldNames());
+        context_->GetExecutor(), context_->GetCache(), context_->GetReadFieldNames());
     return create_inner_(inner_context);
 }
 
@@ -362,7 +361,7 @@ Result<std::shared_ptr<Plan>> QueryAuthTableScan::CreatePlan() {
     // Bound to the schema planned, so the read can tell a column since renamed or replaced, and
     // one added since, from the columns the rules were authorized for.
     QueryAuthScope scope;
-    scope.table_path = context_->GetPath();
+    scope.table_path = table_path_;
     scope.branch = branch_;
     for (const DataField& field : table_schema_->Fields()) {
         if (!authorization_columns_ ||

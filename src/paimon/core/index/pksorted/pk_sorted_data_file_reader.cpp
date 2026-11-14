@@ -48,18 +48,18 @@ Result<std::unique_ptr<PkSortedDataFileReader>> PkSortedDataFileReader::Create(
     const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool) {
     std::map<std::string, std::string> read_options = options.ToMap();
     read_options[Options::BRANCH] = branch;
-    ReadContextBuilder builder(root_path);
-    builder.SetReadFieldIds({field_id})
-        .SetOptions(read_options)
-        .WithBranch(branch)
-        .WithFileSystem(options.GetFileSystem())
+    ReadContextBuilder builder;
+    builder
+        .SetReadFieldIds({field_id})
+
         .WithExecutor(executor)
         .WithMemoryPool(pool)
         .EnablePrefetch(false)
         .EnablePredicateFilter(false);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context, builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InternalReadContext> shared_internal_context,
-                           InternalReadContext::Create(read_context, table_schema, read_options));
+                           InternalReadContext::Create(read_context, table_schema, read_options,
+                                                       options.GetFileSystem(), root_path));
     return std::unique_ptr<PkSortedDataFileReader>(
         new PkSortedDataFileReader(path_factory, shared_internal_context, pool, executor));
 }

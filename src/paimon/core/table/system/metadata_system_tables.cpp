@@ -206,7 +206,7 @@ Result<MetadataSystemTableContext> WithReadOptions(
     auto branch = overrides.find(Options::BRANCH);
     if (branch != overrides.end() &&
         BranchManager::NormalizeBranch(branch->second) != context.branch) {
-        return Status::Invalid("context branch contradicts the loaded table");
+        return Status::Invalid("copy branch contradicts the loaded table");
     }
     MetadataSystemTableContext merged = context;
     for (const auto& [key, value] : overrides) {
@@ -215,7 +215,7 @@ Result<MetadataSystemTableContext> WithReadOptions(
     PAIMON_ASSIGN_OR_RAISE(TableType type, TableTypeDefine::FromOptions(merged.options));
     PAIMON_ASSIGN_OR_RAISE(TableType bound_type, TableTypeDefine::FromOptions(context.options));
     if (type != bound_type) {
-        return Status::Invalid("context type contradicts the loaded table");
+        return Status::Invalid("copy type contradicts the loaded table");
     }
     merged.options[Options::BRANCH] = context.branch;
     PAIMON_RETURN_NOT_OK(SchemaValidation::RejectQueryAuth(*context.table_schema, merged.options,
@@ -1002,6 +1002,68 @@ Result<std::vector<GenericRow>> FilesSystemTable::BuildRows() const {
         rows.push_back(std::move(row));
     }
     return rows;
+}
+
+Result<std::shared_ptr<Table>> OptionsSystemTable::CopyWithoutTimeTravel(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
+    auto table = std::make_shared<OptionsSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
+Result<std::shared_ptr<Table>> SnapshotsSystemTable::CopyWithoutTimeTravel(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
+    auto table = std::make_shared<SnapshotsSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
+Result<std::shared_ptr<Table>> SchemasSystemTable::CopyWithoutTimeTravel(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
+    auto table = std::make_shared<SchemasSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
+Result<std::shared_ptr<Table>> TagsSystemTable::CopyWithoutTimeTravel(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
+    auto table = std::make_shared<TagsSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
+Result<std::shared_ptr<Table>> BranchesSystemTable::CopyWithoutTimeTravel(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
+    auto table = std::make_shared<BranchesSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
+Result<std::shared_ptr<Table>> ConsumersSystemTable::CopyWithoutTimeTravel(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
+    auto table = std::make_shared<ConsumersSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
+Result<std::shared_ptr<Table>> ManifestsSystemTable::CopyWithoutTimeTravel(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
+    PAIMON_ASSIGN_OR_RAISE(MetadataSystemTableContext context,
+                           WithReadOptions(context_, dynamic_options));
+    auto table = std::make_shared<ManifestsSystemTable>(*this);
+    table->context_ = std::move(context);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
+Result<std::shared_ptr<Table>> FilesSystemTable::CopyWithoutTimeTravel(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    PAIMON_RETURN_NOT_OK(CheckBranch(dynamic_options));
+    PAIMON_ASSIGN_OR_RAISE(MetadataSystemTableContext context,
+                           WithReadOptions(context_, dynamic_options));
+    auto table = std::make_shared<FilesSystemTable>(*this);
+    table->context_ = std::move(context);
+    return std::shared_ptr<Table>(std::move(table));
 }
 
 }  // namespace paimon

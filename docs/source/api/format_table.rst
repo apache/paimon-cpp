@@ -35,18 +35,10 @@ and :cpp:class:`paimon::FileStoreCommit`. See :doc:`../user_guide/format_table`.
 Contexts
 ========
 
-Each of those entry points builds its context from a table path, and the schema under that path
-says what kind of table it is. A caller that already holds a ``FormatTable`` hands it over instead,
-through the constructor each context builder has for one:
-
-* :cpp:class:`paimon::ScanContextBuilder`\ ``(const std::shared_ptr<FormatTable>&)``
-* :cpp:class:`paimon::ReadContextBuilder`\ ``(const std::shared_ptr<FormatTable>&)``
-* :cpp:class:`paimon::WriteContextBuilder`\ ``(const std::shared_ptr<FormatTable>&)``
-* :cpp:class:`paimon::CommitContextBuilder`\ ``(const std::shared_ptr<FormatTable>&)``
-
-This is the only way to reach a format table whose schema does not live under its own location,
-such as one a REST catalog serves: nothing under the location says that it is a format table, nor
-that what sits below it is data rather than metadata. The table knows both, so a setting that would
-answer either question again - ``SetTableSchema()``, ``WithFileSystem()`` and a branch among them -
-is refused by these builders rather than quietly ignored. Options given at the call still win over
-the ones the table carries, as they do everywhere else.
+Static entry points load the table through :cpp:struct:`paimon::TableLoadContext`.
+Operation Contexts provide execution settings; dynamic options are a separate
+argument. A caller holding a loaded ``FormatTable`` creates operators directly
+with its ``NewScan()``, ``NewRead()``, ``NewWrite()`` or ``NewCommit()`` methods.
+This also works when a catalog keeps the schema outside the table location.
+The loaded table supplies its schema and file system, and dynamic options passed
+to ``New*()`` override the stored options.

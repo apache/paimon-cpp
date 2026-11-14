@@ -31,6 +31,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/data/generic_row.h"
 #include "paimon/core/catalog/file_system_catalog.h"
 #include "paimon/core/core_options.h"
@@ -253,8 +254,8 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
                                             options);
 
     for (WarmupLevel level : {WarmupLevel::NONE, WarmupLevel::RAW, WarmupLevel::DECODED}) {
-        ReadContextBuilder builder("/tmp/table");
-        builder.SetOptions(options).SetWarmupLevel(level);
+        ReadContextBuilder builder;
+        builder.SetWarmupLevel(level);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> caller_unique_context, builder.Finish());
         std::shared_ptr<ReadContext> caller_context(std::move(caller_unique_context));
         ASSERT_EQ(level, caller_context->GetWarmupLevel());
@@ -267,14 +268,13 @@ TEST(SystemTableTest, TestNewReadPropagatesWarmupLevel) {
         // ChangelogTableRead that wraps it is local to audit_log_system_table.cpp, so a test cannot
         // name the type to reach the read underneath it. EXPECT rather than ASSERT, because the
         // three chains are independent and one broken chain must not hide another.
-        ASSERT_OK_AND_ASSIGN(auto audit_log_options,
-                             audit_log.ReadOptions(caller_context->GetOptions()));
+        ASSERT_OK_AND_ASSIGN(auto audit_log_options, audit_log.ReadOptions({}));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> audit_log_context,
                              audit_log.CreateDataReadContext(caller_context, audit_log_options));
         EXPECT_EQ(level, audit_log_context->GetWarmupLevel())
             << "$audit_log dropped the caller's WarmupLevel";
 
-        ASSERT_OK_AND_ASSIGN(auto binlog_options, binlog.ReadOptions(caller_context->GetOptions()));
+        ASSERT_OK_AND_ASSIGN(auto binlog_options, binlog.ReadOptions({}));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> binlog_context,
                              binlog.CreateDataReadContext(caller_context, binlog_options));
         EXPECT_EQ(level, binlog_context->GetWarmupLevel())

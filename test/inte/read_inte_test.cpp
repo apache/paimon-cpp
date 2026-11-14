@@ -41,6 +41,7 @@
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/catalog/table.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/factories/io_hook.h"
@@ -283,22 +284,30 @@ Result<std::shared_ptr<arrow::ChunkedArray>> ReadSystemTable(
     const std::string& system_table_path, const std::map<std::string, std::string>& options,
     bool streaming_mode = false, const std::shared_ptr<Predicate>& predicate = nullptr,
     const std::vector<std::string>& read_field_names = {}, bool read_next_plan = false) {
-    ScanContextBuilder scan_context_builder(system_table_path);
-    scan_context_builder.SetOptions(options).WithStreamingMode(streaming_mode);
+    TableLoadContext scan_context_builder_load_context{system_table_path};
+    std::map<std::string, std::string> scan_context_builder_options;
+    ScanContextBuilder scan_context_builder;
+    scan_context_builder_options = options;
+    scan_context_builder.WithStreamingMode(streaming_mode);
     if (predicate) {
         scan_context_builder.SetPredicate(predicate);
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
                            scan_context_builder.Finish());
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
-                           TableScan::Create(std::move(scan_context)));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<TableScan> table_scan,
+        TableScan::Create(scan_context_builder_load_context, std::move(scan_context),
+                          scan_context_builder_options));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
     if (read_next_plan) {
         PAIMON_ASSIGN_OR_RAISE(plan, table_scan->CreatePlan());
     }
 
-    ReadContextBuilder read_context_builder(system_table_path);
-    read_context_builder.SetOptions(options);
+    TableLoadContext read_context_builder_load_context{system_table_path};
+    std::map<std::string, std::string> read_context_builder_options;
+    ReadContextBuilder read_context_builder;
+    read_context_builder_options = options;
+
     if (predicate) {
         read_context_builder.SetPredicate(predicate);
     }
@@ -307,8 +316,10 @@ Result<std::shared_ptr<arrow::ChunkedArray>> ReadSystemTable(
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                            read_context_builder.Finish());
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                           TableRead::Create(std::move(read_context)));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<TableRead> table_read,
+        TableRead::Create(read_context_builder_load_context, std::move(read_context),
+                          read_context_builder_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                            table_read->CreateReader(plan->Splits()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,
@@ -380,18 +391,23 @@ TEST_P(ReadInteTest, TestAppendSimple) {
                                               DataField(2, arrow::field("f2", arrow::int32())),
                                               DataField(3, arrow::field("f3", arrow::float64()))};
 
-        ReadContextBuilder context_builder(path);
-        context_builder.AddOption(Options::FILE_FORMAT, param.file_format);
-        context_builder.EnablePrefetch(param.enable_prefetch)
-            .AddOption("test.enable-adaptive-prefetch-strategy", "false")
-            .AddOption("orc.read.enable-metrics", "true");
+        TableLoadContext context_builder_load_context{path};
+        std::map<std::string, std::string> context_builder_options;
+        ReadContextBuilder context_builder;
+        context_builder_options[Options::FILE_FORMAT] = param.file_format;
+
+        context_builder_options["test.enable-adaptive-prefetch-strategy"] = "false";
+        context_builder_options["orc.read.enable-metrics"] = "true";
+        context_builder.EnablePrefetch(param.enable_prefetch);
         context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
 
         if (specific_table_schema) {
-            context_builder.SetTableSchema(specific_table_schema.value());
+            context_builder_load_context.table_schema_json = specific_table_schema.value();
         }
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read,
+                             TableRead::Create(context_builder_load_context,
+                                               std::move(read_context), context_builder_options));
 
         std::vector<std::string> file_list;
         if (param.file_format == "orc") {
@@ -463,18 +479,24 @@ TEST_P(ReadInteTest, TestReadWithLimits) {
     auto param = GetParam();
     std::string path =
         paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
-    ReadContextBuilder context_builder(path);
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption(Options::READ_BATCH_SIZE, "1");
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options[Options::READ_BATCH_SIZE] = "1";
+
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder_options["orc.read.enable-metrics"] = "true";
     context_builder.EnablePrefetch(param.enable_prefetch)
         .SetReadAheadCacheEnabled(param.read_ahead_cache_enabled)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy)
-        .AddOption("orc.read.enable-metrics", "true")
+
         .SetPrefetchBatchCount(10);
 
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list;
     if (param.file_format == "orc") {
@@ -526,14 +548,19 @@ TEST_P(ReadInteTest, TestReadAheadCacheMetrics) {
     auto param = GetParam();
     std::string path =
         paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
-    ReadContextBuilder context_builder(path);
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] = "false";
     context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy", "false")
         .SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
 
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list;
     if (param.file_format == "orc") {
@@ -600,16 +627,21 @@ TEST_P(ReadInteTest, TestReadOnlyPartitionField) {
         DataField(0, arrow::field("dt", arrow::utf8())),
     };
 
-    ReadContextBuilder context_builder(path);
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+
     context_builder.SetReadFieldNames({"dt"});
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::shared_ptr<Split>> data_splits;
     data_splits.reserve(3);
@@ -659,17 +691,27 @@ TEST(SystemTableReadInteTest, TestReadOptionsSystemTable) {
     ArrowSchemaRelease(&schema);
 
     std::string system_table_path = PathUtil::JoinPath(dir->Str(), "warehouse/db1.db/tbl1$options");
-    ScanContextBuilder scan_context_builder(system_table_path);
-    scan_context_builder.SetOptions(options);
+    TableLoadContext scan_context_builder_load_context{system_table_path};
+    std::map<std::string, std::string> scan_context_builder_options;
+    ScanContextBuilder scan_context_builder;
+    scan_context_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_scan,
+                         TableScan::Create(scan_context_builder_load_context,
+                                           std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto plan, table_scan->CreatePlan());
     ASSERT_EQ(plan->Splits().size(), 1);
 
-    ReadContextBuilder read_context_builder(system_table_path);
-    read_context_builder.SetOptions(options);
+    TableLoadContext read_context_builder_load_context{system_table_path};
+    std::map<std::string, std::string> read_context_builder_options;
+    ReadContextBuilder read_context_builder;
+    read_context_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(read_context_builder_load_context,
+                                           std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(std::move(batch_reader)));
     ASSERT_TRUE(result);
@@ -691,17 +733,27 @@ TEST(SystemTableReadInteTest, TestReadBranchOptionsSystemTable) {
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"},
                                                   {Options::FILE_FORMAT, "parquet"}};
     std::string system_table_path = table_path + "$branch_rt$options";
-    ScanContextBuilder scan_context_builder(system_table_path);
-    scan_context_builder.SetOptions(options);
+    TableLoadContext scan_context_builder_load_context{system_table_path};
+    std::map<std::string, std::string> scan_context_builder_options;
+    ScanContextBuilder scan_context_builder;
+    scan_context_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_scan,
+                         TableScan::Create(scan_context_builder_load_context,
+                                           std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto plan, table_scan->CreatePlan());
     ASSERT_EQ(plan->Splits().size(), 1);
 
-    ReadContextBuilder read_context_builder(system_table_path);
-    read_context_builder.SetOptions(options);
+    TableLoadContext read_context_builder_load_context{system_table_path};
+    std::map<std::string, std::string> read_context_builder_options;
+    ReadContextBuilder read_context_builder;
+    read_context_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(read_context_builder_load_context,
+                                           std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(std::move(batch_reader)));
 
@@ -938,17 +990,26 @@ TEST(SystemTableReadInteTest, TestReadMetadataSystemTablesAtPinnedSnapshot) {
         const auto bound_schema = table->GetSchema();
         auto create_reader = [&table](const std::map<std::string, std::string>& read_options)
             -> Result<std::unique_ptr<BatchReader>> {
-            PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<ScanContext> scan_context,
-                ScanContextBuilder("unused_path").SetOptions(read_options).Finish());
+            std::map<std::string, std::string> scan_context_builder_0_options;
+            ScanContextBuilder scan_context_builder_0;
+            scan_context_builder_0_options = read_options;
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
+                                   scan_context_builder_0.Finish());
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table_1,
+                                   table->CopyWithoutTimeTravel(scan_context_builder_0_options));
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan,
-                                   table->NewScan(std::move(scan_context)));
+                                   configured_table_1->NewScan(std::move(scan_context)));
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, scan->CreatePlan());
+            std::map<std::string, std::string> read_context_builder_48503_options;
+            ReadContextBuilder read_context_builder_48503;
+            read_context_builder_48503_options = read_options;
+            PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
+                                   read_context_builder_48503.Finish());
             PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<ReadContext> read_context,
-                ReadContextBuilder("unused_path").SetOptions(read_options).Finish());
+                std::shared_ptr<Table> configured_table_2,
+                table->CopyWithoutTimeTravel(read_context_builder_48503_options));
             PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read,
-                                   table->NewRead(std::move(read_context)));
+                                   configured_table_2->NewRead(std::move(read_context)));
             return read->CreateReader(plan->Splits());
         };
 
@@ -1109,23 +1170,32 @@ TEST(SystemTableReadInteTest, TestReadOptimizedPrimaryKeyProjectionAndPredicateP
     std::shared_ptr<Predicate> predicate =
         PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"k", FieldType::INT, Literal(2));
 
-    ScanContextBuilder ro_scan_context_builder(table_path + "$ro");
-    ro_scan_context_builder.SetOptions(options).SetPredicate(predicate);
+    TableLoadContext ro_scan_context_builder_load_context{table_path + "$ro"};
+    std::map<std::string, std::string> ro_scan_context_builder_options;
+    ScanContextBuilder ro_scan_context_builder;
+    ro_scan_context_builder_options = options;
+    ro_scan_context_builder.SetPredicate(predicate);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> ro_scan_context,
                          ro_scan_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> ro_table_scan,
-                         TableScan::Create(std::move(ro_scan_context)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableScan> ro_table_scan,
+        TableScan::Create(ro_scan_context_builder_load_context, std::move(ro_scan_context),
+                          ro_scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> ro_plan, ro_table_scan->CreatePlan());
     ASSERT_OK_AND_ASSIGN(int64_t ro_file_count, CountDataFiles(ro_plan->Splits()));
     ASSERT_EQ(ro_file_count, 1);
 
-    ReadContextBuilder read_context_builder(table_path + "$ro");
+    TableLoadContext read_context_builder_load_context{table_path + "$ro"};
+    std::map<std::string, std::string> read_context_builder_options;
+    ReadContextBuilder read_context_builder;
     // Do not enable row-level predicate filtering: the result must come from the file reader's
     // row-group/page predicate pushdown.
-    read_context_builder.SetOptions(options).SetPredicate(predicate).SetReadFieldNames({"k", "v"});
+    read_context_builder_options = options;
+    read_context_builder.SetPredicate(predicate).SetReadFieldNames({"k", "v"});
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         TableRead::Create(read_context_builder_load_context,
+                                           std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(ro_plan->Splits()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
@@ -1169,11 +1239,15 @@ TEST(SystemTableReadInteTest, TestReadOptimizedSystemTableNestedProjection) {
                                     /*partition_map=*/{}, /*bucket=*/0, {}));
     ASSERT_OK(WriteAndFullCompact(std::move(batch), /*commit_identifier=*/0, helper.get()));
 
-    ScanContextBuilder scan_context_builder(table_path + "$ro");
-    scan_context_builder.SetOptions(options);
+    TableLoadContext scan_context_builder_load_context{table_path + "$ro"};
+    std::map<std::string, std::string> scan_context_builder_options;
+    ScanContextBuilder scan_context_builder;
+    scan_context_builder_options = options;
+
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                         TableScan::Create(std::move(scan_context)));
+                         TableScan::Create(scan_context_builder_load_context,
+                                           std::move(scan_context), scan_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
 
     auto projected_schema = arrow::schema({
@@ -1182,11 +1256,15 @@ TEST(SystemTableReadInteTest, TestReadOptimizedSystemTableNestedProjection) {
     });
     auto c_projected_schema = std::make_unique<ArrowSchema>();
     ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_projected_schema.get()).ok());
-    ReadContextBuilder read_context_builder(table_path + "$ro");
-    read_context_builder.SetOptions(options).SetReadSchema(std::move(c_projected_schema));
+    TableLoadContext read_context_builder_load_context{table_path + "$ro"};
+    std::map<std::string, std::string> read_context_builder_options;
+    ReadContextBuilder read_context_builder;
+    read_context_builder_options = options;
+    read_context_builder.SetReadSchema(std::move(c_projected_schema));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
+                         TableRead::Create(read_context_builder_load_context,
+                                           std::move(read_context), read_context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
                          table_read->CreateReader(plan->Splits()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
@@ -1417,12 +1495,16 @@ TEST(SystemTableReadInteTest, TestReadFilesSystemTableForPartitionedPartialWrite
                                                          /*is_streaming_mode=*/true));
     std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
 
-    WriteContextBuilder write_context_builder(table_path, "partial-write");
+    TableLoadContext write_context_builder_load_context{table_path};
+    std::map<std::string, std::string> write_context_builder_options;
+    WriteContextBuilder write_context_builder("partial-write");
     write_context_builder.WithWriteSchema({"score"});
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
                          write_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> write,
-                         FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreWrite> write,
+        FileStoreWrite::Create(write_context_builder_load_context, std::move(write_context),
+                               write_context_builder_options));
     ASSERT_OK_AND_ASSIGN(
         std::unique_ptr<RecordBatch> batch,
         TestHelper::MakeRecordBatch(arrow::struct_({fields[2]}), R"([[10], [20]])",
@@ -1432,11 +1514,15 @@ TEST(SystemTableReadInteTest, TestReadFilesSystemTableForPartitionedPartialWrite
                          write->PrepareCommit());
     ASSERT_OK(write->Close());
 
-    CommitContextBuilder commit_context_builder(table_path, "partial-write");
+    TableLoadContext commit_context_builder_load_context{table_path};
+    std::map<std::string, std::string> commit_context_builder_options;
+    CommitContextBuilder commit_context_builder("partial-write");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
                          commit_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
-                         FileStoreCommit::Create(std::move(commit_context)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreCommit> commit,
+        FileStoreCommit::Create(commit_context_builder_load_context, std::move(commit_context),
+                                commit_context_builder_options));
     ASSERT_OK(commit->Commit(commit_messages));
 
     ASSERT_OK_AND_ASSIGN(auto files_result, ReadSystemTable(table_path + "$files", options));
@@ -1802,17 +1888,41 @@ TEST(SystemTableReadInteTest, TestChangelogSequenceNumberCannotBeDisabledByReadO
         for (bool direct : {false, true}) {
             SCOPED_TRACE(direct);
             const std::string path = table->GetRootPath() + "$" + kind;
+            TableLoadContext scan_context_builder_48980_load_context{path};
+            std::map<std::string, std::string> scan_context_builder_48980_options;
+            ScanContextBuilder scan_context_builder_48980;
+            scan_context_builder_48980_options = read_options;
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
-                                 ScanContextBuilder(path).SetOptions(read_options).Finish());
-            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
-                                 direct ? table->NewScan(std::move(scan_context))
-                                        : TableScan::Create(std::move(scan_context)));
+                                 scan_context_builder_48980.Finish());
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<TableScan> scan,
+                direct ? ([&]() -> Result<std::unique_ptr<TableScan>> {
+                    PAIMON_ASSIGN_OR_RAISE(
+                        std::shared_ptr<Table> configured,
+                        table->CopyWithoutTimeTravel(scan_context_builder_48980_options));
+                    return configured->NewScan(std::move(scan_context));
+                })()
+                       : TableScan::Create(scan_context_builder_48980_load_context,
+                                           std::move(scan_context),
+                                           scan_context_builder_48980_options));
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+            TableLoadContext read_context_builder_93839_load_context{path};
+            std::map<std::string, std::string> read_context_builder_93839_options;
+            ReadContextBuilder read_context_builder_93839;
+            read_context_builder_93839_options = read_options;
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
-                                 ReadContextBuilder(path).SetOptions(read_options).Finish());
-            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
-                                 direct ? table->NewRead(std::move(read_context))
-                                        : TableRead::Create(std::move(read_context)));
+                                 read_context_builder_93839.Finish());
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<TableRead> read,
+                direct ? ([&]() -> Result<std::unique_ptr<TableRead>> {
+                    PAIMON_ASSIGN_OR_RAISE(
+                        std::shared_ptr<Table> configured,
+                        table->CopyWithoutTimeTravel(read_context_builder_93839_options));
+                    return configured->NewRead(std::move(read_context));
+                })()
+                       : TableRead::Create(read_context_builder_93839_load_context,
+                                           std::move(read_context),
+                                           read_context_builder_93839_options));
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                                  read->CreateReader(plan->Splits()));
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
@@ -1826,7 +1936,7 @@ TEST(SystemTableReadInteTest, TestChangelogSequenceNumberCannotBeDisabledByReadO
     }
 }
 
-TEST(SystemTableReadInteTest, TestLoadedChangelogHonorsDynamicSequenceNumber) {
+TEST(SystemTableReadInteTest, TestCopiedChangelogHonorsDynamicSequenceNumber) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     const arrow::FieldVector fields = {arrow::field("pk", arrow::utf8()),
@@ -1851,20 +1961,31 @@ TEST(SystemTableReadInteTest, TestLoadedChangelogHonorsDynamicSequenceNumber) {
         SCOPED_TRACE(kind);
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> table,
                              catalog.GetTable(Identifier("foo", "bar$" + kind)));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Table> configured,
+                             table->CopyWithoutTimeTravel(read_options));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> copied_schema,
+                             configured->GetSchema()->GetArrowSchema());
+        auto copied = arrow::ImportSchema(copied_schema.get());
+        ASSERT_TRUE(copied.ok()) << copied.status().ToString();
+        ASSERT_EQ(4, copied.ValueOrDie()->num_fields());
         for (bool direct : {false, true}) {
             SCOPED_TRACE(direct);
             const std::string path = table->GetRootPath() + "$" + kind;
+            TableLoadContext scan_load{path};
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context,
-                                 ScanContextBuilder(path).SetOptions(read_options).Finish());
-            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
-                                 direct ? table->NewScan(std::move(scan_context))
-                                        : TableScan::Create(std::move(scan_context)));
+                                 ScanContextBuilder().Finish());
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<TableScan> scan,
+                direct ? configured->NewScan(std::move(scan_context))
+                       : TableScan::Create(scan_load, std::move(scan_context), read_options));
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+            TableLoadContext read_load{path};
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context,
-                                 ReadContextBuilder(path).SetOptions(read_options).Finish());
-            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
-                                 direct ? table->NewRead(std::move(read_context))
-                                        : TableRead::Create(std::move(read_context)));
+                                 ReadContextBuilder().Finish());
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<TableRead> read,
+                direct ? configured->NewRead(std::move(read_context))
+                       : TableRead::Create(read_load, std::move(read_context), read_options));
             ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                                  read->CreateReader(plan->Splits()));
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
@@ -2171,17 +2292,23 @@ TEST_P(ReadInteTest, TestAppendReadWithMultipleBuckets) {
     auto param = GetParam();
     std::string path =
         paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadFieldNames({"f3", "f0", "f1"});
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2")
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy)
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder
+
         .EnablePrefetch(param.enable_prefetch);
 
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -2252,19 +2379,22 @@ TEST_P(ReadInteTest, TestAppendReadWithPredicate) {
     std::string path =
         paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
 
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadFieldNames({"f3", "f0", "f1"});
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .SetPredicate(predicate)
-        .EnablePredicateFilter(true)
-        .EnablePrefetch(param.enable_prefetch)
-        .AddOption("read.batch-size", "2")
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy)
-        .AddOption("orc.read.enable-metrics", "true");
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder_options["orc.read.enable-metrics"] = "true";
+    context_builder.SetPredicate(predicate).EnablePredicateFilter(true).EnablePrefetch(
+        param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -2354,18 +2484,23 @@ TEST_P(ReadInteTest, TestAppendReadWithComplexTypePredicate) {
 
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
                        "/append_complex_data.db/append_complex_data";
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"f6", "f2", "f4", "f3", "f5"});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
     context_builder.SetPredicate(predicate);
     context_builder.EnablePredicateFilter(true);
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -2428,19 +2563,25 @@ TEST_P(ReadInteTest, TestAppendReadWithPredicateOnlyPushdown) {
     std::string path =
         paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
 
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"f3", "f0", "f1"});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2")
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy)
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder
+
         .SetPredicate(predicate)
         .EnableLateMaterializing(false)
         .EnablePrefetch(param.enable_prefetch);
 
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -2512,18 +2653,24 @@ TEST_P(ReadInteTest, TestAppendReadWithLateMaterializing) {
     std::string path =
         paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
 
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"f3", "f0", "f1"});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2")
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy)
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder
+
         .SetPredicate(predicate)
         .EnableLateMaterializing(true)
         .EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -2590,19 +2737,25 @@ TEST_P(ReadInteTest, TestAppendReadWithPredicateAllFiltered) {
     std::string path =
         paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09";
 
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"f3", "f0", "f1"});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2")
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy)
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder
+
         .SetPredicate(predicate)
         .EnablePredicateFilter(true)
         .EnablePrefetch(param.enable_prefetch);
 
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -2676,18 +2829,22 @@ TEST_P(ReadInteTest, TestAppendReadIOException) {
     for (size_t i = 0; i < 200; i++) {
         ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
         io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
-        ReadContextBuilder context_builder(paimon::test::GetDataDir() + "/" + param.file_format +
-                                           "/append_09.db/append_09/");
+        TableLoadContext context_builder_load_context;
+        context_builder_load_context.path =
+            paimon::test::GetDataDir() + "/" + param.file_format + "/append_09.db/append_09/";
+        std::map<std::string, std::string> context_builder_options;
+        ReadContextBuilder context_builder;
         context_builder.SetReadFieldNames({"f3", "f0", "f1"});
         context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-        context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-            .AddOption("read.batch-size", "2")
-            .EnablePrefetch(param.enable_prefetch)
-            .AddOption("test.enable-adaptive-prefetch-strategy",
-                       param.enable_adaptive_prefetch_strategy);
+        context_builder_options[Options::FILE_FORMAT] = param.file_format;
+        context_builder_options["read.batch-size"] = "2";
+        context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+            param.enable_adaptive_prefetch_strategy;
+        context_builder.EnablePrefetch(param.enable_prefetch);
 
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        Result<std::unique_ptr<TableRead>> table_read = TableRead::Create(std::move(read_context));
+        Result<std::unique_ptr<TableRead>> table_read = TableRead::Create(
+            context_builder_load_context, std::move(read_context), context_builder_options);
         CHECK_HOOK_STATUS(table_read.status(), i);
         Result<std::unique_ptr<BatchReader>> batch_reader =
             table_read.value()->CreateReader(data_splits);
@@ -2722,16 +2879,21 @@ TEST_P(ReadInteTest, TestPkTableWithDeletionVectorSimple) {
         data_file = "data-ed5d7184-cf42-4f4a-bf83-1e3080d9012d-0.parquet";
         dv_file = "index/index-62372b7b-d1cf-4dde-a162-c9d9d35006b4-1";
     }
-    ReadContextBuilder context_builder(path);
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
 
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     DataSplitsDv input_data_splits = {
         {path + "f1=10/bucket-1",
@@ -2771,16 +2933,20 @@ TEST_P(ReadInteTest, TestPkTableWithDeletionVector) {
     auto param = GetParam();
 
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format + "/pk_09.db/pk_09";
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2")
-        .EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
 
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list;
     std::string deletion_file;
@@ -2838,19 +3004,24 @@ TEST_P(ReadInteTest, TestPkTableWithSnapshot6) {
     auto predicate = PredicateBuilder::GreaterThan(/*field_index=*/3, /*field_name=*/"f3",
                                                    FieldType::DOUBLE, Literal(15.0));
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format + "/pk_09.db/pk_09";
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
     context_builder.SetPredicate(predicate);
     context_builder.EnablePredicateFilter(true);
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
 
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -2924,17 +3095,22 @@ TEST_P(ReadInteTest, TestPkTableWithSnapshot8) {
     auto param = GetParam();
 
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format + "/pk_09.db/pk_09";
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"f0", "f3", "f1"});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -3003,20 +3179,25 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolution) {
                                               DataField(5, arrow::field("a", arrow::int32())),
                                               DataField(8, arrow::field("e", arrow::int32()))};
 
-        ReadContextBuilder context_builder(path);
+        TableLoadContext context_builder_load_context{path};
+        std::map<std::string, std::string> context_builder_options;
+        ReadContextBuilder context_builder;
         context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-        context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-            .AddOption("read.batch-size", "2");
-        context_builder.EnablePrefetch(param.enable_prefetch)
-            .AddOption("test.enable-adaptive-prefetch-strategy",
-                       param.enable_adaptive_prefetch_strategy);
+        context_builder_options[Options::FILE_FORMAT] = param.file_format;
+        context_builder_options["read.batch-size"] = "2";
+
+        context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+            param.enable_adaptive_prefetch_strategy;
+        context_builder.EnablePrefetch(param.enable_prefetch);
         if (specific_table_schema) {
-            context_builder.SetTableSchema(specific_table_schema.value());
+            context_builder_load_context.table_schema_json = specific_table_schema.value();
         }
 
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
 
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read,
+                             TableRead::Create(context_builder_load_context,
+                                               std::move(read_context), context_builder_options));
 
         std::vector<std::string> file_list_0;
         std::vector<std::string> file_list_1;
@@ -3110,15 +3291,20 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithReaderBuildParallelism
          /*schema ids*/ {1, 0}}};
     auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/2);
 
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
     ASSERT_OK_AND_ASSIGN(auto result_array,
                          ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -3175,20 +3361,25 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithPredicateFilter) {
     auto param = GetParam();
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
                        "/append_table_with_alter_table.db/append_table_with_alter_table/";
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"a", "k", "key1", "d", "key0", "c"});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
     context_builder.SetPredicate(predicate);
     context_builder.EnablePredicateFilter(true);
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -3255,18 +3446,23 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithPredicateOnlyPushDown)
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
                        "/append_table_with_alter_table.db/"
                        "append_table_with_alter_table/";
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"a", "k", "key1", "d", "key0", "c"});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
     context_builder.SetPredicate(predicate);
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -3329,17 +3525,22 @@ TEST_P(ReadInteTest, TestPkReadSnapshot5WithSchemaEvolution) {
 
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
                        "/pk_table_with_alter_table.db/pk_table_with_alter_table/";
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"key1", "k", "key_2", "c", "d", "a", "key0", "e"});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -3415,17 +3616,22 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolution) {
     auto param = GetParam();
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
                        "/pk_table_with_alter_table.db/pk_table_with_alter_table/";
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"key1", "k", "key_2", "c", "d", "a", "key0", "e"});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -3501,18 +3707,22 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithPredicateOnlyPush
                                                 FieldType::INT, Literal(510));
     ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({equal, less_than}));
 
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadFieldNames({{"key1", "k", "key_2", "c", "d", "a", "key0", "e"}});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetPredicate(predicate);
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .EnableLateMaterializing(false)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch).EnableLateMaterializing(false);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -3587,18 +3797,22 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithLateMaterializing
                                                 FieldType::INT, Literal(510));
     ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({equal, less_than}));
 
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadFieldNames({{"key1", "k", "key_2", "c", "d", "a", "key0", "e"}});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetPredicate(predicate);
-    context_builder.EnableLateMaterializing(true)
-        .EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnableLateMaterializing(true).EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -3671,19 +3885,24 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithPredicateFilter) 
                                                 FieldType::INT, Literal(510));
     ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::And({equal, less_than}));
 
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"key1", "k", "key_2", "c", "d", "a", "key0", "e"});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
     context_builder.SetPredicate(predicate);
     context_builder.EnablePredicateFilter(true);
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -3764,17 +3983,22 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithBuildInFieldId) {
                        "data-11b12094-192f-4ad8-92a8-ae8cba5e25ef-0.parquet"};
     }
 
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"key0", "key1", "k", "c", "d", "a", "e"});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     DataSplitsSchema input_data_splits = {
         {path + "key0=0/key1=1/bucket-0", BinaryRowGenerator::GenerateRow({0, 1}, pool_.get()),
@@ -3828,16 +4052,21 @@ TEST_P(ReadInteTest, TestAppendReadNestedType) {
         DataField(7, arrow::field("f6", arrow::decimal128(2, 2)))};
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
                        "/append_complex_build_in_fieldid.db/append_complex_build_in_fieldid/";
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list;
     if (param.file_format == "orc") {
@@ -3884,17 +4113,22 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithCast) {
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
                        "/append_table_alter_table_with_cast.db/"
                        "append_table_alter_table_with_cast/";
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     context_builder.SetReadFieldNames({"f4", "key0", "key1", "f3", "f1", "f2", "f0", "f6"});
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -3967,18 +4201,23 @@ TEST_P(ReadInteTest, TestAppendReadWithSchemaEvolutionWithCastWithPredicatePushD
     std::string path = paimon::test::GetDataDir() + "/" + param.file_format +
                        "/append_table_alter_table_with_cast.db/"
                        "append_table_alter_table_with_cast/";
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadFieldNames({"f4", "key0", "key1", "f3", "f1", "f2", "f0", "f6"});
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format)
-        .AddOption("read.batch-size", "2");
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+    context_builder_options["read.batch-size"] = "2";
+
     context_builder.SetPredicate(predicate);
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
 
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list_0;
     std::vector<std::string> file_list_1;
@@ -4047,17 +4286,21 @@ TEST_P(ReadInteTest, TestReadWithPKFallBackBranch) {
             DataField(2, arrow::field("amount", arrow::int32())),
         };
 
-        ReadContextBuilder context_builder(path);
+        TableLoadContext context_builder_load_context{path};
+        std::map<std::string, std::string> context_builder_options;
+        ReadContextBuilder context_builder;
         context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-        context_builder.EnablePrefetch(param.enable_prefetch)
-            .AddOption(Options::FILE_FORMAT, param.file_format)
-            .AddOption("test.enable-adaptive-prefetch-strategy",
-                       param.enable_adaptive_prefetch_strategy);
+        context_builder_options[Options::FILE_FORMAT] = param.file_format;
+        context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+            param.enable_adaptive_prefetch_strategy;
+        context_builder.EnablePrefetch(param.enable_prefetch);
         if (specific_table_schema) {
-            context_builder.SetTableSchema(specific_table_schema.value());
+            context_builder_load_context.table_schema_json = specific_table_schema.value();
         }
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read,
+                             TableRead::Create(context_builder_load_context,
+                                               std::move(read_context), context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
         ASSERT_OK_AND_ASSIGN(auto result_array,
                              ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -4103,11 +4346,15 @@ TEST_P(ReadInteTest, TestReadWithAppendFallBackBranch) {
         data_splits.push_back(split);
     }
 
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.EnablePrefetch(param.enable_prefetch);
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
     ASSERT_OK_AND_ASSIGN(auto result_array,
                          ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -4147,13 +4394,17 @@ TEST_P(ReadInteTest, TestFallBackBranchStreamRead) {
     std::vector<DataField> read_fields = {DataField(0, arrow::field("dt", arrow::utf8())),
                                           DataField(1, arrow::field("name", arrow::utf8())),
                                           DataField(2, arrow::field("amount", arrow::int32()))};
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy",
-                   param.enable_adaptive_prefetch_strategy);
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+        param.enable_adaptive_prefetch_strategy;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_split));
     ASSERT_OK_AND_ASSIGN(auto result_array,
                          ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -4193,17 +4444,21 @@ TEST_P(ReadInteTest, TestReadWithPKRtBranch) {
             DataField(2, arrow::field("amount", arrow::int32())),
         };
 
-        ReadContextBuilder context_builder(path);
+        TableLoadContext context_builder_load_context{path};
+        std::map<std::string, std::string> context_builder_options;
+        ReadContextBuilder context_builder;
         context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-        context_builder.EnablePrefetch(param.enable_prefetch)
-            .AddOption("test.enable-adaptive-prefetch-strategy",
-                       param.enable_adaptive_prefetch_strategy)
-            .WithBranch("rt");
+        context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+            param.enable_adaptive_prefetch_strategy;
+        context_builder_options["branch"] = "rt";
+        context_builder.EnablePrefetch(param.enable_prefetch);
         if (specific_table_schema) {
-            context_builder.SetTableSchema(specific_table_schema.value());
+            context_builder_load_context.table_schema_json = specific_table_schema.value();
         }
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read,
+                             TableRead::Create(context_builder_load_context,
+                                               std::move(read_context), context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
         ASSERT_OK_AND_ASSIGN(auto result_array,
                              ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -4250,17 +4505,21 @@ TEST_P(ReadInteTest, TestReadWithAppendPtBranch) {
             DataField(2, arrow::field("value2", arrow::int32())),
         };
 
-        ReadContextBuilder context_builder(path);
+        TableLoadContext context_builder_load_context{path};
+        std::map<std::string, std::string> context_builder_options;
+        ReadContextBuilder context_builder;
         context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-        context_builder.EnablePrefetch(param.enable_prefetch)
-            .AddOption("test.enable-adaptive-prefetch-strategy",
-                       param.enable_adaptive_prefetch_strategy)
-            .WithBranch("test");
+        context_builder_options["test.enable-adaptive-prefetch-strategy"] =
+            param.enable_adaptive_prefetch_strategy;
+        context_builder_options["branch"] = "test";
+        context_builder.EnablePrefetch(param.enable_prefetch);
         if (specific_table_schema) {
-            context_builder.SetTableSchema(specific_table_schema.value());
+            context_builder_load_context.table_schema_json = specific_table_schema.value();
         }
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read,
+                             TableRead::Create(context_builder_load_context,
+                                               std::move(read_context), context_builder_options));
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
         ASSERT_OK_AND_ASSIGN(auto result_array,
                              ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -4381,15 +4640,20 @@ TEST_P(ReadInteTest, TestSpecificFs) {
 
     auto countable_fs =
         std::make_shared<CountableFileSystem>(std::make_shared<LocalFileSystem>(), &io_count);
-    ReadContextBuilder context_builder(path);
+    TableLoadContext context_builder_load_context{path};
+    std::map<std::string, std::string> context_builder_options;
+    ReadContextBuilder context_builder;
     context_builder.SetReadAheadCacheEnabled(param.read_ahead_cache_enabled);
-    context_builder.AddOption(Options::FILE_FORMAT, param.file_format);
-    context_builder.EnablePrefetch(param.enable_prefetch)
-        .AddOption("test.enable-adaptive-prefetch-strategy", "false")
-        .AddOption("orc.read.enable-metrics", "true")
-        .WithFileSystem(countable_fs);
+    context_builder_options[Options::FILE_FORMAT] = param.file_format;
+
+    context_builder_options["test.enable-adaptive-prefetch-strategy"] = "false";
+    context_builder_options["orc.read.enable-metrics"] = "true";
+    context_builder_load_context.file_system = countable_fs;
+    context_builder.EnablePrefetch(param.enable_prefetch);
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(context_builder_load_context, std::move(read_context),
+                                           context_builder_options));
 
     std::vector<std::string> file_list;
     if (param.file_format == "orc") {
@@ -4449,20 +4713,28 @@ Result<std::shared_ptr<arrow::ChunkedArray>> ReadGlobalSystemTable(
 
     std::string sys_path = PathUtil::JoinPath(PathUtil::JoinPath(warehouse, "sys"), table_name);
 
-    ScanContextBuilder scan_context_builder(sys_path);
-    scan_context_builder.SetOptions(options);
+    std::map<std::string, std::string> scan_context_builder_options;
+    ScanContextBuilder scan_context_builder;
+    scan_context_builder_options = options;
+
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> scan_context,
                            scan_context_builder.Finish());
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table_7,
+                           system_table->CopyWithoutTimeTravel(scan_context_builder_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
-                           system_table->NewScan(std::move(scan_context)));
+                           configured_table_7->NewScan(std::move(scan_context)));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
 
-    ReadContextBuilder read_context_builder(sys_path);
-    read_context_builder.SetOptions(options);
+    std::map<std::string, std::string> read_context_builder_options;
+    ReadContextBuilder read_context_builder;
+    read_context_builder_options = options;
+
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                            read_context_builder.Finish());
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table_8,
+                           system_table->CopyWithoutTimeTravel(read_context_builder_options));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                           system_table->NewRead(std::move(read_context)));
+                           configured_table_8->NewRead(std::move(read_context)));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                            table_read->CreateReader(plan->Splits()));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,

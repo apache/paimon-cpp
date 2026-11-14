@@ -50,8 +50,8 @@ class FileSystem;
 ///
 /// Reading and writing go through the entry points every other table uses: `TableScan`,
 /// `TableRead`, `FileStoreWrite` and `FileStoreCommit`. Each recognises a format table from the
-/// schema under the table path, or takes one already loaded through the `FormatTable` constructor
-/// every context builder has, which is how a table whose schema lives in a metastore is reached.
+/// schema under the table path, or uses NewScan/NewRead/NewWrite/NewCommit on a table already
+/// loaded through its catalog.
 ///
 /// See `docs/source/user_guide/format_table.rst` for what is not supported yet.
 class PAIMON_EXPORT FormatTable : public Table {
@@ -103,9 +103,8 @@ class PAIMON_EXPORT FormatTable : public Table {
         bool location_carries_paimon_metadata,
         const std::map<std::string, std::string>& dynamic_options);
 
-    /// Copies `table` with `dynamic_options` on top of the options it already carries, which is
-    /// the precedence every context builder promises for a table it was handed rather than loaded
-    /// itself. `table` comes back as it is when there is nothing to add.
+    /// Copies `table` with `dynamic_options` overriding the options it already carries.
+    /// Returns `table` itself when there is nothing to add.
     ///
     /// `type` is not overridable: it is structural and is read from the schema alone.
     ///
@@ -117,6 +116,9 @@ class PAIMON_EXPORT FormatTable : public Table {
         const std::map<std::string, std::string>& dynamic_options);
 
     ~FormatTable() override;
+
+    Result<std::shared_ptr<Table>> CopyWithoutTimeTravel(
+        const std::map<std::string, std::string>& dynamic_options) const override;
 
     Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
     Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
@@ -194,10 +196,6 @@ class PAIMON_EXPORT FormatTable : public Table {
     }
 
  private:
-    Status CheckWriteContext(const std::string& path,
-                             const std::shared_ptr<FormatTable>& context_table) const;
-    Result<std::shared_ptr<FormatTable>> ForContext(
-        const std::map<std::string, std::string>& options) const;
     FormatTable(const std::shared_ptr<FileSystem>& file_system, const std::string& location,
                 const Identifier& identifier, const std::shared_ptr<DataSchema>& schema,
                 const std::map<std::string, std::string>& options, Format format,

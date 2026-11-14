@@ -29,6 +29,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/file_index/bitmap/bitmap_file_index.h"
@@ -411,10 +412,16 @@ TEST_F(DataEvolutionSplitReadTest, TestBlobFallbackValidatesRangesBeforeOpeningF
                                                         {Options::DATA_EVOLUTION_ENABLED, "true"}};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          TableSchema::Create(0, schema, {}, {}, options));
-    ReadContextBuilder builder(dir->Str());
+    TableLoadContext builder_load_context{dir->Str()};
+    std::map<std::string, std::string> builder_options;
+    ReadContextBuilder builder;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
-                         InternalReadContext::Create(read_context, table_schema, options));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<InternalReadContext> context,
+        InternalReadContext::Create(
+            read_context, table_schema, options, builder_load_context.file_system,
+            builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+            builder_load_context.catalog, builder_load_context.identifier, builder_options));
     DataEvolutionSplitRead split_read(/*path_factory=*/nullptr, context, GetDefaultPool(),
                                       /*executor=*/nullptr);
     auto blob =
@@ -449,10 +456,16 @@ TEST_F(DataEvolutionSplitReadTest, TestEmptyBlobReaders) {
                                                         {Options::DATA_EVOLUTION_ENABLED, "true"}};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          TableSchema::Create(0, schema, {}, {}, options));
-    ReadContextBuilder builder(dir->Str());
+    TableLoadContext builder_load_context{dir->Str()};
+    std::map<std::string, std::string> builder_options;
+    ReadContextBuilder builder;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
-                         InternalReadContext::Create(read_context, table_schema, options));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<InternalReadContext> context,
+        InternalReadContext::Create(
+            read_context, table_schema, options, builder_load_context.file_system,
+            builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+            builder_load_context.catalog, builder_load_context.identifier, builder_options));
     ASSERT_OK_AND_ASSIGN(
         std::shared_ptr<FileStorePathFactory> path_factory,
         FileStorePathFactory::Create(dir->Str(), schema, {}, "default", "parquet", "data-",
@@ -1108,11 +1121,18 @@ TEST_F(DataEvolutionSplitReadTest, TestSequentialVectorReadReusesMainReader) {
           std::vector<std::string>{"_ROW_ID", "_SEQUENCE_NUMBER"}}) {
         auto counting_fs = std::make_shared<CountingLocalFileSystem>(
             PathUtil::JoinPath(bucket_path, main->file_name));
-        ReadContextBuilder builder(dir->Str());
-        builder.WithFileSystem(counting_fs).EnablePrefetch(false).SetReadFieldNames(projection);
+        TableLoadContext builder_load_context{dir->Str()};
+        std::map<std::string, std::string> builder_options;
+        ReadContextBuilder builder;
+        builder_load_context.file_system = counting_fs;
+        builder.EnablePrefetch(false).SetReadFieldNames(projection);
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
-                             InternalReadContext::Create(read_context, table_schema, options));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<InternalReadContext> context,
+            InternalReadContext::Create(
+                read_context, table_schema, options, builder_load_context.file_system,
+                builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+                builder_load_context.catalog, builder_load_context.identifier, builder_options));
         auto split_read = std::make_unique<DataEvolutionSplitRead>(path_factory, context,
                                                                    GetDefaultPool(), executor);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, split_read->CreateReader(split));
@@ -1133,12 +1153,19 @@ TEST_F(DataEvolutionSplitReadTest, TestSequentialVectorReadReusesMainReader) {
 
     // A selection confined to the first VECTOR file must not include rows from the second.
     {
-        ReadContextBuilder builder(dir->Str());
-        builder.WithFileSystem(fs).EnablePrefetch(false).SetReadFieldNames(
+        TableLoadContext builder_load_context{dir->Str()};
+        std::map<std::string, std::string> builder_options;
+        ReadContextBuilder builder;
+        builder_load_context.file_system = fs;
+        builder.EnablePrefetch(false).SetReadFieldNames(
             {"id", "embedding", "_ROW_ID", "_SEQUENCE_NUMBER"});
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
-                             InternalReadContext::Create(read_context, table_schema, options));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<InternalReadContext> context,
+            InternalReadContext::Create(
+                read_context, table_schema, options, builder_load_context.file_system,
+                builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+                builder_load_context.catalog, builder_load_context.identifier, builder_options));
         DataEvolutionSplitRead split_read(path_factory, context, GetDefaultPool(), executor);
         auto selected_split =
             std::make_shared<IndexedSplitImpl>(split, std::vector<Range>{Range(0, 1)});
@@ -1173,12 +1200,19 @@ TEST_F(DataEvolutionSplitReadTest, TestSequentialVectorReadReusesMainReader) {
                                                     {vector1, legacy_main, vector0});
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> legacy_split,
                              legacy_split_builder.RawConvertible(false).Build());
-        ReadContextBuilder builder(dir->Str());
-        builder.WithFileSystem(fs).EnablePrefetch(false).SetReadFieldNames(
+        TableLoadContext builder_load_context{dir->Str()};
+        std::map<std::string, std::string> builder_options;
+        ReadContextBuilder builder;
+        builder_load_context.file_system = fs;
+        builder.EnablePrefetch(false).SetReadFieldNames(
             {"id", "embedding", "_ROW_ID", "_SEQUENCE_NUMBER"});
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
-                             InternalReadContext::Create(read_context, evolved_schema, options));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<InternalReadContext> context,
+            InternalReadContext::Create(
+                read_context, evolved_schema, options, builder_load_context.file_system,
+                builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+                builder_load_context.catalog, builder_load_context.identifier, builder_options));
         DataEvolutionSplitRead split_read(path_factory, context, GetDefaultPool(), executor);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                              split_read.CreateReader(legacy_split));
@@ -1394,10 +1428,16 @@ TEST_F(DataEvolutionSplitReadTest, TestFileIndexSelectionOnlyPushesDownNormalGro
                                                         {Options::FILE_INDEX_READ_ENABLED, "true"}};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          TableSchema::Create(0, schema, {}, {}, options));
-    ReadContextBuilder builder(dir->Str());
+    TableLoadContext builder_load_context{dir->Str()};
+    std::map<std::string, std::string> builder_options;
+    ReadContextBuilder builder;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
-                         InternalReadContext::Create(read_context, table_schema, options));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<InternalReadContext> context,
+        InternalReadContext::Create(
+            read_context, table_schema, options, builder_load_context.file_system,
+            builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+            builder_load_context.catalog, builder_load_context.identifier, builder_options));
     DataEvolutionSplitRead split_read(/*path_factory=*/nullptr, context, pool,
                                       /*executor=*/nullptr);
 
@@ -1568,10 +1608,16 @@ TEST_F(DataEvolutionSplitReadTest, TestGroupBitmapCombinesWithRowRangesAndDvInFi
                                                         {Options::DATA_EVOLUTION_ENABLED, "true"}};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
                          TableSchema::Create(0, schema, {}, {}, options));
-    ReadContextBuilder builder(dir->Str());
+    TableLoadContext builder_load_context{dir->Str()};
+    std::map<std::string, std::string> builder_options;
+    ReadContextBuilder builder;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> context,
-                         InternalReadContext::Create(read_context, table_schema, options));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<InternalReadContext> context,
+        InternalReadContext::Create(
+            read_context, table_schema, options, builder_load_context.file_system,
+            builder_load_context.path, builder_load_context.fs_scheme_to_identifier_map,
+            builder_load_context.catalog, builder_load_context.identifier, builder_options));
     DataEvolutionSplitRead split_read(/*path_factory=*/nullptr, context, GetDefaultPool(),
                                       /*executor=*/nullptr);
     split_read.file_indexes_evaluated_ = true;

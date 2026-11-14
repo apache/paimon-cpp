@@ -29,6 +29,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/utils/linked_hash_map.h"
 #include "paimon/common/utils/path_util.h"
@@ -80,12 +81,15 @@ TEST(FileStoreCommitTest, TestCreate) {
                                    /*ignore_if_exists=*/false));
     std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
 
-    CommitContextBuilder context_builder(table_path, "commit_user");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+    TableLoadContext context_builder_load_context{table_path};
+    std::map<std::string, std::string> context_builder_options;
+    CommitContextBuilder context_builder("commit_user");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(context_builder_load_context,
+                                             std::move(commit_context), context_builder_options));
     auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
     ASSERT_TRUE(commit_impl);
 }
@@ -95,14 +99,12 @@ TEST(FileStoreCommitTest, TestCreateWithCatalogRequiresIdentifier) {
     ASSERT_TRUE(dir);
     std::map<std::string, std::string> options = {{Options::FILE_SYSTEM, "local"}};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Catalog> catalog, Catalog::Create(dir->Str(), options));
-    auto commit_context = std::make_unique<CommitContext>(
-        dir->Str(), "commit_user", /*ignore_empty_commit=*/true,
-        /*use_rest_catalog_commit=*/false, catalog, /*identifier=*/std::nullopt,
-        /*table_id=*/std::nullopt, /*append_commit_check_conflict=*/false, GetDefaultPool(),
-        CreateDefaultExecutor(), /*specific_file_system=*/nullptr, options,
-        /*format_table=*/nullptr);
-    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(std::move(commit_context)),
-                        "a catalog commit requires a table identifier");
+    TableLoadContext load_context{dir->Str()};
+    load_context.catalog = catalog;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
+                         CommitContextBuilder("commit_user").Finish());
+    ASSERT_NOK_WITH_MSG(FileStoreCommit::Create(load_context, std::move(context), options),
+                        "a catalog load requires a table identifier");
 }
 
 TEST(FileStoreCommitTest, TestCatalogCommitUsesPerTableFileSystem) {
@@ -123,10 +125,14 @@ TEST(FileStoreCommitTest, TestCatalogCommitUsesPerTableFileSystem) {
     catalog->SetFileSystem(std::make_shared<LocalFileSystem>());
     catalog->SetTableFileSystem(dir->GetFileSystem());
 
-    CommitContextBuilder builder(table_path, "commit_user");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> ctx,
-                         builder.WithCatalog(catalog, identifier).Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(ctx)));
+    TableLoadContext builder_load_context{table_path};
+    std::map<std::string, std::string> builder_options;
+    CommitContextBuilder builder("commit_user");
+    builder_load_context.catalog = catalog;
+    builder_load_context.identifier.emplace(identifier);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> ctx, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(builder_load_context, std::move(ctx),
+                                                              builder_options));
 
     // The file system was resolved per table, not from the catalog-wide one.
     const std::vector<Identifier>& requests = catalog->TableFileSystemRequests();
@@ -161,12 +167,15 @@ TEST(FileStoreCommitTest, TestAppendDvIndexShouldUseOverwriteCommitKind) {
                                    /*ignore_if_exists=*/false));
     std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
 
-    CommitContextBuilder context_builder(table_path, "commit_user");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
-                         context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                             .AddOption(Options::FILE_SYSTEM, "local")
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+    TableLoadContext context_builder_load_context{table_path};
+    std::map<std::string, std::string> context_builder_options;
+    CommitContextBuilder context_builder("commit_user");
+    context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+    context_builder_options[Options::FILE_SYSTEM] = "local";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        auto commit, FileStoreCommit::Create(context_builder_load_context,
+                                             std::move(commit_context), context_builder_options));
 
     LinkedHashMap<std::string, DeletionVectorMeta> dv_ranges;
     dv_ranges.insert_or_assign("data-file-1",

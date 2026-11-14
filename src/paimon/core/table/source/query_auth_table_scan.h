@@ -49,12 +49,14 @@ class QueryAuthTableScan : public TableScan {
     using InnerScanFactory =
         std::function<Result<std::unique_ptr<TableScan>>(const std::shared_ptr<ScanContext>&)>;
 
-    /// @param context The scan as the caller asked for it; it must name the catalog and the table.
+    /// @param context The execution settings for the scan.
+    /// @param catalog The catalog retained by the loaded table.
     static Result<std::unique_ptr<TableScan>> Create(
         const std::shared_ptr<ScanContext>& context,
         const std::shared_ptr<TableSchema>& table_schema,
         const std::shared_ptr<FileSystem>& file_system, const std::string& branch,
-        InnerScanFactory create_inner);
+        const std::shared_ptr<Catalog>& catalog, const Identifier& identifier,
+        const std::string& table_path, InnerScanFactory create_inner);
 
     Result<std::shared_ptr<Plan>> CreatePlan() override;
 
@@ -65,6 +67,7 @@ class QueryAuthTableScan : public TableScan {
                        const QueryAuthCatalog* auth_catalog, Identifier auth_identifier,
                        const std::shared_ptr<TableSchema>& table_schema,
                        const std::shared_ptr<FileSystem>& file_system, const std::string& branch,
+                       const std::shared_ptr<Catalog>& catalog, const std::string& table_path,
                        InnerScanFactory create_inner,
                        std::optional<std::vector<std::string>> authorization_columns,
                        std::set<std::string> user_filter_fields,
@@ -90,8 +93,10 @@ class QueryAuthTableScan : public TableScan {
     /// Fails when `rules` would need pruning the inner scan already pushed down to be undone.
     Status ValidatePushdownCompatibility(const TableQueryAuthResult& rules) const;
 
-    /// Holds the catalog `auth_catalog_` points to.
     std::shared_ptr<ScanContext> context_;
+    /// Holds the catalog `auth_catalog_` points to.
+    std::shared_ptr<Catalog> catalog_;
+    std::string table_path_;
     const QueryAuthCatalog* auth_catalog_;
     /// The table the rules are asked for, naming the branch planned.
     Identifier auth_identifier_;

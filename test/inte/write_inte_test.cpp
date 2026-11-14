@@ -41,6 +41,7 @@
 #include "gtest/gtest.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/binary_array.h"
 #include "paimon/common/data/binary_array_writer.h"
@@ -289,11 +290,16 @@ class WriteInteTest : public testing::Test, public ::testing::WithParamInterface
                           const std::vector<std::shared_ptr<Split>>& data_splits,
                           const std::string& blob_field,
                           const std::vector<std::shared_ptr<Blob>>& expected_blobs) const {
-        ReadContextBuilder read_context_builder(table_path);
-        read_context_builder.SetOptions(options).SetReadFieldNames({blob_field});
+        TableLoadContext read_context_builder_load_context{table_path};
+        std::map<std::string, std::string> read_context_builder_options;
+        ReadContextBuilder read_context_builder;
+        read_context_builder_options = options;
+        read_context_builder.SetReadFieldNames({blob_field});
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
                                read_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(std::move(read_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_read, TableRead::Create(read_context_builder_load_context,
+                                                                  std::move(read_context),
+                                                                  read_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto batch_reader, table_read->CreateReader(data_splits));
         PAIMON_ASSIGN_OR_RAISE(auto read_result,
                                ReadResultCollector::CollectResult(std::move(batch_reader)));
@@ -349,11 +355,15 @@ class WriteInteTest : public testing::Test, public ::testing::WithParamInterface
                           const std::vector<std::shared_ptr<CommitMessage>>& commit_messages,
                           bool ignore_empty_commit = true,
                           int64_t commit_identifier = BATCH_WRITE_COMMIT_IDENTIFIER) const {
-        CommitContextBuilder commit_builder(table_path, "commit_user_1");
+        TableLoadContext commit_builder_load_context{table_path};
+        std::map<std::string, std::string> commit_builder_options;
+        CommitContextBuilder commit_builder("commit_user_1");
         commit_builder.IgnoreEmptyCommit(ignore_empty_commit);
         PAIMON_ASSIGN_OR_RAISE(auto commit_context, commit_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto file_store_commit,
-                               FileStoreCommit::Create(std::move(commit_context)));
+        PAIMON_ASSIGN_OR_RAISE(
+            auto file_store_commit,
+            FileStoreCommit::Create(commit_builder_load_context, std::move(commit_context),
+                                    commit_builder_options));
         return file_store_commit->Commit(commit_messages, commit_identifier);
     }
 
@@ -2015,11 +2025,14 @@ TEST_P(WriteInteTest, TestPkTableWriteWithIOException) {
         ASSERT_EQ(3, batches_2.size());
 
         // write data
-        WriteContextBuilder context_builder(root_path, "commit_user_1");
+        TableLoadContext context_builder_load_context{root_path};
+        std::map<std::string, std::string> context_builder_options;
+        WriteContextBuilder context_builder("commit_user_1");
+        context_builder_options = options;
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                             context_builder.SetOptions(options).WithStreamingMode(true).Finish());
-        Result<std::unique_ptr<FileStoreWrite>> write =
-            FileStoreWrite::Create(std::move(write_context));
+                             context_builder.WithStreamingMode(true).Finish());
+        Result<std::unique_ptr<FileStoreWrite>> write = FileStoreWrite::Create(
+            context_builder_load_context, std::move(write_context), context_builder_options);
         CHECK_HOOK_STATUS(write.status(), i);
         auto& file_store_write = write.value();
         // round 1
@@ -2451,12 +2464,15 @@ TEST_P(WriteInteTest, TestWriteAndCommitIOException) {
     for (size_t i = 0; i < 200; i++) {
         ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
         io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
-        WriteContextBuilder context_builder(table_path, "commit_user_1");
+        TableLoadContext context_builder_load_context{table_path};
+        std::map<std::string, std::string> context_builder_options;
+        WriteContextBuilder context_builder("commit_user_1");
+        context_builder_options = options;
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                             context_builder.SetOptions(options).WithStreamingMode(true).Finish());
+                             context_builder.WithStreamingMode(true).Finish());
 
-        Result<std::unique_ptr<FileStoreWrite>> write =
-            FileStoreWrite::Create(std::move(write_context));
+        Result<std::unique_ptr<FileStoreWrite>> write = FileStoreWrite::Create(
+            context_builder_load_context, std::move(write_context), context_builder_options);
         CHECK_HOOK_STATUS(write.status(), i);
         auto& file_store_write = write.value();
 
@@ -2476,14 +2492,16 @@ TEST_P(WriteInteTest, TestWriteAndCommitIOException) {
     for (size_t i = 0; i < 400; i += paimon::test::RandomNumber(5, 15)) {
         ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
         io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
-        CommitContextBuilder commit_context_builder(table_path, "commit_user_1");
-        ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<CommitContext> commit_context,
-            commit_context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                .AddOption(Options::FILE_SYSTEM, "local")
-                .IgnoreEmptyCommit(false)
-                .Finish());
-        auto commit = FileStoreCommit::Create(std::move(commit_context));
+        TableLoadContext commit_context_builder_load_context{table_path};
+        std::map<std::string, std::string> commit_context_builder_options;
+        CommitContextBuilder commit_context_builder("commit_user_1");
+        commit_context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+        commit_context_builder_options[Options::FILE_SYSTEM] = "local";
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                             commit_context_builder.IgnoreEmptyCommit(false).Finish());
+        auto commit =
+            FileStoreCommit::Create(commit_context_builder_load_context, std::move(commit_context),
+                                    commit_context_builder_options);
         CHECK_HOOK_STATUS(commit.status(), i);
         Result<int32_t> committed = commit.value()->FilterAndCommit({{0, commit_messages}});
         CHECK_HOOK_STATUS(committed.status(), i);
@@ -2545,12 +2563,15 @@ TEST_P(WriteInteTest, TestWriteWithFieldId) {
                                                                  /*partition_keys=*/{},
                                                                  /*primary_keys=*/{}, options));
 
-    WriteContextBuilder context_builder(table_path, "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.SetOptions(options).Finish());
+    TableLoadContext context_builder_load_context{table_path};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder("commit_user_1");
+    context_builder_options = options;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
 
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(context_builder_load_context,
+                                                std::move(write_context), context_builder_options));
     ::ArrowArray c_array;
     ASSERT_TRUE(arrow::ExportArray(*src_array, &c_array).ok());
     RecordBatchBuilder batch_builder(&c_array);
@@ -2615,12 +2636,15 @@ TEST_P(WriteInteTest, TestAppendTableWriteAndReadWithExternalPath) {
                                          /*table_name=*/"append_table_with_external_path", &schema,
                                          /*partition_keys=*/{"f1"}, /*primary_keys=*/{}, options));
     // write
-    WriteContextBuilder context_builder(table_path, "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.SetOptions(options).Finish());
-    std::string root_path = write_context->GetRootPath();
+    TableLoadContext context_builder_load_context{table_path};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder("commit_user_1");
+    context_builder_options = options;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
+    std::string root_path = context_builder_load_context.path;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(context_builder_load_context,
+                                                std::move(write_context), context_builder_options));
 
     std::shared_ptr<arrow::Array> array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
@@ -2652,15 +2676,25 @@ TEST_P(WriteInteTest, TestAppendTableWriteAndReadWithExternalPath) {
     ASSERT_TRUE(file_exist);
 
     // check read result
-    ScanContextBuilder scan_context_builder(table_path);
-    scan_context_builder.AddOption(Options::FILE_FORMAT, file_format);
-    ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    TableLoadContext scan_context_builder_load_context{table_path};
+    std::map<std::string, std::string> scan_context_builder_options;
+    ScanContextBuilder scan_context_builder;
+    scan_context_builder_options[Options::FILE_FORMAT] = file_format;
 
-    ReadContextBuilder read_context_builder(table_path);
-    read_context_builder.AddOption(Options::FILE_FORMAT, file_format);
+    ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_scan,
+                         TableScan::Create(scan_context_builder_load_context,
+                                           std::move(scan_context), scan_context_builder_options));
+
+    TableLoadContext read_context_builder_load_context{table_path};
+    std::map<std::string, std::string> read_context_builder_options;
+    ReadContextBuilder read_context_builder;
+    read_context_builder_options[Options::FILE_FORMAT] = file_format;
+
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(read_context_builder_load_context,
+                                           std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
@@ -2712,12 +2746,15 @@ TEST_P(WriteInteTest, TestPKTableWriteAndReadWithExternalPath) {
                         /*table_name=*/"pk_table_with_external_path", &schema,
                         /*partition_keys=*/{"f1"}, /*primary_keys=*/{"f0", "f1"}, options));
     // write
-    WriteContextBuilder context_builder(table_path, "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.SetOptions(options).Finish());
-    std::string root_path = write_context->GetRootPath();
+    TableLoadContext context_builder_load_context{table_path};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder("commit_user_1");
+    context_builder_options = options;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
+    std::string root_path = context_builder_load_context.path;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(context_builder_load_context,
+                                                std::move(write_context), context_builder_options));
 
     std::shared_ptr<arrow::Array> array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
@@ -2932,12 +2969,15 @@ TEST_P(WriteInteTest, TestWriteAndReadWithSpecialPartitionValue) {
                                          /*primary_keys=*/{}, options));
 
     // write
-    WriteContextBuilder context_builder(table_path, "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.SetOptions(options).Finish());
-    std::string root_path = write_context->GetRootPath();
+    TableLoadContext context_builder_load_context{table_path};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder("commit_user_1");
+    context_builder_options = options;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
+    std::string root_path = context_builder_load_context.path;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(context_builder_load_context,
+                                                std::move(write_context), context_builder_options));
     auto write = [&](const std::string& json_array,
                      const std::map<std::string, std::string>& partition) -> void {
         std::shared_ptr<arrow::Array> array =
@@ -2973,15 +3013,25 @@ TEST_P(WriteInteTest, TestWriteAndReadWithSpecialPartitionValue) {
                                 arrow::field("_VALUE_KIND", arrow::int8()));
     auto data_type = arrow::struct_(fields_with_row_kind);
     {
-        ScanContextBuilder scan_context_builder(table_path);
-        scan_context_builder.AddOption(Options::FILE_FORMAT, file_format);
-        ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+        TableLoadContext scan_context_builder_load_context{table_path};
+        std::map<std::string, std::string> scan_context_builder_options;
+        ScanContextBuilder scan_context_builder;
+        scan_context_builder_options[Options::FILE_FORMAT] = file_format;
 
-        ReadContextBuilder read_context_builder(table_path);
-        read_context_builder.AddOption(Options::FILE_FORMAT, file_format);
+        ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
+                                                                std::move(scan_context),
+                                                                scan_context_builder_options));
+
+        TableLoadContext read_context_builder_load_context{table_path};
+        std::map<std::string, std::string> read_context_builder_options;
+        ReadContextBuilder read_context_builder;
+        read_context_builder_options[Options::FILE_FORMAT] = file_format;
+
         ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
+                                                                std::move(read_context),
+                                                                read_context_builder_options));
 
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
@@ -3020,18 +3070,28 @@ TEST_P(WriteInteTest, TestWriteAndReadWithSpecialPartitionValue) {
         ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
     }
     {
-        ScanContextBuilder scan_context_builder(table_path);
-        scan_context_builder.AddOption(Options::FILE_FORMAT, file_format);
+        TableLoadContext scan_context_builder_load_context{table_path};
+        std::map<std::string, std::string> scan_context_builder_options;
+        ScanContextBuilder scan_context_builder;
+        scan_context_builder_options[Options::FILE_FORMAT] = file_format;
+
         std::vector<std::map<std::string, std::string>> partition_filters = {
             {{"dt", " "}, {"hr", "a=b?"}}};
         ASSERT_OK_AND_ASSIGN(auto scan_context,
                              scan_context_builder.SetPartitionFilter(partition_filters).Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
+                                                                std::move(scan_context),
+                                                                scan_context_builder_options));
 
-        ReadContextBuilder read_context_builder(table_path);
-        read_context_builder.AddOption(Options::FILE_FORMAT, file_format);
+        TableLoadContext read_context_builder_load_context{table_path};
+        std::map<std::string, std::string> read_context_builder_options;
+        ReadContextBuilder read_context_builder;
+        read_context_builder_options[Options::FILE_FORMAT] = file_format;
+
         ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
+                                                                std::move(read_context),
+                                                                read_context_builder_options));
 
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
@@ -3047,18 +3107,28 @@ TEST_P(WriteInteTest, TestWriteAndReadWithSpecialPartitionValue) {
         ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
     }
     {
-        ScanContextBuilder scan_context_builder(table_path);
-        scan_context_builder.AddOption(Options::FILE_FORMAT, file_format);
+        TableLoadContext scan_context_builder_load_context{table_path};
+        std::map<std::string, std::string> scan_context_builder_options;
+        ScanContextBuilder scan_context_builder;
+        scan_context_builder_options[Options::FILE_FORMAT] = file_format;
+
         std::vector<std::map<std::string, std::string>> partition_filters = {
             {{"dt", ""}, {"hr", "a=b?"}}};
         ASSERT_OK_AND_ASSIGN(auto scan_context,
                              scan_context_builder.SetPartitionFilter(partition_filters).Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
+                                                                std::move(scan_context),
+                                                                scan_context_builder_options));
 
-        ReadContextBuilder read_context_builder(table_path);
-        read_context_builder.AddOption(Options::FILE_FORMAT, file_format);
+        TableLoadContext read_context_builder_load_context{table_path};
+        std::map<std::string, std::string> read_context_builder_options;
+        ReadContextBuilder read_context_builder;
+        read_context_builder_options[Options::FILE_FORMAT] = file_format;
+
         ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
+                                                                std::move(read_context),
+                                                                read_context_builder_options));
 
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
@@ -3074,18 +3144,28 @@ TEST_P(WriteInteTest, TestWriteAndReadWithSpecialPartitionValue) {
         ASSERT_TRUE(expected->Equals(read_result)) << read_result->ToString();
     }
     {
-        ScanContextBuilder scan_context_builder(table_path);
-        scan_context_builder.AddOption(Options::FILE_FORMAT, file_format);
+        TableLoadContext scan_context_builder_load_context{table_path};
+        std::map<std::string, std::string> scan_context_builder_options;
+        ScanContextBuilder scan_context_builder;
+        scan_context_builder_options[Options::FILE_FORMAT] = file_format;
+
         std::vector<std::map<std::string, std::string>> partition_filters = {
             {{"dt", "__DEFAULT_PARTITION__"}, {"hr", "a=b?"}}};
         ASSERT_OK_AND_ASSIGN(auto scan_context,
                              scan_context_builder.SetPartitionFilter(partition_filters).Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(scan_context_builder_load_context,
+                                                                std::move(scan_context),
+                                                                scan_context_builder_options));
 
-        ReadContextBuilder read_context_builder(table_path);
-        read_context_builder.AddOption(Options::FILE_FORMAT, file_format);
+        TableLoadContext read_context_builder_load_context{table_path};
+        std::map<std::string, std::string> read_context_builder_options;
+        ReadContextBuilder read_context_builder;
+        read_context_builder_options[Options::FILE_FORMAT] = file_format;
+
         ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(read_context_builder_load_context,
+                                                                std::move(read_context),
+                                                                read_context_builder_options));
 
         ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
@@ -3124,12 +3204,15 @@ TEST_P(WriteInteTest, TestWriteWithNestedSchema) {
                                          /*table_name=*/"bar", &schema,
                                          /*partition_keys=*/{}, /*primary_keys=*/{}, options));
     // write
-    WriteContextBuilder context_builder(table_path, "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.SetOptions(options).Finish());
-    std::string root_path = write_context->GetRootPath();
+    TableLoadContext context_builder_load_context{table_path};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder("commit_user_1");
+    context_builder_options = options;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
+    std::string root_path = context_builder_load_context.path;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(context_builder_load_context,
+                                                std::move(write_context), context_builder_options));
 
     std::shared_ptr<arrow::Array> array =
         arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
@@ -3155,15 +3238,25 @@ TEST_P(WriteInteTest, TestWriteWithNestedSchema) {
                              /*commit_identifier=*/1));
 
     // check read result
-    ScanContextBuilder scan_context_builder(table_path);
-    scan_context_builder.AddOption(Options::FILE_FORMAT, file_format);
-    ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_scan, TableScan::Create(std::move(scan_context)));
+    TableLoadContext scan_context_builder_load_context{table_path};
+    std::map<std::string, std::string> scan_context_builder_options;
+    ScanContextBuilder scan_context_builder;
+    scan_context_builder_options[Options::FILE_FORMAT] = file_format;
 
-    ReadContextBuilder read_context_builder(table_path);
-    read_context_builder.AddOption(Options::FILE_FORMAT, file_format);
+    ASSERT_OK_AND_ASSIGN(auto scan_context, scan_context_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto table_scan,
+                         TableScan::Create(scan_context_builder_load_context,
+                                           std::move(scan_context), scan_context_builder_options));
+
+    TableLoadContext read_context_builder_load_context{table_path};
+    std::map<std::string, std::string> read_context_builder_options;
+    ReadContextBuilder read_context_builder;
+    read_context_builder_options[Options::FILE_FORMAT] = file_format;
+
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(auto table_read,
+                         TableRead::Create(read_context_builder_load_context,
+                                           std::move(read_context), read_context_builder_options));
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(result_plan->Splits()));
@@ -3220,12 +3313,15 @@ TEST_P(WriteInteTest, TestWriteWithIOException) {
         ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
         io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
 
-        WriteContextBuilder context_builder(table_path, "commit_user_1");
+        TableLoadContext context_builder_load_context{table_path};
+        std::map<std::string, std::string> context_builder_options;
+        WriteContextBuilder context_builder("commit_user_1");
+        context_builder_options = options;
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                             context_builder.SetOptions(options).WithStreamingMode(true).Finish());
+                             context_builder.WithStreamingMode(true).Finish());
 
-        Result<std::unique_ptr<FileStoreWrite>> write =
-            FileStoreWrite::Create(std::move(write_context));
+        Result<std::unique_ptr<FileStoreWrite>> write = FileStoreWrite::Create(
+            context_builder_load_context, std::move(write_context), context_builder_options);
         CHECK_HOOK_STATUS(write.status(), i);
         auto& file_store_write = write.value();
 
@@ -3273,11 +3369,15 @@ TEST_P(WriteInteTest, TestCommitWithIOException) {
                                          /*partition_keys=*/{"f1"},
                                          /*primary_keys=*/{}, options));
     // write data
-    WriteContextBuilder context_builder(table_path, "commit_user_1");
+    TableLoadContext context_builder_load_context{table_path};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder("commit_user_1");
+    context_builder_options = options;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.SetOptions(options).WithStreamingMode(true).Finish());
+                         context_builder.WithStreamingMode(true).Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(context_builder_load_context,
+                                                std::move(write_context), context_builder_options));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch_0,
                          MakeRecordBatch({{"Alice", 10, 1, 11.1}}, {{"f1", "10"}}, 0));
     ASSERT_OK(file_store_write->Write(std::move(batch_0)));
@@ -3293,14 +3393,16 @@ TEST_P(WriteInteTest, TestCommitWithIOException) {
         std::string tmp_table_path = tmp_dir->Str();
         ScopeGuard guard([&io_hook]() { io_hook->Clear(); });
         io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);
-        CommitContextBuilder commit_context_builder(tmp_table_path, "commit_user_1");
-        ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<CommitContext> commit_context,
-            commit_context_builder.AddOption(Options::MANIFEST_TARGET_FILE_SIZE, "8mb")
-                .AddOption(Options::FILE_SYSTEM, "local")
-                .IgnoreEmptyCommit(false)
-                .Finish());
-        auto commit = FileStoreCommit::Create(std::move(commit_context));
+        TableLoadContext commit_context_builder_load_context{tmp_table_path};
+        std::map<std::string, std::string> commit_context_builder_options;
+        CommitContextBuilder commit_context_builder("commit_user_1");
+        commit_context_builder_options[Options::MANIFEST_TARGET_FILE_SIZE] = "8mb";
+        commit_context_builder_options[Options::FILE_SYSTEM] = "local";
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,
+                             commit_context_builder.IgnoreEmptyCommit(false).Finish());
+        auto commit =
+            FileStoreCommit::Create(commit_context_builder_load_context, std::move(commit_context),
+                                    commit_context_builder_options);
         CHECK_HOOK_STATUS(commit.status(), i);
         Result<int32_t> committed = commit.value()->FilterAndCommit({{0, commit_messages}});
         CHECK_HOOK_STATUS(committed.status(), i);
@@ -3348,14 +3450,17 @@ TEST_P(WriteInteTest, TestWriteMemoryUse) {
                                          /*primary_keys=*/{}, options));
     std::shared_ptr<MemoryPool> write_pool = GetMemoryPool();
     {
-        WriteContextBuilder context_builder(table_path, "commit_user_1");
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                             context_builder.SetOptions(options)
-                                 .WithMemoryPool(write_pool)
-                                 .WithStreamingMode(true)
-                                 .Finish());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                             FileStoreWrite::Create(std::move(write_context)));
+        TableLoadContext context_builder_load_context{table_path};
+        std::map<std::string, std::string> context_builder_options;
+        WriteContextBuilder context_builder("commit_user_1");
+        context_builder_options = options;
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<WriteContext> write_context,
+            context_builder.WithMemoryPool(write_pool).WithStreamingMode(true).Finish());
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<FileStoreWrite> file_store_write,
+            FileStoreWrite::Create(context_builder_load_context, std::move(write_context),
+                                   context_builder_options));
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch_0,
                              MakeRecordBatch({{"Alice", 10, 1, 11.1}}, {{"f1", "10"}}, 0));
         ASSERT_OK(file_store_write->Write(std::move(batch_0)));
@@ -3532,11 +3637,15 @@ TEST_F(WriteInteTest, TestBranchWrite) {
     std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "orc"},
 
                                                   {Options::FILE_SYSTEM, "local"}};
-    WriteContextBuilder context_builder(table_path, "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         context_builder.SetOptions(options).WithBranch("rt").Finish());
+    TableLoadContext context_builder_load_context{table_path};
+    std::map<std::string, std::string> context_builder_options;
+    WriteContextBuilder context_builder("commit_user_1");
+    context_builder_options = options;
+    context_builder_options["branch"] = "rt";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write,
-                         FileStoreWrite::Create(std::move(write_context)));
+                         FileStoreWrite::Create(context_builder_load_context,
+                                                std::move(write_context), context_builder_options));
 
     // write to rt branch, pk table
     std::string data_0 =
@@ -3577,11 +3686,15 @@ TEST_F(WriteInteTest, TestBranchWrite) {
     ASSERT_TRUE(expected_commit_message_0->TEST_Equal(*result_commit_msgs));
 
     // write to main branch, append table
-    WriteContextBuilder context_builder1(table_path, "commit_user_1");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context1,
-                         context_builder1.SetOptions(options).Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> file_store_write1,
-                         FileStoreWrite::Create(std::move(write_context1)));
+    TableLoadContext context_builder1_load_context{table_path};
+    std::map<std::string, std::string> context_builder1_options;
+    WriteContextBuilder context_builder1("commit_user_1");
+    context_builder1_options = options;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context1, context_builder1.Finish());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileStoreWrite> file_store_write1,
+        FileStoreWrite::Create(context_builder1_load_context, std::move(write_context1),
+                               context_builder1_options));
     std::string data_1 =
         R"([["20240725", "watermelon", 3],
             ["20240725", "orange", 2]
@@ -3715,11 +3828,14 @@ TEST_P(WriteInteTest, TestDataEvolutionWrite) {
     auto write_array = [&](const std::vector<std::string>& write_cols,
                            const std::shared_ptr<arrow::Array>& write_array)
         -> Result<std::vector<std::shared_ptr<CommitMessage>>> {
-        WriteContextBuilder builder(table_path, commit_user);
+        TableLoadContext builder_load_context{table_path};
+        std::map<std::string, std::string> builder_options;
+        WriteContextBuilder builder(commit_user);
         builder.WithWriteSchema(write_cols);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> write_context, builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(auto file_store_write,
-                               FileStoreWrite::Create(std::move(write_context)));
+                               FileStoreWrite::Create(builder_load_context,
+                                                      std::move(write_context), builder_options));
         ArrowArray c_array;
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*write_array, &c_array));
         auto record_batch = std::make_unique<RecordBatch>(
@@ -3749,10 +3865,13 @@ TEST_P(WriteInteTest, TestDataEvolutionWrite) {
 
     auto commit = [&](const std::vector<std::shared_ptr<CommitMessage>>& commit_msgs,
                       int64_t latest_snapshot_id, int64_t next_row_id) {
-        CommitContextBuilder builder(table_path, commit_user);
+        TableLoadContext builder_load_context{table_path};
+        std::map<std::string, std::string> builder_options;
+        CommitContextBuilder builder(commit_user);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> file_store_commit,
-                             FileStoreCommit::Create(std::move(commit_context)));
+                             FileStoreCommit::Create(builder_load_context,
+                                                     std::move(commit_context), builder_options));
         ASSERT_OK(file_store_commit->Commit(commit_msgs));
 
         auto commit_impl = dynamic_cast<FileStoreCommitImpl*>(file_store_commit.get());
@@ -3765,10 +3884,13 @@ TEST_P(WriteInteTest, TestDataEvolutionWrite) {
     // first_row_id, write_cols, min_sequence_number, max_sequence_number
     using MetaType = std::tuple<int64_t, std::optional<std::vector<std::string>>, int64_t, int64_t>;
     auto check_committed_meta = [&](const std::vector<MetaType>& expected_meta) {
-        ScanContextBuilder builder(table_path);
+        TableLoadContext builder_load_context{table_path};
+        std::map<std::string, std::string> builder_options;
+        ScanContextBuilder builder;
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, builder.Finish());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                             TableScan::Create(std::move(scan_context)));
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TableScan> table_scan,
+            TableScan::Create(builder_load_context, std::move(scan_context), builder_options));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
         ASSERT_EQ(plan->Splits().size(), 1);
         auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(plan->Splits()[0]);
@@ -4144,13 +4266,15 @@ TEST_P(WriteInteTest, TestPkSpillableMapSharedShreddingReadWrite) {
                                                           /*primary_keys=*/{"id"}, options));
 
     std::string tmp_dir = PathUtil::JoinPath(dir->Str(), "tmp");
-    WriteContextBuilder write_builder(table_path, "commit_user_1");
+    TableLoadContext write_builder_load_context{table_path};
+    std::map<std::string, std::string> write_builder_options;
+    WriteContextBuilder write_builder("commit_user_1");
+    write_builder_options = options;
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                         write_builder.SetOptions(options)
-                             .WithStreamingMode(true)
-                             .WithTempDirectory(tmp_dir)
-                             .Finish());
-    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+                         write_builder.WithStreamingMode(true).WithTempDirectory(tmp_dir).Finish());
+    ASSERT_OK_AND_ASSIGN(auto file_store_write,
+                         FileStoreWrite::Create(write_builder_load_context,
+                                                std::move(write_context), write_builder_options));
 
     ASSERT_OK_AND_ASSIGN(
         auto batch_0, TestHelper::MakeRecordBatch(
@@ -4210,10 +4334,14 @@ TEST_P(WriteInteTest, TestPkSpillableDiskQuotaExhaustedFallsBackToFlush) {
                                                           /*primary_keys=*/{"pt", "f0"}, options));
 
     std::string tmp_dir = PathUtil::JoinPath(dir->Str(), "tmp");
-    WriteContextBuilder write_builder(table_path, "commit_user_1");
+    TableLoadContext write_builder_load_context{table_path};
+    std::map<std::string, std::string> write_builder_options;
+    WriteContextBuilder write_builder("commit_user_1");
     write_builder.WithStreamingMode(true).WithTempDirectory(tmp_dir);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(auto file_store_write,
+                         FileStoreWrite::Create(write_builder_load_context,
+                                                std::move(write_context), write_builder_options));
 
     auto write_array = arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
         ["Alice", 10, 1, 1.0],
@@ -4266,10 +4394,14 @@ TEST_P(WriteInteTest, TestPkSpillableGlobalMemoryPreemptionDataCorrectness) {
                                                           /*primary_keys=*/{"pt", "f0"}, options));
 
     std::string tmp_dir = PathUtil::JoinPath(dir->Str(), "tmp");
-    WriteContextBuilder write_builder(table_path, "commit_user_1");
+    TableLoadContext write_builder_load_context{table_path};
+    std::map<std::string, std::string> write_builder_options;
+    WriteContextBuilder write_builder("commit_user_1");
     write_builder.WithStreamingMode(true).WithTempDirectory(tmp_dir);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(auto file_store_write,
+                         FileStoreWrite::Create(write_builder_load_context,
+                                                std::move(write_context), write_builder_options));
 
     // Write long strings to different partitions to trigger global memory preemption.
     std::string long_str_a(48, 'a');
@@ -4364,10 +4496,14 @@ TEST_P(WriteInteTest, TestPkSpillableTempFilesCleanedAfterPrepareCommit) {
                                                           /*primary_keys=*/{"pt", "f0"}, options));
 
     std::string tmp_dir = PathUtil::JoinPath(dir->Str(), "tmp");
-    WriteContextBuilder write_builder(table_path, "commit_user_1");
+    TableLoadContext write_builder_load_context{table_path};
+    std::map<std::string, std::string> write_builder_options;
+    WriteContextBuilder write_builder("commit_user_1");
     write_builder.WithStreamingMode(true).WithTempDirectory(tmp_dir);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(auto file_store_write,
+                         FileStoreWrite::Create(write_builder_load_context,
+                                                std::move(write_context), write_builder_options));
 
     auto batch1 =
         arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([["Alice", 10, 1]])").ValueOrDie();
@@ -4428,10 +4564,14 @@ TEST_P(WriteInteTest, TestPkSpillableIntermediateMergeWithTempFileTracking) {
 
     std::string tmp_dir = PathUtil::JoinPath(dir->Str(), "tmp");
 
-    WriteContextBuilder write_builder(table_path, "commit_user_1");
+    TableLoadContext write_builder_load_context{table_path};
+    std::map<std::string, std::string> write_builder_options;
+    WriteContextBuilder write_builder("commit_user_1");
     write_builder.WithStreamingMode(true).WithTempDirectory(tmp_dir);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(auto file_store_write,
+                         FileStoreWrite::Create(write_builder_load_context,
+                                                std::move(write_context), write_builder_options));
 
     auto write_array_fn = [](FileStoreWrite* writer,
                              const std::map<std::string, std::string>& partition, int32_t bucket,
@@ -4511,10 +4651,14 @@ TEST_P(WriteInteTest, TestPkSpillableVector) {
                                                           /*primary_keys=*/{"pt", "f0"}, options));
 
     std::string tmp_dir = PathUtil::JoinPath(dir->Str(), "tmp");
-    WriteContextBuilder write_builder(table_path, "commit_user_1");
+    TableLoadContext write_builder_load_context{table_path};
+    std::map<std::string, std::string> write_builder_options;
+    WriteContextBuilder write_builder("commit_user_1");
     write_builder.WithStreamingMode(true).WithTempDirectory(tmp_dir);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(auto file_store_write,
+                         FileStoreWrite::Create(write_builder_load_context,
+                                                std::move(write_context), write_builder_options));
 
     auto write_array = [](FileStoreWrite* writer, const std::shared_ptr<arrow::Array>& array) {
         ArrowArray c_array;
@@ -4594,12 +4738,16 @@ TEST_P(WriteInteTest, TestPkSpillableMultiBucketMultiRoundDataCorrectness) {
         return writer->Write(std::move(batch));
     };
 
-    WriteContextBuilder write_builder(table_path, "commit_user_1");
+    TableLoadContext write_builder_load_context{table_path};
+    std::map<std::string, std::string> write_builder_options;
+    WriteContextBuilder write_builder("commit_user_1");
     write_builder.WithStreamingMode(true)
         .WithTempDirectory(tmp_dir)
         .SetWriteBufferSpillThreadNumber(3);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, write_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
+    ASSERT_OK_AND_ASSIGN(auto file_store_write,
+                         FileStoreWrite::Create(write_builder_load_context,
+                                                std::move(write_context), write_builder_options));
 
     // Round 1: Bucket 0 writes Alice(dup) + Bob, Bucket 1 writes Dave(dup) + Eve
     auto r1_b0_batch1 =
@@ -4787,14 +4935,17 @@ TEST_P(WriteInteTest, TestPkSpillableWithIOException) {
 
         // Write with spill enabled (WithTempDirectory)
         std::string tmp_dir = PathUtil::JoinPath(dir->Str(), "tmp");
-        WriteContextBuilder context_builder(root_path, "commit_user_1");
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context,
-                             context_builder.SetOptions(options)
-                                 .WithStreamingMode(true)
-                                 .WithTempDirectory(tmp_dir)
-                                 .Finish());
-        ASSERT_OK_AND_ASSIGN(auto file_store_write,
-                             FileStoreWrite::Create(std::move(write_context)));
+        TableLoadContext context_builder_load_context{root_path};
+        std::map<std::string, std::string> context_builder_options;
+        WriteContextBuilder context_builder("commit_user_1");
+        context_builder_options = options;
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<WriteContext> write_context,
+            context_builder.WithStreamingMode(true).WithTempDirectory(tmp_dir).Finish());
+        ASSERT_OK_AND_ASSIGN(
+            auto file_store_write,
+            FileStoreWrite::Create(context_builder_load_context, std::move(write_context),
+                                   context_builder_options));
 
         // Start IOHook only for spill write/read operations.
         io_hook->Reset(i, IOHook::Mode::RETURN_ERROR);

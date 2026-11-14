@@ -19,15 +19,12 @@
 #pragma once
 
 #include <cstdint>
-#include <map>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
 #include "arrow/c/abi.h"
 #include "paimon/cache/cache.h"
-#include "paimon/catalog/identifier.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/result.h"
 #include "paimon/type_fwd.h"
@@ -35,13 +32,10 @@
 #include "paimon/visibility.h"
 
 namespace paimon {
-class Catalog;
 class Executor;
 struct FullTextSearch;
-class FormatTable;
 class MemoryPool;
 class Predicate;
-class FileSystem;
 class RealtimeContext;
 struct VectorSearch;
 
@@ -52,8 +46,7 @@ struct VectorSearch;
 /// @see ReadContextBuilder
 class PAIMON_EXPORT ReadContext {
  public:
-    ReadContext(const std::string& path, const std::string& branch,
-                const std::vector<std::string>& read_field_names,
+    ReadContext(const std::vector<std::string>& read_field_names,
                 const std::vector<int32_t>& read_field_ids,
                 const std::shared_ptr<Predicate>& predicate,
                 const std::shared_ptr<VectorSearch>& vector_search,
@@ -61,35 +54,13 @@ class PAIMON_EXPORT ReadContext {
                 bool enable_precise_file_index_evaluate, bool enable_predicate_filter,
                 bool enable_prefetch, bool enable_late_materializing, uint32_t prefetch_batch_count,
                 uint32_t prefetch_max_parallel_num, bool enable_multi_thread_row_to_batch,
-                uint32_t row_to_batch_thread_number, const std::optional<std::string>& table_schema,
-                const std::shared_ptr<MemoryPool>& memory_pool,
+                uint32_t row_to_batch_thread_number, const std::shared_ptr<MemoryPool>& memory_pool,
                 const std::shared_ptr<Executor>& executor,
-                const std::shared_ptr<FileSystem>& specific_file_system,
-                const std::map<std::string, std::string>& fs_scheme_to_identifier_map,
                 const std::shared_ptr<RealtimeContext>& realtime_context,
-                const std::map<std::string, std::string>& options, bool read_ahead_cache_enabled,
-                const CacheConfig& cache_config, const std::shared_ptr<Cache>& cache,
-                const std::shared_ptr<FormatTable>& format_table, WarmupLevel warmup_level,
-                const std::shared_ptr<Catalog>& catalog,
-                const std::optional<Identifier>& identifier);
+                bool read_ahead_cache_enabled, const CacheConfig& cache_config,
+                const std::shared_ptr<Cache>& cache, WarmupLevel warmup_level);
 
     ~ReadContext();
-
-    const std::string& GetPath() const {
-        return path_;
-    }
-
-    const std::string& GetBranch() const {
-        return branch_;
-    }
-
-    const std::map<std::string, std::string>& GetFileSystemSchemeToIdentifierMap() const {
-        return fs_scheme_to_identifier_map_;
-    }
-
-    const std::map<std::string, std::string>& GetOptions() const {
-        return options_;
-    }
 
     const std::vector<std::string>& GetReadFieldNames() const {
         return read_field_names_;
@@ -141,17 +112,12 @@ class PAIMON_EXPORT ReadContext {
     uint32_t GetRowToBatchThreadNumber() const {
         return row_to_batch_thread_number_;
     }
-    const std::optional<std::string>& GetSpecificTableSchema() const {
-        return table_schema_;
-    }
+
     std::shared_ptr<MemoryPool> GetMemoryPool() const {
         return memory_pool_;
     }
     std::shared_ptr<Executor> GetExecutor() const {
         return executor_;
-    }
-    std::shared_ptr<FileSystem> GetSpecificFileSystem() const {
-        return specific_file_system_;
     }
 
     /// Returns the context used to resolve process-local real-time split tickets.
@@ -171,24 +137,8 @@ class PAIMON_EXPORT ReadContext {
         return cache_;
     }
 
-    /// The format table this context was built from, or null when it names a table path and the
-    /// schema under that path says what kind of table it is.
-    const std::shared_ptr<FormatTable>& GetFormatTable() const {
-        return format_table_;
-    }
-
     WarmupLevel GetWarmupLevel() const {
         return warmup_level_;
-    }
-
-    /// Returns the catalog supplying table metadata, or null if unset.
-    const std::shared_ptr<Catalog>& GetCatalog() const {
-        return catalog_;
-    }
-
-    /// Returns the table identifier supplied with the catalog.
-    const std::optional<Identifier>& GetIdentifier() const {
-        return identifier_;
     }
 
     /// Whether a read schema (C ArrowSchema) for nested column pruning was provided.
@@ -208,8 +158,6 @@ class PAIMON_EXPORT ReadContext {
     void SetReadSchema(std::unique_ptr<ArrowSchema> schema);
 
  private:
-    std::string path_;
-    std::string branch_;
     std::vector<std::string> read_field_names_;
     std::vector<int32_t> read_field_ids_;
     std::shared_ptr<Predicate> predicate_;
@@ -223,20 +171,13 @@ class PAIMON_EXPORT ReadContext {
     uint32_t prefetch_max_parallel_num_;
     bool enable_multi_thread_row_to_batch_;
     uint32_t row_to_batch_thread_number_;
-    std::optional<std::string> table_schema_;
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<Executor> executor_;
-    std::shared_ptr<FileSystem> specific_file_system_;
-    std::map<std::string, std::string> fs_scheme_to_identifier_map_;
     std::shared_ptr<RealtimeContext> realtime_context_;
-    std::map<std::string, std::string> options_;
     bool read_ahead_cache_enabled_;
     CacheConfig cache_config_;
     std::shared_ptr<Cache> cache_;
-    std::shared_ptr<FormatTable> format_table_;
     WarmupLevel warmup_level_;
-    std::shared_ptr<Catalog> catalog_;
-    std::optional<Identifier> identifier_;
     // Owns schema resources and releases ArrowSchema::release in destructor.
     std::unique_ptr<ArrowSchema> read_schema_;
 };
@@ -244,18 +185,7 @@ class PAIMON_EXPORT ReadContext {
 /// `ReadContextBuilder` used to build a `ReadContext`, has input validation.
 class PAIMON_EXPORT ReadContextBuilder {
  public:
-    /// Constructs a `ReadContextBuilder` with required parameters.
-    /// @param path The root path of the table.
-    explicit ReadContextBuilder(const std::string& path);
-
-    /// Constructs a `ReadContextBuilder` for a format table that is already loaded: the only way
-    /// to read one whose schema lives in a metastore rather than under its location, such as a
-    /// table a REST catalog serves. The table carries what such a location does not say, so
-    /// `SetTableSchema()`, `WithFileSystem()`, `WithFileSystemSchemeToIdentifierMap()` and a
-    /// branch are refused here rather than ignored.
-    ///
-    /// @param table The format table to read, as `Catalog::GetFormatTable()` hands it back.
-    explicit ReadContextBuilder(const std::shared_ptr<FormatTable>& table);
+    ReadContextBuilder();
 
     ~ReadContextBuilder();
 
@@ -324,7 +254,7 @@ class PAIMON_EXPORT ReadContextBuilder {
     ///     return paimon::Status::Invalid(export_status.message());
     /// }
     ///
-    /// ReadContextBuilder builder("/path/to/table");
+    /// ReadContextBuilder builder;
     /// builder.SetReadSchema(std::move(c_schema));
     /// @endcode
     ///
@@ -334,23 +264,6 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @note Priority: read_schema > read_field_ids > read_field_names.
     ///       When set, read_field_ids and read_field_names are ignored.
     ReadContextBuilder& SetReadSchema(std::unique_ptr<ArrowSchema> read_schema);
-
-    /// Set a configuration options map to set some option entries which are not defined in the
-    /// table schema or whose values you want to overwrite.
-    /// @note The options map will clear the options added by `AddOption()` before.
-    /// @param options The configuration options map.
-    /// @return Reference to this builder for method chaining.
-    ReadContextBuilder& SetOptions(const std::map<std::string, std::string>& options);
-
-    /// Add a single configuration option which is not defined in the table schema or whose value
-    /// you want to overwrite.
-    ///
-    /// If you want to add multiple options, call `AddOption()` multiple times or use `SetOptions()`
-    /// instead.
-    /// @param key The option key.
-    /// @param value The option value.
-    /// @return Reference to this builder for method chaining.
-    ReadContextBuilder& AddOption(const std::string& key, const std::string& value);
 
     /// Set a predicate for filtering data during reading.
     ///
@@ -515,77 +428,6 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& WithRealtimeContext(
         const std::shared_ptr<RealtimeContext>& realtime_context);
-
-    /// Set the table schema as a string to avoid schema loading I/O operations.
-    ///
-    /// This optimization allows the reader to use a pre-loaded schema instead of
-    /// reading it from the table metadata, which can improve performance especially
-    /// in scenarios with many small read operations.
-    ///
-    /// @param table_schema String representation of the table schema.
-    /// @return Reference to this builder for method chaining.
-    /// @note The user must ensure that the schema string is valid and matches the table.
-    /// @note If not set, the schema will be loaded from the table path.
-    ReadContextBuilder& SetTableSchema(const std::string& table_schema);
-
-    /// Set the specific branch to read from in a versioned table.
-    ///
-    /// Paimon supports branching for data versioning and time travel queries.
-    /// This method allows reading from a specific branch instead of the main branch.
-    ///
-    /// The `branch` option names the branch too, as it does for a scan of one branch; naming two
-    /// different branches is refused rather than silently resolved.
-    ///
-    /// @param branch Name of the branch to read from.
-    /// @return Reference to this builder for method chaining.
-    /// @note Default branch is "main" if not specified. An empty name is the main branch.
-    ReadContextBuilder& WithBranch(const std::string& branch);
-
-    /// Sets a mapping from URI schemes (e.g., "file", "oss") to registered file system
-    /// identifiers. This allows selecting different pre-registered file system implementations
-    /// based on the URI scheme at runtime.
-    ///
-    /// @param fs_scheme_to_identifier_map Map from URI scheme (like "oss") to the corresponding
-    /// file system identifier.
-    /// @return Reference to this builder for method chaining.
-    /// @note
-    ///   - This method is intended for environments where multiple file systems are pre-registered.
-    ///   - The specified identifiers must correspond to file systems that have been registered at
-    ///   compile time or initialization.
-    ///   - Cannot be used together with `WithFileSystem()`.
-    ///   - If not set, use default file system (configured in `Options::FILE_SYSTEM`).
-    /// Example:
-    ///   builder.WithFileSystemSchemeToIdentifierMap({{"oss", "jindo"}, {"file", "local"}});
-    ///
-    ReadContextBuilder& WithFileSystemSchemeToIdentifierMap(
-        const std::map<std::string, std::string>& fs_scheme_to_identifier_map);
-
-    /// Sets a custom file system instance to be used for all file operations in this read context.
-    /// This bypasses the global file system registry and uses the provided implementation directly.
-    ///
-    /// @param file_system The file system to use.
-    /// @return Reference to this builder for method chaining.
-    /// @note If not set, use default file system (configured in `Options::FILE_SYSTEM`)
-    ReadContextBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
-
-    /// Reads a native table through its catalog, which supplies its file system:
-    /// `catalog->GetTableFileSystem(identifier)`, with any per-table temporary credentials; an
-    /// explicit `WithFileSystem()` takes precedence, so the catalog is not asked for one.
-    /// `TableRead::Create()` reads `query-auth.enabled` from the schema the catalog holds for the
-    /// branch read. A branch named by a system table path is resolved before requesting the table's
-    /// file system and must agree with the identifier, `branch` option and `WithBranch()`.
-    /// The fields the read reads with still come from `SetTableSchema()` on the main
-    /// branch or from the latest schema under the table path. When the catalog does not enable it,
-    /// the read path must be `catalog->GetTableLocation()` of the branch read.
-    /// A `sys` identifier requires a global system table path. A branch the catalog
-    /// would read as another object, such as `MAIN` or one holding a `$`, is rejected before the
-    /// catalog is asked for anything.
-    /// @param catalog Non-null catalog, read when `Finish()` builds the context and when
-    ///        `TableRead::Create()` runs.
-    /// @param identifier The native table to read.
-    /// @return Reference to this builder for method chaining.
-    ReadContextBuilder& WithCatalog(const std::shared_ptr<Catalog>& catalog,
-                                    const Identifier& identifier);
 
     /// Inject a cache for read operations. Passing nullptr disables cache.
     /// @return Reference to this builder for method chaining.

@@ -232,6 +232,7 @@ Result<BatchReader::ReadBatch> QueryAuthBatchReader::NextBatch() {
 
 Result<std::unique_ptr<TableRead>> QueryAuthTableRead::Create(
     const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
+    const std::string& table_path, const std::string& branch,
     const std::shared_ptr<arrow::MemoryPool>& arrow_pool, InnerReadFactory create_inner) {
     if (context->HasVectorOrFullTextSearch() || context->EnablePreciseFileIndexEvaluate()) {
         return Status::NotImplemented(
@@ -278,8 +279,9 @@ Result<std::unique_ptr<TableRead>> QueryAuthTableRead::Create(
                 name));
         }
     }
-    std::unique_ptr<QueryAuthTableRead> read(new QueryAuthTableRead(
-        context, table_schema, arrow_pool, std::move(create_inner), std::move(output_fields)));
+    std::unique_ptr<QueryAuthTableRead> read(
+        new QueryAuthTableRead(context, table_schema, table_path, branch, arrow_pool,
+                               std::move(create_inner), std::move(output_fields)));
     // Built now, so a read the table cannot serve fails here rather than at the first split.
     PAIMON_RETURN_NOT_OK(read->GetOrCreateInnerRead({}).status());
     return std::unique_ptr<TableRead>(std::move(read));
@@ -287,10 +289,13 @@ Result<std::unique_ptr<TableRead>> QueryAuthTableRead::Create(
 
 QueryAuthTableRead::QueryAuthTableRead(const std::shared_ptr<ReadContext>& context,
                                        const std::shared_ptr<TableSchema>& table_schema,
+                                       const std::string& table_path, const std::string& branch,
                                        const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
                                        InnerReadFactory create_inner,
                                        std::optional<std::vector<std::string>> output_fields)
     : context_(context),
+      table_path_(table_path),
+      branch_(branch),
       table_schema_(table_schema),
       arrow_pool_(arrow_pool),
       create_inner_(std::move(create_inner)),
@@ -337,17 +342,15 @@ Result<TableRead*> QueryAuthTableRead::GetOrCreateInnerRead(
     }
     // Without the predicate: file statistics and indexes hold raw values.
     auto inner_context = std::make_unique<ReadContext>(
-        context_->GetPath(), context_->GetBranch(), read_field_names, read_field_ids,
+        read_field_names, read_field_ids,
         /*predicate=*/nullptr, /*vector_search=*/nullptr, /*full_text_search=*/nullptr,
         /*enable_precise_file_index_evaluate=*/false, /*enable_predicate_filter=*/false,
         context_->EnablePrefetch(), context_->EnableLateMaterializing(),
         context_->GetPrefetchBatchCount(), context_->GetPrefetchMaxParallelNum(),
         context_->EnableMultiThreadRowToBatch(), context_->GetRowToBatchThreadNumber(),
-        context_->GetSpecificTableSchema(), context_->GetMemoryPool(), context_->GetExecutor(),
-        context_->GetSpecificFileSystem(), context_->GetFileSystemSchemeToIdentifierMap(),
-        /*realtime_context=*/nullptr, context_->GetOptions(), context_->ReadAheadCacheEnabled(),
-        context_->GetCacheConfig(), context_->GetCache(), context_->GetFormatTable(),
-        context_->GetWarmupLevel(), context_->GetCatalog(), context_->GetIdentifier());
+        context_->GetMemoryPool(), context_->GetExecutor(),
+        /*realtime_context=*/nullptr, context_->ReadAheadCacheEnabled(), context_->GetCacheConfig(),
+        context_->GetCache(), context_->GetWarmupLevel());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read,
                            create_inner_(std::move(inner_context)));
     TableRead* raw_read = read.get();
@@ -370,13 +373,13 @@ Status QueryAuthTableRead::ValidateSplit(const QueryAuthSplit& split,
             "authorized for. Plan the scan again.");
     }
     PAIMON_ASSIGN_OR_RAISE(bool same_location,
-                           CatalogUtils::SameTableLocation(scope.table_path, context_->GetPath()));
-    const std::string read_branch = BranchManager::NormalizeBranch(context_->GetBranch());
+                           CatalogUtils::SameTableLocation(scope.table_path, table_path_));
+    const std::string read_branch = BranchManager::NormalizeBranch(branch_);
     if (!same_location || scope.branch != read_branch) {
         return Status::Invalid(fmt::format(
             "The split was authorized for table {} (branch {}), but the read targets {} (branch "
             "{}). Plan the scan for the table and branch being read.",
-            scope.table_path, scope.branch, context_->GetPath(), read_branch));
+            scope.table_path, scope.branch, table_path_, read_branch));
     }
     const TableQueryAuthResult& rules = *split.GetAuthResult();
     const std::vector<DataField>& fields = table_schema_->Fields();
@@ -425,9 +428,8 @@ Result<std::unique_ptr<BatchReader>> QueryAuthTableRead::CreateReader(
     }
     Status valid = ValidateSplit(*auth_split, filter_fields);
     if (!valid.ok()) {
-        return valid.WithMessage(fmt::format("Query auth read of {} (schema {}): {}",
-                                             context_->GetPath(), table_schema_->Id(),
-                                             valid.message()));
+        return valid.WithMessage(fmt::format("Query auth read of {} (schema {}): {}", table_path_,
+                                             table_schema_->Id(), valid.message()));
     }
 
     if (rules.RejectsAllRows()) {

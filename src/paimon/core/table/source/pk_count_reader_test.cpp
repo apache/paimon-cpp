@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/core/operation/internal_read_context.h"
 #include "paimon/core/schema/schema_manager.h"
@@ -51,14 +52,18 @@ class PKCountReaderTest : public testing::Test {
  protected:
     Result<std::vector<std::shared_ptr<Split>>> CreateSplits(
         const std::string& table_path, const std::optional<int64_t>& snapshot_id) {
-        ScanContextBuilder scan_context_builder(table_path);
+        TableLoadContext scan_context_builder_load_context{table_path};
+        std::map<std::string, std::string> scan_context_builder_options;
+        ScanContextBuilder scan_context_builder;
         if (snapshot_id.has_value()) {
-            scan_context_builder.AddOption(Options::SCAN_SNAPSHOT_ID,
-                                           std::to_string(snapshot_id.value()));
+            scan_context_builder_options[Options::SCAN_SNAPSHOT_ID] =
+                std::to_string(snapshot_id.value());
         }
 
         PAIMON_ASSIGN_OR_RAISE(auto scan_context, scan_context_builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(std::move(scan_context)));
+        PAIMON_ASSIGN_OR_RAISE(auto table_scan, TableScan::Create(scan_context_builder_load_context,
+                                                                  std::move(scan_context),
+                                                                  scan_context_builder_options));
         PAIMON_ASSIGN_OR_RAISE(auto plan, table_scan->CreatePlan());
         if (snapshot_id.has_value()) {
             if (!plan->SnapshotId().has_value() || plan->SnapshotId().value() != snapshot_id) {
@@ -70,7 +75,9 @@ class PKCountReaderTest : public testing::Test {
 
     Result<std::shared_ptr<InternalReadContext>> CreateInternalContext(
         const std::string& table_path) {
-        ReadContextBuilder read_context_builder(table_path);
+        TableLoadContext read_context_builder_load_context{table_path};
+        std::map<std::string, std::string> read_context_builder_options;
+        ReadContextBuilder read_context_builder;
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context,
                                read_context_builder.Finish());
 
@@ -78,7 +85,13 @@ class PKCountReaderTest : public testing::Test {
         PAIMON_ASSIGN_OR_RAISE(auto table_schema, schema_manager.ReadSchema(0));
         PAIMON_ASSIGN_OR_RAISE(
             auto internal_context,
-            InternalReadContext::Create(read_context, table_schema, table_schema->Options()));
+            InternalReadContext::Create(
+                read_context, table_schema, table_schema->Options(),
+                read_context_builder_load_context.file_system,
+                read_context_builder_load_context.path,
+                read_context_builder_load_context.fs_scheme_to_identifier_map,
+                read_context_builder_load_context.catalog,
+                read_context_builder_load_context.identifier, read_context_builder_options));
         return std::shared_ptr<InternalReadContext>(std::move(internal_context));
     }
 

@@ -59,6 +59,7 @@ std::map<std::string, std::string> ReadOptimizedSystemTable::ReadOptimizedOption
 
 Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
     std::unique_ptr<ScanContext> ctx) const {
+    const auto& dynamic_options = options_;
     const std::shared_ptr<ScanContext> context = std::move(ctx);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
     if (context->GetRealtimeContext() && !table_schema_->PrimaryKeys().empty()) {
@@ -66,14 +67,10 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
             "PK real-time union read does not support read-optimized scans");
     }
     auto options = ReadOptimizedOptions();
-    auto read_options = context->GetOptions();
-    read_options[kReadOptimizedScanOption] = "true";
-    ScanContextBuilder builder(table_path_);
+    ScanContextBuilder builder;
     builder.WithStreamingMode(context->IsStreamingMode())
-        .SetOptions(read_options)
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(GetFileSystem())
         .WithCache(context->GetCache());
     if (context->GetLimit().has_value()) {
         builder.SetLimit(context->GetLimit().value());
@@ -91,12 +88,16 @@ Result<std::unique_ptr<TableScan>> ReadOptimizedSystemTable::NewScan(
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> base_context, builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
                            CreateDataTable(table_schema_, options));
-    return data_table->NewScan(std::move(base_context));
+    auto scan_options = dynamic_options;
+    scan_options[kReadOptimizedScanOption] = "true";
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table,
+                           data_table->CopyWithoutTimeTravel(scan_options));
+    return configured_table->NewScan(std::move(base_context));
 }
 
 Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadContext(
     const std::shared_ptr<ReadContext>& context) const {
-    ReadContextBuilder builder(table_path_);
+    ReadContextBuilder builder;
     builder.SetPredicate(context->GetPredicate())
         .EnablePredicateFilter(context->EnablePredicateFilter())
         .EnablePrefetch(context->EnablePrefetch())
@@ -104,10 +105,8 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
         .SetPrefetchMaxParallelNum(context->GetPrefetchMaxParallelNum())
         .EnableMultiThreadRowToBatch(context->EnableMultiThreadRowToBatch())
         .SetRowToBatchThreadNumber(context->GetRowToBatchThreadNumber())
-        .SetOptions(context->GetOptions())
         .WithMemoryPool(context->GetMemoryPool())
         .WithExecutor(context->GetExecutor())
-        .WithFileSystem(GetFileSystem())
         .SetReadAheadCacheEnabled(context->ReadAheadCacheEnabled())
         .WithCacheConfig(context->GetCacheConfig())
         .SetWarmupLevel(context->GetWarmupLevel())
@@ -126,15 +125,29 @@ Result<std::unique_ptr<ReadContext>> ReadOptimizedSystemTable::CreateDataReadCon
 
 Result<std::unique_ptr<TableRead>> ReadOptimizedSystemTable::NewRead(
     std::unique_ptr<ReadContext> ctx) const {
+    const auto& dynamic_options = options_;
     const std::shared_ptr<ReadContext> context = std::move(ctx);
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "read"));
     PAIMON_RETURN_NOT_OK(CheckNoSearch(context));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> base_context,
                            CreateDataReadContext(context));
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileStoreTable> data_table,
-        CreateDataTable(table_schema_, options_, context->GetFileSystemSchemeToIdentifierMap()));
-    return data_table->NewRead(std::move(base_context));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStoreTable> data_table,
+                           CreateDataTable(table_schema_, options_));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> configured_table,
+                           data_table->CopyWithoutTimeTravel(dynamic_options));
+    return configured_table->NewRead(std::move(base_context));
+}
+
+Result<std::shared_ptr<Table>> ReadOptimizedSystemTable::CopyWithoutTimeTravel(
+    const std::map<std::string, std::string>& dynamic_options) const {
+    using OptionsMap = std::map<std::string, std::string>;
+    PAIMON_ASSIGN_OR_RAISE(OptionsMap options,
+                           CopyOptions(*table_schema_, options_, dynamic_options));
+    auto table = std::make_shared<ReadOptimizedSystemTable>(*this);
+    table->options_ = std::move(options);
+    PAIMON_ASSIGN_OR_RAISE(table->table_schema_, table_schema_->Copy(table->options_));
+    PAIMON_RETURN_NOT_OK(table->AdoptOwnSchema());
+    return std::shared_ptr<Table>(std::move(table));
 }
 
 }  // namespace paimon

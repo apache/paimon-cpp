@@ -598,4 +598,28 @@ Result<std::vector<GenericRow>> PartitionsSystemTable::BuildRows() const {
     return rows;
 }
 
+Result<std::shared_ptr<Table>> CatalogOptionsSystemTable::CopyWithoutTimeTravel(
+    const std::map<std::string, std::string>& /*dynamic_options*/) const {
+    auto table = std::make_shared<CatalogOptionsSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
+Result<std::shared_ptr<Table>> AllTableOptionsSystemTable::CopyWithoutTimeTravel(
+    const std::map<std::string, std::string>& /*dynamic_options*/) const {
+    auto table = std::make_shared<AllTableOptionsSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
+Result<std::shared_ptr<Table>> TablesSystemTable::CopyWithoutTimeTravel(
+    const std::map<std::string, std::string>& /*dynamic_options*/) const {
+    auto table = std::make_shared<TablesSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
+Result<std::shared_ptr<Table>> PartitionsSystemTable::CopyWithoutTimeTravel(
+    const std::map<std::string, std::string>& /*dynamic_options*/) const {
+    auto table = std::make_shared<PartitionsSystemTable>(*this);
+    return std::shared_ptr<Table>(std::move(table));
+}
+
 }  // namespace paimon

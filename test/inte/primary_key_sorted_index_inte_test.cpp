@@ -31,6 +31,7 @@
 #include "arrow/api.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog/table_load_context.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/table/source/data_split_impl.h"
@@ -199,24 +200,27 @@ class PrimaryKeySortedIndexInteTest : public ::testing::Test,
         const std::optional<int64_t>& snapshot_id, bool index_enabled,
         const std::vector<std::map<std::string, std::string>>& partition_filters,
         const std::string& branch, const std::shared_ptr<FileSystem>& file_system) const {
-        ScanContextBuilder builder(TablePath(partitioned));
-        builder.SetPredicate(predicate).AddOption(Options::GLOBAL_INDEX_ENABLED,
-                                                  index_enabled ? "true" : "false");
+        TableLoadContext builder_load_context{TablePath(partitioned)};
+        std::map<std::string, std::string> builder_options;
+        ScanContextBuilder builder;
+        builder_options[Options::GLOBAL_INDEX_ENABLED] = index_enabled ? "true" : "false";
+        builder.SetPredicate(predicate);
         if (snapshot_id != std::nullopt) {
-            builder.AddOption(Options::SCAN_SNAPSHOT_ID, fmt::format("{}", snapshot_id.value()));
+            builder_options[Options::SCAN_SNAPSHOT_ID] = fmt::format("{}", snapshot_id.value());
         }
         if (!partition_filters.empty()) {
             builder.SetPartitionFilter(partition_filters);
         }
         if (!branch.empty()) {
-            builder.AddOption(Options::BRANCH, branch);
+            builder_options[Options::BRANCH] = branch;
         }
         if (file_system != nullptr) {
-            builder.WithFileSystem(file_system);
+            builder_load_context.file_system = file_system;
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context, builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> table_scan,
-                               TableScan::Create(std::move(context)));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<TableScan> table_scan,
+            TableScan::Create(builder_load_context, std::move(context), builder_options));
         return table_scan->CreatePlan();
     }
 
@@ -224,7 +228,9 @@ class PrimaryKeySortedIndexInteTest : public ::testing::Test,
                                   const std::vector<std::shared_ptr<Split>>& splits,
                                   const std::map<std::string, std::string>& options,
                                   const std::shared_ptr<FileSystem>& file_system) const {
-        ReadContextBuilder builder(TablePath(partitioned));
+        TableLoadContext builder_load_context{TablePath(partitioned)};
+        std::map<std::string, std::string> builder_options;
+        ReadContextBuilder builder;
         if (partitioned) {
             builder.SetReadFieldNames({"pt", "id", "score", "tag"});
         } else {
@@ -232,14 +238,15 @@ class PrimaryKeySortedIndexInteTest : public ::testing::Test,
         }
         builder.SetPredicate(predicate).EnablePredicateFilter(true);
         for (const auto& [key, value] : options) {
-            builder.AddOption(key, value);
+            builder_options[key] = value;
         }
         if (file_system != nullptr) {
-            builder.WithFileSystem(file_system);
+            builder_load_context.file_system = file_system;
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> context, builder.Finish());
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                               TableRead::Create(std::move(context)));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<TableRead> table_read,
+            TableRead::Create(builder_load_context, std::move(context), builder_options));
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> batch_reader,
                                table_read->CreateReader(splits));
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> result,
@@ -541,13 +548,16 @@ TEST_P(PrimaryKeySortedIndexInteTest, ScoredSplitFailsBeforeForceKeepDeleteFallb
         inner_split, std::vector<Range>{Range(first_range.from, first_range.from)},
         std::vector<float>{0.5F});
 
-    ReadContextBuilder builder(TablePath(/*partitioned=*/false));
+    TableLoadContext builder_load_context{TablePath(/*partitioned=*/false)};
+    std::map<std::string, std::string> builder_options;
+    ReadContextBuilder builder;
     builder.SetReadFieldNames({"id", "score", "tag"})
         .SetPredicate(predicate)
         .EnablePredicateFilter(true);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(context)));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TableRead> table_read,
+        TableRead::Create(builder_load_context, std::move(context), builder_options));
     auto* key_value_table_read = dynamic_cast<KeyValueTableRead*>(table_read.get());
     ASSERT_TRUE(key_value_table_read != nullptr);
     key_value_table_read->ForceKeepDelete(true);
