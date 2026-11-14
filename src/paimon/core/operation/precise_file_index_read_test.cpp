@@ -230,6 +230,53 @@ class PreciseFileIndexReadTest : public ::testing::Test {
         std::make_shared<MockSearchFileIndex::Statistics>();
 };
 
+TEST_F(PreciseFileIndexReadTest, TestReadRowPositionsAcrossPredicates) {
+    ReadContextBuilder builder(SearchTablePath());
+    builder.EnablePreciseFileIndexEvaluate(true);
+    builder.SetReadFieldNames({"f0", "f1", "f2", "f3"})
+        .SetPredicate(PredicateBuilder::GreaterThan(3, "f3", FieldType::DOUBLE, Literal(13.5)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RawFileSplitRead> split_read, CreateSplitRead(context));
+    auto file = PrepareDataFile();
+    auto path_factory = std::make_shared<DataFilePathFactory>();
+    ASSERT_OK(
+        path_factory->Init(SearchTablePath() + "/f1=10/f2=0/bucket-0", "orc", "data-", nullptr));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FieldMappingBuilder> field_mapping_builder,
+        FieldMappingBuilder::Create(split_read->context_->GetReadSchema(),
+                                    split_read->context_->GetPartitionKeys(), nullptr));
+    const BinaryRow partition = BinaryRowGenerator::GenerateRow({10, 0}, pool_.get());
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<PreciseFileIndexRead> read,
+        PreciseFileIndexRead::Create(*split_read, partition, file, field_mapping_builder.get(),
+                                     path_factory, {}));
+    const RoaringBitmap32 candidates = RoaringBitmap32::From({0, 1, 2});
+    auto first = PredicateBuilder::Equal(3, "f3", FieldType::DOUBLE, Literal(12.1));
+    ASSERT_OK_AND_ASSIGN(RoaringBitmap32 rows, read->ReadRowPositions(first, candidates));
+    ASSERT_EQ(rows, RoaringBitmap32::From({0}));
+    ASSERT_OK_AND_ASSIGN(
+        rows, read->ReadRowPositions(PredicateBuilder::Equal(1, "f1", FieldType::INT, Literal(10)),
+                                     candidates));
+    ASSERT_EQ(rows, candidates);
+    ASSERT_OK_AND_ASSIGN(
+        rows, read->ReadRowPositions(
+                  PredicateBuilder::LessOrEqual(3, "f3", FieldType::DOUBLE, Literal(13.1)),
+                  RoaringBitmap32::From({1, 2})));
+    ASSERT_EQ(rows, RoaringBitmap32::From({1}));
+    ASSERT_OK_AND_ASSIGN(rows, read->ReadRowPositions(first, candidates));
+    ASSERT_EQ(rows, RoaringBitmap32::From({0}));
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader,
+                         read->CreateReader({}, std::nullopt));
+    ASSERT_TRUE(reader);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                         ReadResultCollector::CollectResult(std::move(reader)));
+    CheckSearchResult(result,
+                      {arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
+                       arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())},
+                      R"([["Tony",10,0,14.1]])");
+}
+
 TEST_F(PreciseFileIndexReadTest, TestMixedPredicateNestedAndOrWithPartitionConstants) {
     const std::string first_query = R"({"match":{"query":"first"}})";
     const std::string second_query = R"({"match":{"query":"second"}})";
