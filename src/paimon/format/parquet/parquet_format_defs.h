@@ -59,6 +59,10 @@ static inline const char PARQUET_WRITE_ENABLE_PAGE_INDEX[] = "parquet.write.enab
 static constexpr bool DEFAULT_PARQUET_WRITE_ENABLE_PAGE_INDEX = true;
 
 // read
+// Enable parallel column reads on the application's Arrow CPU pool (default true).
+static inline const char PARQUET_READ_USE_THREADS[] = "parquet.read.use-threads";
+// Deprecated fallback when PARQUET_READ_USE_THREADS is absent: 0 disables column threads,
+// positive values enable them. This option no longer changes the global CPU pool capacity.
 static inline const char PARQUET_READ_EXECUTOR_THREAD_COUNT[] =
     "parquet.read.executor.thread-count";
 static constexpr uint32_t DEFAULT_PARQUET_READ_EXECUTOR_THREAD_COUNT = 3;

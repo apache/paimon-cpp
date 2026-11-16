@@ -43,14 +43,17 @@
 #include "arrow/io/memory.h"
 #include "arrow/ipc/api.h"
 #include "arrow/ipc/json_simple.h"
+#include "arrow/util/thread_pool.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/columnar/columnar_array.h"
 #include "paimon/common/data/columnar/columnar_row.h"
 #include "paimon/common/data/columnar/columnar_row_ref.h"
+#include "paimon/common/executor/future.h"
 #include "paimon/common/io/cache_input_stream.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/predicate/equal.h"
+#include "paimon/common/reader/prefetch_file_batch_reader_impl.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
@@ -59,6 +62,8 @@
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/read_ahead_cache.h"
+#include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/io/arrow_ipc_file.h"
 #include "paimon/defs.h"
 #include "paimon/format/parquet/parquet_field_id_converter.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
@@ -77,6 +82,7 @@
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
 #include "paimon/utils/roaring_bitmap32.h"
+#include "paimon/write_context.h"
 #include "parquet/arrow/reader.h"
 #include "parquet/file_reader.h"
 #include "parquet/metadata.h"
@@ -1137,41 +1143,175 @@ TEST_F(ParquetFileBatchReaderTest, TestCreateReaderProperties) {
     }
 }
 
+TEST_F(ParquetFileBatchReaderTest, TestConcurrentReadersPreserveGlobalCpuPool) {
+    WriteArray(file_path_, struct_array_, schema_, /*write_batch_size=*/2,
+               /*enable_dictionary=*/true, /*max_row_group_length=*/2);
+    const int32_t original_capacity = arrow::GetCpuThreadPoolCapacity();
+    ScopeGuard restore_capacity([original_capacity]() {
+        EXPECT_TRUE(arrow::SetCpuThreadPoolCapacity(original_capacity).ok());
+    });
+    ASSERT_OK_AND_ASSIGN(auto executor, CreateDefaultExecutor(4));
+    const std::vector<std::map<std::string, std::string>> configurations = {
+        {},
+        {{PARQUET_READ_EXECUTOR_THREAD_COUNT, "0"}},
+        {{PARQUET_READ_EXECUTOR_THREAD_COUNT, "1"}},
+        {{PARQUET_READ_EXECUTOR_THREAD_COUNT, "6"}},
+        {{PARQUET_READ_USE_THREADS, "false"}},
+        {{PARQUET_READ_USE_THREADS, "true"}}};
+    for (int32_t spill_threads : {0, 2}) {
+        SCOPED_TRACE(spill_threads);
+        ASSERT_TRUE(arrow::SetCpuThreadPoolCapacity(5).ok());
+        WriteContextBuilder write_builder(dir_->Str(), "test_user");
+        write_builder.SetWriteBufferSpillThreadNumber(spill_threads);
+        ASSERT_OK_AND_ASSIGN(auto write_context, write_builder.Finish());
+        ASSERT_EQ(write_context->EnableMultiThreadSpill(), spill_threads > 0);
+        const int32_t expected_capacity = spill_threads > 0 ? spill_threads : 5;
+        ASSERT_EQ(arrow::GetCpuThreadPoolCapacity(), expected_capacity);
+
+        std::vector<std::future<Result<std::unique_ptr<FileBatchReader>>>> reader_futures;
+        for (const auto& options : configurations) {
+            reader_futures.push_back(
+                Via(executor.get(), [&, options]() -> Result<std::unique_ptr<FileBatchReader>> {
+                    ParquetReaderBuilder builder(options, /*batch_size=*/1);
+                    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input,
+                                           fs_->Open(file_path_));
+                    return builder.Build(input);
+                }));
+        }
+        std::vector<std::unique_ptr<FileBatchReader>> readers;
+        for (auto& result : CollectAll(reader_futures)) {
+            ASSERT_OK(result.status());
+            readers.push_back(std::move(result).value());
+            ASSERT_EQ(arrow::GetCpuThreadPoolCapacity(), expected_capacity);
+        }
+        std::vector<std::future<Result<std::shared_ptr<arrow::ChunkedArray>>>> futures;
+        futures.push_back(
+            Via(executor.get(), [&]() -> Result<std::shared_ptr<arrow::ChunkedArray>> {
+                const bool use_threads = write_context->EnableMultiThreadSpill();
+                const std::string spill_path =
+                    PathUtil::JoinPath(dir_->Str(), fmt::format("spill-{}.arrow", spill_threads));
+                PAIMON_ASSIGN_OR_RAISE(
+                    std::unique_ptr<ArrowIpcFileWriter> writer,
+                    ArrowIpcFileWriter::Create(fs_, spill_path, schema_, "zstd",
+                                               /*compression_level=*/1, use_threads, pool_));
+                auto batch = arrow::RecordBatch::Make(schema_, struct_array_->length(),
+                                                      struct_array_->fields());
+                PAIMON_RETURN_NOT_OK(writer->WriteBatch(batch));
+                PAIMON_RETURN_NOT_OK(writer->Close());
+                PAIMON_ASSIGN_OR_RAISE(
+                    std::unique_ptr<ArrowIpcFileReader> reader,
+                    ArrowIpcFileReader::Open(fs_, spill_path, use_threads, pool_));
+                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::RecordBatch> actual,
+                                       reader->ReadRecordBatch(0));
+                PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> array,
+                                                  actual->ToStructArray());
+                return std::make_shared<arrow::ChunkedArray>(array);
+            }));
+        for (const auto& reader : readers) {
+            futures.push_back(Via(executor.get(), [reader = reader.get()]() {
+                return paimon::test::ReadResultCollector::CollectResult(reader);
+            }));
+        }
+        for (const auto& result : CollectAll(futures)) {
+            ASSERT_OK(result.status());
+            ASSERT_TRUE(result.value()->Equals(arrow::ChunkedArray(struct_array_)));
+        }
+        ASSERT_EQ(arrow::GetCpuThreadPoolCapacity(), expected_capacity);
+        for (auto& reader : readers) {
+            reader->Close();
+            reader.reset();
+            ASSERT_EQ(arrow::GetCpuThreadPoolCapacity(), expected_capacity);
+        }
+    }
+}
+
+TEST_F(ParquetFileBatchReaderTest, TestPrefetchReadersPreserveGlobalCpuPool) {
+    WriteArray(file_path_, struct_array_, schema_, /*write_batch_size=*/2,
+               /*enable_dictionary=*/true, /*max_row_group_length=*/2);
+    ASSERT_OK_AND_ASSIGN(auto file_status, fs_->GetFileStatus(file_path_));
+    const int32_t original_capacity = arrow::GetCpuThreadPoolCapacity();
+    ScopeGuard restore_capacity([original_capacity]() {
+        EXPECT_TRUE(arrow::SetCpuThreadPoolCapacity(original_capacity).ok());
+    });
+    ASSERT_TRUE(arrow::SetCpuThreadPoolCapacity(1).ok());
+    const std::vector<std::map<std::string, std::string>> configurations = {
+        {},
+        {{PARQUET_READ_EXECUTOR_THREAD_COUNT, "0"}},
+        {{PARQUET_READ_EXECUTOR_THREAD_COUNT, "6"}},
+        {{PARQUET_READ_USE_THREADS, "false"}},
+        {{PARQUET_READ_USE_THREADS, "true"}}};
+    for (uint32_t outer_threads : {1, 4}) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor,
+                             CreateDefaultExecutor(outer_threads));
+        for (bool read_ahead : {false, true}) {
+            for (const auto& options : configurations) {
+                SCOPED_TRACE(::testing::PrintToString(options));
+                SCOPED_TRACE(outer_threads);
+                SCOPED_TRACE(read_ahead);
+                ParquetReaderBuilder builder(options, /*batch_size=*/1);
+                builder.WithReadHints(ReadHints{true, read_ahead});
+                ASSERT_OK_AND_ASSIGN(
+                    auto reader,
+                    PrefetchFileBatchReaderImpl::Create(
+                        file_path_, file_status.GetLen(), &builder, fs_,
+                        /*prefetch_max_parallel_num=*/4, /*batch_size=*/1,
+                        /*prefetch_batch_count=*/8, /*enable_adaptive_prefetch_strategy=*/false,
+                        executor, /*initialize_read_ranges=*/true,
+                        /*read_ahead_cache_enabled=*/read_ahead, CacheConfig(),
+                        /*enable_io_metrics=*/true, WarmupLevel::DECODED, GetDefaultPool(), pool_));
+                ASSERT_EQ(arrow::GetCpuThreadPoolCapacity(), 1);
+                reader->Warmup();
+                ASSERT_OK_AND_ASSIGN(auto result, paimon::test::ReadResultCollector::CollectResult(
+                                                      std::move(reader)));
+                ASSERT_TRUE(result->Equals(arrow::ChunkedArray(struct_array_)));
+                ASSERT_EQ(arrow::GetCpuThreadPoolCapacity(), 1);
+            }
+        }
+    }
+}
+
 TEST_F(ParquetFileBatchReaderTest, TestCreateArrowReaderProperties) {
-    {
-        // test default options
-        std::map<std::string, std::string> options;
-        int32_t batch_size = 1024;
-        ASSERT_OK_AND_ASSIGN(
-            auto arrow_reader_properties,
-            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, batch_size,
-                                                                /*hints=*/std::nullopt));
-        ASSERT_EQ(arrow_reader_properties.pre_buffer(), true);
-        ASSERT_EQ(arrow_reader_properties.batch_size(), 1024);
-        ASSERT_EQ(arrow_reader_properties.use_threads(), true);
-        ASSERT_EQ(arrow::GetCpuThreadPoolCapacity(), 3);
-        auto expected_cache_options = arrow::io::CacheOptions::Defaults();
-        expected_cache_options.hole_size_limit = DEFAULT_PARQUET_READ_CACHE_OPTION_HOLE_SIZE_LIMIT;
-        ASSERT_EQ(arrow_reader_properties.cache_options(), expected_cache_options);
+    const int32_t original_capacity = arrow::GetCpuThreadPoolCapacity();
+    ScopeGuard restore_capacity([original_capacity]() {
+        EXPECT_TRUE(arrow::SetCpuThreadPoolCapacity(original_capacity).ok());
+    });
+    ASSERT_TRUE(arrow::SetCpuThreadPoolCapacity(8).ok());
+    auto expected_cache_options = arrow::io::CacheOptions::Defaults();
+    expected_cache_options.hole_size_limit = DEFAULT_PARQUET_READ_CACHE_OPTION_HOLE_SIZE_LIMIT;
+    const std::vector<std::pair<std::map<std::string, std::string>, bool>> threading_options = {
+        {{}, true},
+        {{{PARQUET_READ_EXECUTOR_THREAD_COUNT, "0"}}, false},
+        {{{PARQUET_READ_EXECUTOR_THREAD_COUNT, "1"}}, true},
+        {{{PARQUET_READ_EXECUTOR_THREAD_COUNT, "6"}}, true},
+        {{{PARQUET_READ_EXECUTOR_THREAD_COUNT, "4294967295"}}, true},
+        {{{PARQUET_READ_USE_THREADS, "false"}}, false},
+        {{{PARQUET_READ_USE_THREADS, "true"}}, true},
+        {{{PARQUET_READ_EXECUTOR_THREAD_COUNT, "0"}, {PARQUET_READ_USE_THREADS, "true"}}, true},
+        {{{PARQUET_READ_EXECUTOR_THREAD_COUNT, "6"}, {PARQUET_READ_USE_THREADS, "false"}}, false}};
+    for (const auto& [options, use_threads] : threading_options) {
+        SCOPED_TRACE(::testing::PrintToString(options));
+        ASSERT_OK_AND_ASSIGN(auto properties, ParquetFileBatchReader::CreateArrowReaderProperties(
+                                                  pool_, options, 1024, /*hints=*/std::nullopt));
+        ASSERT_TRUE(properties.pre_buffer());
+        ASSERT_EQ(properties.batch_size(), 1024);
+        ASSERT_EQ(properties.use_threads(), use_threads);
+        ASSERT_EQ(properties.cache_options(), expected_cache_options);
+        ASSERT_EQ(arrow::GetCpuThreadPoolCapacity(), 8);
     }
-    {
-        std::map<std::string, std::string> options = {{PARQUET_READ_EXECUTOR_THREAD_COUNT, "0"}};
-        int32_t batch_size = 1024;
-        ASSERT_OK_AND_ASSIGN(
-            auto arrow_reader_properties,
-            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, batch_size,
-                                                                /*hints=*/std::nullopt));
-        ASSERT_EQ(arrow_reader_properties.use_threads(), false);
-    }
-    {
-        std::map<std::string, std::string> options = {{PARQUET_READ_EXECUTOR_THREAD_COUNT, "6"}};
-        int32_t batch_size = 1024;
-        ASSERT_OK_AND_ASSIGN(
-            auto arrow_reader_properties,
-            ParquetFileBatchReader::CreateArrowReaderProperties(pool_, options, batch_size,
-                                                                /*hints=*/std::nullopt));
-        ASSERT_EQ(arrow_reader_properties.use_threads(), true);
-        ASSERT_EQ(arrow::GetCpuThreadPoolCapacity(), 6);
+    const std::vector<std::pair<std::map<std::string, std::string>, std::string>> invalid_options =
+        {{{{PARQUET_READ_USE_THREADS, "invalid"}}, PARQUET_READ_USE_THREADS},
+         {{{PARQUET_READ_EXECUTOR_THREAD_COUNT, "0"}, {PARQUET_READ_USE_THREADS, "invalid"}},
+          PARQUET_READ_USE_THREADS},
+         {{{PARQUET_READ_EXECUTOR_THREAD_COUNT, "-1"}}, PARQUET_READ_EXECUTOR_THREAD_COUNT},
+         {{{PARQUET_READ_EXECUTOR_THREAD_COUNT, "4294967296"}}, PARQUET_READ_EXECUTOR_THREAD_COUNT},
+         {{{PARQUET_READ_EXECUTOR_THREAD_COUNT, "invalid"}, {PARQUET_READ_USE_THREADS, "true"}},
+          PARQUET_READ_EXECUTOR_THREAD_COUNT}};
+    for (const auto& [options, invalid_option] : invalid_options) {
+        SCOPED_TRACE(::testing::PrintToString(options));
+        ASSERT_NOK_WITH_MSG(ParquetFileBatchReader::CreateArrowReaderProperties(
+                                pool_, options, 1024, /*hints=*/std::nullopt),
+                            invalid_option);
+        ASSERT_EQ(arrow::GetCpuThreadPoolCapacity(), 8);
     }
     {
         std::map<std::string, std::string> options = {
@@ -1210,6 +1350,7 @@ TEST_F(ParquetFileBatchReaderTest, TestCreateArrowReaderProperties) {
             "parquet.read.cache-option.range-size-limit must be greater than "
             "parquet.read.cache-option.hole-size-limit");
     }
+    ASSERT_EQ(arrow::GetCpuThreadPoolCapacity(), 8);
 }
 
 TEST_F(ParquetFileBatchReaderTest, TestPreBufferReadHints) {

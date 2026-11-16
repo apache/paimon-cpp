@@ -302,7 +302,9 @@ class PAIMON_EXPORT WriteContextBuilder {
 
     /// Set the thread number for write buffer spill operations. (default is 0)
     /// If <= 0, threading is disabled for spill IPC read/write.
-    /// If > 0, sets arrow CPU thread pool capacity for spill operations.
+    /// If > 0, Finish() sets the process-wide Arrow CPU pool capacity and enables threaded
+    /// spill IPC read/write. Parquet readers and other Arrow CPU consumers share this pool.
+    /// Coordinate positive values with application CPU configuration before concurrent work.
     /// @param thread_number The thread number to use for spill operations.
     /// @return Reference to this builder for method chaining.
     WriteContextBuilder& SetWriteBufferSpillThreadNumber(int32_t thread_number);

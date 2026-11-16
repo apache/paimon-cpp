@@ -22,10 +22,6 @@
 // attributed without the catalog lookup, split planning, merge/sort and commit that the
 // table-level read_write_benchmark includes. Each case comment says what that case answers.
 //
-// Every axis - type, cardinality, null density, batch size, encoding, selectivity - is swept on
-// its own rather than as a combined matrix, because the point is attributing one change rather
-// than describing a workload.
-//
 // Data is generated outside the timed region and on Arrow's default pool, because the writer
 // cuts a new row group once its own pool crosses parquet.writer.max.memory.use.
 //
@@ -50,6 +46,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "arrow/util/bit_util.h"
+#include "arrow/util/thread_pool.h"
 #include "benchmark/benchmark.h"
 #include "fmt/format.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
@@ -1311,6 +1308,54 @@ void BM_ParquetRead_FullScan(::benchmark::State& state) {
                      /*selection_bitmap=*/std::nullopt, /*options=*/{}, kReadBatchSize);
 }
 
+// Policy -1 uses defaults; -2 mixes legacy counts 0/1/3/6 across readers.
+void BM_ParquetRead_Concurrent(::benchmark::State& state) {
+    const auto& fixture = FlatFixture();
+    if (FailBenchmark(state, fixture.status())) {
+        return;
+    }
+    std::map<std::string, std::string> options;
+    int64_t legacy_thread_count = state.range(0);
+    if (legacy_thread_count == -2) {
+        constexpr int32_t kLegacyThreadCounts[] = {0, 1, 3, 6};
+        legacy_thread_count = kLegacyThreadCounts[state.thread_index() % 4];
+    }
+    if (legacy_thread_count >= 0) {
+        options[paimon::parquet::PARQUET_READ_EXECUTOR_THREAD_COUNT] =
+            fmt::format("{}", legacy_thread_count);
+    }
+    const auto schema = FlatSchema();
+    double reader_elapsed_ns = 0;
+    Timer workload_timer;
+    for (auto _ : state) {
+        Timer timer;
+        Result<ReadStats> result = ReadParquetFile(
+            fixture.fs(), fixture.path(), schema, /*predicate=*/nullptr,
+            /*selection_bitmap=*/std::nullopt, options, kReadBatchSize, fixture.arrow_pool());
+        reader_elapsed_ns += timer.ElapsedNanos();
+        if (FailBenchmark(state, result.status())) {
+            return;
+        }
+        if (result.value().rows != kRowsPerFile) {
+            FailBenchmark(state,
+                          Status::Invalid("concurrent reader returned an incorrect row count"));
+            return;
+        }
+    }
+    // Counter values are summed across reader threads. Include the loop's completion barrier
+    // so a faster reader in the mixed case does not inflate aggregate throughput.
+    state.counters["rows_per_second"] =
+        ::benchmark::Counter(static_cast<double>(state.iterations() * kRowsPerFile) * 1e9 /
+                             workload_timer.ElapsedNanos());
+    if (state.iterations() > 0) {
+        state.counters["latency_ms"] =
+            ::benchmark::Counter(reader_elapsed_ns / static_cast<double>(state.iterations()) / 1e6,
+                                 ::benchmark::Counter::kAvgThreads);
+    }
+    state.counters["cpu_capacity"] =
+        ::benchmark::Counter(arrow::GetCpuThreadPoolCapacity(), ::benchmark::Counter::kAvgThreads);
+}
+
 // One column at a time, separating per-column transfer from materializing the whole row.
 void BM_ParquetRead_Projection(::benchmark::State& state, const char* column) {
     std::shared_ptr<arrow::Field> field = FlatSchema()->GetFieldByName(column);
@@ -1584,6 +1629,18 @@ BENCHMARK(BM_ParquetRead_OffsetIndexCache)
     ->Unit(benchmark::kMillisecond)
     ->UseRealTime();
 BENCHMARK(BM_ParquetRead_FullScan)->Unit(benchmark::kMillisecond)->UseRealTime();
+BENCHMARK(BM_ParquetRead_Concurrent)
+    ->ArgName("policy")
+    ->Arg(-1)
+    ->Arg(0)
+    ->Arg(3)
+    ->Arg(6)
+    ->Arg(-2)
+    ->Threads(1)
+    ->Threads(4)
+    ->MeasureProcessCPUTime()
+    ->UseRealTime()
+    ->Unit(benchmark::kMillisecond);
 BENCHMARK_CAPTURE(BM_ParquetRead_Projection, id, "id")
     ->Unit(benchmark::kMillisecond)
     ->UseRealTime();

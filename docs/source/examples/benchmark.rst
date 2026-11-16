@@ -108,8 +108,8 @@ source file or table.
 
 Two things shape how the results should be read:
 
-- Every axis is swept on its own rather than as a combined matrix, so each
-  case answers one question and a change can be attributed to it.
+- Most cases sweep a single axis. Concurrent reads vary both reader policy
+  and reader count to expose interactions through the shared CPU pool.
 - Writes go through the local FileSystem into a temporary directory, so
   absolute numbers carry the cost of that path. Comparisons are meaningful
   only under the same environment and methodology - the same machine, build
@@ -157,13 +157,14 @@ Reader cases (``BM_ParquetRead_*``) cover full scan, single-column projection,
 predicate-filtered reads at varying selectivity with page-index filtering on and
 off, skip-heavy reads driven by a strided selection bitmap, null density,
 ``DECIMAL`` at precision 9 / 18 / 38, ``DOUBLE``, dictionary-encoded against
-plain-encoded files, rows per ``NextBatch`` call, and nested column reads.
+plain-encoded files, rows per ``NextBatch`` call, nested column reads, and
+concurrent readers with different threading policies.
 
-Every case reports ``ns_per_row`` next to ``bytes_per_row`` - ``file_bytes`` for
-writes, ``read_bytes`` for reads - so a change that trades CPU for size is
-visible in both directions. Read cases additionally report ``rows_read``,
-``batches``, and ``row_groups`` / ``row_groups_after_filter`` from the reader's
-own metrics.
+Writer and single-reader cases report ``ns_per_row`` next to ``bytes_per_row`` -
+``file_bytes`` for writes, ``read_bytes`` for reads - so a change that trades CPU
+for size is visible in both directions. Single-reader cases additionally report
+``rows_read``, ``batches``, and ``row_groups`` / ``row_groups_after_filter`` from
+the reader's own metrics.
 
 Compare filtered cases on ``ns_per_input_row`` and ``bytes_per_input_row``, not
 ``ns_per_row`` and ``bytes_per_row``. The latter pair divides by the rows a case
@@ -211,3 +212,32 @@ Read batch size sweep, repeated for a stable comparison::
 Null density on both sides, to see what definition levels cost::
 
    paimon-parquet-format-benchmark --benchmark_filter='Parquet(Write|Read)_Nulls'
+
+Concurrent reader CPU policy
+----------------------------
+
+``BM_ParquetRead_Concurrent`` runs one or four readers over the same cached local
+file. Policy ``-1`` uses default reader options; ``0``, ``3`` and ``6`` set the
+legacy ``parquet.read.executor.thread-count`` option; ``-2`` assigns legacy
+values ``0``, ``1``, ``3`` and ``6`` by reader index. This allows the same workload
+to compare the old global-capacity mutation with the application-owned policy
+described in :doc:`../user_guide/read`.
+
+The counters report aggregate ``rows_per_second``, mean reader open/scan/close
+``latency_ms``, and the resulting Arrow ``cpu_capacity``. Google Benchmark's CPU
+time includes all process threads, including Arrow column workers. These cases
+exercise format readers directly; they do not include Paimon's outer prefetch
+executor.
+
+For before/after comparisons, run each policy and reader count in a fresh process
+with the same application CPU budget. Older readers change the global pool, so
+running several policies in one process can affect later cases. Check the
+reported capacity alongside throughput and latency: a difference in CPU budget
+is part of the policy change, not a fixed-budget speedup.
+
+Four readers with mixed legacy settings and an application CPU budget of four::
+
+   OMP_NUM_THREADS=4 paimon-parquet-format-benchmark \
+       --benchmark_filter='BM_ParquetRead_Concurrent/policy:-2/.*threads:4$' \
+       --benchmark_min_time=1s \
+       --benchmark_repetitions=3

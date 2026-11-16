@@ -41,6 +41,61 @@ cross-language task scheduling and interaction (e.g., Java and C++), substantial
 across the two language ecosystems.
 
 
+Parquet CPU parallelism
+-----------------------
+
+``parquet.read.use-threads`` controls parallel column decoding within a Parquet
+reader and defaults to ``true``. ``false`` decodes columns on the calling thread.
+Creating, reading and closing readers never changes Arrow's global CPU pool
+capacity. Threaded readers share the existing pool, including with Arrow IPC
+spill operations; they do not reserve a separate number of threads per reader.
+
+The application owns the CPU capacity policy. Configure Arrow's CPU pool once
+at application startup, for example with ``OMP_NUM_THREADS`` before the process
+starts, or with ``arrow::SetCpuThreadPoolCapacity(n)`` before starting concurrent
+Arrow work. The API must address the same Arrow library instance used by Paimon.
+Without application configuration, Arrow chooses its own default capacity.
+``WriteContextBuilder::SetWriteBufferSpillThreadNumber(n)`` remains an explicit
+process-wide capacity setter when ``n > 0``: ``Finish()`` applies it to the same
+pool, and subsequent Parquet readers preserve that setting. Coordinate these
+spill settings with the application's budget; different positive spill settings
+still resize the shared pool.
+
+Migration from ``parquet.read.executor.thread-count``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The numeric option is deprecated and accepts an unsigned 32-bit integer. When
+``parquet.read.use-threads`` is absent, ``0`` still disables column threading
+and any positive value enables it. The legacy default of ``3`` therefore still
+enables threaded reads, but **no longer sets a three-thread global capacity**.
+Different positive values have the same effect and coexist without changing
+each other's scheduler. When both options are supplied,
+``parquet.read.use-threads`` takes precedence; a malformed legacy value is still
+rejected.
+
+Replace a legacy zero with ``parquet.read.use-threads=false``. Replace a positive
+value with ``parquet.read.use-threads=true`` and move the capacity setting to
+application startup if a fixed budget is required. For example, a former value
+of ``6`` becomes ``use-threads=true`` with an application CPU capacity of six.
+
+Interaction with prefetch
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Paimon's prefetch executor and Arrow's CPU pool are separate resources.
+``ReadContextBuilder::WithExecutor`` and ``SetPrefetchMaxParallelNum`` control
+outer file/range parallelism; ``parquet.read.use-threads`` controls inner column
+parallelism. Parallel construction of prefetch sub-readers does not create or
+resize CPU pools. With many concurrent readers, measure both settings together;
+disabling inner column threading can reduce scheduling overhead.
+
+The supported Arrow 17 synchronous ``GetRecordBatchReader`` API has no scoped
+CPU executor parameter. Its asynchronous generator does, but using it would
+change the batch/row-group read path. This configuration change keeps the
+synchronous path and its decoding behavior. Do not run synchronous threaded
+Parquet reads on the same Arrow CPU pool they submit column tasks to: a worker
+waiting on its own saturated pool can deadlock. The Paimon prefetch executor is
+independent of that pool.
+
 Planning with a custom memory pool
 ----------------------------------
 
