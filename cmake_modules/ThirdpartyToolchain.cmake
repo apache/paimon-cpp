@@ -15,6 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
+include(ThirdpartyPatch)
+
 set(THIRDPARTY_LOG_OPTIONS
     LOG_CONFIGURE
     1
@@ -43,6 +45,9 @@ endmacro()
 
 set(THIRDPARTY_DIR "${CMAKE_SOURCE_DIR}/third_party")
 # Read toolchain versions from third_party/versions.txt
+set_property(DIRECTORY
+             APPEND
+             PROPERTY CMAKE_CONFIGURE_DEPENDS "${THIRDPARTY_DIR}/versions.txt")
 file(STRINGS "${THIRDPARTY_DIR}/versions.txt" TOOLCHAIN_VERSIONS_TXT)
 foreach(_VERSION_ENTRY ${TOOLCHAIN_VERSIONS_TXT})
     # Exclude comments
@@ -946,17 +951,30 @@ macro(build_jieba)
         "-DCMAKE_INSTALL_PREFIX=${JIEBA_INSTALL}")
 
     set(PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/jieba.diff")
+    paimon_patch_command(jieba_ep PATCH_COMMAND)
     externalproject_add(jieba_ep
                         ${EP_COMMON_OPTIONS}
                         URL ${JIEBA_SOURCE_URL}
                         URL_HASH "SHA256=${PAIMON_JIEBA_BUILD_SHA256_CHECKSUM}"
                         CMAKE_ARGS ${JIEBA_CMAKE_ARGS}
                         LOG_PATCH ON
-                        PATCH_COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> bash -c
-                                      "[ -f .patched ] && echo '<SOURCE_DIR> patch already applied, ignore...' || patch -s -N -p1 -i '${PATCH_FILE}' && touch .patched"
+                        PATCH_COMMAND ${PATCH_COMMAND}
                         INSTALL_COMMAND bash -c
                                         "cp -r ${JIEBA_PREFIX}/src/jieba_ep/include/* ${JIEBA_INSTALL}/include/ && cp -r ${JIEBA_PREFIX}/src/jieba_ep/dict/* ${JIEBA_INSTALL}/dict/ && cp -r ${LIMONP_PREFIX}/src/limonp_ep/include/* ${JIEBA_INSTALL}/include/"
     )
+
+    paimon_register_patched_project(jieba_ep
+                                    VERSION
+                                    "${PAIMON_JIEBA_BUILD_VERSION}"
+                                    PATCHES
+                                    "${PATCH_FILE}"
+                                    INSTALL_DIR
+                                    "${JIEBA_INSTALL}"
+                                    VERSION_VARIABLES
+                                    PAIMON_JIEBA_BUILD_VERSION
+                                    PAIMON_JIEBA_BUILD_SHA256_CHECKSUM
+                                    PAIMON_LIMONP_BUILD_VERSION
+                                    PAIMON_LIMONP_BUILD_SHA256_CHECKSUM)
 
     # The include directory must exist before it is referenced by a target.
     include_directories(SYSTEM ${JIEBA_INCLUDE_DIR} ${JIEBA_DICT_DIR})
@@ -1495,7 +1513,8 @@ macro(build_vortex)
     set(VORTEX_STATIC_LIB
         "${VORTEX_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}vortex_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}"
     )
-    set(VORTEX_CARGO_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/vortex_ep-cargo")
+    set(VORTEX_CARGO_TARGET_DIR
+        "${CMAKE_CURRENT_BINARY_DIR}/vortex_ep-prefix/src/vortex_ep-build")
     set(VORTEX_CARGO_STATIC_LIB
         "${VORTEX_CARGO_TARGET_DIR}/release/${CMAKE_STATIC_LIBRARY_PREFIX}vortex_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}"
     )
@@ -1504,42 +1523,29 @@ macro(build_vortex)
     # backed by host callbacks; it is maintained in this repository and injected into the Vortex
     # source tree. The patch declares the module.
     set(VORTEX_PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/vortex.diff")
+    paimon_patch_command(vortex_ep PATCH_COMMAND)
     set(VORTEX_CALLBACK_IO_SRC
         "${CMAKE_SOURCE_DIR}/crates/vortex_callback_io/callback_io.rs")
 
     file(MAKE_DIRECTORY "${VORTEX_INCLUDE_DIR}")
     file(MAKE_DIRECTORY "${VORTEX_LIB_DIR}")
 
-    # A local checkout (PAIMON_VORTEX_SOURCE_DIR) avoids re-downloading the full cargo workspace;
-    # otherwise download the pinned source archive (with SHA256 when versions.txt provides one).
-    if(DEFINED ENV{PAIMON_VORTEX_SOURCE_DIR})
-        set(VORTEX_EP_DOWNLOAD SOURCE_DIR "$ENV{PAIMON_VORTEX_SOURCE_DIR}"
-                               DOWNLOAD_COMMAND "")
-    elseif(PAIMON_VORTEX_BUILD_SHA256_CHECKSUM)
-        set(VORTEX_EP_DOWNLOAD URL ${VORTEX_SOURCE_URL} URL_HASH
-                               "SHA256=${PAIMON_VORTEX_BUILD_SHA256_CHECKSUM}")
-    else()
-        set(VORTEX_EP_DOWNLOAD URL ${VORTEX_SOURCE_URL})
-    endif()
-
     externalproject_add(vortex_ep
-                        ${VORTEX_EP_DOWNLOAD} ${THIRDPARTY_LOG_OPTIONS}
-                        BUILD_IN_SOURCE TRUE
+                        URL ${VORTEX_SOURCE_URL}
+                        URL_HASH "SHA256=${PAIMON_VORTEX_BUILD_SHA256_CHECKSUM}"
+                        ${THIRDPARTY_LOG_OPTIONS}
+                        BINARY_DIR "${VORTEX_CARGO_TARGET_DIR}"
                         CONFIGURE_COMMAND ""
                         LOG_PATCH ON
-                        PATCH_COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> bash -c
-                                      "[ -f .patched ] && echo '<SOURCE_DIR> patch already applied, ignore...' || patch -s -N -p1 -i '${VORTEX_PATCH_FILE}' && touch .patched"
-                        # Rebuild every time so edits to callback_io.rs are picked up; cargo
-                        # returns immediately when nothing changed, and copy_if_different keeps
-                        # the archive's timestamp stable so dependents do not relink.
-                        BUILD_ALWAYS TRUE
+                        PATCH_COMMAND ${PATCH_COMMAND}
+                        # The patch guard tracks callback_io.rs as a build input.
                         BUILD_COMMAND ${CMAKE_COMMAND} -E copy_if_different
                                       "${VORTEX_CALLBACK_IO_SRC}"
                                       "<SOURCE_DIR>/vortex-ffi/src/callback_io.rs"
-                        COMMAND ${CMAKE_COMMAND} -E env "FLATC=${VORTEX_FLATC}"
-                                "RUSTUP_TOOLCHAIN=stable" "CC=${CMAKE_C_COMPILER}"
-                                "CXX=${CMAKE_CXX_COMPILER}"
-                                "CARGO_TARGET_DIR=${VORTEX_CARGO_TARGET_DIR}"
+                        COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> ${CMAKE_COMMAND} -E
+                                env "FLATC=${VORTEX_FLATC}" "RUSTUP_TOOLCHAIN=stable"
+                                "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}"
+                                "CARGO_TARGET_DIR=<BINARY_DIR>"
                                 "RUSTFLAGS=-Crelocation-model=pic"
                                 ${PAIMON_CARGO_EXECUTABLE} rustc --locked --package
                                 vortex-ffi --lib --crate-type=staticlib --release
@@ -1550,6 +1556,19 @@ macro(build_vortex)
                                 "${VORTEX_INCLUDE_DIR}/vortex.h"
                         INSTALL_COMMAND ""
                         BUILD_BYPRODUCTS "${VORTEX_STATIC_LIB}")
+
+    paimon_register_patched_project(vortex_ep
+                                    VERSION
+                                    "${PAIMON_VORTEX_BUILD_VERSION}"
+                                    PATCHES
+                                    "${VORTEX_PATCH_FILE}"
+                                    INPUTS
+                                    "${VORTEX_CALLBACK_IO_SRC}"
+                                    INSTALL_DIR
+                                    "${VORTEX_PREFIX}"
+                                    VERSION_VARIABLES
+                                    PAIMON_VORTEX_BUILD_VERSION
+                                    PAIMON_VORTEX_BUILD_SHA256_CHECKSUM)
 
     if(NOT TARGET Threads::Threads)
         set(THREADS_PREFER_PTHREAD_FLAG TRUE)
@@ -1686,15 +1705,26 @@ macro(build_oss_sdk_v2)
     # Avoid copying the metadata variant, which triggers GCC 12's
     # -Wmaybe-uninitialized warning in optimized builds.
     set(OSS_SDK_V2_PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/oss_sdk_v2.diff")
+    paimon_patch_command(oss_sdk_v2_ep PATCH_COMMAND)
     externalproject_add(oss_sdk_v2_ep
                         ${EP_COMMON_OPTIONS}
                         URL ${OSS_SDK_V2_SOURCE_URL}
                         URL_HASH "SHA256=${PAIMON_OSS_SDK_V2_BUILD_SHA256_CHECKSUM}"
                         LOG_PATCH ON
-                        PATCH_COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> bash -c
-                                      "[ -f .patched ] && echo '<SOURCE_DIR> patch already applied, ignore...' || patch -s -N -p1 -i '${OSS_SDK_V2_PATCH_FILE}' && touch .patched"
+                        PATCH_COMMAND ${PATCH_COMMAND}
                         CMAKE_ARGS ${OSS_SDK_V2_CMAKE_ARGS} ${THIRDPARTY_LOG_OPTIONS}
                         BUILD_BYPRODUCTS "${OSS_SDK_V2_STATIC_LIB}")
+
+    paimon_register_patched_project(oss_sdk_v2_ep
+                                    VERSION
+                                    "${PAIMON_OSS_SDK_V2_BUILD_VERSION}"
+                                    PATCHES
+                                    "${OSS_SDK_V2_PATCH_FILE}"
+                                    INSTALL_DIR
+                                    "${OSS_SDK_V2_PREFIX}"
+                                    VERSION_VARIABLES
+                                    PAIMON_OSS_SDK_V2_BUILD_VERSION
+                                    PAIMON_OSS_SDK_V2_BUILD_SHA256_CHECKSUM)
 
     file(MAKE_DIRECTORY "${OSS_SDK_V2_INCLUDE_DIR}")
     file(MAKE_DIRECTORY "${OSS_SDK_V2_LIB_DIR}")
@@ -1873,10 +1903,8 @@ macro(build_orc)
              "-DCMAKE_MODULE_LINKER_FLAGS=-Wl,-rpath=${ORC_RPATH}")
     endif()
 
-    set(ORC_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/orc_ep-prefix")
+    set(ORC_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/orc_ep-install")
     set(ORC_INCLUDE_DIR "${ORC_PREFIX}/include")
-    set(ORC_SOURCE_DIR "${ORC_PREFIX}/cpp")
-    set(ORC_BUILD_DIR "${CMAKE_BINARY_DIR}/build/orc")
 
     set(ORC_STATIC_LIB "${ORC_PREFIX}/lib/liborc.a")
 
@@ -1896,15 +1924,13 @@ macro(build_orc)
         -DBUILD_CPP_ENABLE_METRICS=ON)
 
     set(PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/orc.diff")
+    paimon_patch_command(orc_ep PATCH_COMMAND)
     externalproject_add(orc_ep
                         URL ${ORC_SOURCE_URL}
                         URL_HASH "SHA256=${PAIMON_ORC_BUILD_SHA256_CHECKSUM}"
-                        SOURCE_DIR ${ORC_SOURCE_DIR}
-                        BINARY_DIR ${ORC_BUILD_DIR}
                         CMAKE_ARGS ${ORC_CMAKE_ARGS}
                         LOG_PATCH ON
-                        PATCH_COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> bash -c
-                                      "[ -f .patched ] && echo '<SOURCE_DIR> patch already applied, ignore...' || patch -s -N -p1 -i '${PATCH_FILE}' && touch .patched"
+                        PATCH_COMMAND ${PATCH_COMMAND}
                         UPDATE_DISCONNECTED 1
                         BUILD_BYPRODUCTS ${ORC_STATIC_LIB}
                         DEPENDS zstd
@@ -1912,6 +1938,27 @@ macro(build_orc)
                                 lz4
                                 zlib
                                 libprotobuf)
+
+    paimon_register_patched_project(orc_ep
+                                    VERSION
+                                    "${PAIMON_ORC_BUILD_VERSION}"
+                                    PATCHES
+                                    "${PATCH_FILE}"
+                                    INSTALL_DIR
+                                    "${ORC_PREFIX}"
+                                    VERSION_VARIABLES
+                                    PAIMON_ORC_BUILD_VERSION
+                                    PAIMON_ORC_BUILD_SHA256_CHECKSUM
+                                    PAIMON_PROTOBUF_BUILD_VERSION
+                                    PAIMON_PROTOBUF_BUILD_SHA256_CHECKSUM
+                                    PAIMON_ZSTD_BUILD_VERSION
+                                    PAIMON_ZSTD_BUILD_SHA256_CHECKSUM
+                                    PAIMON_SNAPPY_BUILD_VERSION
+                                    PAIMON_SNAPPY_BUILD_SHA256_CHECKSUM
+                                    PAIMON_LZ4_BUILD_VERSION
+                                    PAIMON_LZ4_BUILD_SHA256_CHECKSUM
+                                    PAIMON_ZLIB_BUILD_VERSION
+                                    PAIMON_ZLIB_BUILD_SHA256_CHECKSUM)
 
     # The include directory must exist before it is referenced by a target.
     file(MAKE_DIRECTORY "${ORC_INCLUDE_DIR}")
@@ -2022,12 +2069,12 @@ macro(build_arrow)
 
     set(ARROW_CONFIGURE SOURCE_SUBDIR "cpp" CMAKE_ARGS ${ARROW_CMAKE_ARGS})
     set(PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/arrow.diff")
+    paimon_patch_command(arrow_ep PATCH_COMMAND)
     externalproject_add(arrow_ep
                         URL ${ARROW_SOURCE_URL}
                         URL_HASH "SHA256=${PAIMON_ARROW_BUILD_SHA256_CHECKSUM}"
                         LOG_PATCH ON
-                        PATCH_COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> bash -c
-                                      "[ -f .patched ] && echo '<SOURCE_DIR> patch already applied, ignore...' || patch -s -N -p1 -i '${PATCH_FILE}' && touch .patched"
+                        PATCH_COMMAND ${PATCH_COMMAND}
                         GIT_SUBMODULES "" GIT_SUBMODULES_RECURSE FALSE ${ARROW_CONFIGURE}
                         UPDATE_DISCONNECTED 1
                         BUILD_BYPRODUCTS "${ARROW_STATIC_LIB}"
@@ -2040,6 +2087,27 @@ macro(build_arrow)
                                 lz4
                                 zlib
                                 re2::re2)
+
+    paimon_register_patched_project(arrow_ep
+                                    VERSION
+                                    "${PAIMON_ARROW_BUILD_VERSION}"
+                                    PATCHES
+                                    "${PATCH_FILE}"
+                                    INSTALL_DIR
+                                    "${ARROW_PREFIX}"
+                                    VERSION_VARIABLES
+                                    PAIMON_ARROW_BUILD_VERSION
+                                    PAIMON_ARROW_BUILD_SHA256_CHECKSUM
+                                    PAIMON_ZSTD_BUILD_VERSION
+                                    PAIMON_ZSTD_BUILD_SHA256_CHECKSUM
+                                    PAIMON_SNAPPY_BUILD_VERSION
+                                    PAIMON_SNAPPY_BUILD_SHA256_CHECKSUM
+                                    PAIMON_LZ4_BUILD_VERSION
+                                    PAIMON_LZ4_BUILD_SHA256_CHECKSUM
+                                    PAIMON_ZLIB_BUILD_VERSION
+                                    PAIMON_ZLIB_BUILD_SHA256_CHECKSUM
+                                    PAIMON_RE2_BUILD_VERSION
+                                    PAIMON_RE2_BUILD_SHA256_CHECKSUM)
 
     add_library(arrow STATIC IMPORTED)
     set_target_properties(arrow

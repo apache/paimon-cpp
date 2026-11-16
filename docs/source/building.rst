@@ -262,6 +262,20 @@ All other enabled dependencies must be available as system packages or under
 the specified prefix. When ORC support is disabled, the ``ORC_SOURCE`` override
 can be omitted.
 
+Some third-party dependencies require project-specific patches.
+Repeated builds reuse these dependencies when their versions, patches, and build
+inputs are unchanged.
+
+If an existing build cannot be safely reused after an update or interrupted
+patching, the build stops and lists the paths to clean. Remove all listed paths,
+then re-run CMake and build. No files are deleted automatically. Older build
+directories may also require this cleanup when first using the patch checks.
+
+Compilation or installation failures after successful patching can be retried
+without cleanup if the inputs are unchanged. Avoid manually modifying dependency
+sources or installed files in the build directory; clean and rebuild the affected
+dependency if its files are damaged.
+
 Package-manager-specific modes are intentionally out of scope for this first
 dependency source interface. They can still be used through standard CMake
 mechanisms such as ``CMAKE_PREFIX_PATH`` or ``CMAKE_TOOLCHAIN_FILE``, while
