@@ -18,9 +18,15 @@
 
 #include "paimon/core/operation/raw_file_split_read.h"
 
+#include <chrono>
+#include <condition_variable>
+#include <future>
+#include <initializer_list>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -31,6 +37,8 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/reader/concat_batch_reader.h"
+#include "paimon/common/reader/reader_utils.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -65,6 +73,7 @@
 #include "paimon/testing/mock/mock_search_file_index.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/counting_cache_test_utils.h"
+#include "paimon/testing/utils/counting_reader_file_system.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -120,6 +129,50 @@ class CacheTrackingFileIndexFactory : public FileIndexerFactory {
 
 class RawFileSplitReadTest : public ::testing::Test {
  protected:
+    Result<std::unique_ptr<RawFileSplitRead>> CreateCountingRead(
+        const std::shared_ptr<FileSystem>& fs, const std::vector<std::string>& field_names = {},
+        bool row_tracking = false) const {
+        const std::string path =
+            GetDataDir() + "/orc/multi_partition_append_table.db/multi_partition_append_table";
+        ReadContextBuilder builder(path);
+        builder.WithFileSystem(fs)
+            .WithMemoryPool(pool_)
+            .EnablePrefetch(false)
+            .EnablePredicateFilter(true);
+        builder.AddOption(Options::FILE_INDEX_READ_ENABLED, "false");
+        if (row_tracking) {
+            builder.AddOption(Options::ROW_TRACKING_ENABLED, "true");
+        }
+        if (!field_names.empty()) {
+            builder.SetReadFieldNames(field_names);
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadContext> read_context, builder.Finish());
+        SchemaManager schemas(fs, path);
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema, schemas.ReadSchema(0));
+        auto read_options = table_schema->Options();
+        for (const auto& [key, value] : read_context->GetOptions()) {
+            read_options.insert_or_assign(key, value);
+        }
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<InternalReadContext> context,
+            InternalReadContext::Create(read_context, table_schema, read_options));
+        const CoreOptions& options = context->GetCoreOptions();
+        auto schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths,
+                               options.CreateExternalPaths());
+        PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> global_paths,
+                               options.CreateGlobalIndexExternalPaths());
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<FileStorePathFactory> paths,
+            FileStorePathFactory::Create(
+                path, schema, table_schema->PartitionKeys(), options.GetPartitionDefaultName(),
+                options.GetFileFormat()->Identifier(), options.DataFilePrefix(),
+                options.LegacyPartitionNameEnabled(), external_paths, global_paths,
+                options.IndexFileInDataFileDir(), {}, pool_));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Executor> executor, CreateDefaultExecutor(2));
+        return std::make_unique<RawFileSplitRead>(paths, context, pool_, executor);
+    }
+
     std::vector<std::shared_ptr<DataSplit>> PrepareDataSplits() const {
         auto meta1 = std::make_shared<DataFileMeta>(
             "data-01b6a930-6564-409b-b8f4-ed1307790d72-0.orc", /*file_size=*/575, /*row_count=*/3,
@@ -314,6 +367,191 @@ class RawFileSplitReadTest : public ::testing::Test {
     std::shared_ptr<MemoryPool> pool_ = GetDefaultPool();
 };
 
+TEST_F(RawFileSplitReadTest, LazyInitialWindowBuildsConcurrentlyAndEarlyCloseStopsOpening) {
+    auto fs = std::make_shared<CountingReaderFileSystem>(".orc");
+    ASSERT_OK_AND_ASSIGN(auto split_read, CreateCountingRead(fs));
+    auto split = std::dynamic_pointer_cast<DataSplitImpl>(PrepareDataSplits().front());
+    std::vector<std::shared_ptr<DataFileMeta>> files(100, split->DataFiles().front());
+    std::mutex mutex;
+    std::condition_variable changed;
+    size_t started = 0;
+    bool released = false;
+    fs->before_open = [&](const std::string&) {
+        std::unique_lock<std::mutex> lock(mutex);
+        started++;
+        changed.notify_all();
+        changed.wait(lock, [&released]() { return released; });
+        return Status::OK();
+    };
+    auto open = std::async(std::launch::async, [&]() {
+        return split_read->CreateReader(split->Partition(), split->Bucket(), files,
+                                        DeletionVector::Factory(), std::nullopt);
+    });
+    auto release = [&]() {
+        std::lock_guard<std::mutex> lock(mutex);
+        released = true;
+        changed.notify_all();
+    };
+    ScopeGuard unblock(release);
+    const size_t parallel = std::min<size_t>(ConcatBatchReader::kPreparationWindow,
+                                             std::max(1u, std::thread::hardware_concurrency()));
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        ASSERT_TRUE(
+            changed.wait_for(lock, std::chrono::seconds(5), [&]() { return started == parallel; }));
+    }
+    ASSERT_EQ(fs->counts->opens.load(), parallel);
+    ASSERT_EQ(open.wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+    release();
+    unblock.Release();
+    ASSERT_OK_AND_ASSIGN(auto reader, open.get());
+    ASSERT_EQ(fs->counts->opens.load(), ConcatBatchReader::kPreparationWindow);
+    split_read.reset();
+    files.clear();
+    split.reset();
+    ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    ASSERT_EQ(batch.first->length, 3);
+    ASSERT_EQ(fs->counts->opens.load(), ConcatBatchReader::kPreparationWindow);
+    reader->Close();
+    ASSERT_EQ(fs->counts->opens.load(), ConcatBatchReader::kPreparationWindow);
+    ASSERT_EQ(fs->counts->live.load(), 0);
+    ASSERT_LE(fs->counts->peak.load(), ConcatBatchReader::kPreparationWindow);
+    ReaderUtils::ReleaseReadBatch(std::move(batch));
+}
+
+TEST_F(RawFileSplitReadTest, LazyReaderOutlivesCreatorWithPerFilePredicatesDvAndRowIds) {
+    pool_ = GetMemoryPool();
+    std::weak_ptr<MemoryPool> weak_pool = pool_;
+    auto fs = std::make_shared<CountingReaderFileSystem>(".orc");
+    const auto counts = fs->counts;
+    std::weak_ptr<FileSystem> weak_fs = fs;
+    ASSERT_OK_AND_ASSIGN(auto split_read, CreateCountingRead(fs, {"_ROW_ID", "f0"}, true));
+    auto split = std::dynamic_pointer_cast<DataSplitImpl>(PrepareDataSplits().front());
+    std::vector<std::shared_ptr<DataFileMeta>> files;
+    constexpr size_t kFiles = 19;
+    for (size_t i = 0; i < kFiles; i++) {
+        auto file = std::make_shared<DataFileMeta>(*split->DataFiles().front());
+        file->first_row_id = i * 100;
+        files.push_back(std::move(file));
+    }
+    std::shared_ptr<DeletionVector> dv =
+        std::make_shared<BitmapDeletionVector>(RoaringBitmap32::From({0}));
+    DeletionVector::Factory dv_factory =
+        [dv](const std::string&) -> Result<std::shared_ptr<DeletionVector>> { return dv; };
+    auto schema = DataField::ConvertDataFieldsToArrowSchema(
+        {SpecialFields::RowId(), DataField(0, arrow::field("f0", arrow::utf8()))});
+    auto predicate =
+        PredicateBuilder::Equal(1, "f0", FieldType::STRING, Literal(FieldType::STRING, "Tony", 4));
+    auto predicates = std::make_shared<std::vector<std::shared_ptr<Predicate>>>(
+        std::initializer_list<std::shared_ptr<Predicate>>{
+            predicate, PredicateBuilder::Equal(1, "f0", FieldType::STRING,
+                                               Literal(FieldType::STRING, "Zoe", 3))});
+    std::weak_ptr<std::vector<std::shared_ptr<Predicate>>> weak_predicates = predicates;
+    RawFileSplitRead::PredicateProvider predicate_provider =
+        [predicates](
+            const std::shared_ptr<DataFileMeta>& file) -> Result<std::shared_ptr<Predicate>> {
+        return (*predicates)[file->first_row_id.value() / 100 % predicates->size()];
+    };
+    ASSERT_OK_AND_ASSIGN(auto reader, split_read->CreateReaderWithPredicateProvider(
+                                          split->Partition(), split->Bucket(), files, dv_factory,
+                                          std::nullopt, schema, predicate, predicate_provider));
+    split_read.reset();
+    files.clear();
+    split.reset();
+    schema.reset();
+    predicate.reset();
+    predicates.reset();
+    predicate_provider = {};
+    dv_factory = {};
+    dv.reset();
+    fs.reset();
+    pool_.reset();
+    ASSERT_FALSE(weak_fs.expired());
+    ASSERT_FALSE(weak_pool.expired());
+    ASSERT_FALSE(weak_predicates.expired());
+    ASSERT_OK_AND_ASSIGN(auto result, ReadResultCollector::CollectResult(reader.get()));
+    ASSERT_NE(result, nullptr);
+    ASSERT_TRUE(weak_fs.expired());
+    ASSERT_TRUE(weak_predicates.expired());
+    reader.reset();
+    ASSERT_FALSE(weak_pool.expired());
+    ASSERT_EQ(result->length(), (kFiles + 1) / 2);
+    size_t index = 0;
+    for (const auto& chunk : result->chunks()) {
+        auto rows = std::dynamic_pointer_cast<arrow::StructArray>(chunk);
+        ASSERT_NE(rows, nullptr);
+        auto kinds = std::dynamic_pointer_cast<arrow::Int8Array>(rows->field(0));
+        auto ids = std::dynamic_pointer_cast<arrow::Int64Array>(rows->field(1));
+        auto names = std::dynamic_pointer_cast<arrow::StringArray>(rows->field(2));
+        ASSERT_NE(kinds, nullptr);
+        ASSERT_NE(ids, nullptr);
+        ASSERT_NE(names, nullptr);
+        for (int64_t row = 0; row < rows->length(); row++, index++) {
+            ASSERT_EQ(kinds->Value(row), 0);
+            ASSERT_EQ(ids->Value(row), index * 200 + 2);
+            ASSERT_EQ(names->GetString(row), "Tony");
+        }
+    }
+    ASSERT_EQ(counts->opens.load(), kFiles);
+    ASSERT_LE(counts->peak.load(), ConcatBatchReader::kPreparationWindow);
+    ASSERT_EQ(counts->live.load(), 0);
+    result.reset();
+    ASSERT_TRUE(weak_pool.expired());
+}
+
+TEST_F(RawFileSplitReadTest, LazyValidationAndFileOpenFailures) {
+    auto fs = std::make_shared<CountingReaderFileSystem>(".orc");
+    ASSERT_OK_AND_ASSIGN(auto split_read, CreateCountingRead(fs));
+    auto split = std::dynamic_pointer_cast<DataSplitImpl>(PrepareDataSplits().front());
+    std::vector<std::shared_ptr<DataFileMeta>> files(20, split->DataFiles().front());
+    ASSERT_NOK_WITH_MSG(
+        split_read->CreateReader(split->Partition(), split->Bucket(), files,
+                                 DeletionVector::Factory(), std::nullopt, nullptr, nullptr),
+        "raw file read schema is null");
+    auto invalid_schema = arrow::schema({arrow::field("f0", arrow::utf8())});
+    ASSERT_NOK_WITH_MSG(
+        split_read->CreateReader(split->Partition(), split->Bucket(), files,
+                                 DeletionVector::Factory(), std::nullopt, invalid_schema, nullptr),
+        "lack of metadata of field id");
+    auto schema = DataField::ConvertDataFieldsToArrowSchema(
+        {DataField(0, arrow::field("f0", arrow::utf8()))});
+    ASSERT_NOK_WITH_MSG(split_read->CreateReaderWithPredicateProvider(
+                            split->Partition(), split->Bucket(), files, DeletionVector::Factory(),
+                            std::nullopt, schema, nullptr, /*predicate_provider=*/{}),
+                        "file predicate provider is null");
+    files.back() = nullptr;
+    ASSERT_NOK_WITH_MSG(split_read->CreateReader(split->Partition(), split->Bucket(), files,
+                                                 DeletionVector::Factory(), std::nullopt),
+                        "raw data file is null");
+    ASSERT_NOK_WITH_MSG(
+        split_read->CreateReader(split->Partition(), split->Bucket(), {nullptr},
+                                 DeletionVector::Factory(), std::vector<Range>{Range(0, 0)}),
+        "raw data file is null");
+    ASSERT_EQ(fs->counts->opens.load(), 0);
+    files.back() = files.front();
+    auto missing = std::make_shared<DataFileMeta>(*files.front());
+    missing->file_name = "missing.orc";
+    files[ConcatBatchReader::kPreparationWindow] = missing;
+    ASSERT_OK_AND_ASSIGN(auto reader,
+                         split_read->CreateReader(split->Partition(), split->Bucket(), files,
+                                                  DeletionVector::Factory(), std::nullopt));
+    ASSERT_EQ(fs->counts->opens.load(), ConcatBatchReader::kPreparationWindow);
+    for (size_t i = 0; i < ConcatBatchReader::kPreparationWindow; i++) {
+        ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
+        ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+        ReaderUtils::ReleaseReadBatch(std::move(batch));
+    }
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "missing.orc");
+    ASSERT_NOK_WITH_MSG(reader->NextBatchWithBitmap(), "missing.orc");
+    ASSERT_EQ(fs->counts->live.load(), 0);
+    files.front() = missing;
+    ASSERT_NOK_WITH_MSG(split_read->CreateReader(split->Partition(), split->Bucket(), files,
+                                                 DeletionVector::Factory(), std::nullopt),
+                        "missing.orc");
+    ASSERT_EQ(fs->counts->live.load(), 0);
+}
+
 // test simple, recall all columns with sequence in data
 TEST_F(RawFileSplitReadTest, TestCreateReader) {
     std::vector<DataField> read_fields = {DataField(0, arrow::field("f0", arrow::utf8())),
@@ -384,11 +622,6 @@ TEST_F(RawFileSplitReadTest, TestCreateReaderUsesExplicitPredicate) {
         [](const std::shared_ptr<DataFileMeta>&) -> Result<std::shared_ptr<Predicate>> {
         return std::shared_ptr<Predicate>();
     };
-    ASSERT_NOK_WITH_MSG(
-        read.CreateReaderWithPredicateProvider(split->Partition(), split->Bucket(), {first, second},
-                                               dv_factory, std::nullopt, context->GetReadSchema(),
-                                               predicate, /*predicate_provider=*/{}),
-        "file predicate provider is null");
     ASSERT_NOK_WITH_MSG(
         read.CreateReaderWithPredicateProvider(split->Partition(), split->Bucket(), {first, second},
                                                dv_factory, std::vector<Range>{Range(0, 0)},
