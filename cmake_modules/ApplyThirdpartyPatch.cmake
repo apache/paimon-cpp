@@ -29,9 +29,15 @@ function(paimon_patch_error)
 endfunction()
 
 function(paimon_patch_fingerprint output)
+    foreach(url IN LISTS PP_URLS)
+        if(IS_DIRECTORY "${url}")
+            paimon_patch_error("Local source directories are not supported; use a SHA256-verified archive: ${url}"
+            )
+        endif()
+    endforeach()
     # The same ordered list is used here and by the application loop below.
     set(identity
-        "paimon-patch-v1\n${PP_NAME}\n${PP_VERSION}\n${PP_ARCHIVE}\n${PP_SOURCE}\n${PP_BINARY}\n${PP_INSTALL}\n${PP_CONTEXT}\n"
+        "paimon-patch-v2\n${PP_NAME}\n${PP_VERSION}\n${PP_ARCHIVE}\n${PP_URLS}\n${PP_SOURCE}\n${PP_BINARY}\n${PP_INSTALL}\n${PP_CONTEXT}\n"
     )
     file(SHA256 "${CMAKE_CURRENT_FUNCTION_LIST_FILE}" runner_hash)
     string(APPEND identity
@@ -121,6 +127,12 @@ function(paimon_patch_check_postimage)
     if(NOT source_id STREQUAL PP_EXPECTED)
         paimon_patch_error("Source identity does not match its build state")
     endif()
+    file(SHA256 "${PP_STATE}/postimage" postimage_hash)
+    file(READ "${PP_STATE}/patched" patched)
+    if(NOT patched STREQUAL "${PP_EXPECTED}\n${postimage_hash}\n")
+        paimon_patch_error("Patch completion or source verification record is inconsistent"
+        )
+    endif()
     file(STRINGS "${PP_STATE}/postimage" entries)
     foreach(entry IN LISTS entries)
         if(NOT entry MATCHES "^([^ ]+) (.+)$")
@@ -194,9 +206,10 @@ function(paimon_patch_guard)
         )
     endif()
     if(EXISTS "${PP_STATE}/patched")
-        file(READ "${PP_STATE}/patched" patched)
-        if(NOT patched STREQUAL PP_EXPECTED)
-            paimon_patch_error("Patch completion record does not match the requested identity"
+        # Clean targets remove ExternalProject stamps but retain the source and
+        # our records. Stop before download can overwrite that patched source.
+        if(NOT EXISTS "${PP_STAMP}/${PP_NAME}-download")
+            paimon_patch_error("Download completion record is missing; refusing to overwrite patched source"
             )
         endif()
         paimon_patch_check_postimage()
@@ -240,44 +253,48 @@ function(paimon_patch_apply)
     # renames, mode changes or paths through symlinks.
     set(targets "")
     foreach(patch IN LISTS PP_PATCHES)
-        file(STRINGS "${patch}" lines)
-        set(count 0)
-        foreach(line IN LISTS lines)
-            if(line MATCHES
-               "^(GIT binary patch|rename from |rename to |old mode |new mode )")
-                paimon_patch_error("Unsupported non-text patch operation in ${patch}")
-            endif()
-            if(line MATCHES "^(---|\\+\\+\\+) (.*)$")
-                set(path "${CMAKE_MATCH_2}")
-                if(path STREQUAL "/dev/null")
-                    continue()
-                endif()
-                if(NOT path MATCHES "^[ab]/(.+)$")
-                    paimon_patch_error("Unsupported patch path in ${patch}: ${path}")
-                endif()
-                set(relative "${CMAKE_MATCH_1}")
-                if(relative MATCHES "(^|/)\\.\\.(/|$)|[;\\\\\t]" OR IS_ABSOLUTE
-                                                                    "${relative}")
-                    paimon_patch_error("Unsafe patch path in ${patch}: ${relative}")
-                endif()
-                file(REAL_PATH "${PP_SOURCE}" source_real)
-                file(REAL_PATH "${PP_SOURCE}/${relative}" target_real)
-                cmake_path(IS_PREFIX
-                           source_real
-                           "${target_real}"
-                           NORMALIZE
-                           contained)
-                if(NOT contained OR IS_SYMLINK "${PP_SOURCE}/${relative}")
-                    paimon_patch_error("Patch target escapes its source tree: ${relative}"
-                    )
-                endif()
-                list(APPEND targets "${relative}")
-                math(EXPR count "${count} + 1")
-            endif()
-        endforeach()
-        if(count EQUAL 0)
+        file(READ "${patch}" contents)
+        if(contents MATCHES
+           "(^|\n)(GIT binary patch|rename from |rename to |old mode |new mode )")
+            paimon_patch_error("Unsupported non-text patch operation in ${patch}")
+        endif()
+        execute_process(COMMAND "${PP_LSDIFF_EXECUTABLE}" -- "${patch}"
+                        RESULT_VARIABLE result
+                        OUTPUT_VARIABLE paths
+                        ERROR_VARIABLE error)
+        if(NOT result STREQUAL "0")
+            paimon_patch_error("Cannot list patch targets in ${patch}: ${error}")
+        endif()
+        if(paths STREQUAL "")
             paimon_patch_error("No text patch targets found in ${patch}")
         endif()
+        # Only convert the filename output to a list, never the diff body.
+        # Reject filenames that cannot be represented by our verification record.
+        if(paths MATCHES "[;\\\t]|\\[|\\]")
+            paimon_patch_error("Unsafe patch path in ${patch}: ${paths}")
+        endif()
+        string(REGEX REPLACE "\n+$" "" paths "${paths}")
+        string(REPLACE "\n" ";" paths "${paths}")
+        foreach(path IN LISTS paths)
+            if(NOT path MATCHES "^[ab]/(.+)$")
+                paimon_patch_error("Unsupported patch path in ${patch}: ${path}")
+            endif()
+            set(relative "${CMAKE_MATCH_1}")
+            if(relative MATCHES "(^|/)\\.\\.(/|$)" OR IS_ABSOLUTE "${relative}")
+                paimon_patch_error("Unsafe patch path in ${patch}: ${relative}")
+            endif()
+            file(REAL_PATH "${PP_SOURCE}" source_real)
+            file(REAL_PATH "${PP_SOURCE}/${relative}" target_real)
+            cmake_path(IS_PREFIX
+                       source_real
+                       "${target_real}"
+                       NORMALIZE
+                       contained)
+            if(NOT contained OR IS_SYMLINK "${PP_SOURCE}/${relative}")
+                paimon_patch_error("Patch target escapes its source tree: ${relative}")
+            endif()
+            list(APPEND targets "${relative}")
+        endforeach()
     endforeach()
     paimon_patch_write(applying "${PP_EXPECTED}")
     foreach(patch IN LISTS PP_PATCHES)
@@ -316,7 +333,8 @@ function(paimon_patch_apply)
     endforeach()
     paimon_patch_write(postimage "${postimage}")
     file(WRITE "${PP_SOURCE}/.paimon-source-id" "${PP_EXPECTED}")
-    paimon_patch_write(patched "${PP_EXPECTED}")
+    string(SHA256 postimage_hash "${postimage}")
+    paimon_patch_write(patched "${PP_EXPECTED}\n${postimage_hash}\n")
     # A crash between these operations is conservatively treated as interrupted.
     file(REMOVE "${PP_STATE}/applying")
 endfunction()

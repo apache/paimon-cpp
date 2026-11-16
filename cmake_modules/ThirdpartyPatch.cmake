@@ -74,6 +74,23 @@ function(paimon_register_patched_project name)
     if(NOT hash_length EQUAL 71)
         message(FATAL_ERROR "${name}: invalid archive SHA256")
     endif()
+    get_property(urls
+                 TARGET ${name}
+                 PROPERTY _EP_URL)
+    set(PP_URLS "")
+    foreach(url IN LISTS urls)
+        # Match ExternalProject's local file URL handling and resolve relative
+        # paths now, before the guard runs from a different working directory.
+        string(REGEX REPLACE "^file://" "" url "${url}")
+        if(NOT url MATCHES "^[a-zA-Z][a-zA-Z0-9+.-]*://")
+            get_filename_component(url
+                                   "${url}"
+                                   ABSOLUTE
+                                   BASE_DIR
+                                   "${CMAKE_CURRENT_SOURCE_DIR}")
+        endif()
+        list(APPEND PP_URLS "${url}")
+    endforeach()
 
     # Validate ownership even though this module never deletes directories.
     # In particular, do not generate cleanup advice for a user checkout.
@@ -131,6 +148,11 @@ function(paimon_register_patched_project name)
     endforeach()
     set(PP_RUNNER "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/ApplyThirdpartyPatch.cmake")
     find_program(PP_PATCH_EXECUTABLE patch REQUIRED)
+    find_program(PP_LSDIFF_EXECUTABLE lsdiff)
+    if(NOT PP_LSDIFF_EXECUTABLE)
+        message(FATAL_ERROR "${name}: lsdiff is required to inspect dependency patches. Install patchutils and re-run CMake."
+        )
+    endif()
 
     set_property(DIRECTORY
                  APPEND
@@ -157,12 +179,14 @@ function(paimon_register_patched_project name)
             CLEAN
             VERSION
             ARCHIVE
+            URLS
             PATCHES
             INPUTS
             VERSIONS_FILE
             VERSION_VARIABLES
             CONTEXT
             PATCH_EXECUTABLE
+            LSDIFF_EXECUTABLE
             EXPECTED)
         # Bracket arguments preserve spaces, semicolons, dollar signs and backslashes.
         set(delimiter "=")

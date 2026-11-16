@@ -149,12 +149,6 @@ include(GNUInstallDirs)
 set(PAIMON_CMAKE_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/Paimon")
 include(DefineOptions)
 
-if(PAIMON_OPTIONAL_INSTALL)
-    # Don't make the "install" target depend on the "all" target
-    set(CMAKE_SKIP_INSTALL_ALL_DEPENDENCY true)
-    set(INSTALL_IS_OPTIONAL OPTIONAL)
-endif()
-
 if(PAIMON_EXTRA_ERROR_CONTEXT)
     add_definitions(-DPAIMON_EXTRA_ERROR_CONTEXT)
 endif()

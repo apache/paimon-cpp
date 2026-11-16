@@ -15,7 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Offline ExternalProject lifecycle tests. No compiler or downloaded packages needed.
+"""Offline ExternalProject lifecycle tests. Requires patch and lsdiff (patchutils).
+
+No compiler or downloaded packages needed.
 
 python3 cmake_modules/tests/thirdparty_patch_test.py --generator Ninja
 python3 cmake_modules/tests/thirdparty_patch_test.py --generator 'Unix Makefiles'
@@ -211,6 +213,140 @@ paimon_register_patched_project(dep
         path.write_text(patch("beta", "delta"))
         os.utime(str(path), ns=(stat.st_atime_ns, stat.st_mtime_ns))
         self.assert_reuse_rejected()
+
+    def test_multifile_patch_with_brackets_and_header_like_content(self):
+        (self.package / "brackets").write_text("unchanged\n")
+        (self.package / "other").write_text("-- a/phantom\n")
+        self.make_archive()
+        self.write_versions()
+        (self.project / "one.diff").write_text(
+            patch("unchanged", "[;", "brackets") +
+            patch("-- a/phantom", "++ b/phantom", "other") + patch("alpha", "gamma"))
+        self.write_project(patches="one.diff")
+        self.built()
+        for name, expected in [("brackets", "[;\n"), ("other", "++ b/phantom\n"),
+                               ("value", "gamma\n")]:
+            source = self.source / name
+            self.assertEqual(source.read_text(), expected)
+            for replacement in ["corrupted\n", None]:
+                with self.subTest(file=name, replacement=replacement):
+                    if replacement is None:
+                        source.unlink()
+                    else:
+                        source.write_text(replacement)
+                    try:
+                        self.assert_reuse_rejected()
+                    finally:
+                        source.write_text(expected)
+        self.compile()
+
+    def test_missing_lsdiff_reports_required_package(self):
+        output = self.configure(False, options=[
+            "-DCMAKE_FIND_USE_CMAKE_SYSTEM_PATH=OFF",
+            "-DCMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH=OFF",
+            "-DCMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH=OFF",
+            "-DCMAKE_MAKE_PROGRAM=" + shutil.which(
+                "ninja" if ARGS.generator == "Ninja" else "make"),
+            "-DPP_PATCH_EXECUTABLE=" + shutil.which("patch"),
+        ])
+        self.assertIn("lsdiff is required", output)
+        self.assertIn("Install patchutils", output)
+        self.assertFalse((self.source / "value").exists())
+
+    def test_lsdiff_failure_or_empty_output_does_not_apply_patches(self):
+        for exit_code, message in [(1, "Cannot list patch targets"),
+                                   (0, "No text patch targets found")]:
+            with self.subTest(exit_code=exit_code):
+                self.create_project()
+                wrapper = self.project / "lsdiff"
+                wrapper.write_text("#!/bin/sh\nexit {}\n".format(exit_code))
+                wrapper.chmod(0o755)
+                self.configure(options=["-DCMAKE_PROGRAM_PATH=" + str(self.project)])
+                self.assertIn(message, self.compile(False))
+                self.assertEqual((self.source / "value").read_text(), "alpha\n")
+                self.assertFalse((self.install / "built-value").exists())
+
+    def test_local_directory_urls_are_rejected(self):
+        for prefix in ["", "file://"]:
+            with self.subTest(prefix=prefix):
+                self.create_project()
+                cmake = self.project / "CMakeLists.txt"
+                cmake.write_text(cmake.read_text().replace(
+                    '${CMAKE_CURRENT_SOURCE_DIR}/dep.tar.gz', prefix + str(self.package)))
+                self.write_versions(checksum="0" * 64)
+                output = self.configure(False)
+                self.assertIn("Local source directories are not supported", output)
+                self.assertFalse((self.source / "value").exists())
+                self.assertFalse((self.stamp / "dep-download").exists())
+                self.assertEqual((self.package / "value").read_text(), "alpha\n")
+
+    def test_local_archive_replaced_by_directory_is_rejected(self):
+        self.configure()
+        self.archive.unlink()
+        shutil.copytree(str(self.package), str(self.archive))
+        output = self.compile(False)
+        self.assertIn("Local source directories are not supported", output)
+        self.assertFalse((self.source / "value").exists())
+
+    def test_local_archive_urls_still_require_matching_checksum(self):
+        for prefix in ["", "file://"]:
+            for valid in [True, False]:
+                with self.subTest(prefix=prefix, valid_checksum=valid):
+                    self.create_project()
+                    cmake = self.project / "CMakeLists.txt"
+                    cmake.write_text(cmake.read_text().replace(
+                        '${CMAKE_CURRENT_SOURCE_DIR}/dep.tar.gz', prefix + str(self.archive)))
+                    if not valid:
+                        self.write_versions(checksum="0" * 64)
+                    self.configure()
+                    if valid:
+                        self.compile()
+                        self.assertEqual((self.install / "built-value").read_text(), "gamma\n")
+                    else:
+                        self.compile(False)
+                        self.assertFalse((self.source / "value").exists())
+                        self.assertFalse((self.install / "built-value").exists())
+
+    def test_clean_first_stops_before_source_is_overwritten(self):
+        self.built()
+        output = self.command([ARGS.cmake, "--build", str(self.build), "--target", "dep",
+                               "--clean-first"], False)
+        self.assertIn("Download completion record is missing", output)
+        self.assert_cleanup(output)
+        self.assertEqual((self.source / "value").read_text(), "gamma\n")
+        self.assertEqual((self.project / "events").read_text(), "build\ninstall\n")
+        self.clean_reported_paths(output)
+        self.built()
+
+    def test_same_archive_at_new_url_requires_cleanup(self):
+        self.built()
+        mirror = self.project / "mirror.tar.gz"
+        shutil.copyfile(str(self.archive), str(mirror))
+        cmake = self.project / "CMakeLists.txt"
+        cmake.write_text(cmake.read_text().replace("dep.tar.gz", "mirror.tar.gz"))
+        output = self.configure(False)
+        self.assert_cleanup(output)
+        self.assertEqual((self.source / "value").read_text(), "gamma\n")
+        self.assert_reuse_rejected()
+        self.clean_reported_paths(output)
+        self.built()
+
+    def test_truncated_postimage_is_rejected(self):
+        (self.project / "two.diff").write_text(
+            patch("beta", "gamma") + patch("unchanged", "updated", "other"))
+        self.built()
+        record = self.build / "paimon-thirdparty/dep/postimage"
+        original = record.read_text()
+        for replacement in [original.splitlines()[0] + "\n", ""]:
+            with self.subTest(postimage=replacement):
+                record.write_text(replacement)
+                (self.source / "other").write_text("corrupted\n")
+                try:
+                    self.assert_reuse_rejected()
+                finally:
+                    record.write_text(original)
+                    (self.source / "other").write_text("updated\n")
+        self.compile()
 
     def test_patch_list_changes_require_cleanup(self):
         self.built()
@@ -485,9 +621,12 @@ build_vortex()
         self.assertEqual((self.install / "built-value").read_text(), "alpha\n")
 
     def test_escaping_patch_path(self):
-        (self.project / "one.diff").write_text(patch("alpha", "beta", "../outside"))
-        self.configure()
-        self.assertIn("Unsafe patch path", self.compile(False))
+        for name in ["../outside", "file[", "semi;colon", "back\\slash"]:
+            with self.subTest(path=name):
+                self.create_project()
+                (self.project / "one.diff").write_text(patch("alpha", "beta", name))
+                self.configure()
+                self.assertIn("Unsafe patch path", self.compile(False))
 
 
 if __name__ == "__main__":
