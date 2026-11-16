@@ -51,11 +51,12 @@ class EmptyFileIndexReader : public FileIndexReader {
         const std::shared_ptr<FullTextMatch>&, bool needs_scores) override {
         if (needs_scores) {
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredFileIndexResult> result,
-                                   ScoredFileIndexResult::Create(RoaringBitmap32(), {}));
+                                   ScoredFileIndexResult::Create(RoaringBitmap32(), {},
+                                                                 /*is_exact=*/true));
             return result;
         }
         return std::make_shared<BitmapIndexResult>(
-            []() -> Result<RoaringBitmap32> { return RoaringBitmap32(); });
+            []() -> Result<RoaringBitmap32> { return RoaringBitmap32(); }, /*is_exact=*/true);
     }
 
     Result<std::shared_ptr<ScoredFileIndexResult>> VisitVectorSearch(

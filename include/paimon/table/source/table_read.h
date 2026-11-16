@@ -53,6 +53,10 @@ class PAIMON_EXPORT TableRead {
     /// real-time views before consuming any tickets. The reader retains those views and returns
     /// a terminal error if a split fails to open when reached.
     ///
+    /// With a root vector or full-text search, returns at most the request's limit across all
+    /// supplied splits, ordered by search score after predicate, deletion-vector and row-range
+    /// filtering.
+    ///
     /// @param splits The splits to read.
     /// @return A Result containing a unique pointer to the `BatchReader` instance.
     /// @note `BatchReader`s created by the same `TableRead` are not thread-safe for

@@ -43,6 +43,7 @@ class DataFilePathFactory;
 class FileIndexReader;
 class MemoryPool;
 class Predicate;
+class RoaringBitmap32;
 class ScoredFileIndexResult;
 struct DataFileMeta;
 struct FullTextSearch;
@@ -73,7 +74,8 @@ class FileIndexEvaluator {
     Result<std::vector<std::shared_ptr<FileIndexReader>>> GetReaders(const std::string& field_name);
 
     Result<std::shared_ptr<FileIndexResult>> EvaluateLeaf(
-        const std::shared_ptr<LeafPredicate>& predicate, bool needs_scores);
+        const std::shared_ptr<LeafPredicate>& predicate, bool needs_scores,
+        const RoaringBitmap32* candidates);
 
     Result<std::optional<double>> EstimateSelectivity(
         const std::shared_ptr<LeafPredicate>& predicate);
@@ -96,10 +98,11 @@ class FileIndexEvaluator {
         const std::shared_ptr<FileSystem>& file_system);
 
     Result<std::shared_ptr<FileIndexResult>> EvaluatePredicate(
-        const std::shared_ptr<Predicate>& predicate);
+        const std::shared_ptr<Predicate>& predicate, const RoaringBitmap32* candidates);
 
     Result<std::shared_ptr<FileIndexResult>> EvaluateCompoundPredicate(
-        const std::shared_ptr<CompoundPredicate>& compound_predicate);
+        const std::shared_ptr<CompoundPredicate>& compound_predicate,
+        const RoaringBitmap32* candidates);
 
  private:
     std::shared_ptr<arrow::Schema> data_schema_;

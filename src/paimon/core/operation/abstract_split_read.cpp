@@ -482,12 +482,12 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFieldMappingRe
             file_field_names, arrow_pool_);
     }
     std::unique_ptr<FileBatchReader> final_reader;
+    const auto& predicate = field_mapping->non_partition_info.non_partition_filter;
     if (exact_selection) {
-        PAIMON_ASSIGN_OR_RAISE(final_reader,
-                               ApplyBitmapSelection(std::move(file_reader), read_schema,
-                                                    /*predicate=*/nullptr, *exact_selection));
+        PAIMON_ASSIGN_OR_RAISE(
+            final_reader,
+            ApplyBitmapSelection(std::move(file_reader), read_schema, predicate, *exact_selection));
     } else {
-        const auto& predicate = field_mapping->non_partition_info.non_partition_filter;
         auto all_data_schema = DataField::ConvertDataFieldsToArrowSchema(data_schema->Fields());
         auto field_name_mapping = FieldMappingBuilder::CreateFieldNameMapping(
             context_->GetTableSchema()->Fields(), data_schema->Fields());

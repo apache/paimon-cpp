@@ -342,9 +342,9 @@ TEST(ReadContextTest, TestSetWarmupLevel) {
 }
 
 TEST(ReadContextTest, TestSearchRequiresPreciseFileIndexEvaluate) {
-    auto vector =
-        std::make_shared<VectorSearch>("embedding", /*limit=*/3, std::vector<float>{1.0f}, nullptr,
-                                       nullptr, std::nullopt, std::map<std::string, std::string>{});
+    auto vector = std::make_shared<VectorSearch>(
+        "embedding", /*limit=*/3, std::vector<float>{1.0f}, nullptr, nullptr,
+        VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
     auto text = std::make_shared<FullTextSearch>("body", R"({"match":{"query":"apple"}})", 3);
     auto match = std::make_shared<FullTextMatch>("body", text->query);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> full_text,
@@ -542,9 +542,9 @@ TEST(ReadContextTest, TestFullTextPredicateAndRootTopKConfiguration) {
                          PredicateBuilder::FullTextMatch(0, match));
     auto scalar = PredicateBuilder::LessThan(1, "price", FieldType::INT, Literal(10));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> filter, PredicateBuilder::Or({text, scalar}));
-    auto vector =
-        std::make_shared<VectorSearch>("embedding", 3, std::vector<float>{1.0f}, nullptr, nullptr,
-                                       std::nullopt, std::map<std::string, std::string>{});
+    auto vector = std::make_shared<VectorSearch>("embedding", 3, std::vector<float>{1.0f}, nullptr,
+                                                 nullptr, VectorSearch::DistanceType::EUCLIDEAN,
+                                                 std::map<std::string, std::string>{});
     ReadContextBuilder builder("table_root_path");
     builder.EnablePreciseFileIndexEvaluate(true)
         .SetReadFieldNames({"body", "price"})
@@ -560,6 +560,29 @@ TEST(ReadContextTest, TestFullTextPredicateAndRootTopKConfiguration) {
     ASSERT_OK_AND_ASSIGN(context, builder.Finish());
     ASSERT_EQ(context->GetPredicate(), filter);
     ASSERT_EQ(context->GetFullTextSearch(), ranked_text);
+}
+
+TEST(ReadContextTest, TestRootVectorSearchRequiresDistanceType) {
+    auto search =
+        std::make_shared<VectorSearch>("embedding", 3, std::vector<float>{1.0f}, nullptr, nullptr,
+                                       std::nullopt, std::map<std::string, std::string>{});
+    for (const auto& distance_type : std::vector<std::optional<VectorSearch::DistanceType>>{
+             std::nullopt, VectorSearch::DistanceType::UNKNOWN,
+             static_cast<VectorSearch::DistanceType>(0)}) {
+        search->distance_type = distance_type;
+        ReadContextBuilder builder("table_root_path");
+        builder.EnablePreciseFileIndexEvaluate(true).SetVectorSearch(search);
+        ASSERT_NOK_WITH_MSG(builder.Finish(), "VectorSearch requires DistanceType");
+    }
+    for (auto distance_type :
+         {VectorSearch::DistanceType::EUCLIDEAN, VectorSearch::DistanceType::INNER_PRODUCT,
+          VectorSearch::DistanceType::COSINE}) {
+        search->distance_type = distance_type;
+        ReadContextBuilder builder("table_root_path");
+        builder.EnablePreciseFileIndexEvaluate(true).SetVectorSearch(search);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+        ASSERT_EQ(context->GetVectorSearch()->distance_type, distance_type);
+    }
 }
 
 TEST(ReadContextTest, TestRootTopKValidation) {

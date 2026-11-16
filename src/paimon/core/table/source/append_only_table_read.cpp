@@ -53,9 +53,12 @@
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/realtime_split.h"
 #include "paimon/core/table/source/table_read_utils.h"
+#include "paimon/core/table/source/topk_batch_reader.h"
+#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/predicate/predicate_utils.h"
+#include "paimon/predicate/vector_search.h"
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/realtime/realtime_store.h"
 #include "paimon/status.h"
@@ -146,6 +149,9 @@ AppendOnlyTableRead::AppendOnlyTableRead(const std::shared_ptr<FileStorePathFact
 
 Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateReader(
     const std::shared_ptr<Split>& split) {
+    if (context_->HasVectorOrFullTextSearch()) {
+        return CreateReader(std::vector<std::shared_ptr<Split>>{split});
+    }
     std::shared_ptr<RealtimeSplit> realtime_split = std::dynamic_pointer_cast<RealtimeSplit>(split);
     if (!realtime_split) {
         return CreateDiskReader(split);
@@ -157,13 +163,32 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateReader(
     const std::vector<std::shared_ptr<Split>>& splits) {
     auto owned_read =
         std::make_shared<AppendOnlyTableRead>(path_factory_, context_, memory_pool_, executor_);
-    return TableReadUtils::CreateLazyReader(
-        splits, owned_read,
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
+        TableReadUtils::CreateLazyReader(
+        splits, [owned_read](const std::shared_ptr<Split>& split) {
+            return owned_read->CreateDiskReader(split);
+        },
         [owned_read](const std::shared_ptr<RealtimeSplit>& split,
                      const RealtimePartitionBucketView& view) {
             return owned_read->CreateRealtimeReader(split, view);
         },
-        *context_);
+        *context_));
+    if (!context_->HasVectorOrFullTextSearch()) {
+        return reader;
+    }
+    const auto& vector_search = context_->GetVectorSearch();
+    const auto& full_text_search = context_->GetFullTextSearch();
+    const std::string score_name = SpecialFields::IndexScoreFieldName(
+        vector_search ? vector_search->field_name : full_text_search->field_name);
+    const int32_t limit = vector_search ? vector_search->limit : full_text_search->limit;
+    const TopKBatchReader::ScoreOrder score_order =
+        vector_search && *vector_search->distance_type != VectorSearch::DistanceType::INNER_PRODUCT
+            ? TopKBatchReader::ScoreOrder::ASCENDING
+            : TopKBatchReader::ScoreOrder::DESCENDING;
+    return std::make_unique<TopKBatchReader>(std::move(reader), score_name, score_order, limit,
+                                             context_->GetCoreOptions().GetReadBatchSize(),
+                                             context_->GetReadSchema(),
+                                             context_->GetArrowMemoryPool());
 }
 
 Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(

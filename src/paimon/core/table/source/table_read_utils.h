@@ -31,12 +31,14 @@ namespace paimon {
 class InternalReadContext;
 class RealtimeSplit;
 class Split;
-class TableRead;
 
 class TableReadUtils {
  public:
     TableReadUtils() = delete;
     ~TableReadUtils() = delete;
+
+    using DiskReaderFactory = std::function<Result<std::unique_ptr<BatchReader>>(
+        const std::shared_ptr<Split>&)>;
 
     using RealtimeReaderFactory = std::function<Result<std::unique_ptr<BatchReader>>(
         const std::shared_ptr<RealtimeSplit>&, const RealtimePartitionBucketView&)>;
@@ -45,10 +47,10 @@ class TableReadUtils {
     static Result<RealtimePartitionBucketView> ResolveRealtimeReadView(
         const RealtimeSplit& split, const InternalReadContext& context);
 
-    /// The real-time factory must own its read state. It receives the view pinned for its split
+    /// Both factories must own their read state. The real-time factory It receives the view pinned for its split
     /// during validation, even if the caller has since destroyed the TableRead.
     static Result<std::unique_ptr<BatchReader>> CreateLazyReader(
-        const std::vector<std::shared_ptr<Split>>& splits, const std::shared_ptr<TableRead>& read,
+        const std::vector<std::shared_ptr<Split>>& splits, const DiskReaderFactory& open_disk,
         const RealtimeReaderFactory& open_realtime, const InternalReadContext& context);
 };
 }  // namespace paimon

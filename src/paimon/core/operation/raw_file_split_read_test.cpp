@@ -959,8 +959,9 @@ TEST_F(RawFileSplitReadTest, TestVectorSearchScoreProjection) {
     std::shared_ptr<arrow::ChunkedArray> without_score_expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
-                                    arrow::field("f0", arrow::utf8())}),
-                    {R"([[0, "Bob"], [0, "Tony"]])"}, &without_score_expected)
+                                    arrow::field("f0", arrow::utf8()),
+                                    arrow::field("_f3_INDEX_SCORE", arrow::float32())}),
+                    {R"([[0, "Bob", 0.25], [0, "Tony", 0.75]])"}, &without_score_expected)
                     .ok());
     ASSERT_TRUE(without_score_result->Equals(without_score_expected));
     ASSERT_EQ(*open_count, 2);
@@ -1011,8 +1012,9 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchFiltersDeletionVectorBeforeLimit)
     std::shared_ptr<arrow::ChunkedArray> expected;
     ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
                     arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
-                                    arrow::field("f0", arrow::utf8())}),
-                    {R"([[0, "Tony"]])"}, &expected)
+                                    arrow::field("f0", arrow::utf8()),
+                                    arrow::field("_f3_INDEX_SCORE", arrow::float32())}),
+                    {R"([[0, "Tony", 0.75]])"}, &expected)
                     .ok());
     EXPECT_TRUE(result->Equals(expected));
 }
@@ -1123,10 +1125,11 @@ TEST_F(RawFileSplitReadTest, TestFullTextSearchRenamedUnprojectedFieldInOldFile)
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
 
     auto expected_type = arrow::struct_(
-        {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("f0", arrow::utf8())});
+        {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("f0", arrow::utf8()),
+         arrow::field("_renamed_f3_INDEX_SCORE", arrow::float32())});
     const std::vector<std::pair<RoaringBitmap32, std::string>> cases = {
-        {RoaringBitmap32(), R"([[0,"Bob"],[0,"Tony"]])"},
-        {RoaringBitmap32::From({0}), R"([[0,"Tony"]])"}};
+        {RoaringBitmap32(), R"([[0,"Bob",0.25],[0,"Tony",0.75]])"},
+        {RoaringBitmap32::From({0}), R"([[0,"Tony",0.75]])"}};
     for (const auto& [deleted, expected_json] : cases) {
         SCOPED_TRACE(deleted.ToString());
         ASSERT_OK_AND_ASSIGN(auto actual, ReadSearchWithDeletionVector(context, identifier, deleted,

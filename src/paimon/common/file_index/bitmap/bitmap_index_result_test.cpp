@@ -92,4 +92,53 @@ TEST_F(BitmapIndexResultTest, TestCompoundIndexResult) {
     ASSERT_TRUE(res2->Or(FileIndexResult::Remain()).value()->IsRemain().value());
 }
 
+TEST_F(BitmapIndexResultTest, TestExactnessComposition) {
+    auto candidate = CreateResult({1, 2, 3});
+    auto exact = std::make_shared<BitmapIndexResult>(
+        []() -> Result<RoaringBitmap32> {
+            return RoaringBitmap32::From({1, 2, 3});
+        },
+        /*is_exact=*/true);
+    auto other_exact = std::make_shared<BitmapIndexResult>(
+        []() -> Result<RoaringBitmap32> {
+            return RoaringBitmap32::From({2, 4});
+        },
+        /*is_exact=*/true);
+    ASSERT_FALSE(candidate->IsExact());
+    ASSERT_TRUE(exact->IsExact());
+    ASSERT_FALSE(FileIndexResult::Remain()->IsExact());
+    ASSERT_TRUE(FileIndexResult::Skip()->IsExact());
+
+    ASSERT_OK_AND_ASSIGN(auto intersection, exact->And(other_exact));
+    ASSERT_TRUE(intersection->IsExact());
+    CheckResult(intersection, {2});
+    ASSERT_OK_AND_ASSIGN(auto union_result, exact->Or(other_exact));
+    ASSERT_TRUE(union_result->IsExact());
+    CheckResult(union_result, {1, 2, 3, 4});
+
+    for (const auto& inexact :
+         {std::shared_ptr<FileIndexResult>(candidate), FileIndexResult::Remain()}) {
+        ASSERT_OK_AND_ASSIGN(auto left, exact->And(inexact));
+        ASSERT_OK_AND_ASSIGN(auto right, inexact->And(exact));
+        ASSERT_FALSE(left->IsExact());
+        ASSERT_FALSE(right->IsExact());
+        CheckResult(left, {1, 2, 3});
+        CheckResult(right, {1, 2, 3});
+        ASSERT_OK_AND_ASSIGN(left, exact->Or(inexact));
+        ASSERT_OK_AND_ASSIGN(right, inexact->Or(exact));
+        ASSERT_FALSE(left->IsExact());
+        ASSERT_FALSE(right->IsExact());
+    }
+    for (const auto& result : {candidate, exact}) {
+        ASSERT_OK_AND_ASSIGN(auto left, result->And(FileIndexResult::Skip()));
+        ASSERT_OK_AND_ASSIGN(auto right, FileIndexResult::Skip()->And(result));
+        ASSERT_TRUE(left->IsExact());
+        ASSERT_TRUE(right->IsExact());
+        ASSERT_OK_AND_ASSIGN(left, result->Or(FileIndexResult::Skip()));
+        ASSERT_OK_AND_ASSIGN(right, FileIndexResult::Skip()->Or(result));
+        ASSERT_EQ(left->IsExact(), result->IsExact());
+        ASSERT_EQ(right->IsExact(), result->IsExact());
+    }
+}
+
 }  // namespace paimon::test

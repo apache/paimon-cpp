@@ -29,6 +29,7 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/file_index/bitmap/bitmap_file_index.h"
@@ -49,6 +50,7 @@
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/factories/factory_creator.h"
+#include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
@@ -65,6 +67,12 @@
 
 namespace paimon::test {
 namespace {
+
+class MockScalarFileIndexReader : public FileIndexReader {
+ public:
+    MOCK_METHOD(Result<std::shared_ptr<FileIndexResult>>, Evaluate,
+                (const std::shared_ptr<LeafPredicate>&, const RoaringBitmap32*), (override));
+};
 
 class RecordingDoubleFunction final : public LeafFunction {
  public:
@@ -188,6 +196,12 @@ class PreciseFileIndexReadTest : public ::testing::Test {
             PreciseFileIndexRead::Create(*split_read, partition, file, context->GetReadSchema(),
                                          context->GetPredicate(), field_mapping_builder.get(),
                                          path_factory, {}));
+        if (scalar_index_result_) {
+            auto reader = std::make_shared<MockScalarFileIndexReader>();
+            EXPECT_CALL(*reader, Evaluate(::testing::_, ::testing::_))
+                .WillOnce(::testing::Return(scalar_index_result_));
+            precise_read->indexes_->field_readers_["f3"] = {std::move(reader)};
+        }
         if (!deletion_vector) {
             deletion_vector = std::make_shared<BitmapDeletionVector>(deleted_rows);
         }
@@ -226,6 +240,7 @@ class PreciseFileIndexReadTest : public ::testing::Test {
         ASSERT_TRUE(actual->Equals(expected)) << actual->ToString();
     }
 
+    std::shared_ptr<FileIndexResult> scalar_index_result_;
     std::shared_ptr<MemoryPool> pool_ = GetDefaultPool();
     const std::string statistics_index_type_ = "precise-read-statistics-full-text";
     std::shared_ptr<MockSearchFileIndex::Statistics> statistics_ =
@@ -560,6 +575,11 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateIndexedLeafSkipsUnselectedSca
 }
 
 TEST_F(PreciseFileIndexReadTest, TestMixedPredicateRechecksScalarIndexCandidates) {
+    scalar_index_result_ = std::make_shared<BitmapIndexResult>(
+        []() -> Result<RoaringBitmap32> {
+            return RoaringBitmap32::From({0, 1});
+        },
+        /*is_exact=*/false);
     auto field = arrow::field("f3", arrow::float64());
     ASSERT_OK_AND_ASSIGN(auto writer, BitmapFileIndexWriter::Create(field, {}, pool_));
     // Include Bob as a false positive: the data file contains 12.1 for row 0.
@@ -602,6 +622,95 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateRechecksScalarIndexCandidates
                       R"([["Emily",13.1,0.5]])");
     ASSERT_EQ(statistics_->executions.size(), 1);
     ASSERT_TRUE(statistics_->executions.front().needs_scores);
+}
+
+TEST_F(PreciseFileIndexReadTest, TestInexactScalarIndexRecoversMissingRows) {
+    auto field = arrow::field("f3", arrow::float64());
+    auto predicate = PredicateBuilder::NotEqual(1, "f3", FieldType::DOUBLE, Literal(13.1));
+    ReadContextBuilder builder(SearchTablePath());
+    builder.EnablePreciseFileIndexEvaluate(true)
+        .SetReadFieldNames({"f0", "f3"})
+        .SetPredicate(predicate)
+        .AddOption(Options::READ_BATCH_SIZE, "1");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+
+    const std::string query = R"({"match":{"query":"first-two"}})";
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Bytes> text_payload,
+        MockSearchFileIndex::MakeQueryPayload({{query, {{{0, 0.25f}, {1, 0.5f}}, 0.1}}}, pool_));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> text,
+        PredicateBuilder::FullTextMatch(0, std::make_shared<FullTextMatch>("f0", query)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> conjunction,
+                         PredicateBuilder::And({text, predicate}));
+    ReadContextBuilder and_builder(SearchTablePath());
+    and_builder.EnablePreciseFileIndexEvaluate(true)
+        .SetReadFieldNames({"f0", "f3"})
+        .SetPredicate(conjunction)
+        .AddOption(Options::READ_BATCH_SIZE, "1");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> and_context, and_builder.Finish());
+
+    FileIndexFormat::ColumnIndexes indexes;
+    indexes["f0"][statistics_index_type_] = text_payload;
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> index,
+                         MockSearchFileIndex::Serialize(indexes, pool_));
+    // The actual matches are rows 0 and 2. Simulate partial and complete false negatives.
+    for (const auto& rows : {RoaringBitmap32::From({2}), RoaringBitmap32()}) {
+        scalar_index_result_ = std::make_shared<BitmapIndexResult>(
+            [rows]() -> Result<RoaringBitmap32> { return rows; }, /*is_exact=*/false);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadWithFileIndex(context, index));
+        CheckSearchResult(result, {arrow::field("f0", arrow::utf8()), field},
+                          R"([["Bob",12.1],["Tony",14.1]])");
+
+        ASSERT_OK_AND_ASSIGN(result, ReadWithFileIndex(context, index, RoaringBitmap32::From({2})));
+        CheckSearchResult(result, {arrow::field("f0", arrow::utf8()), field}, R"([["Bob",12.1]])");
+        ASSERT_OK_AND_ASSIGN(result, ReadWithFileIndex(context, index, RoaringBitmap32(), nullptr,
+                                                       std::vector<Range>{Range(1, 2)}));
+        CheckSearchResult(result, {arrow::field("f0", arrow::utf8()), field}, R"([["Tony",14.1]])");
+
+        // Recovery must preserve the exact result of the preceding full-text predicate.
+        ASSERT_OK_AND_ASSIGN(result, ReadWithFileIndex(and_context, index));
+        CheckSearchResult(result, {arrow::field("f0", arrow::utf8()), field}, R"([["Bob",12.1]])");
+    }
+}
+
+TEST_F(PreciseFileIndexReadTest, TestExactScalarIndexAvoidsRecheckingRows) {
+    auto field = arrow::field("f3", arrow::float64());
+    ASSERT_OK_AND_ASSIGN(auto writer, BitmapFileIndexWriter::Create(field, {}, pool_));
+    auto values = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({field}),
+                                                            R"([[12.1], [13.1], [14.1]])");
+    ASSERT_TRUE(values.ok()) << values.status().ToString();
+    ::ArrowArray c_array;
+    ASSERT_TRUE(arrow::ExportArray(*values.ValueUnsafe(), &c_array).ok());
+    ASSERT_OK(writer->AddBatch(&c_array));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> payload, writer->SerializedBytes());
+    FileIndexFormat::ColumnIndexes indexes;
+    indexes["f3"]["bitmap"] = payload;
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> index,
+                         MockSearchFileIndex::Serialize(indexes, pool_));
+
+    auto scalar = std::dynamic_pointer_cast<LeafPredicateImpl>(
+        PredicateBuilder::Equal(1, "f3", FieldType::DOUBLE, Literal(13.1)));
+    ASSERT_TRUE(scalar);
+    std::vector<double> evaluated;
+    RecordingDoubleFunction function(scalar->GetLeafFunction(), &evaluated);
+    auto predicate =
+        std::make_shared<LeafPredicateImpl>(function, scalar->FieldIndex(), scalar->FieldName(),
+                                            scalar->GetFieldType(), scalar->Literals());
+    ReadContextBuilder builder(SearchTablePath());
+    builder.EnablePreciseFileIndexEvaluate(true)
+        .SetReadFieldNames({"f0", "f3"})
+        .SetPredicate(predicate);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         ReadWithFileIndex(context, index));
+    CheckSearchResult(actual, {arrow::field("f0", arrow::utf8()), field}, R"([["Emily",13.1]])");
+    ASSERT_TRUE(evaluated.empty());
+
+    ASSERT_OK_AND_ASSIGN(actual, ReadWithFileIndex(context, nullptr));
+    CheckSearchResult(actual, {arrow::field("f0", arrow::utf8()), field}, R"([["Emily",13.1]])");
+    ASSERT_FALSE(evaluated.empty());
 }
 
 TEST_F(PreciseFileIndexReadTest, TestMixedPredicatePrechecksSearchBeforeEmptyCandidates) {

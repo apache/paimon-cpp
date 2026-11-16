@@ -1097,6 +1097,96 @@ class WriteAndReadInteWithIndexTest
         ASSERT_EQ(1, (*split)->DataFiles()[1]->schema_id);
     }
 
+    void CreateMultiFileSearchSplit(std::string* path,
+                                    std::shared_ptr<DataSplitImpl>* split) const {
+        if (data_source_ != IndexDataSource::Java) {
+            std::vector<DataField> read_fields = {
+                SpecialFields::ValueKind(), DataField(1, arrow::field("f1", arrow::int64())),
+                DataField(0, arrow::field("f4", arrow::utf8())),
+                DataField(3, arrow::field("f3", arrow::float64())),
+                DataField(4, arrow::field("f5", arrow::int32()))};
+            ASSERT_NO_FATAL_FAILURE(WriteCppTableWithAlter(read_fields, path, split));
+        } else {
+            *path = GetDataDir() + "/" + file_format_ +
+                    "/append_with_bitmap_alter_table.db/append_with_bitmap_alter_table/";
+            ScanContextBuilder builder(*path);
+            builder.AddOption(Options::SCAN_SNAPSHOT_ID, "2");
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                                 TableScan::Create(std::move(context)));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+            ASSERT_EQ(plan->Splits().size(), 1u);
+            *split = checked_pointer_cast<DataSplitImpl>(plan->Splits()[0]);
+        }
+        ASSERT_EQ((*split)->DataFiles().size(), 2u);
+        ASSERT_EQ((*split)->DataFiles()[0]->schema_id, 0);
+        ASSERT_EQ((*split)->DataFiles()[0]->row_count, 8);
+        ASSERT_EQ((*split)->DataFiles()[1]->schema_id, 1);
+        ASSERT_EQ((*split)->DataFiles()[1]->row_count, 4);
+    }
+
+    void CreateRootSearchSplits(const std::shared_ptr<DataSplitImpl>& source,
+                                const std::string& index_type,
+                                const std::vector<MockSearchFileIndex::ScoredRows>& scored_rows,
+                                bool separate_splits,
+                                std::vector<std::shared_ptr<Split>>* splits) const {
+        ASSERT_EQ(source->DataFiles().size(), scored_rows.size());
+        std::vector<std::shared_ptr<DataFileMeta>> files;
+        for (size_t i = 0; i < scored_rows.size(); ++i) {
+            auto file = std::make_shared<DataFileMeta>(*source->DataFiles()[i]);
+            ASSERT_OK_AND_ASSIGN(file->embedded_index,
+                                 MockSearchFileIndex::MakeIndex(file->schema_id == 0 ? "f0" : "f4",
+                                                                index_type, scored_rows[i], pool_));
+            files.push_back(std::move(file));
+        }
+        splits->clear();
+        const size_t files_per_split = separate_splits ? 1 : files.size();
+        for (size_t i = 0; i < files.size(); i += files_per_split) {
+            DataSplitImpl::Builder builder(
+                source->Partition(), source->Bucket(), source->BucketPath(),
+                std::vector<std::shared_ptr<DataFileMeta>>(files.begin() + i,
+                                                           files.begin() + i + files_per_split));
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<DataSplitImpl> split,
+                builder.WithSnapshot(source->SnapshotId()).RawConvertible(true).Build());
+            splits->push_back(std::move(split));
+        }
+    }
+
+    Result<std::unique_ptr<TableRead>> CreateRootSearchRead(
+        const std::string& path, const std::shared_ptr<VectorSearch>& vector_search,
+        const std::shared_ptr<FullTextSearch>& full_text_search, bool project_score) const {
+        ReadContextBuilder builder(path);
+        builder.EnablePreciseFileIndexEvaluate(true)
+            .SetReadFieldNames(project_score ? std::vector<std::string>{"f3", "_f4_INDEX_SCORE"}
+                                             : std::vector<std::string>{"f3"})
+            .SetVectorSearch(vector_search)
+            .SetFullTextSearch(full_text_search)
+            .AddOption(Options::READ_BATCH_SIZE, "2")
+            .AddOption("test.enable-adaptive-prefetch-strategy", "false")
+            .EnableLateMaterializing(false);
+        if (enable_prefetch_) {
+            builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> context, builder.Finish());
+        return TableRead::Create(std::move(context));
+    }
+
+    void CheckRootSearchResult(const std::shared_ptr<arrow::ChunkedArray>& actual,
+                               bool project_score, const std::string& json) const {
+        arrow::FieldVector fields = {SpecialFields::ValueKind().ArrowField(),
+                                     arrow::field("f3", arrow::float64())};
+        if (project_score) {
+            fields.push_back(arrow::field("_f4_INDEX_SCORE", arrow::float32()));
+        }
+        std::shared_ptr<arrow::ChunkedArray> expected;
+        ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow::struct_(fields), {json},
+                                                                     &expected)
+                        .ok());
+        ASSERT_TRUE(actual);
+        ASSERT_TRUE(actual->Equals(expected)) << actual->ToString();
+    }
+
  private:
     std::string PkDvTablePath() const {
         return data_source_ == IndexDataSource::Java
@@ -1871,12 +1961,12 @@ TEST_P(WriteAndReadInteWithIndexTest, TestPkDvFullTextTopKFiltersBeforeLimit) {
     std::shared_ptr<DataSplitImpl> split;
     ASSERT_NO_FATAL_FAILURE(CreatePkDvSplit(&split, index));
     // Rows 0 and 4 are deleted, and row 7 fails the scalar filter. All three rank ahead of
-    // the surviving TopK, whose scores must be reordered with the physical output rows.
+    // the surviving TopK, which is returned in descending full-text score order.
     CheckPkDvPreciseResult(
         split,
         {arrow::field("key", arrow::int32()), arrow::field("_f0_INDEX_SCORE", arrow::float32()),
          arrow::field("f3", arrow::float64())},
-        R"([[0,2,0.5,13.1],[0,5,0.625,16.1]])", predicate, /*vector_search=*/nullptr, search);
+        R"([[0,5,0.625,16.1],[0,2,0.5,13.1]])", predicate, /*vector_search=*/nullptr, search);
     ASSERT_EQ(statistics_->executions.size(), 1);
     ASSERT_TRUE(statistics_->executions.front().needs_scores);
     ASSERT_FALSE(search->include_row_ids);
@@ -1912,13 +2002,319 @@ TEST_P(WriteAndReadInteWithIndexTest, TestPkDvFullTextAndVectorTopKScoreAlignmen
         "f3", /*limit=*/2, std::vector<float>{1.0f}, nullptr, nullptr,
         VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
     // The DV excludes rows 0 and 4 and FullTextMatch excludes row 5 before vector TopK.
-    // The vector field itself is not projected, and both score columns follow the final rows.
+    // The vector field is not projected. Both score columns follow rows ordered by increasing
+    // Euclidean distance, rather than by physical row position or full-text score.
     CheckPkDvPreciseResult(
         split,
         {arrow::field("_f3_INDEX_SCORE", arrow::float32()), arrow::field("key", arrow::int32()),
          arrow::field("f0", arrow::utf8()), arrow::field("_f0_INDEX_SCORE", arrow::float32())},
-        R"([[0,0.625,2,"Emily",0.75],[0,0.5,7,"Alice",0.25]])", text, search);
+        R"([[0,0.5,7,"Alice",0.25],[0,0.625,2,"Emily",0.75]])", text, search);
     ASSERT_FALSE(search->pre_filter);
+}
+
+TEST_P(WriteAndReadInteWithIndexTest, TestRootFullTextTopKAcrossFilesAndSplits) {
+    std::string path;
+    std::shared_ptr<DataSplitImpl> source;
+    ASSERT_NO_FATAL_FAILURE(CreateMultiFileSearchSplit(&path, &source));
+    // File 0 has values 11.1 .. 18.1; file 1 has values 21.1 .. 24.1.
+    const std::vector<MockSearchFileIndex::ScoredRows> scored_rows = {
+        {{0, 6.0f}, {4, 4.0f}, {7, 2.0f}}, {{1, 5.0f}, {3, 3.0f}, {0, 1.0f}}};
+    for (bool separate_splits : {false, true}) {
+        std::vector<std::shared_ptr<Split>> splits;
+        ASSERT_NO_FATAL_FAILURE(CreateRootSearchSplits(source,
+                                                       MockSearchFileIndex::FULL_TEXT_IDENTIFIER,
+                                                       scored_rows, separate_splits, &splits));
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TableRead> read,
+            CreateRootSearchRead(path, /*vector_search=*/nullptr,
+                                 std::make_shared<FullTextSearch>("f4", "query", /*limit=*/3),
+                                 /*project_score=*/true));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(splits));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        CheckRootSearchResult(actual, /*project_score=*/true,
+                              R"([[0,11.1,6],[0,22.1,5],[0,15.1,4]])");
+    }
+}
+
+TEST_P(WriteAndReadInteWithIndexTest, TestRootTopKWithMixedStringEncodings) {
+    if (data_source_ == IndexDataSource::Java) {
+        GTEST_SKIP() << "This test writes files with different string encodings";
+    }
+    auto schema =
+        arrow::schema({arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32())});
+    auto options = CppOptions(
+        {{"parquet.enable.dictionary", "true"}, {"orc.dictionary-key-size-threshold", "1.0"}});
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<TestHelper> helper,
+        TestHelper::Create(dir_->Str(), schema, {}, {}, options, /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        TestHelper::MakeRecordBatch(arrow::struct_(schema->fields()),
+                                    R"([["encoded",0],["encoded",1]])", {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+    helper.reset();
+
+    const std::string path = dir_->Str() + "/foo.db/bar";
+    options["parquet.enable.dictionary"] = "false";
+    options["orc.dictionary-key-size-threshold"] = "0.0";
+    ASSERT_OK_AND_ASSIGN(helper, TestHelper::Create(path, options, /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(batch, TestHelper::MakeRecordBatch(arrow::struct_(schema->fields()),
+                                                            R"([["plain",2]])", {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 1, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> source_splits,
+                         helper->NewScan(StartupMode::LatestFull(), std::nullopt, false));
+    ASSERT_EQ(source_splits.size(), 1u);
+    auto source = std::dynamic_pointer_cast<DataSplitImpl>(source_splits[0]);
+    ASSERT_TRUE(source);
+    ASSERT_EQ(source->DataFiles().size(), 2u);
+    ASSERT_EQ(source->DataFiles()[0]->row_count, 2);
+    ASSERT_EQ(source->DataFiles()[1]->row_count, 1);
+    std::vector<std::shared_ptr<Split>> splits;
+    ASSERT_NO_FATAL_FAILURE(CreateRootSearchSplits(
+        source, MockSearchFileIndex::FULL_TEXT_IDENTIFIER, {{{0, 2.0f}, {1, 1.0f}}, {{0, 3.0f}}},
+        /*separate_splits=*/true, &splits));
+
+    auto create_read = [&](bool search) -> Result<std::unique_ptr<TableRead>> {
+        ReadContextBuilder builder(path);
+        builder.EnablePreciseFileIndexEvaluate(search)
+            .SetReadFieldNames(search ? std::vector<std::string>{"f0", "f1", "_f0_INDEX_SCORE"}
+                                      : std::vector<std::string>{"f0", "f1"})
+            .AddOption("parquet.read.enable-dictionary-passthrough", "true")
+            .AddOption("orc.read.enable-lazy-decoding", "true")
+            .AddOption(Options::READ_BATCH_SIZE, "1")
+            .AddOption("test.enable-adaptive-prefetch-strategy", "false")
+            .EnableLateMaterializing(false);
+        if (search) {
+            builder.SetFullTextSearch(std::make_shared<FullTextSearch>("f0", "query", 2));
+        }
+        if (enable_prefetch_) {
+            builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> context, builder.Finish());
+        return TableRead::Create(std::move(context));
+    };
+    // Verify the input files really produce different physical types for the same field.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> plain_read, create_read(/*search=*/false));
+    for (size_t i = 0; i < splits.size(); ++i) {
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                             plain_read->CreateReader(splits[i]));
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch input, reader->NextBatch());
+        auto array_result = arrow::ImportArray(input.first.get(), input.second.get());
+        ASSERT_TRUE(array_result.ok()) << array_result.status().ToString();
+        auto array = std::dynamic_pointer_cast<arrow::StructArray>(array_result.ValueOrDie());
+        ASSERT_TRUE(array);
+        ASSERT_EQ(array->GetFieldByName("f0")->type_id(),
+                  i == 0 ? arrow::Type::DICTIONARY : arrow::Type::STRING);
+        reader->Close();
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, create_read(/*search=*/true));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(splits));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         ReadResultCollector::CollectResult(std::move(reader)));
+    arrow::FieldVector output_fields = {SpecialFields::ValueKind().ArrowField(), schema->field(0),
+                                        schema->field(1),
+                                        arrow::field("_f0_INDEX_SCORE", arrow::float32())};
+    std::shared_ptr<arrow::ChunkedArray> expected;
+    ASSERT_TRUE(
+        arrow::ipc::internal::json::ChunkedArrayFromJSON(
+            arrow::struct_(output_fields), {R"([[0,"plain",2,3],[0,"encoded",0,2]])"}, &expected)
+            .ok());
+    ASSERT_TRUE(actual);
+    ASSERT_TRUE(actual->Equals(expected)) << actual->ToString();
+}
+
+TEST_P(WriteAndReadInteWithIndexTest, TestRootVectorTopKAcrossFilesAndSplits) {
+    std::string path;
+    std::shared_ptr<DataSplitImpl> source;
+    ASSERT_NO_FATAL_FAILURE(CreateMultiFileSearchSplit(&path, &source));
+    for (VectorSearch::DistanceType metric :
+         {VectorSearch::DistanceType::EUCLIDEAN, VectorSearch::DistanceType::COSINE,
+          VectorSearch::DistanceType::INNER_PRODUCT}) {
+        const bool ascending = metric != VectorSearch::DistanceType::INNER_PRODUCT;
+        std::vector<MockSearchFileIndex::ScoredRows> scored_rows = {
+            {{0, 6.0f}, {4, 4.0f}, {7, 2.0f}}, {{1, 5.0f}, {3, 3.0f}, {0, 1.0f}}};
+        if (ascending) {
+            for (auto& rows : scored_rows) {
+                std::reverse(rows.begin(), rows.end());
+            }
+        }
+        for (bool separate_splits : {false, true}) {
+            std::vector<std::shared_ptr<Split>> splits;
+            ASSERT_NO_FATAL_FAILURE(CreateRootSearchSplits(source,
+                                                           MockSearchFileIndex::VECTOR_IDENTIFIER,
+                                                           scored_rows, separate_splits, &splits));
+            auto search = std::make_shared<VectorSearch>(
+                "f4", /*limit=*/3, std::vector<float>{1.0f}, nullptr, nullptr, metric,
+                std::map<std::string, std::string>{});
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                                 CreateRootSearchRead(path, search, /*full_text_search=*/nullptr,
+                                                      /*project_score=*/true));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(splits));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                                 ReadResultCollector::CollectResult(std::move(reader)));
+            CheckRootSearchResult(actual, /*project_score=*/true,
+                                  ascending ? R"([[0,21.1,1],[0,18.1,2],[0,24.1,3]])"
+                                            : R"([[0,11.1,6],[0,22.1,5],[0,15.1,4]])");
+        }
+    }
+}
+
+TEST_P(WriteAndReadInteWithIndexTest, TestRootTopKScoreProjection) {
+    std::string path;
+    std::shared_ptr<DataSplitImpl> source;
+    ASSERT_NO_FATAL_FAILURE(CreateMultiFileSearchSplit(&path, &source));
+    const std::vector<MockSearchFileIndex::ScoredRows> scored_rows = {
+        {{0, 6.0f}, {4, 4.0f}, {7, 2.0f}}, {{1, 5.0f}, {3, 3.0f}, {0, 1.0f}}};
+    for (bool vector_search : {false, true}) {
+        std::vector<std::shared_ptr<Split>> splits;
+        ASSERT_NO_FATAL_FAILURE(
+            CreateRootSearchSplits(source,
+                                   vector_search ? MockSearchFileIndex::VECTOR_IDENTIFIER
+                                                 : MockSearchFileIndex::FULL_TEXT_IDENTIFIER,
+                                   scored_rows, /*separate_splits=*/true, &splits));
+        auto vector = vector_search ? std::make_shared<VectorSearch>(
+                                          "f4", /*limit=*/3, std::vector<float>{1.0f}, nullptr,
+                                          nullptr, VectorSearch::DistanceType::INNER_PRODUCT,
+                                          std::map<std::string, std::string>{})
+                                    : nullptr;
+        auto full_text =
+            vector_search ? nullptr : std::make_shared<FullTextSearch>("f4", "query", /*limit=*/3);
+        for (bool project_score : {false, true}) {
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                                 CreateRootSearchRead(path, vector, full_text, project_score));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(splits));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                                 ReadResultCollector::CollectResult(std::move(reader)));
+            CheckRootSearchResult(actual, project_score,
+                                  project_score ? R"([[0,11.1,6],[0,22.1,5],[0,15.1,4]])"
+                                                : R"([[0,11.1],[0,22.1],[0,15.1]])");
+        }
+    }
+}
+
+TEST_P(WriteAndReadInteWithIndexTest, TestRootTopKStableTiesAndBatching) {
+    std::string path;
+    std::shared_ptr<DataSplitImpl> source;
+    ASSERT_NO_FATAL_FAILURE(CreateMultiFileSearchSplit(&path, &source));
+    for (bool ascending : {false, true}) {
+        std::vector<MockSearchFileIndex::ScoredRows> scored_rows = {
+            {{3, 3.0f},
+             {7, 3.0f},
+             {2, 2.0f},
+             {6, 2.0f},
+             {1, 1.0f},
+             {5, 1.0f},
+             {0, 0.0f},
+             {4, 0.0f}},
+            {{3, 3.0f}, {2, 2.0f}, {1, 1.0f}, {0, 0.0f}}};
+        if (ascending) {
+            for (auto& rows : scored_rows) {
+                std::stable_sort(rows.begin(), rows.end(), [](const auto& left, const auto& right) {
+                    return left.second < right.second;
+                });
+            }
+        }
+        std::vector<std::shared_ptr<Split>> splits;
+        ASSERT_NO_FATAL_FAILURE(
+            CreateRootSearchSplits(source, MockSearchFileIndex::VECTOR_IDENTIFIER, scored_rows,
+                                   /*separate_splits=*/true, &splits));
+        auto search = std::make_shared<VectorSearch>(
+            "f4", /*limit=*/10, std::vector<float>{1.0f}, nullptr, nullptr,
+            ascending ? VectorSearch::DistanceType::EUCLIDEAN
+                      : VectorSearch::DistanceType::INNER_PRODUCT,
+            std::map<std::string, std::string>{});
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                             CreateRootSearchRead(path, search, /*full_text_search=*/nullptr,
+                                                  /*project_score=*/true));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(splits));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(actual);
+        ASSERT_EQ(actual->num_chunks(), 5);
+        for (const auto& chunk : actual->chunks()) {
+            ASSERT_EQ(chunk->length(), 2);
+        }
+        CheckRootSearchResult(actual, /*project_score=*/true,
+                              ascending
+                                  ? R"([[0,11.1,0],[0,15.1,0],[0,21.1,0],[0,12.1,1],[0,16.1,1],
+                            [0,22.1,1],[0,13.1,2],[0,17.1,2],[0,23.1,2],[0,14.1,3]])"
+                                  : R"([[0,14.1,3],[0,18.1,3],[0,24.1,3],[0,13.1,2],[0,17.1,2],
+                            [0,23.1,2],[0,12.1,1],[0,16.1,1],[0,22.1,1],[0,11.1,0]])");
+    }
+}
+
+TEST_P(WriteAndReadInteWithIndexTest, TestRootTopKUsesQueryMetricAndRejectsMismatches) {
+    std::string path;
+    std::shared_ptr<DataSplitImpl> source;
+    ASSERT_NO_FATAL_FAILURE(CreateMultiFileSearchSplit(&path, &source));
+    struct TestCase {
+        VectorSearch::DistanceType first_metric;
+        VectorSearch::DistanceType second_metric;
+        VectorSearch::DistanceType query_metric;
+        float expected_score;
+    };
+    const std::vector<TestCase> cases = {
+        {VectorSearch::DistanceType::EUCLIDEAN, VectorSearch::DistanceType::EUCLIDEAN,
+         VectorSearch::DistanceType::COSINE, 0.0f},
+        {VectorSearch::DistanceType::EUCLIDEAN, VectorSearch::DistanceType::COSINE,
+         VectorSearch::DistanceType::EUCLIDEAN, 0.0f},
+        {VectorSearch::DistanceType::EUCLIDEAN, VectorSearch::DistanceType::EUCLIDEAN,
+         VectorSearch::DistanceType::EUCLIDEAN, 0.25f},
+        {VectorSearch::DistanceType::COSINE, VectorSearch::DistanceType::COSINE,
+         VectorSearch::DistanceType::COSINE, 0.25f},
+        {VectorSearch::DistanceType::INNER_PRODUCT, VectorSearch::DistanceType::INNER_PRODUCT,
+         VectorSearch::DistanceType::INNER_PRODUCT, 0.75f}};
+    for (const auto& test_case : cases) {
+        std::vector<std::shared_ptr<DataFileMeta>> files;
+        for (size_t i = 0; i < 2; ++i) {
+            auto file = std::make_shared<DataFileMeta>(*source->DataFiles()[i]);
+            ASSERT_GT(file->row_count, 0);
+            ASSERT_OK_AND_ASSIGN(
+                file->embedded_index,
+                MockSearchFileIndex::MakeVectorIndex(
+                    file->schema_id == 0 ? "f0" : "f4", {{0, i == 0 ? 0.25f : 0.75f}},
+                    i == 0 ? test_case.first_metric : test_case.second_metric, pool_));
+            files.push_back(std::move(file));
+        }
+        DataSplitImpl::Builder split_builder(source->Partition(), source->Bucket(),
+                                             source->BucketPath(), std::move(files));
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<DataSplitImpl> split,
+            split_builder.WithSnapshot(source->SnapshotId()).RawConvertible(true).Build());
+        ReadContextBuilder builder(path);
+        builder.EnablePreciseFileIndexEvaluate(true)
+            .SetReadFieldNames({"f3", "_f4_INDEX_SCORE"})
+            .SetVectorSearch(std::make_shared<VectorSearch>(
+                "f4", 1, std::vector<float>{1.0f}, nullptr, nullptr, test_case.query_metric,
+                std::map<std::string, std::string>{}))
+            .AddOption("test.enable-adaptive-prefetch-strategy", "false")
+            .EnableLateMaterializing(false);
+        if (enable_prefetch_) {
+            builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                             TableRead::Create(std::move(context)));
+        if (test_case.first_metric != test_case.query_metric ||
+            test_case.second_metric != test_case.query_metric) {
+            ASSERT_NOK_WITH_MSG(read->CreateReader(split),
+                                "distance type for index and search not match");
+            continue;
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(split));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(result);
+        ASSERT_EQ(result->length(), 1);
+        auto rows = std::dynamic_pointer_cast<arrow::StructArray>(result->chunk(0));
+        ASSERT_TRUE(rows);
+        auto scores =
+            std::dynamic_pointer_cast<arrow::FloatArray>(rows->GetFieldByName("_f4_INDEX_SCORE"));
+        ASSERT_TRUE(scores);
+        ASSERT_FLOAT_EQ(scores->Value(0), test_case.expected_score);
+    }
 }
 
 TEST_P(WriteAndReadInteWithIndexTest, TestWithAlterTable) {

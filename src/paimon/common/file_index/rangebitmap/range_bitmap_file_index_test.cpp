@@ -59,8 +59,14 @@ class RangeBitmapFileIndexTest : public ::testing::Test {
 
     static void CheckResult(const std::shared_ptr<FileIndexResult>& result,
                             const std::vector<int32_t>& expected) {
+        CheckResult(result, expected, /*is_exact=*/true);
+    }
+
+    static void CheckResult(const std::shared_ptr<FileIndexResult>& result,
+                            const std::vector<int32_t>& expected, bool is_exact) {
         const auto typed_result = std::dynamic_pointer_cast<BitmapIndexResult>(result);
         ASSERT_TRUE(typed_result);
+        ASSERT_EQ(typed_result->IsExact(), is_exact);
         ASSERT_OK_AND_ASSIGN(const RoaringBitmap32* bitmap, typed_result->GetBitmap());
         ASSERT_TRUE(bitmap);
         const RoaringBitmap32 expected_bitmap = RoaringBitmap32::From(expected);
@@ -191,6 +197,33 @@ TEST_F(RangeBitmapFileIndexTest, TestEmptyLiterals) {
     ASSERT_TRUE(reader);
     ASSERT_NOK_WITH_MSG(reader->VisitIn({}), "literals cannot be empty in In predicate");
     ASSERT_NOK_WITH_MSG(reader->VisitNotIn({}), "literals cannot be empty in NotIn predicate");
+}
+
+TEST_F(RangeBitmapFileIndexTest, TestSupportsExactPredicate) {
+    RangeBitmapFileIndex index({});
+    for (FieldType field_type :
+         {FieldType::BOOLEAN, FieldType::TINYINT, FieldType::SMALLINT, FieldType::INT,
+          FieldType::BIGINT, FieldType::FLOAT, FieldType::DOUBLE, FieldType::STRING,
+          FieldType::DATE, FieldType::DECIMAL}) {
+        for (Function::Type function :
+             {Function::Type::EQUAL, Function::Type::NOT_EQUAL, Function::Type::IN,
+              Function::Type::NOT_IN, Function::Type::IS_NULL, Function::Type::IS_NOT_NULL,
+              Function::Type::GREATER_THAN, Function::Type::GREATER_OR_EQUAL,
+              Function::Type::LESS_THAN, Function::Type::LESS_OR_EQUAL}) {
+            ASSERT_TRUE(index.SupportsExactPredicate(function, field_type));
+        }
+        ASSERT_FALSE(index.SupportsExactPredicate(Function::Type::CONTAINS, field_type));
+    }
+    for (Function::Type function :
+         {Function::Type::EQUAL, Function::Type::NOT_EQUAL, Function::Type::IN,
+          Function::Type::NOT_IN, Function::Type::GREATER_THAN, Function::Type::GREATER_OR_EQUAL,
+          Function::Type::LESS_THAN, Function::Type::LESS_OR_EQUAL, Function::Type::CONTAINS}) {
+        ASSERT_FALSE(index.SupportsExactPredicate(function, FieldType::TIMESTAMP));
+    }
+    ASSERT_TRUE(index.SupportsExactPredicate(Function::Type::IS_NULL, FieldType::TIMESTAMP));
+    ASSERT_TRUE(index.SupportsExactPredicate(Function::Type::IS_NOT_NULL, FieldType::TIMESTAMP));
+    ASSERT_FALSE(index.SupportsExactPredicate(Function::Type::EQUAL, FieldType::ARRAY));
+    ASSERT_FALSE(index.SupportsExactPredicate(Function::Type::IS_NULL, FieldType::ARRAY));
 }
 
 // Test with all NULL values
@@ -761,8 +794,10 @@ TEST_F(RangeBitmapFileIndexTest, TestWriteAndReadStringDecimalAndTimestamp) {
             auto reader,
             CreateReaderFromJson(type, R"([[1000001], [2000002], [null], [-1000001], [2000002]])",
                                  {}, &serialized_bytes));
-        CheckResult(reader->VisitEqual(Literal(Timestamp(2000, 2000))).value(), {1, 4});
-        CheckResult(reader->VisitLessThan(Literal(Timestamp(0, 0))).value(), {3});
+        CheckResult(reader->VisitEqual(Literal(Timestamp(2000, 2000))).value(), {1, 4},
+                    /*is_exact=*/false);
+        CheckResult(reader->VisitLessThan(Literal(Timestamp(0, 0))).value(), {3},
+                    /*is_exact=*/false);
         CheckResult(reader->VisitIsNull().value(), {2});
     }
 
@@ -772,6 +807,28 @@ TEST_F(RangeBitmapFileIndexTest, TestWriteAndReadStringDecimalAndTimestamp) {
     ASSERT_NOK_WITH_MSG(RangeBitmapFileIndexWriter::Create(
                             arrow::field("f0", arrow::timestamp(arrow::TimeUnit::NANO)), {}, pool_),
                         "TIMESTAMP with precision in [0, 6]");
+}
+
+TEST_F(RangeBitmapFileIndexTest, TestTimestampLiteralTruncationProducesInexactResult) {
+    for (const auto unit : {arrow::TimeUnit::MILLI, arrow::TimeUnit::MICRO}) {
+        PAIMON_UNIQUE_PTR<Bytes> serialized_bytes;
+        ASSERT_OK_AND_ASSIGN(
+            auto reader,
+            CreateReaderFromJson(arrow::timestamp(unit), R"([["1970-01-01 00:00:00.001"], [null]])",
+                                 {}, &serialized_bytes));
+        Timestamp stored_value(1, 0);
+        Timestamp query_value(1, 1);
+
+        // The literal is one nanosecond greater than the stored value. Truncation to either
+        // milliseconds or microseconds makes them equal, producing a false positive at row 0.
+        ASSERT_OK_AND_ASSIGN(auto result, reader->VisitEqual(Literal(query_value)));
+        CheckResult(result, {0}, /*is_exact=*/false);
+
+        ASSERT_OK_AND_ASSIGN(auto is_null_result, reader->VisitIsNull());
+        CheckResult(is_null_result, {1});
+        ASSERT_OK_AND_ASSIGN(auto is_not_null_result, reader->VisitIsNotNull());
+        CheckResult(is_not_null_result, {0});
+    }
 }
 
 TEST_F(RangeBitmapFileIndexTest, TestRangeBitmapEdgeCases) {

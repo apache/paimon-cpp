@@ -21,9 +21,15 @@
 #include <utility>
 
 #include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/status.h"
 
 namespace paimon {
+Result<std::shared_ptr<FileIndexResult>> FileIndexReader::Evaluate(
+    const std::shared_ptr<LeafPredicate>& predicate, const RoaringBitmap32*) {
+    return PredicateUtils::VisitPredicate<std::shared_ptr<FileIndexResult>>(predicate, this);
+}
+
 Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitIsNotNull() {
     return FileIndexResult::Remain();
 }

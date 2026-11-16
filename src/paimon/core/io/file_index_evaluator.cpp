@@ -37,11 +37,13 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
+#include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/file_index/file_index_format.h"
 #include "paimon/file_index/file_index_reader.h"
 #include "paimon/file_index/scored_file_index_result.h"
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/predicate/compound_predicate.h"
+#include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/function.h"
 #include "paimon/predicate/leaf_predicate.h"
@@ -50,6 +52,7 @@
 #include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
 #include "paimon/utils/roaring_bitmap32.h"
+#include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon {
 class MemoryPool;
@@ -180,7 +183,8 @@ Result<std::shared_ptr<FileIndexReader>> FileIndexEvaluator::GetSearchReader(
 }
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateLeaf(
-    const std::shared_ptr<LeafPredicate>& predicate, bool needs_scores) {
+    const std::shared_ptr<LeafPredicate>& predicate, bool needs_scores,
+    const RoaringBitmap32* candidates) {
     if (predicate->GetFunction().GetType() == Function::Type::FULL_TEXT_MATCH) {
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<FileIndexReader> reader,
@@ -189,22 +193,48 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateLeaf(
         if (!full_text) {
             return Status::Invalid("FullTextMatch requires a full-text match predicate");
         }
-        return reader->VisitFullTextMatch(full_text->GetFullTextMatch(), needs_scores);
+        auto match = full_text->GetFullTextMatch();
+        if (candidates) {
+            match = std::make_shared<FullTextMatch>(*match);
+            RoaringBitmap64 eligible(*candidates);
+            if (match->include_row_ids) {
+                eligible &= *match->include_row_ids;
+            }
+            match->include_row_ids = std::move(eligible);
+        }
+        return reader->VisitFullTextMatch(match, needs_scores);
+    }
+    if (candidates && candidates->IsEmpty()) {
+        return FileIndexResult::Skip();
     }
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<FileIndexReader>> readers,
                            GetReaders(predicate->FieldName()));
-    std::shared_ptr<FileIndexResult> result = FileIndexResult::Remain();
     for (const auto& reader : readers) {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<FileIndexResult> child,
-            PredicateUtils::VisitPredicate<std::shared_ptr<FileIndexResult>>(predicate, reader));
-        PAIMON_ASSIGN_OR_RAISE(result, result->And(child));
-        PAIMON_ASSIGN_OR_RAISE(bool remain, result->IsRemain());
-        if (!remain) {
-            break;
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> child,
+                               reader->Evaluate(predicate, candidates));
+        // Inexact indexes may miss matches. Try another index over the original scope.
+        // Remain is also inexact and contributes no row selection for this predicate.
+        if (!child->IsExact()) {
+            continue;
         }
+        if (std::dynamic_pointer_cast<Skip>(child)) {
+            return child;
+        }
+        auto bitmap = std::dynamic_pointer_cast<BitmapIndexResult>(child);
+        assert(bitmap);
+        if (!candidates) {
+            return child;
+        }
+        return std::make_shared<BitmapIndexResult>(
+            [bitmap, rows = *candidates]() -> Result<RoaringBitmap32> {
+                PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap32* matches, bitmap->GetBitmap());
+                RoaringBitmap32 result(rows);
+                result &= *matches;
+                return result;
+            },
+            /*is_exact=*/true);
     }
-    return result;
+    return FileIndexResult::Remain();
 }
 
 Result<std::optional<double>> FileIndexEvaluator::EstimateSelectivity(
@@ -241,7 +271,7 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::Evaluate(
     for (const auto& field_name : required_field_names) {
         PAIMON_RETURN_NOT_OK(GetReaders(field_name));
     }
-    return EvaluatePredicate(predicate);
+    return EvaluatePredicate(predicate, /*candidates=*/nullptr);
 }
 
 Result<std::shared_ptr<InputStream>> FileIndexEvaluator::ExtractIndexInputStream(
@@ -284,27 +314,34 @@ Result<std::shared_ptr<InputStream>> FileIndexEvaluator::ExtractIndexInputStream
 }
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluatePredicate(
-    const std::shared_ptr<Predicate>& predicate) {
+    const std::shared_ptr<Predicate>& predicate, const RoaringBitmap32* candidates) {
     if (auto compound = std::dynamic_pointer_cast<CompoundPredicate>(predicate)) {
-        return EvaluateCompoundPredicate(compound);
+        return EvaluateCompoundPredicate(compound, candidates);
     }
     if (auto leaf = std::dynamic_pointer_cast<LeafPredicate>(predicate)) {
-        return EvaluateLeaf(leaf, /*needs_scores=*/false);
+        return EvaluateLeaf(leaf, /*needs_scores=*/false, candidates);
     }
     return Status::Invalid(fmt::format(
         "cannot cast predicate {} to CompoundPredicate or LeafPredicate", predicate->ToString()));
 }
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateCompoundPredicate(
-    const std::shared_ptr<CompoundPredicate>& compound_predicate) {
+    const std::shared_ptr<CompoundPredicate>& compound_predicate,
+    const RoaringBitmap32* candidates) {
     const Function::Type type = compound_predicate->GetFunction().GetType();
     if (type != Function::Type::AND && type != Function::Type::OR) {
         return Status::Invalid("CompoundPredicate only support And/Or function");
     }
     std::shared_ptr<FileIndexResult> result;
     for (const auto& child : compound_predicate->Children()) {
+        const RoaringBitmap32* eligible = candidates;
+        if (type == Function::Type::AND) {
+            if (auto bitmap = std::dynamic_pointer_cast<BitmapIndexResult>(result)) {
+                PAIMON_ASSIGN_OR_RAISE(eligible, bitmap->GetBitmap());
+            }
+        }
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> child_result,
-                               EvaluatePredicate(child));
+                               EvaluatePredicate(child, eligible));
         if (!result) {
             result = std::move(child_result);
         } else {

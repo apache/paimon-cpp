@@ -32,6 +32,8 @@
 #include "paimon/visibility.h"
 
 namespace paimon {
+class LeafPredicate;
+class RoaringBitmap32;
 struct FullTextMatch;
 /// Evaluates filter predicates against a file-level index to determine file eligibility.
 ///
@@ -43,12 +45,19 @@ struct FullTextMatch;
 /// All `Visit` methods in `FileIndexReader`, will return a non-null result object on success,
 /// including when no rows match.
 ///
+/// Readers set FileIndexResult::IsExact() when creating each result; callers use that guarantee.
 /// @note Callers of `Visit*` for DECIMAL fields must ensure each literal's scale matches the scale
 /// of the indexed data; otherwise, index filtering results may be incorrect.
 class PAIMON_EXPORT FileIndexReader : public IndexReaderCapabilities,
                                       public FunctionVisitor<std::shared_ptr<FileIndexResult>> {
  public:
     ~FileIndexReader() override = default;
+
+    /// Evaluate a scalar leaf with optional eligible file-local physical row positions.
+    /// Backends may use it to avoid reading irrelevant index data.
+    virtual Result<std::shared_ptr<FileIndexResult>> Evaluate(
+        const std::shared_ptr<LeafPredicate>& predicate,
+        const RoaringBitmap32* candidates);
 
     Result<std::shared_ptr<FileIndexResult>> VisitIsNotNull() override;
 

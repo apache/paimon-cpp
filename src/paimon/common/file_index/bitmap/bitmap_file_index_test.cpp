@@ -35,6 +35,7 @@
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/memory/memory_pool.h"
+#include "paimon/predicate/predicate_builder.h"
 #include "paimon/testing/utils/testharness.h"
 namespace paimon::test {
 namespace {
@@ -43,6 +44,24 @@ template <size_t N>
 std::vector<char> JavaBytes(const char (&bytes)[N]) {
     return std::vector<char>(bytes, bytes + N - 1);
 }
+
+class CountingBitmapInputStream : public ByteArrayInputStream {
+ public:
+    CountingBitmapInputStream(const char* buffer, int64_t length)
+        : ByteArrayInputStream(buffer, length) {}
+
+    Result<int64_t> Read(char* buffer, int64_t size) override {
+        PAIMON_ASSIGN_OR_RAISE(int64_t read, ByteArrayInputStream::Read(buffer, size));
+        bytes_read += read;
+        return read;
+    }
+
+    Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
+        return ByteArrayInputStream::Read(buffer, size, offset);
+    }
+
+    int64_t bytes_read = 0;
+};
 
 }  // namespace
 
@@ -122,6 +141,38 @@ TEST_F(BitmapIndexTest, TestEmptyLiterals) {
         ASSERT_TRUE(reader);
         ASSERT_NOK_WITH_MSG(reader->VisitIn({}), "literals cannot be empty in In predicate");
         ASSERT_NOK_WITH_MSG(reader->VisitNotIn({}), "literals cannot be empty in NotIn predicate");
+    }
+}
+
+TEST_F(BitmapIndexTest, TestCandidatesAvoidUnneededInPostings) {
+    auto type = arrow::int32();
+    ASSERT_OK_AND_ASSIGN(auto array,
+                         (CreateArray<arrow::Int32Builder, int32_t>(type, {1, 2, 1, 2, 3, 3})));
+    auto predicate = std::dynamic_pointer_cast<LeafPredicate>(
+        PredicateBuilder::In(0, "f0", FieldType::INT, {Literal(1), Literal(2), Literal(3)}));
+    ASSERT_TRUE(predicate);
+    for (int32_t version : {1, 2}) {
+        ASSERT_OK_AND_ASSIGN(auto bytes, WriteIndex(type, version, array));
+        BitmapFileIndex index({});
+        auto restricted_input =
+            std::make_shared<CountingBitmapInputStream>(bytes->data(), bytes->size());
+        ASSERT_OK_AND_ASSIGN(auto restricted,
+                             index.CreateReader(CreateArrowSchema(type).get(), 0, bytes->size(),
+                                                restricted_input, pool_));
+        auto candidates = RoaringBitmap32::From({0, 2});
+        ASSERT_OK_AND_ASSIGN(auto result, restricted->Evaluate(predicate, &candidates));
+        ASSERT_TRUE(result->IsExact());
+        // Deferred evaluation owns its copy of the candidates.
+        candidates = RoaringBitmap32::From({1});
+        CheckResult(result, {0, 2});
+
+        auto full_input = std::make_shared<CountingBitmapInputStream>(bytes->data(), bytes->size());
+        ASSERT_OK_AND_ASSIGN(auto full, index.CreateReader(CreateArrowSchema(type).get(), 0,
+                                                           bytes->size(), full_input, pool_));
+        ASSERT_OK_AND_ASSIGN(result, full->Evaluate(predicate, nullptr));
+        ASSERT_TRUE(result->IsExact());
+        CheckResult(result, {0, 1, 2, 3, 4, 5});
+        ASSERT_LT(restricted_input->bytes_read, full_input->bytes_read);
     }
 }
 
@@ -569,6 +620,20 @@ TEST_F(BitmapIndexTest, TestIntType) {
     }
 }
 
+TEST_F(BitmapIndexTest, TestSupportsExactPredicate) {
+    BitmapFileIndex index({});
+    for (Function::Type function : {Function::Type::EQUAL, Function::Type::NOT_EQUAL,
+                                    Function::Type::IN, Function::Type::NOT_IN}) {
+        ASSERT_TRUE(index.SupportsExactPredicate(function, FieldType::INT));
+        ASSERT_FALSE(index.SupportsExactPredicate(function, FieldType::TIMESTAMP));
+    }
+    ASSERT_TRUE(index.SupportsExactPredicate(Function::Type::IS_NULL, FieldType::TIMESTAMP));
+    ASSERT_TRUE(index.SupportsExactPredicate(Function::Type::IS_NOT_NULL, FieldType::TIMESTAMP));
+    ASSERT_FALSE(index.SupportsExactPredicate(Function::Type::LESS_THAN, FieldType::INT));
+    ASSERT_FALSE(index.SupportsExactPredicate(Function::Type::LESS_THAN, FieldType::TIMESTAMP));
+    ASSERT_FALSE(index.SupportsExactPredicate(Function::Type::EQUAL, FieldType::ARRAY));
+}
+
 TEST_F(BitmapIndexTest, TestTimestampType) {
     // data:
     // 1745542802000lms, 123000ns
@@ -606,7 +671,17 @@ TEST_F(BitmapIndexTest, TestTimestampType) {
         ASSERT_TRUE(reader);
 
         CheckResult(reader->VisitIsNull().value(), {5});
+        ASSERT_TRUE(reader->VisitIsNull().value()->IsExact());
+        const Literal timestamp(Timestamp(1745542802000l, 123000));
+        auto predicate = std::dynamic_pointer_cast<LeafPredicate>(
+            PredicateBuilder::Equal(0, "f0", FieldType::TIMESTAMP, timestamp));
+        auto candidates = RoaringBitmap32::From({0, 6});
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> result,
+                             reader->Evaluate(predicate, &candidates));
+        ASSERT_FALSE(result->IsExact());
+        CheckResult(result, {0, 6});
         CheckResult(reader->VisitIsNotNull().value(), {0, 1, 2, 3, 4, 6, 7});
+        ASSERT_TRUE(reader->VisitIsNotNull().value()->IsExact());
         CheckResult(reader->VisitEqual(Literal(Timestamp(1745542502000l, 123000))).value(), {});
         // as timestamp is normalized by micro seconds, there is a loss of precision in the
         // nanosecond part

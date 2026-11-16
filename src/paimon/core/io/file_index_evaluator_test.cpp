@@ -36,6 +36,7 @@
 #include "paimon/common/fs/external_path_provider.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/date_time_utils.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
@@ -68,6 +69,81 @@ class Schema;
 }  // namespace arrow
 
 namespace paimon::test {
+namespace {
+struct CandidateIndexState {
+    std::shared_ptr<FileIndexResult> result = FileIndexResult::Remain();
+    std::vector<std::optional<RoaringBitmap32>> candidates;
+};
+
+class CandidateIndexReader : public FileIndexReader {
+ public:
+    explicit CandidateIndexReader(std::shared_ptr<CandidateIndexState> state)
+        : state_(std::move(state)) {}
+
+    Result<std::shared_ptr<FileIndexResult>> Evaluate(const std::shared_ptr<LeafPredicate>&,
+                                                      const RoaringBitmap32* candidates) override {
+        state_->candidates.push_back(candidates ? std::optional<RoaringBitmap32>(*candidates)
+                                                : std::nullopt);
+        return state_->result;
+    }
+
+    bool SupportsSearch(SearchType type) const override {
+        return type == SearchType::FULL_TEXT_MATCH && state_->result;
+    }
+
+    Result<std::shared_ptr<FileIndexResult>> VisitFullTextMatch(
+        const std::shared_ptr<FullTextMatch>&, bool) override {
+        return state_->result;
+    }
+
+ private:
+    std::shared_ptr<CandidateIndexState> state_;
+};
+
+class CandidateIndexer : public FileIndexer {
+ public:
+    explicit CandidateIndexer(std::shared_ptr<CandidateIndexState> state)
+        : state_(std::move(state)) {}
+
+    bool SupportsExactPredicate(Function::Type, FieldType) const override {
+        return state_->result->IsExact();
+    }
+
+    Result<std::shared_ptr<FileIndexReader>> CreateReader(
+        ::ArrowSchema*, int64_t, int64_t, const std::shared_ptr<InputStream>&,
+        const std::shared_ptr<MemoryPool>&) const override {
+        return std::make_shared<CandidateIndexReader>(state_);
+    }
+
+    Result<std::shared_ptr<FileIndexWriter>> CreateWriter(
+        ::ArrowSchema*, const std::shared_ptr<MemoryPool>&) const override {
+        return Status::NotImplemented("Candidate index is read-only");
+    }
+
+ private:
+    std::shared_ptr<CandidateIndexState> state_;
+};
+
+class CandidateIndexFactory : public FileIndexerFactory {
+ public:
+    CandidateIndexFactory(std::string identifier, std::shared_ptr<CandidateIndexState> state)
+        : identifier_(std::move(identifier)), state_(std::move(state)) {}
+
+    const char* Identifier() const override {
+        return identifier_.c_str();
+    }
+
+    Result<std::unique_ptr<FileIndexer>> Create(
+        const std::map<std::string, std::string>&) const override {
+        return std::make_unique<CandidateIndexer>(state_);
+    }
+
+ private:
+    std::string identifier_;
+    std::shared_ptr<CandidateIndexState> state_;
+};
+}  // namespace
+
 class FileIndexEvaluatorTest : public ::testing::Test {
  public:
     void SetUp() override {
@@ -76,7 +152,6 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                               DataField(2, arrow::field("f2", arrow::int32())),
                                               DataField(3, arrow::field("f3", arrow::float64()))};
         data_schema_ = DataField::ConvertDataFieldsToArrowSchema(read_fields);
-
         pool_ = GetDefaultPool();
         fs_ = std::make_shared<LocalFileSystem>();
     }
@@ -371,7 +446,9 @@ TEST_F(FileIndexEvaluatorTest, TestTimestampType) {
         FileIndexEvaluator::Create(data_schema, core_options_.ToMap(), data_file_path_factory,
                                    data_file_meta, /*file_system=*/fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(auto file_index_result, evaluator->Evaluate(predicate));
-    CheckResult(file_index_result, {0, 6});
+    // Timestamp comparisons are inexact, so the predicate must be checked against the data.
+    ASSERT_EQ(file_index_result, FileIndexResult::Remain());
+    ASSERT_FALSE(file_index_result->IsExact());
 }
 
 TEST_F(FileIndexEvaluatorTest, TestCreateRequiresExternalIndexDependencies) {
@@ -665,15 +742,17 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionReturnsQueryScores) {
     ASSERT_TRUE(leaf);
     ASSERT_OK_AND_ASSIGN(auto estimate, evaluator->EstimateSelectivity(leaf));
     ASSERT_EQ(estimate, 0.75);
-    ASSERT_OK_AND_ASSIGN(auto result, evaluator->EvaluateLeaf(leaf, true));
+    ASSERT_OK_AND_ASSIGN(auto result, evaluator->EvaluateLeaf(leaf, true, nullptr));
     auto scored = std::dynamic_pointer_cast<ScoredFileIndexResult>(result);
     ASSERT_TRUE(scored);
     ASSERT_EQ(scored->GetRowPositions(), RoaringBitmap32::From({1, 2, 3}));
+    ASSERT_TRUE(scored->IsExact());
     ASSERT_EQ(scored->GetScores(), std::vector<float>({0.5f, 0.3f, 0.9f}));
     ASSERT_EQ(statistics_->executions.size(), 1);
     ASSERT_TRUE(statistics_->executions.back().needs_scores);
-    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(leaf, false));
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(leaf, false, nullptr));
     CheckResult(result, {1, 2, 3});
+    ASSERT_TRUE(result->IsExact());
     ASSERT_FALSE(statistics_->executions.back().needs_scores);
 
     auto include = RoaringBitmap64::From({0, 2});
@@ -690,10 +769,15 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionReturnsQueryScores) {
     ASSERT_OK_AND_ASSIGN(auto conjunction, PredicateBuilder::And({predicate, pear}));
     ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(conjunction));
     CheckResult(result, {2});
+    ASSERT_EQ(statistics_->executions.size(), 5);
+    ASSERT_FALSE(statistics_->executions[3].include_row_ids);
+    ASSERT_EQ(statistics_->executions[4].include_row_ids, RoaringBitmap64::From({1, 2, 3}));
     ASSERT_OK_AND_ASSIGN(auto disjunction, PredicateBuilder::Or({predicate, pear}));
     ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(disjunction));
     CheckResult(result, {0, 1, 2, 3});
     ASSERT_EQ(statistics_->executions.size(), 7);
+    ASSERT_FALSE(statistics_->executions[5].include_row_ids);
+    ASSERT_FALSE(statistics_->executions[6].include_row_ids);
 
     ASSERT_OK_AND_ASSIGN(
         auto restricted,
@@ -701,16 +785,32 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionReturnsQueryScores) {
             1, std::make_shared<FullTextMatch>("title", "apple", RoaringBitmap64::From({1, 3}))));
     auto restricted_leaf = std::dynamic_pointer_cast<LeafPredicate>(restricted);
     ASSERT_TRUE(restricted_leaf);
-    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(restricted_leaf, false));
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(restricted_leaf, false, nullptr));
     CheckResult(result, {1, 3});
     ASSERT_FALSE(statistics_->executions.back().needs_scores);
-    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(restricted_leaf, true));
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(restricted_leaf, true, nullptr));
     scored = std::dynamic_pointer_cast<ScoredFileIndexResult>(result);
     ASSERT_TRUE(scored);
     ASSERT_EQ(scored->GetRowPositions(), RoaringBitmap32::From({1, 3}));
     ASSERT_EQ(scored->GetScores(), std::vector<float>({0.5f, 0.9f}));
     ASSERT_TRUE(statistics_->executions.back().needs_scores);
     ASSERT_EQ(statistics_->executions.size(), 9);
+    auto candidates = RoaringBitmap32::From({0, 3});
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(restricted_leaf, true, &candidates));
+    scored = std::dynamic_pointer_cast<ScoredFileIndexResult>(result);
+    ASSERT_TRUE(scored);
+    ASSERT_TRUE(result->IsExact());
+    ASSERT_EQ(scored->GetRowPositions(), RoaringBitmap32::From({3}));
+    ASSERT_EQ(scored->GetScores(), std::vector<float>({0.9f}));
+    ASSERT_EQ(statistics_->executions.back().include_row_ids, RoaringBitmap64::From({3}));
+
+    // Siblings in OR receive the same outer candidates, never each other's matches.
+    ASSERT_OK_AND_ASSIGN(auto nested, PredicateBuilder::And({restricted, disjunction}));
+    ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(nested));
+    CheckResult(result, {1, 3});
+    ASSERT_EQ(statistics_->executions.size(), 13);
+    ASSERT_EQ(statistics_->executions[11].include_row_ids, RoaringBitmap64::From({1, 3}));
+    ASSERT_EQ(statistics_->executions[12].include_row_ids, RoaringBitmap64::From({1, 3}));
 }
 
 TEST_P(FileIndexSearchEvaluatorTest, TestSessionScalarAndSearchReadersCanCoexist) {
@@ -744,19 +844,194 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionScalarAndSearchReadersCanCoexist
     ASSERT_TRUE(scalar);
     ASSERT_OK_AND_ASSIGN(auto estimate, evaluator->EstimateSelectivity(scalar));
     ASSERT_FALSE(estimate.has_value());
-    ASSERT_OK_AND_ASSIGN(auto result, evaluator->EvaluateLeaf(scalar, false));
+    ASSERT_OK_AND_ASSIGN(auto result, evaluator->EvaluateLeaf(scalar, false, nullptr));
     CheckResult(result, {0, 2});
+    ASSERT_TRUE(result->IsExact());
+    ASSERT_OK_AND_ASSIGN(auto contains,
+                         PredicateBuilder::Contains(1, "title", FieldType::STRING,
+                                                    Literal(FieldType::STRING, "a", 1)));
+    auto unsupported = std::dynamic_pointer_cast<LeafPredicate>(contains);
+    ASSERT_TRUE(unsupported);
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(unsupported, false, nullptr));
+    ASSERT_EQ(result, FileIndexResult::Remain());
+    ASSERT_FALSE(result->IsExact());
     auto other =
         PredicateBuilder::Equal(1, "title", FieldType::STRING, Literal(FieldType::STRING, "b", 1));
     ASSERT_OK_AND_ASSIGN(auto disjunction, PredicateBuilder::Or({scalar, other}));
     ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(disjunction));
     CheckResult(result, {0, 1, 2, 3});
+    ASSERT_TRUE(result->IsExact());
+
+    // An exact leaf must not make an unsupported sibling exact, in either order.
+    for (const auto& children : {std::vector<std::shared_ptr<Predicate>>{scalar, unsupported},
+                                 std::vector<std::shared_ptr<Predicate>>{unsupported, scalar}}) {
+        ASSERT_OK_AND_ASSIGN(auto conjunction, PredicateBuilder::And(children));
+        ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(conjunction));
+        CheckResult(result, {0, 2});
+        ASSERT_FALSE(result->IsExact());
+        ASSERT_OK_AND_ASSIGN(auto mixed_disjunction, PredicateBuilder::Or(children));
+        ASSERT_OK_AND_ASSIGN(result, evaluator->Evaluate(mixed_disjunction));
+        ASSERT_EQ(result, FileIndexResult::Remain());
+        ASSERT_FALSE(result->IsExact());
+    }
     ASSERT_OK_AND_ASSIGN(auto search_result,
                          evaluator->SearchFullText(MakeFullTextSearch("title")));
     ASSERT_EQ(search_result->GetRowPositions(), RoaringBitmap32::From({1, 3}));
     ASSERT_EQ(search_result->GetScores(), std::vector<float>({0.5f, 0.9f}));
     ASSERT_EQ(statistics_->executions.size(), 1);
     ASSERT_TRUE(statistics_->executions.back().needs_scores);
+}
+
+TEST_P(FileIndexSearchEvaluatorTest, TestScalarIndexesUseFirstExactResult) {
+    auto make_bitmap_result = [](const RoaringBitmap32& rows, bool is_exact) {
+        return std::make_shared<BitmapIndexResult>(
+            [rows]() -> Result<RoaringBitmap32> { return rows; }, is_exact);
+    };
+    auto first = std::make_shared<CandidateIndexState>();
+    first->result = make_bitmap_result(RoaringBitmap32::From({0, 2, 3}), /*is_exact=*/true);
+    auto second = std::make_shared<CandidateIndexState>();
+    second->result = first->result;
+    auto* factories = FactoryCreator::GetInstance();
+    auto first_factory = std::make_unique<CandidateIndexFactory>("candidate-first", first);
+    auto second_factory = std::make_unique<CandidateIndexFactory>("candidate-second", second);
+    factories->Register("candidate-first", first_factory.release());
+    factories->Register("candidate-second", second_factory.release());
+    ScopeGuard unregister([factories]() {
+        factories->TEST_Unregister("candidate-first");
+        factories->TEST_Unregister("candidate-second");
+    });
+    ASSERT_OK_AND_ASSIGN(auto payload, MockSearchFileIndex::MakePayload({{0, 0.0f}}, pool_));
+    FileIndexFormat::ColumnIndexes indexes;
+    indexes["title"]["candidate-first"] = payload;
+    indexes["title"]["candidate-second"] = payload;
+    ASSERT_OK_AND_ASSIGN(auto bytes, MockSearchFileIndex::Serialize(indexes, pool_));
+    ASSERT_OK_AND_ASSIGN(auto meta, MakeIndex(bytes));
+    ASSERT_OK_AND_ASSIGN(auto evaluator, FileIndexEvaluator::Create(
+                                             data_schema_, core_options_.ToMap(), path_factory_,
+                                             meta, fs_, /*cache=*/nullptr, pool_));
+    auto predicate = std::dynamic_pointer_cast<LeafPredicate>(
+        PredicateBuilder::Equal(1, "title", FieldType::STRING, Literal(FieldType::STRING, "a", 1)));
+    auto candidates = RoaringBitmap32::From({0, 1, 2});
+    ASSERT_OK_AND_ASSIGN(auto result, evaluator->EvaluateLeaf(predicate, false, &candidates));
+    CheckResult(result, {0, 2});
+    ASSERT_TRUE(result->IsExact());
+    ASSERT_EQ(first->candidates.size(), 1);
+    ASSERT_EQ(first->candidates.back(), candidates);
+    ASSERT_TRUE(second->candidates.empty());
+
+    // An exact empty result also stops evaluation of subsequent indexes.
+    first->result = make_bitmap_result(RoaringBitmap32(), /*is_exact=*/true);
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, &candidates));
+    CheckResult(result, {});
+    ASSERT_TRUE(result->IsExact());
+    ASSERT_TRUE(second->candidates.empty());
+
+    first->result = FileIndexResult::Skip();
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, &candidates));
+    ASSERT_EQ(result, FileIndexResult::Skip());
+    ASSERT_TRUE(result->IsExact());
+    ASSERT_TRUE(second->candidates.empty());
+
+    // Inexact results, including empty ones, must not narrow the next reader's scope.
+    second->result = make_bitmap_result(RoaringBitmap32::From({2, 3}), /*is_exact=*/true);
+    for (const RoaringBitmap32& rows : {RoaringBitmap32::From({0}), RoaringBitmap32()}) {
+        first->result = make_bitmap_result(rows, /*is_exact=*/false);
+        const size_t executions = second->candidates.size();
+        ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, &candidates));
+        CheckResult(result, {2});
+        ASSERT_TRUE(result->IsExact());
+        ASSERT_EQ(second->candidates.size(), executions + 1);
+        ASSERT_EQ(second->candidates.back(), candidates);
+    }
+
+    // An unsupported first index leaves the full input scope for the next index.
+    first->result = FileIndexResult::Remain();
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, &candidates));
+    CheckResult(result, {2});
+    ASSERT_TRUE(result->IsExact());
+    ASSERT_EQ(second->candidates.back(), candidates);
+
+    // Without any exact result, return Remain so the caller rechecks the original scope.
+    second->result = make_bitmap_result(RoaringBitmap32::From({2, 3}), /*is_exact=*/false);
+    for (bool remain : {false, true}) {
+        if (remain) {
+            first->result = FileIndexResult::Remain();
+        } else {
+            first->result = make_bitmap_result(RoaringBitmap32(), /*is_exact=*/false);
+        }
+        for (const RoaringBitmap32* scope :
+             std::vector<const RoaringBitmap32*>{&candidates, nullptr}) {
+            ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, scope));
+            ASSERT_EQ(result, FileIndexResult::Remain());
+            ASSERT_FALSE(result->IsExact());
+            ASSERT_EQ(first->candidates.back(), second->candidates.back());
+        }
+    }
+    second->result = FileIndexResult::Remain();
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, &candidates));
+    ASSERT_EQ(result, FileIndexResult::Remain());
+
+    RoaringBitmap32 empty_candidates;
+    const size_t first_executions = first->candidates.size();
+    const size_t second_executions = second->candidates.size();
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, &empty_candidates));
+    ASSERT_EQ(result, FileIndexResult::Skip());
+    ASSERT_TRUE(result->IsExact());
+    ASSERT_EQ(first->candidates.size(), first_executions);
+    ASSERT_EQ(second->candidates.size(), second_executions);
+}
+
+TEST_P(FileIndexSearchEvaluatorTest, TestPreservesReaderResultAndExactness) {
+    auto state = std::make_shared<CandidateIndexState>();
+    auto* factories = FactoryCreator::GetInstance();
+    auto factory = std::make_unique<CandidateIndexFactory>("provided-result", state);
+    factories->Register("provided-result", factory.release());
+    ScopeGuard unregister([factories]() { factories->TEST_Unregister("provided-result"); });
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> payload,
+                         MockSearchFileIndex::MakePayload({{0, 0.0f}}, pool_));
+    FileIndexFormat::ColumnIndexes indexes;
+    indexes["title"]["provided-result"] = payload;
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> bytes,
+                         MockSearchFileIndex::Serialize(indexes, pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> meta, MakeIndex(bytes));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileIndexEvaluator> evaluator,
+        FileIndexEvaluator::Create(data_schema_, core_options_.ToMap(), path_factory_, meta, fs_,
+                                   /*cache=*/nullptr, pool_));
+    auto scalar = std::dynamic_pointer_cast<LeafPredicate>(
+        PredicateBuilder::Equal(1, "title", FieldType::STRING, Literal(FieldType::STRING, "a", 1)));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<Predicate> predicate,
+        PredicateBuilder::FullTextMatch(1, std::make_shared<FullTextMatch>("title", "a")));
+    auto full_text = std::dynamic_pointer_cast<LeafPredicate>(predicate);
+    ASSERT_TRUE(scalar);
+    ASSERT_TRUE(full_text);
+    for (bool empty : {false, true}) {
+        const RoaringBitmap32 rows = empty ? RoaringBitmap32() : RoaringBitmap32::From({1, 3});
+        for (bool is_exact : {false, true}) {
+            state->result = std::make_shared<BitmapIndexResult>(
+                [rows]() -> Result<RoaringBitmap32> { return rows; }, is_exact);
+            for (const auto& leaf : {scalar, full_text}) {
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> result,
+                                     evaluator->EvaluateLeaf(leaf, false, nullptr));
+                if (leaf == scalar && !is_exact) {
+                    ASSERT_EQ(result, FileIndexResult::Remain());
+                } else {
+                    ASSERT_EQ(result, state->result);
+                }
+                ASSERT_EQ(result->IsExact(), is_exact);
+            }
+            std::vector<float> scores =
+                empty ? std::vector<float>() : std::vector<float>({0.5f, 0.9f});
+            ASSERT_OK_AND_ASSIGN(
+                state->result,
+                ScoredFileIndexResult::Create(RoaringBitmap32(rows), std::move(scores), is_exact));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> result,
+                                 evaluator->EvaluateLeaf(full_text, true, nullptr));
+            ASSERT_EQ(result, state->result);
+            ASSERT_EQ(result->IsExact(), is_exact);
+        }
+    }
 }
 
 TEST_P(FileIndexSearchEvaluatorTest, TestSessionPrecheckAndMissingScalarIndex) {
@@ -777,7 +1052,7 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionPrecheckAndMissingScalarIndex) {
     auto scalar = std::dynamic_pointer_cast<LeafPredicate>(
         PredicateBuilder::IsNull(0, "embedding", FieldType::ARRAY));
     ASSERT_TRUE(scalar);
-    ASSERT_OK_AND_ASSIGN(auto result, evaluator->EvaluateLeaf(scalar, false));
+    ASSERT_OK_AND_ASSIGN(auto result, evaluator->EvaluateLeaf(scalar, false, nullptr));
     ASSERT_EQ(result, FileIndexResult::Remain());
     ASSERT_OK_AND_ASSIGN(auto estimate, evaluator->EstimateSelectivity(scalar));
     ASSERT_FALSE(estimate.has_value());
@@ -790,7 +1065,7 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionPrecheckAndMissingScalarIndex) {
     ASSERT_NOK_WITH_MSG(
         evaluator->GetSearchReader("title", FileIndexReader::SearchType::FULL_TEXT_MATCH),
         "has no File Index");
-    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(scalar, false));
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(scalar, false, nullptr));
     ASSERT_EQ(result, FileIndexResult::Remain());
 }
 
@@ -850,7 +1125,7 @@ TEST_P(FileIndexSearchEvaluatorTest, TestEmptySearchIndexPreservesCapabilityAndS
                                              1, std::make_shared<FullTextMatch>("title", "apple")));
     auto leaf = std::dynamic_pointer_cast<LeafPredicate>(predicate);
     ASSERT_TRUE(leaf);
-    ASSERT_OK_AND_ASSIGN(auto result, evaluator->EvaluateLeaf(leaf, true));
+    ASSERT_OK_AND_ASSIGN(auto result, evaluator->EvaluateLeaf(leaf, true, nullptr));
     auto scored = std::dynamic_pointer_cast<ScoredFileIndexResult>(result);
     ASSERT_TRUE(scored);
     ASSERT_TRUE(scored->IsEmpty());

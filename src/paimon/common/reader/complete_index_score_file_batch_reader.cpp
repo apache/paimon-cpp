@@ -36,8 +36,8 @@ namespace paimon {
 CompleteIndexScoreFileBatchReader::CompleteIndexScoreFileBatchReader(
     std::unique_ptr<FileBatchReader>&& reader, const std::vector<float>& scores,
     const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
-    : CompleteIndexScoreFileBatchReader(std::move(reader),
-                                        std::map<std::string, std::vector<float>>{}, arrow_pool) {
+    : CompleteIndexScoreFileBatchReader(
+          std::move(reader), std::map<std::string, std::vector<float>>{}, std::nullopt, arrow_pool) {
     if (!scores.empty()) {
         scores_.emplace(SpecialFields::IndexScore().Name(), scores);
     }
@@ -46,8 +46,12 @@ CompleteIndexScoreFileBatchReader::CompleteIndexScoreFileBatchReader(
 CompleteIndexScoreFileBatchReader::CompleteIndexScoreFileBatchReader(
     std::unique_ptr<FileBatchReader>&& reader,
     const std::map<std::string, std::vector<float>>& scores,
+    const std::optional<std::string>& root_score_field_name,
     const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
-    : arrow_pool_(arrow_pool), reader_(std::move(reader)), scores_(scores) {}
+    : arrow_pool_(arrow_pool),
+      reader_(std::move(reader)),
+      scores_(scores),
+      root_score_field_name_(root_score_field_name) {}
 
 Result<BatchReader::ReadBatch> CompleteIndexScoreFileBatchReader::NextBatch() {
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
@@ -89,10 +93,18 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreFileBatchReader::Next
             "cannot cast array to StructArray in CompleteIndexScoreFileBatchReader");
     }
     auto data = checked_pointer_cast<arrow::StructArray>(imported);
+    auto output_schema = arrow::schema(data->struct_type()->fields());
+    if (root_score_field_name_ &&
+        output_schema->GetAllFieldIndices(root_score_field_name_.value()).empty()) {
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+            output_schema, output_schema->AddField(
+                               output_schema->num_fields(),
+                               arrow::field(root_score_field_name_.value(), arrow::float32())));
+    }
     PAIMON_ASSIGN_OR_RAISE(
         BatchReader::ReadBatchWithBitmap completed,
         IndexScoreBatchUtils::CompleteScores(
-            std::move(batch_with_bitmap), data, arrow::schema(data->struct_type()->fields()),
+            std::move(batch_with_bitmap), data, output_schema,
             scores_,
             [this](const std::string&, const std::vector<float>& scores, int64_t,
                    size_t selected) -> Result<float> { return scores[score_cursor_ + selected]; },

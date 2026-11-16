@@ -27,18 +27,48 @@
 namespace paimon {
 
 Result<std::shared_ptr<ScoredFileIndexResult>> ScoredFileIndexResult::Create(
-    RoaringBitmap32&& row_positions, std::vector<float>&& scores) {
+    RoaringBitmap32&& row_positions, std::vector<float>&& scores, bool is_exact) {
     if (static_cast<size_t>(row_positions.Cardinality()) != scores.size()) {
         return Status::Invalid(fmt::format("Vector search returned {} row positions but {} scores",
                                            row_positions.Cardinality(), scores.size()));
     }
     return std::shared_ptr<ScoredFileIndexResult>(
-        new ScoredFileIndexResult(std::move(row_positions), std::move(scores)));
+        new ScoredFileIndexResult(std::move(row_positions), std::move(scores), is_exact));
 }
 
 ScoredFileIndexResult::ScoredFileIndexResult(RoaringBitmap32&& row_positions,
-                                             std::vector<float>&& scores)
-    : row_positions_(std::move(row_positions)), scores_(std::move(scores)) {}
+                                             std::vector<float>&& scores, bool is_exact)
+    : FileIndexResult(is_exact),
+      row_positions_(std::move(row_positions)),
+      scores_(std::move(scores)) {}
+
+Result<std::shared_ptr<FileIndexResult>> ScoredFileIndexResult::And(
+    const std::shared_ptr<FileIndexResult>& other) {
+    if (std::dynamic_pointer_cast<paimon::Remain>(other)) {
+        if (!IsExact()) {
+            return shared_from_this();
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredFileIndexResult> result,
+                               Create(RoaringBitmap32(row_positions_), std::vector<float>(scores_),
+                                      /*is_exact=*/false));
+        return result;
+    } else if (std::dynamic_pointer_cast<paimon::Skip>(other)) {
+        return FileIndexResult::Skip();
+    } else {
+        return Status::Invalid("Cannot AND ScoredFileIndexResult with unsupported result type");
+    }
+}
+
+Result<std::shared_ptr<FileIndexResult>> ScoredFileIndexResult::Or(
+    const std::shared_ptr<FileIndexResult>& other) {
+    if (std::dynamic_pointer_cast<paimon::Remain>(other)) {
+        return FileIndexResult::Remain();
+    } else if (std::dynamic_pointer_cast<paimon::Skip>(other)) {
+        return shared_from_this();
+    } else {
+        return Status::Invalid("Cannot OR ScoredFileIndexResult with unsupported result type");
+    }
+}
 
 Result<bool> ScoredFileIndexResult::IsRemain() const {
     return !IsEmpty();

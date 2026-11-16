@@ -33,6 +33,7 @@
 #include "paimon/common/reader/complete_index_score_file_batch_reader.h"
 #include "paimon/common/reader/predicate_batch_reader.h"
 #include "paimon/common/reader/reader_utils.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -185,9 +186,15 @@ Result<std::unique_ptr<PreciseFileIndexRead>> PreciseFileIndexRead::Create(
     std::shared_ptr<FullTextSearch> full_text_search;
     PAIMON_RETURN_NOT_OK(PrepareSearch(split_read.context_, field_names, file->file_name,
                                        indexes.get(), &vector_search, &full_text_search));
+    std::optional<std::string> root_search_field_name;
+    if (vector_search) {
+        root_search_field_name = split_read.context_->GetVectorSearch()->field_name;
+    } else if (full_text_search) {
+        root_search_field_name = split_read.context_->GetFullTextSearch()->field_name;
+    }
     return std::unique_ptr<PreciseFileIndexRead>(new PreciseFileIndexRead(
         split_read, partition, file, read_schema, predicate, field_mapping_builder, path_factory,
-        extra_format_options, std::move(indexes), mapped_leaves, vector_search, full_text_search));
+        extra_format_options, std::move(indexes), mapped_leaves, vector_search, full_text_search, root_search_field_name));
 }
 
 PreciseFileIndexRead::PreciseFileIndexRead(
@@ -199,7 +206,8 @@ PreciseFileIndexRead::PreciseFileIndexRead(
     std::unique_ptr<FileIndexEvaluator> indexes,
     const std::map<std::shared_ptr<LeafPredicate>, std::shared_ptr<LeafPredicate>>& mapped_leaves,
     const std::shared_ptr<VectorSearch>& vector_search,
-    const std::shared_ptr<FullTextSearch>& full_text_search)
+    const std::shared_ptr<FullTextSearch>& full_text_search,
+    const std::optional<std::string>& root_search_field_name)
     : split_read_(split_read),
       partition_(partition),
       file_(file),
@@ -211,7 +219,8 @@ PreciseFileIndexRead::PreciseFileIndexRead(
       indexes_(std::move(indexes)),
       mapped_leaves_(mapped_leaves),
       vector_search_(vector_search),
-      full_text_search_(full_text_search) {}
+      full_text_search_(full_text_search),
+      root_search_field_name_(root_search_field_name) {}
 
 Result<RoaringBitmap32> PreciseFileIndexRead::CreateCandidates(
     const DeletionVector::Factory& dv_factory,
@@ -282,12 +291,10 @@ Result<RoaringBitmap32> PreciseFileIndexRead::ScanScalar(
         return Status::Invalid(fmt::format(
             "Scalar predicate field '{}' is missing from the read schema", predicate->FieldName()));
     }
-    // TODO(lisizhuo.lsz): Push the scalar predicate to use min/max statistics for pruning row
-    // groups/pages.
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<FieldMappingBuilder> field_mapping_builder,
         FieldMappingBuilder::Create(arrow::schema({field}),
-                                    split_read_.context_->GetPartitionKeys(), nullptr));
+                                    split_read_.context_->GetPartitionKeys(), predicate));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> reader,
                            CreateSelectedFileReader(input, field_mapping_builder.get()));
     FileBatchReader& file_reader = *reader;
@@ -321,16 +328,9 @@ Result<RoaringBitmap32> PreciseFileIndexRead::ScanScalar(
 }
 
 Status PreciseFileIndexRead::ApplyRootSearch(Evaluation* evaluated) const {
-    // Score bindings use the original field name, not the historical file schema's name.
-    const auto& context = split_read_.context_;
-    std::string field;
-    if (context->GetVectorSearch()) {
-        field = context->GetVectorSearch()->field_name;
-    } else if (context->GetFullTextSearch()) {
-        field = context->GetFullTextSearch()->field_name;
-    }
-    return Evaluator::ApplyRootSearch<FileIndexReader>(vector_search_, full_text_search_, field,
-                                                       indexes_.get(), evaluated);
+    return Evaluator::ApplyRootSearch<FileIndexReader>(
+        vector_search_, full_text_search_, root_search_field_name_.value_or(""), indexes_.get(),
+        evaluated);
 }
 
 Result<std::unique_ptr<FileBatchReader>> PreciseFileIndexRead::CreateReader(
@@ -354,12 +354,17 @@ Result<std::unique_ptr<FileBatchReader>> PreciseFileIndexRead::CreateReader(
     PAIMON_ASSIGN_OR_RAISE(
         output_scores,
         Evaluator::CreateOutputScores(evaluated, split_read_.context_->GetIndexScoreBindings(),
-                                      split_read_.context_->GetReadSchema()));
+                                      split_read_.context_->GetReadSchema(), root_search_field_name_));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> reader,
                            CreateSelectedFileReader(evaluated.rows, field_mapping_builder_));
     if (!output_scores.empty()) {
-        return std::unique_ptr<FileBatchReader>(std::make_unique<CompleteIndexScoreFileBatchReader>(
-            std::move(reader), output_scores, split_read_.context_->GetArrowMemoryPool()));
+        std::optional<std::string> root_score_field_name;
+        if (root_search_field_name_) {
+            root_score_field_name = SpecialFields::IndexScoreFieldName(root_search_field_name_.value());
+        }
+        reader = std::make_unique<CompleteIndexScoreFileBatchReader>(
+            std::move(reader), output_scores, root_score_field_name,
+            split_read_.context_->GetArrowMemoryPool());
     }
     return reader;
 }

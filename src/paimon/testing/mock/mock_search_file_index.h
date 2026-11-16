@@ -58,6 +58,7 @@ class MockSearchFileIndex {
         std::string field_name;
         std::string query;
         bool needs_scores;
+        std::optional<RoaringBitmap64> include_row_ids = std::nullopt;
     };
 
     struct Statistics {
@@ -105,6 +106,12 @@ class MockSearchFileIndex {
                                                     const std::string& index_type,
                                                     const ScoredRows& rows,
                                                     const std::shared_ptr<MemoryPool>& pool);
+
+    /// Builds a vector index that checks the query against its configured metric.
+    static Result<std::shared_ptr<Bytes>> MakeVectorIndex(
+        const std::string& field_name, const ScoredRows& rows,
+        const std::optional<VectorSearch::DistanceType>& distance_type,
+        const std::shared_ptr<MemoryPool>& pool);
 };
 
 class MockSearchFileIndexReader final : public FileIndexReader {
@@ -118,6 +125,11 @@ class MockSearchFileIndexReader final : public FileIndexReader {
                               std::shared_ptr<MockSearchFileIndex::Statistics> statistics);
 
     bool SupportsSearch(SearchType search_type) const override;
+
+    void SetVectorSearchDistanceType(
+        const std::optional<VectorSearch::DistanceType>& distance_type) {
+        distance_type_ = distance_type;
+    }
 
     std::optional<double> EstimateSelectivity(
         const std::shared_ptr<LeafPredicate>& predicate) const override;
@@ -138,10 +150,11 @@ class MockSearchFileIndexReader final : public FileIndexReader {
                                                         bool needs_scores) const;
 
     Result<std::shared_ptr<ScoredFileIndexResult>> MakeScoredResult(
-        const std::map<int32_t, float>& selected) const;
+        const std::map<int32_t, float>& selected, bool is_exact) const;
 
     std::string field_name_;
     SearchIndexType index_type_;
+    std::optional<VectorSearch::DistanceType> distance_type_;
     MockSearchFileIndex::ScoredRows rows_;
     MockSearchFileIndex::QueryMatches queries_;
     std::shared_ptr<MockSearchFileIndex::Statistics> statistics_;

@@ -35,7 +35,7 @@ class PAIMON_EXPORT BitmapIndexResult : public FileIndexResult {
  public:
     using BitmapSupplier = std::function<Result<RoaringBitmap32>()>;
 
-    explicit BitmapIndexResult(BitmapSupplier bitmap_supplier);
+    explicit BitmapIndexResult(BitmapSupplier bitmap_supplier, bool is_exact = false);
     ~BitmapIndexResult() override;
 
     /// @return Whether the file is remained.
