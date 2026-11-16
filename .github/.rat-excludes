@@ -9,11 +9,6 @@ asan_symbolize\.py
 fix_includes\.py
 lint_exclusions\.txt
 iwyu_tool\.py
-arrow\.diff
-jieba\.diff
-orc\.diff
-oss_sdk_v2\.diff
-vortex\.diff
 licenses/*
 .codespell_ignore
 .gitignore

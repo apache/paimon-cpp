@@ -40,6 +40,7 @@
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
@@ -3798,45 +3799,122 @@ TEST_F(ScanAndReadInteTest, TestMosaicJavaAndPythonCompatibility) {
 #endif
 
 #ifdef PAIMON_ENABLE_VORTEX
-TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibility) {
-    // Fixture written by Paimon Java 2.0.0 with file.format=vortex; see
-    // test/test_data/vortex/append_java_compat.db/append_java_compat/README.md. This verifies that
-    // paimon-cpp reads back a Vortex table produced by the Java implementation.
-    arrow::FieldVector fields = {
-        arrow::field("_VALUE_KIND", arrow::int8()),
-        arrow::field("id", arrow::int32()),
-        arrow::field("name", arrow::utf8()),
-    };
-    std::shared_ptr<arrow::DataType> data_type = arrow::struct_(fields);
-    std::shared_ptr<arrow::Array> expected_array =
-        arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
-[0, 1, "one"],
-[0, 2, null],
-[0, 3, "three"],
-[0, 4, "four"],
-[0, 5, "five"]
-])")
-            .ValueOrDie();
-    auto expected = std::make_shared<arrow::ChunkedArray>(expected_array);
+namespace {
 
-    const std::string table_name = "append_java_compat";
-    const std::string table_path = GetDataDir() + "/vortex/" + table_name + ".db/" + table_name;
-    ScanContextBuilder scan_context_builder(table_path);
-    ReadContextBuilder read_context_builder(table_path);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> scan_context, scan_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> table_scan,
-                         TableScan::Create(std::move(scan_context)));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, table_scan->CreatePlan());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> batch_reader,
-                         table_read->CreateReader(plan->Splits()));
+Result<std::shared_ptr<arrow::ChunkedArray>> ReadTableRows(
+    const std::string& table_path, const std::vector<std::shared_ptr<Split>>& splits,
+    const std::vector<std::string>& projection, const std::shared_ptr<Predicate>& predicate,
+    bool exact_filter, bool late_materializing) {
+    ReadContextBuilder builder(table_path);
+    builder.SetReadFieldNames(projection)
+        .SetPredicate(predicate)
+        .EnablePredicateFilter(exact_filter)
+        .EnableLateMaterializing(late_materializing)
+        .AddOption(Options::READ_BATCH_SIZE, "2");
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> context, builder.Finish());
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read, TableRead::Create(std::move(context)));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader, read->CreateReader(splits));
+    return ReadResultCollector::CollectResult(std::move(reader));
+}
+
+}  // namespace
+
+TEST_F(ScanAndReadInteTest, TestVortexPredicatesWithLateMaterialization) {
+    auto dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(dir, nullptr);
+    const arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                       arrow::field("tag", arrow::utf8()),
+                                       arrow::field("payload", arrow::utf8())};
+    const std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "vortex"},
+                                                        {Options::FILE_SYSTEM, "local"},
+                                                        {Options::BUCKET, "-1"},
+                                                        {Options::WRITE_ONLY, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         TestHelper::Create(dir->Str(), arrow::schema(fields), {}, {}, options,
+                                            /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), R"([
+            [0,"skip","zero"],[1,null,"one"],[2,"keep","two"],[3,"drop","three"],
+            [4,"keep",null],[5,"keep","five"],[6,"skip","six"],[7,"keep","seven"]
+        ])",
+                                                     {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                         helper->NewScan(StartupMode::LatestFull(), std::nullopt, false));
+    const auto result_type = arrow::struct_(
+        {arrow::field("_VALUE_KIND", arrow::int8()), fields[2], fields[0], fields[1]});
+    auto greater = PredicateBuilder::GreaterThan(1, "id", FieldType::INT, Literal(int32_t{1}));
+    auto tag =
+        PredicateBuilder::Equal(2, "tag", FieldType::STRING, Literal(FieldType::STRING, "keep", 4));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::And({greater, tag}));
+    std::shared_ptr<arrow::ChunkedArray> expected;
+    ASSERT_OK(ToPaimonStatus(arrow::ipc::internal::json::ChunkedArrayFromJSON(
+        result_type,
+        {R"([[0,"two",2,"keep"],[0,null,4,"keep"],[0,"five",5,"keep"],[0,"seven",7,"keep"]])"},
+        &expected)));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
-                         ReadResultCollector::CollectResult(std::move(batch_reader)));
-    ASSERT_TRUE(expected->Equals(actual))
-        << "actual: " << (actual == nullptr ? "null" : actual->ToString())
-        << "\nexpected: " << expected->ToString();
+                         ReadTableRows(table_path, splits, {"payload", "id", "tag"}, predicate,
+                                       /*exact_filter=*/false, /*late_materializing=*/true));
+    ASSERT_TRUE(expected->Equals(actual));
+}
+
+TEST_F(ScanAndReadInteTest, TestVortexFallbackWithAndWithoutPayload) {
+    auto dir = UniqueTestDirectory::Create("local");
+    ASSERT_NE(dir, nullptr);
+    const arrow::FieldVector fields = {arrow::field("value", arrow::int32()),
+                                       arrow::field("payload", arrow::utf8())};
+    const std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "vortex"},
+                                                        {Options::FILE_SYSTEM, "local"},
+                                                        {Options::BUCKET, "-1"},
+                                                        {Options::WRITE_ONLY, "true"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> helper,
+                         TestHelper::Create(dir->Str(), arrow::schema(fields), {}, {}, options,
+                                            /*is_streaming_mode=*/false));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                         TestHelper::MakeRecordBatch(
+                             arrow::struct_(fields),
+                             R"([[-1,"minus"],[0,"zero"],[1,"one"],[null,"null"]])", {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+    const std::string table_path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<Split>> splits,
+                         helper->NewScan(StartupMode::LatestFull(), std::nullopt, false));
+
+    // This list exceeds the default 32-value native pushdown limit.
+    std::vector<Literal> values = {Literal(int32_t{1})};
+    for (int32_t value = 100; value < 132; ++value) {
+        values.emplace_back(value);
+    }
+    const auto predicate = PredicateBuilder::NotIn(0, "value", FieldType::INT, values);
+    const auto value_kind = arrow::field("_VALUE_KIND", arrow::int8());
+    const auto probe_type = arrow::struct_({value_kind, fields[0]});
+
+    // A probe-only projection bypasses the two-phase reader, even with late materialization on.
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> candidates,
+                         ReadTableRows(table_path, splits, {"value"}, predicate,
+                                       /*exact_filter=*/false, /*late_materializing=*/true));
+    std::shared_ptr<arrow::ChunkedArray> expected_candidates;
+    ASSERT_OK(ToPaimonStatus(arrow::ipc::internal::json::ChunkedArrayFromJSON(
+        probe_type, {R"([[0,-1],[0,0],[0,1],[0,null]])"}, &expected_candidates)));
+    ASSERT_TRUE(expected_candidates->Equals(candidates));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         ReadTableRows(table_path, splits, {"value"}, predicate,
+                                       /*exact_filter=*/true, /*late_materializing=*/true));
+    std::shared_ptr<arrow::ChunkedArray> expected_filtered;
+    ASSERT_OK(ToPaimonStatus(arrow::ipc::internal::json::ChunkedArrayFromJSON(
+        probe_type, {R"([[0,-1],[0,0]])"}, &expected_filtered)));
+    ASSERT_TRUE(expected_filtered->Equals(actual));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> with_payload,
+                         ReadTableRows(table_path, splits, {"value", "payload"}, predicate,
+                                       /*exact_filter=*/false, /*late_materializing=*/true));
+    const auto payload_type = arrow::struct_({value_kind, fields[0], fields[1]});
+    std::shared_ptr<arrow::ChunkedArray> expected_with_payload;
+    ASSERT_OK(ToPaimonStatus(arrow::ipc::internal::json::ChunkedArrayFromJSON(
+        payload_type, {R"([[0,-1,"minus"],[0,0,"zero"]])"}, &expected_with_payload)));
+    ASSERT_TRUE(expected_with_payload->Equals(with_payload));
 }
 
 // The Java fixture stores TIMESTAMP_LTZ in UTC while paimon reads it in the reader's own zone, so
@@ -3875,9 +3953,8 @@ TEST_F(ScanAndReadInteTest, TestVortexJavaCompatibilityLtzAcrossTimezones) {
             shanghai = column;
         }
     }
-    arrow::Result<std::shared_ptr<arrow::Array>> viewed = shanghai->View(utc->type());
-    ASSERT_TRUE(viewed.ok()) << viewed.status().ToString();
-    ASSERT_TRUE((*viewed)->Equals(*utc))
+    std::shared_ptr<arrow::Array> viewed = shanghai->View(utc->type()).ValueOrDie();
+    ASSERT_TRUE(viewed->Equals(*utc))
         << "shanghai: " << shanghai->ToString() << "\nutc: " << utc->ToString();
 }
 
