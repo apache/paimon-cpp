@@ -37,6 +37,7 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/long_counter.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/core/append/bucketed_append_compact_manager.h"
 #include "paimon/core/io/append_data_file_writer_factory.h"
 #include "paimon/core/io/blob_data_file_writer_factory.h"
 #include "paimon/core/io/compact_increment.h"
@@ -108,6 +109,15 @@ Status AppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     }
 
     return writer_->Write(batch->GetData());
+}
+
+Status AppendOnlyWriter::CustomizeCompact(const std::vector<std::string>& file_names) {
+    auto manager = std::dynamic_pointer_cast<BucketedAppendCompactManager>(compact_manager_);
+    if (!manager) {
+        return Status::Invalid("custom compaction requires a bucketed append compact manager");
+    }
+    PAIMON_RETURN_NOT_OK(Sync());
+    return manager->CustomizeCompact(file_names);
 }
 
 Result<CommitIncrement> AppendOnlyWriter::PrepareCommit(bool wait_compaction) {

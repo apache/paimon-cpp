@@ -19,6 +19,7 @@
 #include "paimon/core/operation/append_only_file_store_write.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -268,6 +269,180 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestWriteWithInvalidBatch) {
     }
 }
 
+TEST_F(AppendOnlyFileStoreWriteTest, TestCustomizeCompactValidationAndRestoredSnapshot) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto schema =
+        arrow::schema({arrow::field("id", arrow::int32()), arrow::field("name", arrow::utf8())});
+    std::map<std::string, std::string> options = {{Options::BUCKET, "2"},
+                                                  {Options::BUCKET_KEY, "id"},
+                                                  {Options::FILE_FORMAT, "parquet"},
+                                                  {Options::COMPACTION_MIN_FILE_NUM, "100"}};
+    CreateTable(dir->Str(), schema, options);
+    const std::string path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+    auto first = WriteAndPrepare(path, schema, options, R"([[1, "a"], [2, "b"]])", 0);
+    Commit(path, options, first);
+    WriteContextBuilder second_builder(path, commit_user_);
+    ASSERT_OK_AND_ASSIGN(auto second_context, second_builder.SetOptions(options).Finish());
+    ASSERT_OK_AND_ASSIGN(auto second_writer, FileStoreWrite::Create(std::move(second_context)));
+    auto second_batch = MakeBatch(schema, R"([[3, "c"]])");
+    second_batch->SetBucket(1);
+    ASSERT_OK(second_writer->Write(std::move(second_batch)));
+    ASSERT_OK_AND_ASSIGN(auto second, second_writer->PrepareCommit(false, 1));
+    ASSERT_OK(second_writer->Close());
+    Commit(path, options, second);
+    const std::string first_name = OnlyNewFile(first)->file_name;
+    const std::string second_name = OnlyNewFile(second)->file_name;
+    auto new_writer = [&](const std::map<std::string, std::string>& opts,
+                          const std::vector<std::string>& columns = {})
+        -> Result<std::unique_ptr<FileStoreWrite>> {
+        WriteContextBuilder builder(path, "compactor");
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<WriteContext> context,
+                               builder.SetOptions(opts).WithWriteSchema(columns).Finish());
+        return FileStoreWrite::Create(std::move(context));
+    };
+    CompactRequest request{{}, 0, {first_name}};
+    ASSERT_OK_AND_ASSIGN(auto ordered, new_writer(options));
+    ASSERT_NOK_WITH_MSG(ordered->CustomizeCompact(request), "bucket-append-ordered=false");
+    ASSERT_OK(ordered->Close());
+    options[Options::BUCKET_APPEND_ORDERED] = "false";
+    auto write_only_options = options;
+    write_only_options[Options::WRITE_ONLY] = "true";
+    ASSERT_OK_AND_ASSIGN(auto write_only, new_writer(write_only_options));
+    ASSERT_NOK_WITH_MSG(write_only->CustomizeCompact(request), "write-only=false");
+    ASSERT_OK(write_only->Close());
+    ASSERT_OK_AND_ASSIGN(auto partial, new_writer(options, {"id"}));
+    ASSERT_NOK_WITH_MSG(partial->CustomizeCompact(request), "full write schema");
+    ASSERT_OK(partial->Close());
+    auto realtime_options = options;
+    realtime_options[Options::REALTIME_ENABLED] = "true";
+    ASSERT_OK_AND_ASSIGN(auto realtime, new_writer(realtime_options));
+    ASSERT_NOK_WITH_MSG(realtime->CustomizeCompact(request), "real-time mode");
+    ASSERT_OK(realtime->Close());
+    auto unaware_options = options;
+    unaware_options[Options::BUCKET] = "-1";
+    ASSERT_OK_AND_ASSIGN(auto unaware, new_writer(unaware_options));
+    ASSERT_NOK_WITH_MSG(unaware->CustomizeCompact(request), "fixed-bucket append");
+    ASSERT_OK(unaware->Close());
+    ASSERT_OK_AND_ASSIGN(auto compactor, new_writer(options));
+    for (int32_t bucket : {-1, 2}) {
+        request.bucket = bucket;
+        ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "out of range");
+    }
+    request.bucket = 0;
+    request.partition = {{"unknown", "value"}};
+    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "partition keys");
+    request.partition.clear();
+    request.file_names.clear();
+    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "at least one");
+    request.file_names = {first_name, first_name};
+    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "distinct file names");
+    request.file_names = {"../" + first_name};
+    ASSERT_NOK(compactor->CustomizeCompact(request));
+    request.file_names = {"missing.parquet"};
+    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "not active");
+    request.file_names = {first_name};
+    request.bucket = 1;
+    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "not active");
+    request.bucket = 0;
+    request.file_names = {second_name};
+    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "not active");
+    ASSERT_OK_AND_ASSIGN(auto restored_snapshot, compactor->GetBaseSnapshotId({}, 0));
+    ASSERT_TRUE(restored_snapshot);
+    auto third = WriteAndPrepare(path, schema, options, R"([[4, "d"]])", 2);
+    Commit(path, options, third);
+    const std::string third_name = OnlyNewFile(third)->file_name;
+    request.file_names = {third_name};
+    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "not active");
+    ASSERT_OK_AND_ASSIGN(auto reused_snapshot, compactor->GetBaseSnapshotId({}, 0));
+    ASSERT_EQ(restored_snapshot, reused_snapshot);
+    request.file_names = {first_name};
+    ASSERT_OK(compactor->CustomizeCompact(request));
+    ASSERT_OK(compactor->CustomizeCompact({{}, 1, {second_name}}));
+    ASSERT_OK_AND_ASSIGN(auto messages, compactor->PrepareCommit());
+    ASSERT_EQ(2, messages.size());
+    std::shared_ptr<CommitMessageImpl> impl;
+    for (const auto& message : messages) {
+        auto candidate = std::dynamic_pointer_cast<CommitMessageImpl>(message);
+        ASSERT_TRUE(candidate);
+        if (candidate->Bucket() == 0) {
+            impl = candidate;
+        }
+    }
+    ASSERT_TRUE(impl);
+    ASSERT_EQ(1, impl->GetCompactIncrement().CompactBefore().size());
+    ASSERT_EQ(first_name, impl->GetCompactIncrement().CompactBefore()[0]->file_name);
+    ASSERT_EQ(1, impl->GetCompactIncrement().CompactAfter().size());
+    ASSERT_EQ(2, impl->GetCompactIncrement().CompactAfter()[0]->row_count);
+    ASSERT_NOK_WITH_MSG(compactor->PrepareCommit(), "one-time committing");
+    ASSERT_NOK_WITH_MSG(compactor->Write(MakeBatch(schema, R"([[4, "d"]])")), "cannot mix");
+    ASSERT_NOK_WITH_MSG(compactor->Compact({}, 0, true), "cannot mix");
+    ASSERT_OK(compactor->Close());
+    ASSERT_EQ(
+        2,
+        ReadDataFileArray(path, impl->GetCompactIncrement().CompactAfter()[0], options)->length());
+    CommitContextBuilder commit_builder(path, "compactor");
+    ASSERT_OK_AND_ASSIGN(auto commit_context, commit_builder.SetOptions(options).Finish());
+    ASSERT_OK_AND_ASSIGN(auto commit, FileStoreCommit::Create(std::move(commit_context)));
+    ASSERT_OK(commit->Abort(messages));
+    auto fs = std::make_shared<LocalFileSystem>();
+    ASSERT_OK_AND_ASSIGN(
+        bool exists,
+        fs->Exists(PathUtil::JoinPath(
+            path, "bucket-0/" + impl->GetCompactIncrement().CompactAfter()[0]->file_name)));
+    ASSERT_FALSE(exists);
+    ASSERT_OK_AND_ASSIGN(auto mixed, new_writer(options));
+    ASSERT_OK(mixed->Write(MakeBatch(schema, R"([[4, "d"]])")));
+    ASSERT_NOK_WITH_MSG(mixed->CustomizeCompact(request), "cannot mix");
+    ASSERT_OK(mixed->Close());
+}
+
+TEST_F(AppendOnlyFileStoreWriteTest, TestUnorderedWriterRestore) {
+    struct TestCase {
+        bool ordered;
+        bool write_only;
+        bool ignore_previous;
+        int64_t expected_seq;
+    };
+    const std::vector<TestCase> test_cases = {
+        {/*ordered=*/false, /*write_only=*/false, /*ignore_previous=*/false, /*expected_seq=*/2},
+        {/*ordered=*/false, /*write_only=*/false, /*ignore_previous=*/true, /*expected_seq=*/2},
+        {/*ordered=*/false, /*write_only=*/true, /*ignore_previous=*/false, /*expected_seq=*/0},
+        {/*ordered=*/false, /*write_only=*/true, /*ignore_previous=*/true, /*expected_seq=*/0},
+        {/*ordered=*/true, /*write_only=*/false, /*ignore_previous=*/false, /*expected_seq=*/2},
+        {/*ordered=*/true, /*write_only=*/false, /*ignore_previous=*/true, /*expected_seq=*/0},
+        {/*ordered=*/true, /*write_only=*/true, /*ignore_previous=*/false, /*expected_seq=*/2},
+        {/*ordered=*/true, /*write_only=*/true, /*ignore_previous=*/true, /*expected_seq=*/0},
+    };
+    auto schema = arrow::schema({arrow::field("id", arrow::int32())});
+    for (const auto& test_case : test_cases) {
+        SCOPED_TRACE(::testing::Message()
+                     << "ordered=" << test_case.ordered << ", write_only=" << test_case.write_only
+                     << ", ignore_previous=" << test_case.ignore_previous
+                     << ", expected_seq=" << test_case.expected_seq);
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        std::map<std::string, std::string> options = {
+            {Options::BUCKET, "1"},
+            {Options::BUCKET_KEY, "id"},
+            {Options::FILE_FORMAT, "parquet"},
+            {Options::BUCKET_APPEND_ORDERED, test_case.ordered ? "true" : "false"},
+            {Options::WRITE_ONLY, test_case.write_only ? "true" : "false"}};
+        CreateTable(dir->Str(), schema, options);
+        const std::string path = PathUtil::JoinPath(dir->Str(), "foo.db/bar");
+        Commit(path, options, WriteAndPrepare(path, schema, options, "[[1], [2]]", 0));
+        WriteContextBuilder builder(path, commit_user_);
+        ASSERT_OK_AND_ASSIGN(auto context, builder.SetOptions(options)
+                                               .WithIgnorePreviousFiles(test_case.ignore_previous)
+                                               .Finish());
+        ASSERT_OK_AND_ASSIGN(auto writer, FileStoreWrite::Create(std::move(context)));
+        ASSERT_OK(writer->Write(MakeBatch(schema, "[[3]]")));
+        ASSERT_OK_AND_ASSIGN(auto messages, writer->PrepareCommit());
+        ASSERT_EQ(test_case.expected_seq, OnlyNewFile(messages)->min_sequence_number);
+        ASSERT_OK(writer->Close());
+    }
+}
+
 TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksExternalOffsetRange) {
     std::map<std::string, std::string> options = {
         {"file.format", "parquet"},
@@ -307,6 +482,8 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksExternalOffsetRange)
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
 
+    ASSERT_NOK_WITH_MSG(file_store_write->CustomizeCompact({{}, 0, {"unused.parquet"}}),
+                        "real-time mode");
     ASSERT_OK(file_store_write->Write(MakeBatch(realtime_schema, R"([
         [10, 1, "a"],
         [20, 2, "b"]

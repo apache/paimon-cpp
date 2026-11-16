@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "paimon/commit_message.h"
+#include "paimon/compact_request.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/memory/memory_pool.h"
@@ -88,6 +89,14 @@ class PAIMON_EXPORT FileStoreWrite {
     /// @return status for compacting the records
     virtual Status Compact(const std::map<std::string, std::string>& partition, int32_t bucket,
                            bool full_compaction) = 0;
+
+    /// Asynchronously compacts requested files from the writer's restored state, as with Compact().
+    /// Supports fixed-bucket append tables with or without deletion vectors.
+    /// Requires bucket-append-ordered=false, write-only=false and the full write schema.
+    /// Use a dedicated writer. Real-time mode and data evolution are unsupported.
+    /// Collect results and background errors through PrepareCommit(), as with Compact().
+    /// Do not update deletion vectors or compact the same partition-bucket until commit or discard.
+    virtual Status CustomizeCompact(const CompactRequest& request);
 
     /// Generate a list of commit messages with the latest generated data file meta
     /// information of the current snapshot.

@@ -18,7 +18,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -89,6 +91,11 @@ class AppendOnlyFileStoreWrite : public AbstractFileStoreWrite {
     ~AppendOnlyFileStoreWrite() override;
 
     Status RefreshCommittedSnapshot(int64_t snapshot_id) override;
+
+    Status Write(std::unique_ptr<RecordBatch>&& batch) override;
+    Status Compact(const std::map<std::string, std::string>& partition, int32_t bucket,
+                   bool full_compaction) override;
+    Status CustomizeCompact(const CompactRequest& request) override;
 
     /// Rewrites the given files into new compacted files.
     ///
@@ -161,6 +168,8 @@ class AppendOnlyFileStoreWrite : public AbstractFileStoreWrite {
         const std::shared_ptr<ShreddingWritePlanFactory>& plan_factory) const;
 
     std::optional<std::vector<std::string>> write_cols_;
+    std::atomic<bool> custom_compaction_{false};
+    std::atomic<bool> regular_write_{false};
     std::shared_ptr<RealtimeContext> realtime_context_;
     std::unique_ptr<Logger> logger_;
 };

@@ -19,6 +19,7 @@
 #include "paimon/core/append/bucketed_append_compact_manager.h"
 
 #include <cassert>
+#include <unordered_set>
 
 #include "paimon/common/executor/future.h"
 
@@ -57,11 +58,50 @@ void BucketedAppendCompactManager::RequestCancelCompaction() {
 }
 
 Status BucketedAppendCompactManager::TriggerCompaction(bool full_compaction) {
+    if (custom_compaction_) {
+        return Status::OK();
+    }
     if (full_compaction) {
         PAIMON_RETURN_NOT_OK(TriggerFullCompaction());
     } else {
         TriggerCompactionWithBestEffort();
     }
+    return Status::OK();
+}
+
+Status BucketedAppendCompactManager::CustomizeCompact(const std::vector<std::string>& file_names) {
+    if (task_future_.valid()) {
+        return Status::Invalid("a compaction task is still running");
+    }
+    custom_compaction_ = true;
+    if (file_names.empty()) {
+        return Status::Invalid("custom compaction requires at least one input file");
+    }
+    std::unordered_set<std::string> names(file_names.begin(), file_names.end());
+    if (names.size() != file_names.size()) {
+        return Status::Invalid("custom compaction requires distinct file names");
+    }
+    auto candidates = to_compact_;
+    std::vector<std::shared_ptr<DataFileMeta>> selected;
+    std::vector<std::shared_ptr<DataFileMeta>> retained;
+    while (!candidates.empty()) {
+        std::shared_ptr<DataFileMeta> file = candidates.top();
+        candidates.pop();
+        if (names.erase(file->file_name) > 0) {
+            selected.push_back(file);
+        } else {
+            retained.push_back(file);
+        }
+    }
+    if (!names.empty()) {
+        return Status::Invalid("custom compaction input file is not active in this writer: ",
+                               *names.begin());
+    }
+    to_compact_.swap(candidates);
+    for (const auto& file : retained) {
+        to_compact_.push(file);
+    }
+    SubmitCompaction(selected);
     return Status::OK();
 }
 
@@ -100,15 +140,19 @@ void BucketedAppendCompactManager::TriggerCompactionWithBestEffort() {
     }
     std::optional<std::vector<std::shared_ptr<DataFileMeta>>> picked = PickCompactBefore();
     if (picked) {
-        cancellation_controller_->Reset();
-        compacting_ = picked.value();
-        auto compact_task = std::make_shared<AutoCompactTask>(
-            reporter_, dv_maintainer_, compacting_.value(), rewriter_, materialize_dv_on_commit_);
-        task_future_ =
-            Via(executor_.get(), [compact_task]() -> Result<std::shared_ptr<CompactResult>> {
-                return compact_task->Execute();
-            });
+        SubmitCompaction(picked.value());
     }
+}
+
+void BucketedAppendCompactManager::SubmitCompaction(
+    const std::vector<std::shared_ptr<DataFileMeta>>& files) {
+    cancellation_controller_->Reset();
+    compacting_ = files;
+    auto compact_task = std::make_shared<AutoCompactTask>(reporter_, dv_maintainer_, files,
+                                                          rewriter_, materialize_dv_on_commit_);
+    task_future_ = Via(executor_.get(), [compact_task]() -> Result<std::shared_ptr<CompactResult>> {
+        return compact_task->Execute();
+    });
 }
 
 std::optional<std::vector<std::shared_ptr<DataFileMeta>>>
@@ -162,7 +206,11 @@ BucketedAppendCompactManager::GetCompactionResult(bool blocking) {
                            InnerGetCompactionResult(blocking));
     if (result) {
         std::shared_ptr<CompactResult> compact_result = result.value();
-        if (!compact_result->After().empty()) {
+        if (custom_compaction_) {
+            for (const auto& file : compact_result->After()) {
+                to_compact_.push(file);
+            }
+        } else if (!compact_result->After().empty()) {
             // if the last compacted file is still small,
             // add it back to the head
             std::shared_ptr<DataFileMeta> last_file = compact_result->After().back();

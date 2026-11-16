@@ -20,6 +20,10 @@
 
 namespace paimon {
 
+Status FileStoreWrite::CustomizeCompact(const CompactRequest&) {
+    return Status::NotImplemented("custom compaction only supports fixed-bucket append tables");
+}
+
 Result<std::vector<RealtimeCommitProgress>> FileStoreWrite::PrepareCommitWithProgress(int64_t) {
     return Status::Invalid("prepare commit with progress requires a real-time writer");
 }

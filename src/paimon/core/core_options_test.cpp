@@ -123,7 +123,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(SortEngine::LOSER_TREE, core_options.GetSortEngine());
     ASSERT_FALSE(core_options.IgnoreDelete());
     ASSERT_FALSE(core_options.WriteOnly());
-    ASSERT_FALSE(core_options.BucketAppendOrdered());
+    ASSERT_TRUE(core_options.BucketAppendOrdered());
     ASSERT_EQ(CoreOptions::SequenceNumberInitMode::SCAN,
               core_options.WriteSequenceNumberInitMode());
     ASSERT_EQ(5, core_options.GetCompactionMinFileNum());
@@ -320,7 +320,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::GLOBAL_INDEX_EXTERNAL_PATH, "FILE:///tmp/global_index/"},
         {Options::SCAN_TAG_NAME, "test-tag"},
         {Options::WRITE_ONLY, "true"},
-        {Options::BUCKET_APPEND_ORDERED, "true"},
+        {Options::BUCKET_APPEND_ORDERED, "false"},
         {Options::WRITE_SEQUENCE_NUMBER_INIT_MODE, "snapshot"},
         {Options::COMPACTION_MIN_FILE_NUM, "10"},
         {Options::COMPACTION_FORCE_REWRITE_ALL_FILES, "true"},
@@ -501,7 +501,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(375809637, core_options.GetCompactionFileSize(/*has_primary_key=*/true));
     ASSERT_EQ(375809637, core_options.GetCompactionFileSize(/*has_primary_key=*/false));
     ASSERT_TRUE(core_options.WriteOnly());
-    ASSERT_TRUE(core_options.BucketAppendOrdered());
+    ASSERT_FALSE(core_options.BucketAppendOrdered());
     ASSERT_EQ(CoreOptions::SequenceNumberInitMode::SNAPSHOT,
               core_options.WriteSequenceNumberInitMode());
     ASSERT_EQ(10, core_options.GetCompactionMinFileNum());

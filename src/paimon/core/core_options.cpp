@@ -461,7 +461,7 @@ struct CoreOptions::Impl {
     bool manifest_delete_file_drop_stats = false;
     bool write_buffer_spillable = true;
     bool write_only = false;
-    bool bucket_append_ordered = false;
+    bool bucket_append_ordered = true;
     bool deletion_vectors_enabled = false;
     bool pk_clustering_override = false;
     bool deletion_vectors_bitmap64 = false;

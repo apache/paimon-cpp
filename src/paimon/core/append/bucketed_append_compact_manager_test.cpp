@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/deletionvectors/bucketed_dv_maintainer.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
@@ -309,6 +310,64 @@ TEST_F(BucketedAppendCompactManagerTest, TestPick) {
               {NewFile(2521, 2530), NewFile(2531, 2540), NewFile(2541, 2550), NewFile(2551, 2560),
                NewFile(2561, 2570), NewFile(2571, 2580), NewFile(2581, 2590), NewFile(2591, 2600),
                NewFile(2601, 2610), NewFile(2611, 2620), NewFile(2621, 2630)});
+}
+
+TEST_F(BucketedAppendCompactManagerTest, TestCustomizeCompactUsesAsyncResultLifecycle) {
+    auto cancellation_controller = std::make_shared<CancellationController>();
+    auto files = GenerateDataFileMeta();
+    std::vector<std::shared_ptr<DataFileMeta>> selected = {files[0], files[2]};
+    std::vector<std::string> file_names = {files[2]->file_name, files[0]->file_name};
+    std::vector<std::shared_ptr<DataFileMeta>> outputs = {
+        std::make_shared<DataFileMeta>(*files[0]), std::make_shared<DataFileMeta>(*files[2])};
+    outputs[0]->file_name = "compacted1";
+    outputs[0]->file_size = 2048;
+    outputs[1]->file_name = "compacted3";
+    std::vector<std::shared_ptr<DataFileMeta>> rewritten;
+    std::promise<void> release;
+    auto released = release.get_future().share();
+    auto rewriter = [&rewritten, released,
+                     outputs](const std::vector<std::shared_ptr<DataFileMeta>>& inputs)
+        -> Result<std::vector<std::shared_ptr<DataFileMeta>>> {
+        released.wait();
+        rewritten = inputs;
+        return outputs;
+    };
+    BucketedAppendCompactManager manager(
+        executor_, files, /*dv_maintainer=*/nullptr, /*min_file_num=*/100,
+        /*target_file_size=*/1024, /*compaction_file_size=*/700,
+        /*force_rewrite_all_files=*/false, rewriter, /*reporter=*/nullptr, cancellation_controller,
+        /*materialize_dv_on_commit=*/false);
+    std::future<Status> submission;
+    // Unblock the rewrite before an assertion failure joins the submission future.
+    ScopeGuard unblock([&release]() { release.set_value(); });
+    cancellation_controller->Cancel();
+    submission =
+        std::async(std::launch::async, [&]() { return manager.CustomizeCompact(file_names); });
+    ASSERT_EQ(std::future_status::ready, submission.wait_for(std::chrono::seconds(5)));
+    ASSERT_OK(submission.get());
+    ASSERT_FALSE(cancellation_controller->IsCancelled());
+    ASSERT_OK_AND_ASSIGN(auto pending, manager.GetCompactionResult(/*blocking=*/false));
+    ASSERT_FALSE(pending);
+    ASSERT_TRUE(manager.CompactNotCompleted());
+    ASSERT_NOK_WITH_MSG(manager.CustomizeCompact(file_names), "still running");
+    release.set_value();
+    unblock.Release();
+    ASSERT_OK_AND_ASSIGN(auto result, manager.GetCompactionResult(/*blocking=*/true));
+    ASSERT_TRUE(result);
+    ExpectVectorsEqual(selected, rewritten);
+    ExpectVectorsEqual(selected, result.value()->Before());
+    ExpectVectorsEqual(outputs, result.value()->After());
+    std::vector<std::shared_ptr<DataFileMeta>> active = {outputs[0], files[1], outputs[1]};
+    ExpectVectorsEqual(active, manager.AllFiles());
+    ASSERT_NOK_WITH_MSG(manager.CustomizeCompact(file_names), "not active");
+    ExpectVectorsEqual(active, manager.AllFiles());
+    ASSERT_OK(manager.TriggerCompaction(/*full_compaction=*/false));
+    ASSERT_FALSE(manager.CompactNotCompleted());
+    ASSERT_OK(manager.CustomizeCompact({outputs[1]->file_name, outputs[0]->file_name}));
+    ASSERT_OK_AND_ASSIGN(auto next_result, manager.GetCompactionResult(/*blocking=*/true));
+    ASSERT_TRUE(next_result);
+    ExpectVectorsEqual(outputs, next_result.value()->Before());
+    ExpectVectorsEqual(active, manager.AllFiles());
 }
 
 TEST_F(BucketedAppendCompactManagerTest, TestCancelCompactionPropagatesToRewriteLoop) {

@@ -76,8 +76,15 @@ Result<std::unique_ptr<FileStoreWrite>> AppendOnlyFileStoreTable::CreateWrite(
     } else if (options.GetBucket() <= 0) {
         return Status::Invalid(
             fmt::format("not support bucket {} in append table", options.GetBucket()));
+    } else if (!options.BucketAppendOrdered()) {
+        // Unordered write-only writers do not need historical sequence numbers. Compactors must
+        // restore existing files even if the write context requested ignoring them.
+        ignore_previous_files = options.WriteOnly();
     }
     if (ctx.GetRealtimeContext()) {
+        if (!options.BucketAppendOrdered()) {
+            return Status::Invalid("real-time append write requires bucket-append-ordered=true");
+        }
         if (!ctx.GetWriteSchema().empty()) {
             return Status::Invalid("real-time append write does not support a custom schema");
         }
