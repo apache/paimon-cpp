@@ -37,7 +37,7 @@ function(paimon_patch_fingerprint output)
     endforeach()
     # The same ordered list is used here and by the application loop below.
     set(identity
-        "paimon-patch-v2\n${PP_NAME}\n${PP_VERSION}\n${PP_ARCHIVE}\n${PP_URLS}\n${PP_SOURCE}\n${PP_BINARY}\n${PP_INSTALL}\n${PP_CONTEXT}\n"
+        "paimon-patch-v1\n${PP_NAME}\n${PP_VERSION}\n${PP_ARCHIVE}\n${PP_URLS}\n${PP_SOURCE}\n${PP_BINARY}\n${PP_INSTALL}\n${PP_CONTEXT}\n"
     )
     file(SHA256 "${CMAKE_CURRENT_FUNCTION_LIST_FILE}" runner_hash)
     string(APPEND identity
