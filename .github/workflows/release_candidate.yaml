@@ -140,10 +140,10 @@ jobs:
         shell: bash
         run: ci/scripts/setup_flatc.sh
 
-      - name: Install HTTP and TLS development dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcurl4-openssl-dev libssl-dev
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev patchutils
 
       - name: Verify, build, test, and install
         shell: bash
