@@ -211,3 +211,31 @@ Read batch size sweep, repeated for a stable comparison::
 Null density on both sides, to see what definition levels cost::
 
    paimon-parquet-format-benchmark --benchmark_filter='Parquet(Write|Read)_Nulls'
+
+Sequential small-file reads
+===========================
+
+``paimon-sequential-reader-benchmark`` compares eager construction (``lazy:0``)
+with the bounded raw-reader window (``lazy:1``). It requires ORC and
+``PAIMON_BUILD_BENCHMARKS=ON``. Each case copies the small checked-in ORC fixture
+to 128 or 1024 distinct temporary files, outside the measured interval.
+``first_only:1`` closes after the first batch; ``first_only:0`` consumes every
+file. Both paths use the same row-kind wrapper and disable batch prefetch to
+isolate reader construction.
+
+The measured interval includes reader construction, consumption and close.
+Counters report first-batch latency, first-batch and total file opens, initial
+footer/setup read calls, peak retained streams, peak Paimon pool allocation,
+and bytes read. Pool allocation excludes memory allocated outside Paimon's
+pool and is not process RSS. ``items_per_second`` reports returned rows per
+second. An optional 1000-microsecond delay per open simulates remote setup
+latency; it does not model remote bandwidth or cache behavior.
+
+Run a repeated comparison and save the counters::
+
+   cmake --build build --target paimon-sequential-reader-benchmark
+   ./build/debug/paimon-sequential-reader-benchmark \
+       --benchmark_filter='BM_SequentialReaders/files:1024/' \
+       --benchmark_repetitions=5 \
+       --benchmark_out=sequential-readers.json \
+       --benchmark_out_format=json

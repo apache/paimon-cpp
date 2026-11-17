@@ -20,9 +20,11 @@
 #include "paimon/common/reader/concat_batch_reader.h"
 
 #include <algorithm>
+#include <chrono>
 #include <utility>
 
 #include "arrow/c/abi.h"
+#include "paimon/common/executor/future.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
@@ -33,78 +35,159 @@ class MemoryPool;
 
 ConcatBatchReader::ConcatBatchReader(std::vector<std::unique_ptr<BatchReader>>&& readers,
                                      const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
-    : arrow_pool_(arrow_pool),
-      finished_reader_metrics_(std::make_shared<MetricsImpl>()),
-      readers_(std::move(readers)),
-      file_readers_(readers_.size(), nullptr),
-      current_(0) {
-    // Non-file readers keep their null slots so the warmup window stays aligned with readers_.
-    for (size_t i = 0; i < readers_.size(); i++) {
-        if (auto* file_reader = dynamic_cast<FileBatchReader*>(readers_[i].get())) {
-            file_readers_[i] = file_reader;
+    : arrow_pool_(arrow_pool), finished_reader_metrics_(std::make_shared<MetricsImpl>()) {
+    for (auto& reader : readers) {
+        readers_.emplace_back();
+        readers_.back().file_reader = dynamic_cast<FileBatchReader*>(reader.get());
+        readers_.back().reader = std::move(reader);
+    }
+}
+
+ConcatBatchReader::~ConcatBatchReader() {
+    ConcatBatchReader::Close();
+}
+
+Result<std::unique_ptr<ConcatBatchReader>> ConcatBatchReader::CreateLazy(
+    size_t reader_count, ReaderFactory factory,
+    const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+    const std::shared_ptr<Executor>& build_executor) {
+    if (!factory || !build_executor) {
+        return Status::Invalid("lazy reader requires a factory and a build executor");
+    }
+    auto reader = std::make_unique<ConcatBatchReader>(std::vector<std::unique_ptr<BatchReader>>(),
+                                                      arrow_pool);
+    reader->preparation_ = std::make_shared<Preparation>(std::move(factory));
+    reader->build_executor_ = build_executor;
+    reader->reader_count_ = reader_count;
+    reader->FillWindow();
+    for (auto& state : reader->readers_) {
+        PAIMON_RETURN_NOT_OK(reader->ResolveReader(&state, /*wait=*/true));
+    }
+    return reader;
+}
+
+void ConcatBatchReader::FillWindow() {
+    while (next_reader_ < reader_count_ && readers_.size() < kPreparationWindow) {
+        readers_.emplace_back();
+        readers_.back().future =
+            Via(build_executor_.get(),
+                [preparation = preparation_,
+                 index = next_reader_++]() mutable -> Result<std::unique_ptr<BatchReader>> {
+                    // Release the task's creator before Via publishes its result, so draining
+                    // the future also releases the background owner of the creation context.
+                    auto retained = std::move(preparation);
+                    if (retained->cancelled.load()) {
+                        return std::unique_ptr<BatchReader>();
+                    }
+                    return retained->factory(index);
+                });
+    }
+}
+
+Status ConcatBatchReader::ResolveReader(ReaderState* state, bool wait) {
+    if (state->future.valid() &&
+        (wait || state->future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)) {
+        auto result = state->future.get();
+        if (!result.ok()) {
+            state->failure = result.status();
+        } else {
+            state->reader = std::move(result).value();
+            state->file_reader = dynamic_cast<FileBatchReader*>(state->reader.get());
         }
     }
+    return state->failure;
 }
 
 Result<BatchReader::ReadBatch> ConcatBatchReader::NextBatch() {
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
                            NextBatchWithBitmap());
-    PAIMON_ASSIGN_OR_RAISE(
-        BatchReader::ReadBatch batch,
-        ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_));
-    return batch;
+    auto result = ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_);
+    if (!result.ok()) {
+        failure_ = result.status();
+        Close();
+    }
+    return result;
 }
 
 void ConcatBatchReader::Close() {
-    for (; current_ < readers_.size(); current_++) {
-        CloseAndReleaseReader(current_);
+    if (preparation_) {
+        preparation_->cancelled.store(true);
     }
+    for (auto& state : readers_) {
+        try {
+            (void)ResolveReader(&state, /*wait=*/true);
+        } catch (...) {
+            // Construction exceptions captured by Via must not escape destruction or prevent
+            // the remaining tasks from being drained.
+        }
+        CloseAndReleaseReader(&state);
+    }
+    readers_.clear();
+    next_reader_ = reader_count_;
+    preparation_.reset();
 }
 
 std::shared_ptr<Metrics> ConcatBatchReader::GetReaderMetrics() const {
     auto metrics = std::make_shared<MetricsImpl>();
     metrics->Merge(finished_reader_metrics_);
-    metrics->Merge(MetricsImpl::CollectReadMetrics(readers_));
+    for (const auto& state : readers_) {
+        if (state.reader) {
+            metrics->Merge(state.reader->GetReaderMetrics());
+        }
+    }
     return metrics;
 }
 
-void ConcatBatchReader::CloseAndReleaseReader(size_t reader_index) {
-    std::unique_ptr<BatchReader>& reader = readers_[reader_index];
+void ConcatBatchReader::CloseAndReleaseReader(ReaderState* state) {
+    std::unique_ptr<BatchReader>& reader = state->reader;
     if (!reader) {
         return;
     }
     reader->Close();
     finished_reader_metrics_->Merge(reader->GetReaderMetrics());
     reader.reset();
-    file_readers_[reader_index] = nullptr;
+    state->file_reader = nullptr;
 }
 
-void ConcatBatchReader::WarmupRange(size_t idx, size_t count) {
-    const size_t end = std::min(idx + count, file_readers_.size());
-    for (size_t i = idx; i < end; i++) {
-        if (file_readers_[i] != nullptr) {
-            file_readers_[i]->Warmup();
+void ConcatBatchReader::WarmupRange() {
+    const size_t end = std::min(1 + kWarmupLookahead, readers_.size());
+    for (size_t i = 0; i < end; i++) {
+        // Never stall the current file on lookahead. Keep a failed preparation until its turn.
+        (void)ResolveReader(&readers_[i], /*wait=*/false);
+        if (readers_[i].file_reader != nullptr) {
+            readers_[i].file_reader->Warmup();
         }
     }
 }
 
 Result<BatchReader::ReadBatchWithBitmap> ConcatBatchReader::NextBatchWithBitmap() {
-    while (current_ < readers_.size()) {
+    PAIMON_RETURN_NOT_OK(failure_);
+    while (!readers_.empty()) {
+        failure_ = ResolveReader(&readers_.front(), /*wait=*/true);
+        if (!failure_.ok()) {
+            Close();
+            return failure_;
+        }
         // Lookahead: when the file system reads asynchronously, the next file's first read is paid
         // while this file is still being consumed, instead of serially after its EOF.
-        WarmupRange(current_, 1 + kWarmupLookahead);
-        auto& current_reader = readers_[current_];
-        PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap result,
-                               current_reader->NextBatchWithBitmap());
-        if (!BatchReader::IsEofBatch(result)) {
-            // current reader not eof, just return
-            return result;
+        WarmupRange();
+        auto& current_reader = readers_.front().reader;
+        if (current_reader) {
+            auto result = current_reader->NextBatchWithBitmap();
+            if (!result.ok()) {
+                failure_ = result.status();
+                Close();
+                return failure_;
+            }
+            if (!BatchReader::IsEofBatch(result.value())) {
+                return result;
+            }
         }
-        // current meets eof, move to next reader
-        CloseAndReleaseReader(current_);
-        current_++;
+        CloseAndReleaseReader(&readers_.front());
+        readers_.pop_front();
+        FillWindow();
     }
-    // read finish
+    preparation_.reset();
     return BatchReader::MakeEofBatchWithBitmap();
 }
 

@@ -44,6 +44,25 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(PAIMON_BUILD_BENCHMARKS)
+    if(PAIMON_ENABLE_ORC)
+        add_paimon_benchmark(sequential_reader_benchmark
+                             SOURCES
+                             sequential_reader_benchmark.cpp
+                             STATIC_LINK_LIBS
+                             arrow
+                             parquet
+                             paimon_static
+                             ${PAIMON_LOCAL_FILE_SYSTEM_STATIC_LINK_LIBS}
+                             ${PAIMON_PARQUET_FILE_FORMAT_STATIC_LINK_LIBS}
+                             ${PAIMON_BLOB_FILE_FORMAT_STATIC_LINK_LIBS}
+                             ${PAIMON_ORC_FILE_FORMAT_STATIC_LINK_LIBS}
+                             ${PAIMON_AVRO_FILE_FORMAT_STATIC_LINK_LIBS}
+                             test_utils_static
+                             Threads::Threads
+                             ${PAIMON_BENCHMARK_PLATFORM_LINK_LIBS}
+                             ${PAIMON_BENCHMARK_LINK_TOOLCHAIN})
+    endif()
+
     add_paimon_benchmark(read_write_benchmark
                          SOURCES
                          benchmark_helpers.cpp

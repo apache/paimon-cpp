@@ -414,8 +414,8 @@ TEST_P(ReadInteTest, TestAppendSimple) {
         auto split_concat_batch_reader = dynamic_cast<ConcatBatchReader*>(batch_reader.get());
         ASSERT_TRUE(split_concat_batch_reader);
         ASSERT_EQ(1, split_concat_batch_reader->readers_.size());
-        auto complete_batch_reader =
-            dynamic_cast<CompleteRowKindBatchReader*>(split_concat_batch_reader->readers_[0].get());
+        auto complete_batch_reader = dynamic_cast<CompleteRowKindBatchReader*>(
+            split_concat_batch_reader->readers_[0].reader.get());
         ASSERT_TRUE(complete_batch_reader);
         auto file_concat_batch_reader =
             dynamic_cast<ConcatBatchReader*>(complete_batch_reader->reader_.get());

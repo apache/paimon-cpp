@@ -26,7 +26,7 @@
 #include "fmt/format.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
-#include "paimon/common/utils/object_utils.h"
+#include "paimon/common/types/data_field.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/deletion_vector.h"
 #include "paimon/core/global_index/indexed_split_impl.h"
@@ -59,6 +59,9 @@ Status ValidateFileLocalRowRanges(const std::vector<std::shared_ptr<DataFileMeta
         return Status::Invalid("file-local row ranges require exactly one data file");
     }
     const auto& file = data_files.front();
+    if (!file) {
+        return Status::Invalid("raw data file is null");
+    }
     for (const Range& range : local_row_ranges.value()) {
         if (range.from < 0 || range.to < range.from || range.to >= file->row_count ||
             range.to >= std::numeric_limits<int32_t>::max()) {
@@ -149,16 +152,36 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReaderWithPredicate
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DataFilePathFactory> data_file_path_factory,
                            path_factory_->CreateDataFilePathFactory(partition, bucket));
 
+    if (!data_files.empty() && !predicate_provider) {
+        return Status::Invalid("file predicate provider is null");
+    }
+    // Validate the plan before starting any asynchronous file preparation.
+    PAIMON_RETURN_NOT_OK(DataField::ConvertArrowSchemaToDataFields(read_schema).status());
+    for (const auto& file : data_files) {
+        if (!file) {
+            return Status::Invalid("raw data file is null");
+        }
+    }
+    // The returned reader may outlive this SplitRead and all arguments of this call. Keep a
+    // separate creator, including its context, schema manager, file system and pools, alive.
+    auto owned_read = std::make_shared<RawFileSplitRead>(path_factory_, context_, pool_, executor_);
+    ConcatBatchReader::ReaderFactory factory =
+        [owned_read, partition = partition.Copy(pool_.get()), data_files, read_schema,
+         predicate_provider = std::move(predicate_provider), dv_factory, local_row_ranges,
+         data_file_path_factory](size_t index) -> Result<std::unique_ptr<BatchReader>> {
+        PAIMON_ASSIGN_OR_RAISE(
+            std::vector<std::unique_ptr<FileBatchReader>> readers,
+            owned_read->CreateRawFileReadersWithPredicateProvider(
+                partition, {data_files[index]}, read_schema, predicate_provider, dv_factory,
+                local_row_ranges, data_file_path_factory, /*extra_format_options=*/{}));
+        if (readers.empty()) {
+            return std::unique_ptr<BatchReader>();
+        }
+        return std::unique_ptr<BatchReader>(std::move(readers.front()));
+    };
     PAIMON_ASSIGN_OR_RAISE(
-        std::vector<std::unique_ptr<FileBatchReader>> raw_file_readers,
-        CreateRawFileReadersWithPredicateProvider(
-            partition, data_files, read_schema, std::move(predicate_provider), dv_factory,
-            local_row_ranges, data_file_path_factory, /*extra_format_options=*/{}));
-
-    auto raw_readers =
-        ObjectUtils::MoveVector<std::unique_ptr<BatchReader>>(std::move(raw_file_readers));
-    auto concat_batch_reader =
-        std::make_unique<ConcatBatchReader>(std::move(raw_readers), arrow_pool_);
+        std::unique_ptr<ConcatBatchReader> concat_batch_reader,
+        ConcatBatchReader::CreateLazy(data_files.size(), std::move(factory), arrow_pool_));
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<BatchReader> batch_reader,
         ApplyPredicateFilterIfNeeded(

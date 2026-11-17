@@ -71,6 +71,27 @@ Prefetch is enabled when the estimated compressed size of the selected columns
 exceeds the configured threshold; otherwise the reader uses the normal
 single-reader path.
 
+Sequential file preparation
+===========================
+
+Append/raw reads construct a sliding window of at most four data-file reader
+stacks per split, including construction tasks still in flight. The initial
+window is built on the dedicated reader-build executor before ``CreateReader``
+returns. As a file reaches EOF, its reader is closed, its metrics are retained,
+and the next file is submitted for construction while prepared files are read.
+This bounds open streams and format metadata independently of the number of
+files in the split. Per-file metadata and owned creation inputs still scale
+with the split's file count. Merge-on-read keeps its eager input construction.
+
+Plan validation still runs during ``CreateReader``. File-open and reader-build
+errors in the initial window are returned there; errors for later files are
+returned through ``NextBatch`` or ``NextBatchWithBitmap`` when that file is
+reached. These errors are terminal. The returned reader retains its creation
+context, schemas, file system and memory pools, so it may outlive the object
+that created it. Closing or destroying it cancels queued construction, waits
+for already running construction, and releases the prepared readers without
+scheduling the unopened tail.
+
 Warmup
 ======
 
@@ -82,6 +103,10 @@ end. Warmup looks one file ahead of the file being read, and merge-on-read with
 the default ``loser-tree`` sort engine additionally warms the first file of
 every sorted run before merging. It applies to append-table reads and append
 compaction as well, but does not cross split boundaries.
+
+For lazy append/raw readers, warmup uses the next file once its construction
+has completed; reading the current file never waits for lookahead construction.
+The construction window is independent of the warmup level below.
 
 How far the next file is prepared is set with
 ``ReadContextBuilder::SetWarmupLevel()``. Append compaction builds its own read
