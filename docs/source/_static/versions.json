@@ -9,5 +9,10 @@
         "version": "",
         "url": "https://paimon.apache.org/docs/cpp/",
         "preferred": true
+    },
+    {
+        "name": "0.3.0",
+        "version": "0.3",
+        "url": "https://paimon.apache.org/docs/cpp/0.3/"
     }
 ]
