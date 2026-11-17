@@ -1415,7 +1415,8 @@ macro(build_mosaic)
     set(MOSAIC_DYNAMIC_LIB
         "${MOSAIC_LIB_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}paimon_mosaic_ffi${CMAKE_SHARED_LIBRARY_SUFFIX}"
     )
-    set(MOSAIC_CARGO_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/mosaic_ep-cargo")
+    set(MOSAIC_CARGO_TARGET_DIR
+        "${CMAKE_CURRENT_BINARY_DIR}/mosaic_ep-prefix/src/mosaic_ep-build")
     set(MOSAIC_CARGO_DYNAMIC_LIB
         "${MOSAIC_CARGO_TARGET_DIR}/release/${CMAKE_SHARED_LIBRARY_PREFIX}paimon_mosaic_ffi${CMAKE_SHARED_LIBRARY_SUFFIX}"
     )
@@ -1459,7 +1460,8 @@ macro(build_full_text)
     set(FULL_TEXT_DYNAMIC_LIB
         "${FULL_TEXT_LIB_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}paimon_ftindex_ffi${CMAKE_SHARED_LIBRARY_SUFFIX}"
     )
-    set(FULL_TEXT_CARGO_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/full_text_ep-cargo")
+    set(FULL_TEXT_CARGO_TARGET_DIR
+        "${CMAKE_CURRENT_BINARY_DIR}/full_text_ep-prefix/src/full_text_ep-build")
     set(FULL_TEXT_CARGO_DYNAMIC_LIB
         "${FULL_TEXT_CARGO_TARGET_DIR}/release/${CMAKE_SHARED_LIBRARY_PREFIX}paimon_ftindex_ffi${CMAKE_SHARED_LIBRARY_SUFFIX}"
     )
