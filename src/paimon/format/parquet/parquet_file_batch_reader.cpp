@@ -176,7 +176,7 @@ bool IsChunkFullyDictionaryEncoded(const ::parquet::ColumnChunkMetaData& chunk) 
 // the same byte ranges are not buffered twice. Without hints, fall back to the option.
 Result<bool> ResolvePreBufferEnabled(const std::map<std::string, std::string>& options,
                                      const std::optional<ReadHints>& hints) {
-    if (hints.has_value() && hints->prefetch_enabled && hints->read_ahead_cache_enabled) {
+    if (hints.has_value() && hints->read_ahead_cache_enabled) {
         return false;
     }
     return OptionsUtils::GetValueFromMap<bool>(options, PARQUET_READ_ENABLE_PRE_BUFFER, true);

@@ -437,26 +437,27 @@ class PAIMON_EXPORT ReadContextBuilder {
     ///
     /// A read-ahead cache is used to prebuffer data ranges before they are needed,
     /// which can improve read performance by reducing redundant I/O operations.
+    /// It also works without batch prefetch for readers exposing byte ranges through
+    /// PrefetchFileBatchReader, including Parquet and ORC.
     /// @param enabled Whether to enable the read-ahead cache (default: true)
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& SetReadAheadCacheEnabled(bool enabled);
 
-    /// Set the cache configuration for prefetch read operations.
+    /// Set the read-ahead cache configuration for synchronous and prefetch reads.
     ///
     /// @param config The cache configuration to use.
     /// @return Reference to this builder for method chaining.
     ReadContextBuilder& WithCacheConfig(const CacheConfig& config);
 
-    /// Set how far the reader prepares the next file before it is read.
+    /// Set whether the reader fetches the next file's raw bytes before it is read.
     ///
-    /// Warmup overlaps remote-storage latency with the read of the current file. Higher levels hide
-    /// more latency but use more memory, and may warm files that a query never reads (for example
-    /// when a LIMIT stops the scan early).
+    /// Warmup can overlap remote-storage latency with reading the current file. It may fetch bytes
+    /// for files that a query never reads, for example when a LIMIT stops the scan early.
     /// @param level The warmup level to use (default: WarmupLevel::RAW).
     /// @return Reference to this builder for method chaining.
     /// @note WarmupLevel::RAW warms the read-ahead cache, so it has no effect and behaves like
     /// WarmupLevel::NONE when the cache is off (see SetReadAheadCacheEnabled()).
-    /// WarmupLevel::DECODED does not depend on the cache.
+    /// RAW also works with EnablePrefetch(false) and never starts batch decoding.
     /// @see WarmupLevel
     ReadContextBuilder& SetWarmupLevel(WarmupLevel level);
 

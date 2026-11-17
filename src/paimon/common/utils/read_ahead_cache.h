@@ -26,6 +26,7 @@
 #include <future>
 #include <memory>
 #include <optional>
+#include <set>
 #include <shared_mutex>
 #include <utility>
 #include <vector>
@@ -44,6 +45,7 @@ class Metrics;
 class FileBlockCache;
 class Bytes;
 struct PendingFetch;
+struct ReadAheadCacheBudget;
 
 /// Metric names for the read-ahead cache.
 class PAIMON_EXPORT ReadAheadCacheMetrics {
@@ -137,9 +139,9 @@ struct RangeCacheEntry {
 /// ranges from that offset forward until their cumulative size exceeds `pre_buffer_limit`, so a
 /// sequential read runs ahead of the caller instead of fetching one range at a time.
 ///
-/// The cache never evicts: every published range stays cached until
-/// ReleaseBuffers() or Reset(). It is meant to hold the prefetched ranges of
-/// a single data file, whose size is bounded by the reader's scan scope.
+/// By default published ranges stay cached until ReleaseBuffers() or Reset(). Synchronous
+/// readers enable bounded retention: completed, unpinned buffers outside the current fetch
+/// window can be evicted, and the pre-buffer limit also bounds resident range buffers.
 ///
 /// Reads that the prefetched ranges do not cover - a reader reads the metadata
 /// of its file before any range is registered - are served by a FileBlockCache
@@ -201,6 +203,11 @@ class PAIMON_EXPORT ReadAheadCache {
     /// @param from_offset The offset to start fetching from, typically one AddRanges() returned.
     void Warmup(uint64_t from_offset);
 
+    /// Configure while reader tasks are stopped. Synchronous reads bound retained range buffers
+    /// by the pre-buffer limit; the block cache keeps its separate budget. In-flight reads and
+    /// buffers retained by callbacks count against the range budget, including across Reset().
+    void SetBoundedRetention(bool enabled);
+
     /// Collect the counters of the Read() calls, of the block cache and of the IOs into the given
     /// metrics as counters named after `ReadAheadCacheMetrics`. Only reads issued through Read()
     /// are counted as hits, block hits or misses; the fetches the cache dispatches are counted in
@@ -225,6 +232,10 @@ class PAIMON_EXPORT ReadAheadCache {
     /// is closed while its metrics are still being aggregated. The block cache is
     /// released too, as the file is not read again.
     void ReleaseBuffers();
+
+    /// Drain fetches and close the backing stream, preserving counters. The owner must stop
+    /// readers first; use only when this cache owns the file's dedicated stream.
+    Status Close();
 
  private:
     /// Merge coalesced, validated `new_ranges` into the disjoint, offset-ordered ranges_, moving
@@ -255,6 +266,8 @@ class PAIMON_EXPORT ReadAheadCache {
     /// once it is already visible in ranges_, so it waits on the in-flight entry instead of
     /// re-fetching the same bytes.
     void PreBuffer(uint64_t offset);
+    bool MakeRoomLocked(uint64_t size, uint64_t window_begin, uint64_t window_end);
+    std::shared_ptr<Bytes> AllocateRangeBuffer(uint64_t size);
 
     /// Clear the prefetch state, waiting for the fetches still writing into the
     /// entry buffers. Leaves the block cache untouched.
@@ -263,10 +276,17 @@ class PAIMON_EXPORT ReadAheadCache {
     std::shared_ptr<InputStream> stream_;
     CacheConfig config_;
     const uint64_t file_size_;
+    bool bounded_retention_ = false;
+    std::shared_ptr<ReadAheadCacheBudget> budget_;
     // Every registered range, ordered by offset and disjoint (so a matching
     // region is found by binary search). An entry whose buffer is still null is
     // registered but not fetched yet; publishing fills buffer/future in place.
     std::vector<RangeCacheEntry> ranges_;
+    // Stable offsets survive registration merging/reallocation. Only published entries belong
+    // here, so a pinned budget never scans all of a file's unmaterialized ranges.
+    std::set<uint64_t> resident_ranges_;
+    uint64_t eviction_offset_ = 0;
+    bool closed_ = false;
     std::shared_ptr<MemoryPool> memory_pool_;
     mutable std::shared_mutex rw_mutex_;
     // Caches the reads that no registered range covers, or null when the block

@@ -26,6 +26,7 @@
 
 #include "gtest/gtest.h"
 #include "paimon/common/factories/io_hook.h"
+#include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/fs/file_system.h"
@@ -81,6 +82,40 @@ class CacheInputStreamTest : public ::testing::Test {
     std::string content_;
     std::string file_path_;
 };
+
+TEST_F(CacheInputStreamTest, EnableCacheLazilyOnce) {
+    uint32_t factory_calls = 0;
+    auto cache = CreateCache({{2, 5}});
+    CacheInputStream stream(OpenFile(), nullptr, [&]() -> Result<std::shared_ptr<ReadAheadCache>> {
+        ++factory_calls;
+        return cache;
+    });
+    std::string buffer(5, '\0');
+    ASSERT_OK(stream.Read(buffer.data(), 5, 2));
+    ASSERT_EQ(factory_calls, 0);
+    ASSERT_EQ(buffer, "cdefg");
+    ASSERT_OK_AND_ASSIGN(bool enabled, stream.EnableCache());
+    ASSERT_TRUE(enabled);
+    ASSERT_OK_AND_ASSIGN(bool enabled_again, stream.EnableCache());
+    ASSERT_TRUE(enabled_again);
+    ASSERT_EQ(factory_calls, 1);
+    ASSERT_OK(stream.Read(buffer.data(), 5, 2));
+    ASSERT_EQ(buffer, "cdefg");
+    std::shared_ptr<Metrics> metrics = std::make_shared<MetricsImpl>();
+    cache->CollectMetrics(&metrics);
+    ASSERT_OK_AND_ASSIGN(uint64_t io_count, metrics->GetCounter(ReadAheadCacheMetrics::IO_COUNT));
+    ASSERT_EQ(io_count, 1);
+}
+
+TEST_F(CacheInputStreamTest, DisableCacheFactoryAndPropagateFailure) {
+    CacheInputStream stream(OpenFile(), nullptr, []() -> Result<std::shared_ptr<ReadAheadCache>> {
+        return Status::IOError("cache initialization failed");
+    });
+    ASSERT_NOK_WITH_MSG(stream.EnableCache(), "cache initialization failed");
+    stream.ClearCacheFactory();
+    ASSERT_OK_AND_ASSIGN(bool enabled, stream.EnableCache());
+    ASSERT_FALSE(enabled);
+}
 
 // Test proxy methods: Seek, GetPos, Read (sequential), Close, GetUri, Length
 TEST_F(CacheInputStreamTest, TestProxyMethods) {

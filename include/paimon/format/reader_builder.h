@@ -45,8 +45,9 @@ class PAIMON_EXPORT ReaderBuilder {
 
     /// Inject runtime read state from the framework layer, so the format can adapt
     /// its internal behavior accordingly. When present, the hints describe the
-    /// authoritative runtime state of this read; when absent, the format should fall
-    /// back to its own options.
+    /// framework state for this read; shared caching applies to builders returning a
+    /// PrefetchFileBatchReader. Plain readers retain their own buffering. When hints are
+    /// absent, the format should fall back to its own options.
     virtual ReaderBuilder* WithReadHints(const std::optional<ReadHints>& hints) {
         (void)hints;
         return this;

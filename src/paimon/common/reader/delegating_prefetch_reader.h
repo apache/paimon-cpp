@@ -74,11 +74,6 @@ class DelegatingPrefetchReader : public FileBatchReader {
     }
 
     void Warmup() override {
-        // GetReader() bypasses the prefetch layer entirely when prefetching is off, and a
-        // bypassed reader has no background thread to start.
-        if (!prefetch_reader_->NeedPrefetch()) {
-            return;
-        }
         prefetch_reader_->Warmup();
     }
 
@@ -88,7 +83,7 @@ class DelegatingPrefetchReader : public FileBatchReader {
         if (prefetch_reader_->NeedPrefetch()) {
             return prefetch_reader_.get();
         } else {
-            return prefetch_reader_->GetFirstReader();
+            return prefetch_reader_->GetSynchronousReader();
         }
     }
 

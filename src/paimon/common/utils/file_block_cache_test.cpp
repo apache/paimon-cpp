@@ -325,4 +325,44 @@ TEST(TestFileBlockCache, TestBlockBufferKeepsPoolAliveAfterCacheIsGone) {
     ASSERT_TRUE(weak_pool.expired());
 }
 
+TEST(TestFileBlockCache, ReadCachedNeverFetchesAndRequiresCompleteCoverage) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    FileBlockCache cache(OpenTestFile(&dir), sizeof(kContent) - 1, kBlockSize,
+                         /*capacity=*/1024, TestPool());
+    std::string dest(16, 'X');
+    ASSERT_FALSE(cache.ReadCached({10, 16}, dest.data()));
+    ASSERT_EQ(cache.GetCounters().fetches, 0u);
+    AssertServed({10, 8}, "klmnopqr", &cache);
+    ASSERT_FALSE(cache.ReadCached({10, 16}, dest.data()));
+    ASSERT_EQ(dest, std::string(16, 'X'));
+    ASSERT_EQ(cache.GetCounters().fetches, 1u);
+    AssertServed({18, 8}, "stuvwxyz", &cache);
+    ASSERT_TRUE(cache.ReadCached({10, 16}, dest.data()));
+    ASSERT_EQ(dest, "klmnopqrstuvwxyz");
+    ASSERT_EQ(cache.GetCounters().fetches, 2u);
+    ASSERT_EQ(cache.GetCounters().hits, 2u);
+    ASSERT_FALSE(cache.ReadCached({25, 2}, dest.data()));
+}
+
+TEST(TestFileBlockCache, ReadCachedDeclinesPendingAndFailedBlocks) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto gated = std::make_shared<GatedAsyncInputStream>(OpenTestFile(&dir));
+    FileBlockCache cache(gated, sizeof(kContent) - 1, kBlockSize, 1024, TestPool());
+    std::thread read([&]() {
+        std::string result(8, 'X');
+        EXPECT_FALSE(cache.Read({18, 8}, result.data()));
+    });
+    while (gated->AsyncReadCount() == 0) {
+        std::this_thread::yield();
+    }
+    std::string dest(8, 'X');
+    const bool pending_hit = cache.ReadCached({18, 8}, dest.data());
+    gated->FailAll(Status::IOError("injected block failure"));
+    read.join();
+    ASSERT_FALSE(pending_hit);
+    ASSERT_FALSE(cache.ReadCached({18, 8}, dest.data()));
+    ASSERT_EQ(dest, std::string(8, 'X'));
+    ASSERT_EQ(gated->AsyncReadCount(), 1);
+}
+
 }  // namespace paimon::test

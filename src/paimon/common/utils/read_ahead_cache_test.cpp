@@ -19,6 +19,7 @@
 
 #include "paimon/common/utils/read_ahead_cache.h"
 
+#include <atomic>
 #include <chrono>
 #include <fstream>
 #include <limits>
@@ -212,6 +213,146 @@ TEST(TestReadAheadCache, TestNoEvictionKeepsAllRanges) {
     AssertReadEquals({8, 5}, "ijklm", &cache);
     AssertReadEquals({16, 5}, "qrstu", &cache);
     AssertReadEquals({0, 5}, "abcde", &cache);
+}
+
+TEST(TestReadAheadCache, BoundedRetentionLimitsPeakMemoryAndAllowsRewind) {
+    constexpr uint64_t kMiB = 1024 * 1024;
+    std::string content(32 * kMiB, 'a');
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto stream = OpenTestFile(&dir, "bounded", content);
+    auto pool = TestPool();
+    CacheConfig config = TestCacheConfig(kMiB, 0, 2 * kMiB);
+    config.SetBlockSize(0);
+    ReadAheadCache cache(stream, config, content.size(), pool);
+    cache.SetBoundedRetention(true);
+    ASSERT_OK(cache.AddRanges({{0, 16 * kMiB}}));
+    cache.Warmup();
+    ASSERT_EQ(pool->CurrentUsage(), 2 * kMiB);
+    for (uint64_t i = 0; i < 32; ++i) {
+        if (i == 16) {
+            ASSERT_OK(cache.AddRanges({{16 * kMiB, 16 * kMiB}}));
+        }
+        AssertReadEquals({i * kMiB, kMiB}, std::string(kMiB, 'a'), &cache);
+        ASSERT_LE(pool->CurrentUsage(), 2 * kMiB);
+    }
+    AssertReadEquals({0, kMiB}, std::string(kMiB, 'a'), &cache);
+    ASSERT_LE(pool->MaxMemoryUsage(), 2 * kMiB);
+    cache.ReleaseBuffers();
+    ASSERT_EQ(pool->CurrentUsage(), 0);
+}
+
+TEST(TestReadAheadCache, BoundedRetentionCountsPendingAndRetainedCallbacksAcrossReset) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto stream = std::make_shared<GatedAsyncInputStream>(
+        OpenTestFile(&dir, "pending", "abcdefghijklmnopqrstuvwxyz"));
+    auto pool = TestPool();
+    CacheConfig config = TestCacheConfig(4, 0, 8);
+    config.SetBlockSize(0);
+    ReadAheadCache cache(stream, config, 26, pool);
+    cache.SetBoundedRetention(true);
+    ASSERT_OK(cache.AddRanges({{0, 24}}));
+    cache.Warmup();
+    ASSERT_EQ(stream->AsyncReadCount(), 2);
+    AssertReadMiss({8, 4}, &cache);
+    ASSERT_EQ(stream->AsyncReadCount(), 2);
+    stream->ReleaseAllKeepingCallbacks();
+    AssertReadMiss({8, 4}, &cache);
+    ASSERT_EQ(pool->CurrentUsage(), 8);
+    cache.Reset();
+    ASSERT_OK(cache.AddRanges({{12, 4}}));
+    cache.Warmup();
+    ASSERT_EQ(stream->AsyncReadCount(), 2);
+    stream->DropCompletedCallbacks();
+    ASSERT_EQ(pool->CurrentUsage(), 0);
+    cache.Warmup();
+    ASSERT_EQ(stream->AsyncReadCount(), 3);
+    stream->ReleaseAll();
+    AssertReadEquals({12, 4}, "mnop", &cache);
+    ASSERT_LE(pool->MaxMemoryUsage(), 8);
+    cache.ReleaseBuffers();
+    ASSERT_EQ(pool->CurrentUsage(), 0);
+}
+
+TEST(TestReadAheadCache, BoundedRetentionCountsBuffersFromEarlierParallelGeneration) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto stream = std::make_shared<GatedAsyncInputStream>(
+        OpenTestFile(&dir, "mode-switch", "abcdefghijklmnop"));
+    auto pool = TestPool();
+    CacheConfig config = TestCacheConfig(4, 0, 8);
+    config.SetBlockSize(0);
+    ReadAheadCache cache(stream, config, 16, pool);
+    ASSERT_OK(cache.AddRanges({{0, 8}}));
+    cache.Warmup();
+    stream->ReleaseAllKeepingCallbacks();
+    cache.Reset();
+    cache.SetBoundedRetention(true);
+    ASSERT_OK(cache.AddRanges({{8, 4}}));
+    cache.Warmup();
+    ASSERT_EQ(stream->AsyncReadCount(), 2);
+    ASSERT_EQ(pool->CurrentUsage(), 8);
+    stream->DropCompletedCallbacks();
+    cache.Warmup();
+    ASSERT_EQ(stream->AsyncReadCount(), 3);
+    stream->ReleaseAll();
+    AssertReadEquals({8, 4}, "ijkl", &cache);
+    ASSERT_LE(pool->MaxMemoryUsage(), 8);
+}
+
+TEST(TestReadAheadCache, BoundedRetentionDeclinesOversizedReadsWithoutAllocating) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto stream = OpenTestFile(&dir, "oversized", "abcdefghijklmnop");
+    auto pool = TestPool();
+    CacheConfig config = TestCacheConfig(8, 0, 4);
+    config.SetBlockSize(0);
+    ReadAheadCache cache(stream, config, 16, pool);
+    cache.SetBoundedRetention(true);
+    ASSERT_OK(cache.AddRanges({{0, 16}}));
+    cache.Warmup();
+    AssertReadMiss({0, 8}, &cache);
+    ASSERT_EQ(pool->MaxMemoryUsage(), 0);
+    char bytes[8];
+    ASSERT_OK_AND_ASSIGN(int64_t read, stream->Read(bytes, 8, 0));
+    ASSERT_EQ(read, 8);
+    ASSERT_EQ(std::string(bytes, 8), "abcdefgh");
+}
+
+TEST(TestReadAheadCache, BoundedRetentionKeepsFailedFetchErrors) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto stream =
+        std::make_shared<GatedAsyncInputStream>(OpenTestFile(&dir, "failed", "abcdefghijklmnop"));
+    CacheConfig config = TestCacheConfig(4, 0, 4);
+    config.SetBlockSize(0);
+    ReadAheadCache cache(stream, config, 16, TestPool());
+    cache.SetBoundedRetention(true);
+    ASSERT_OK(cache.AddRanges({{0, 16}}));
+    cache.Warmup();
+    stream->FailAll(Status::IOError("failed fetch"));
+    AssertReadMiss({4, 4}, &cache);
+    char buffer[4];
+    ASSERT_NOK_WITH_MSG(cache.Read({0, 4}, buffer), "failed fetch");
+    ASSERT_EQ(stream->AsyncReadCount(), 1);
+}
+
+TEST(TestReadAheadCache, RejectOutOfFileRangesBeforeSplitting) {
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto stream = OpenTestFile(&dir, "bounds", std::string(1024, 'a'));
+    CacheConfig config = TestCacheConfig(1024, 0, 2048);
+    config.SetBlockSize(0);
+    ReadAheadCache cache(stream, config, 1024, TestPool());
+    for (const ByteRange& range :
+         std::vector<ByteRange>{{512, 32 * 1024 * 1024},
+                                {1025, 0},
+                                {1024, 1},
+                                {std::numeric_limits<uint64_t>::max(), 1}}) {
+        ASSERT_NOK_WITH_MSG(cache.AddRanges({{0, 1}, range}), "exceeds file size 1024");
+        ASSERT_TRUE(cache.ranges_.empty());
+    }
+    ASSERT_OK(cache.AddRanges({{1024, 0}, {1023, 1}}));
+    ASSERT_EQ(cache.ranges_.size(), 1);
+    ReadAheadCache unknown(stream, TestCacheConfig(1024 * 1024, 0, 8), 0, TestPool());
+    ASSERT_OK(unknown.AddRanges({{512, 32 * 1024 * 1024}}));
+    ASSERT_NOK_WITH_MSG(unknown.AddRanges({{1, std::numeric_limits<uint64_t>::max()}}),
+                        "int64 bound");
 }
 
 // Test that Read() hits and misses are recorded in the cache metrics.
@@ -939,6 +1080,93 @@ TEST(TestReadAheadCache, TestBlockCacheDisabled) {
     GetBlockCounters(unknown_size_cache.get(), &blocks);
     ASSERT_EQ(blocks.fetches, 0u);
     ASSERT_EQ(blocks.hits, 0u);
+}
+
+TEST(TestReadAheadCache, WarmupReusesCompletedBlocksAcrossSchemaReset) {
+    CacheConfig config = TestCacheConfig(16, 0, 32);
+    config.SetBlockSize(8);
+    config.SetBlockCacheLimit(32);
+    auto cache = CreateTestFileAndCache("data_file", "abcdefghijklmnopqrstuvwxyz", config, {}, 26);
+    AssertReadEquals({10, 8}, "klmnopqr", cache.get());
+    AssertReadEquals({18, 8}, "stuvwxyz", cache.get());
+    cache->Reset();
+    ASSERT_OK(cache->AddRanges({{10, 16}}));
+    cache->Warmup();
+    ASSERT_EQ(CounterOf(ReadAheadCacheMetrics::IO_COUNT, cache.get()), 0u);
+    AssertReadEquals({10, 16}, "klmnopqrstuvwxyz", cache.get());
+    ASSERT_EQ(CounterOf(ReadAheadCacheMetrics::IO_COUNT, cache.get()), 0u);
+}
+
+TEST(TestReadAheadCache, PinnedBudgetOnlyTracksResidentEvictionCandidates) {
+    constexpr uint64_t kRangeCount = 64000;
+    CacheConfig config = TestCacheConfig(4, 0, 4);
+    config.SetBlockCacheLimit(0);
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto gated = std::make_shared<GatedAsyncInputStream>(
+        OpenTestFile(&dir, "data_file", std::string(kRangeCount * 4, 'x')));
+    ReadAheadCache cache(gated, config, kRangeCount * 4, TestPool());
+    cache.SetBoundedRetention(true);
+    ASSERT_OK(cache.AddRanges({{0, kRangeCount * 4}}));
+    cache.Warmup();
+    gated->ReleaseAllKeepingCallbacks();
+    ASSERT_EQ(cache.ranges_.size(), kRangeCount);
+    ASSERT_EQ(cache.resident_ranges_.size(), 1u);
+    for (uint64_t i = 1; i <= 256; ++i) {
+        AssertReadMiss({i * 4, 4}, &cache);
+    }
+    ASSERT_EQ(gated->AsyncReadCount(), 1);
+    ASSERT_EQ(cache.resident_ranges_.size(), 1u);
+    // Registration can move entries, but must preserve the resident candidates.
+    ASSERT_OK(cache.AddRanges({{0, 8}}));
+    gated->DropCompletedCallbacks();
+    cache.Warmup(4);
+    ASSERT_EQ(gated->AsyncReadCount(), 2);
+    ASSERT_EQ(cache.resident_ranges_, (std::set<uint64_t>{4}));
+    gated->ReleaseAll();
+    AssertReadEquals({4, 4}, "xxxx", &cache);
+    cache.Reset();
+    ASSERT_TRUE(cache.resident_ranges_.empty());
+}
+
+class CloseObservedGatedStream : public GatedAsyncInputStream {
+ public:
+    explicit CloseObservedGatedStream(const std::shared_ptr<InputStream>& inner)
+        : GatedAsyncInputStream(inner) {}
+    Status Close() override {
+        ++close_count;
+        return GatedAsyncInputStream::Close();
+    }
+    std::atomic<uint32_t> close_count{0};
+};
+
+TEST(TestReadAheadCache, CloseDrainsFetchesBeforeClosingStreamAndPreservesMetrics) {
+    CacheConfig config = TestCacheConfig(4, 0, 4);
+    std::unique_ptr<UniqueTestDirectory> dir;
+    auto gated =
+        std::make_shared<CloseObservedGatedStream>(OpenTestFile(&dir, "data_file", "abcdefgh"));
+    ReadAheadCache cache(gated, config, 0, TestPool());
+    ASSERT_OK(cache.AddRanges({{0, 4}}));
+    cache.Warmup();
+    ASSERT_EQ(gated->AsyncReadCount(), 1);
+    auto closed = std::async(std::launch::async, [&]() { return cache.Close(); });
+    // ReleasePrefetchBuffers detaches the generation before waiting on its fetches.
+    // Observe that transition instead of relying on a sleep to start Close().
+    while (true) {
+        std::shared_lock<std::shared_mutex> lock(cache.rw_mutex_);
+        if (cache.ranges_.empty()) {
+            break;
+        }
+        lock.unlock();
+        std::this_thread::yield();
+    }
+    const uint32_t closed_before_completion = gated->close_count.load();
+    gated->ReleaseAll();
+    ASSERT_OK(closed.get());
+    ASSERT_EQ(closed_before_completion, 0u);
+    ASSERT_EQ(gated->close_count, 1u);
+    ASSERT_EQ(CounterOf(ReadAheadCacheMetrics::IO_BYTES, &cache), 4u);
+    ASSERT_OK(cache.Close());
+    ASSERT_EQ(gated->close_count, 1u);
 }
 
 }  // namespace paimon::test

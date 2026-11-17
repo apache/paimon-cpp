@@ -35,6 +35,7 @@
 #include "fmt/format.h"
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/predicate/predicate_validator.h"
+#include "paimon/common/reader/file_read_ahead.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
@@ -46,6 +47,12 @@ namespace paimon {
 
 Result<std::unique_ptr<LateMaterializingFileBatchReader>> LateMaterializingFileBatchReader::Create(
     std::unique_ptr<FileBatchReader> inner, const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    return Create(std::move(inner), arrow_pool, nullptr);
+}
+
+Result<std::unique_ptr<LateMaterializingFileBatchReader>> LateMaterializingFileBatchReader::Create(
+    std::unique_ptr<FileBatchReader> inner, const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+    const std::shared_ptr<FileReadAhead>& read_ahead) {
     if (arrow_pool == nullptr) {
         return Status::Invalid("arrow pool could not be nullptr.");
     }
@@ -53,8 +60,9 @@ Result<std::unique_ptr<LateMaterializingFileBatchReader>> LateMaterializingFileB
         return Status::Invalid("inner could not be nullptr.");
     }
     auto* prefetch_inner = dynamic_cast<PrefetchFileBatchReader*>(inner.get());
-    auto reader = std::unique_ptr<LateMaterializingFileBatchReader>(
-        new LateMaterializingFileBatchReader(std::move(inner), prefetch_inner, arrow_pool));
+    auto reader =
+        std::unique_ptr<LateMaterializingFileBatchReader>(new LateMaterializingFileBatchReader(
+            std::move(inner), prefetch_inner, arrow_pool, read_ahead));
     return reader;
 }
 
@@ -73,7 +81,7 @@ Result<FileBatchReader::ReadBatch> LateMaterializingFileBatchReader::NextBatch()
             PAIMON_RETURN_NOT_OK(
                 SetInnerReadSchema(payload_schema_, /*predicate=*/nullptr, matched_bitmap_));
             state_ = kRunning;
-            PAIMON_RETURN_NOT_OK(ReportPayloadPreBufferRanges());
+            PAIMON_RETURN_NOT_OK(PreparePayloadRanges());
         }
     }
 
@@ -263,23 +271,11 @@ Status LateMaterializingFileBatchReader::SetInnerReadSchema(
     return Status::OK();
 }
 
-Status LateMaterializingFileBatchReader::ReportPayloadPreBufferRanges() {
-    // The payload byte ranges only exist now: setting the payload schema refined the inner
-    // reader's target row groups down to the pages holding the matched rows. Reporting them
-    // here lets the shared read-ahead cache fetch them while this pass is still assembling
-    // its first batch, instead of every payload read waiting for its own IO.
-    if (!pre_buffer_range_callback_ || prefetch_inner_ == nullptr) {
+Status LateMaterializingFileBatchReader::PreparePayloadRanges() {
+    if (!read_ahead_ || prefetch_inner_ == nullptr) {
         return Status::OK();
     }
-    // The error is propagated rather than swallowed: the ranges come from the file metadata, so a
-    // failure here means the reads about to follow would fail too.
-    using ByteRanges = std::vector<std::pair<uint64_t, uint64_t>>;
-    PAIMON_ASSIGN_OR_RAISE(ByteRanges ranges, prefetch_inner_->PreBufferRange());
-    if (ranges.empty()) {
-        return Status::OK();
-    }
-    pre_buffer_range_callback_(std::move(ranges));
-    return Status::OK();
+    return read_ahead_->PrepareRanges(prefetch_inner_);
 }
 
 Status LateMaterializingFileBatchReader::SetReadSchema(

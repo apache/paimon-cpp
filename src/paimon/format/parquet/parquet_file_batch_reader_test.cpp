@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <functional>
 #include <future>
 #include <iostream>
@@ -51,6 +52,8 @@
 #include "paimon/common/io/cache_input_stream.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/predicate/equal.h"
+#include "paimon/common/reader/data_file_reader_factory.h"
+#include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
@@ -60,6 +63,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/read_ahead_cache.h"
 #include "paimon/defs.h"
+#include "paimon/executor.h"
 #include "paimon/format/parquet/parquet_field_id_converter.h"
 #include "paimon/format/parquet/parquet_format_defs.h"
 #include "paimon/format/parquet/parquet_format_writer.h"
@@ -1212,6 +1216,46 @@ TEST_F(ParquetFileBatchReaderTest, TestCreateArrowReaderProperties) {
     }
 }
 
+TEST_F(ParquetFileBatchReaderTest, BuilderUsesActualCacheBeforeChoosingPreBuffer) {
+    WriteArray(file_path_, struct_array_, schema_, /*write_batch_size=*/10,
+               /*enable_dictionary=*/false, /*max_row_group_length=*/10);
+    for (bool cache_enabled : {false, true}) {
+        SCOPED_TRACE(cache_enabled);
+        ParquetReaderBuilder builder({{PARQUET_READ_ENABLE_PRE_BUFFER, "true"}}, batch_size_);
+        ReadHints hints;
+        hints.read_ahead_cache_enabled = !cache_enabled;
+        builder.WithReadHints(hints);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<InputStream> input, fs_->Open(file_path_));
+        ASSERT_OK_AND_ASSIGN(int64_t file_size, input->Length());
+        uint32_t factory_calls = 0;
+        CacheInputStream::CacheFactory cache_factory;
+        if (cache_enabled) {
+            cache_factory = [&]() -> Result<std::shared_ptr<ReadAheadCache>> {
+                ++factory_calls;
+                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> cache_stream,
+                                       fs_->Open(file_path_));
+                return std::make_shared<ReadAheadCache>(cache_stream, CacheConfig(), file_size,
+                                                        GetDefaultPool());
+            };
+        }
+        auto stream =
+            std::make_shared<CacheInputStream>(std::move(input), nullptr, std::move(cache_factory));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, builder.Build(stream));
+        auto* parquet_reader = dynamic_cast<ParquetFileBatchReader*>(reader.get());
+        ASSERT_NE(parquet_reader, nullptr);
+        ASSERT_EQ(parquet_reader->reader_->GetFileReader()->properties().pre_buffer(),
+                  !cache_enabled);
+        ASSERT_EQ(factory_calls, cache_enabled ? 1 : 0);
+        ASSERT_EQ(builder.hints_->read_ahead_cache_enabled, hints.read_ahead_cache_enabled);
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+        auto actual_result = arrow::ImportArray(batch.first.get(), batch.second.get());
+        ASSERT_TRUE(actual_result.ok()) << actual_result.status().ToString();
+        std::shared_ptr<arrow::Array> actual = actual_result.ValueOrDie();
+        ASSERT_TRUE(actual->Equals(struct_array_));
+        reader->Close();
+    }
+}
+
 TEST_F(ParquetFileBatchReaderTest, TestPreBufferReadHints) {
     const int32_t batch_size = 1024;
     // When both framework prefetch and the shared read-ahead cache are active, parquet's own
@@ -1239,7 +1283,7 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferReadHints) {
                                                    pool_, options, batch_size, hints));
         ASSERT_EQ(arrow_props.pre_buffer(), true);
     }
-    // Only cache enabled (prefetch disabled): fall back to the option, which defaults to true.
+    // The shared cache also replaces parquet pre-buffering without batch prefetch.
     {
         std::map<std::string, std::string> options;
         ReadHints hints;
@@ -1247,7 +1291,10 @@ TEST_F(ParquetFileBatchReaderTest, TestPreBufferReadHints) {
         hints.read_ahead_cache_enabled = true;
         ASSERT_OK_AND_ASSIGN(auto arrow_props, ParquetFileBatchReader::CreateArrowReaderProperties(
                                                    pool_, options, batch_size, hints));
-        ASSERT_EQ(arrow_props.pre_buffer(), true);
+        ASSERT_EQ(arrow_props.pre_buffer(), false);
+        ASSERT_OK_AND_ASSIGN(auto reader_props,
+                             ParquetFileBatchReader::CreateReaderProperties(pool_, options, hints));
+        ASSERT_EQ(reader_props.is_buffered_stream_enabled(), false);
     }
     // Neither active and the option explicitly disabled: honor the option.
     {
@@ -2570,6 +2617,171 @@ TEST_F(ParquetFileBatchReaderTest, TestBlockCacheSharesTailReadsAcrossReaders) {
     ASSERT_OK_AND_ASSIGN(uint64_t block_hits,
                          metrics->GetCounter(ReadAheadCacheMetrics::BLOCK_HITS));
     ASSERT_GT(block_hits, 1u);
+}
+
+class PhysicalCountingStream : public InputStream {
+ public:
+    PhysicalCountingStream(std::unique_ptr<InputStream> stream,
+                           const std::shared_ptr<std::atomic<uint64_t>>& bytes)
+        : stream_(std::move(stream)), bytes_(bytes) {}
+    Status Seek(int64_t offset, SeekOrigin origin) override {
+        return stream_->Seek(offset, origin);
+    }
+    Result<int64_t> GetPos() const override {
+        return stream_->GetPos();
+    }
+    Result<int64_t> Read(char* buffer, int64_t size) override {
+        PAIMON_ASSIGN_OR_RAISE(int64_t read, stream_->Read(buffer, size));
+        *bytes_ += read;
+        return read;
+    }
+    Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
+        PAIMON_ASSIGN_OR_RAISE(int64_t read, stream_->Read(buffer, size, offset));
+        *bytes_ += read;
+        return read;
+    }
+    void ReadAsync(char* buffer, int64_t size, int64_t offset,
+                   std::function<void(Status)>&& callback) override {
+        stream_->ReadAsync(buffer, size, offset,
+                           [bytes = bytes_, size, callback = std::move(callback)](Status status) {
+                               if (status.ok()) {
+                                   *bytes += size;
+                               }
+                               callback(status);
+                           });
+    }
+    Result<std::string> GetUri() const override {
+        return stream_->GetUri();
+    }
+    Result<int64_t> Length() const override {
+        return stream_->Length();
+    }
+    Status Close() override {
+        return stream_->Close();
+    }
+
+ private:
+    std::unique_ptr<InputStream> stream_;
+    std::shared_ptr<std::atomic<uint64_t>> bytes_;
+};
+
+class PhysicalCountingFileSystem : public LocalFileSystem {
+ public:
+    using LocalFileSystem::Open;
+    Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> stream, LocalFileSystem::Open(path));
+        return std::make_unique<PhysicalCountingStream>(std::move(stream), bytes);
+    }
+    std::shared_ptr<std::atomic<uint64_t>> bytes = std::make_shared<std::atomic<uint64_t>>(0);
+};
+
+TEST_F(ParquetFileBatchReaderTest, FrameworkWarmupReusesBlocksAndCountsPhysicalBytesOnce) {
+    // Six rows in one row group exceed the adaptive queue capacity with batch size one.
+    WriteArray(file_path_, struct_array_, schema_, 10, false, 10);
+    const std::string& path = file_path_;
+    for (bool block_cache : {false, true}) {
+        for (bool io_metrics : {false, true}) {
+            for (int32_t mode : {0, 1, 2}) {
+                SCOPED_TRACE(std::to_string(mode) + " block_cache=" + std::to_string(block_cache) +
+                             " io_metrics=" + std::to_string(io_metrics));
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(2));
+                auto fs = std::make_shared<PhysicalCountingFileSystem>();
+                auto pool = GetDefaultPool();
+                DataFileReadOptions options;
+                options.read_batch_size = mode == 2 ? 1 : 1024;
+                options.prefetch_io_metrics_enabled = io_metrics;
+                options.prefetch_enabled = mode != 0;
+                options.prefetch_max_parallel_num = 2;
+                options.prefetch_batch_count = mode == 2 ? 2 : 6;
+                options.adaptive_prefetch_strategy = mode == 2;
+                if (!block_cache) {
+                    options.cache_config.SetBlockCacheLimit(0);
+                }
+                ASSERT_OK_AND_ASSIGN(FileStatus status, fs->GetFileStatus(path));
+                ASSERT_OK_AND_ASSIGN(
+                    std::unique_ptr<ReaderBuilder> builder,
+                    DataFileReaderFactory::CreateReaderBuilder("parquet", {}, {}, options, pool));
+                ASSERT_OK_AND_ASSIGN(
+                    std::unique_ptr<FileBatchReader> reader,
+                    DataFileReaderFactory::Open("parquet", path, status.GetLen(), builder.get(),
+                                                options, fs, executor, pool, GetArrowPool(pool)));
+                ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> schema, reader->GetFileSchema());
+                ASSERT_OK(reader->SetReadSchema(schema.get(), nullptr, std::nullopt));
+                ASSERT_EQ(reader->GetReaderMetrics()->GetGauge(PrefetchMetrics::ENABLED).value(),
+                          mode == 1 ? 1.0 : 0.0);
+                const uint64_t before = fs->bytes->load();
+                ASSERT_EQ(reader->GetReaderMetrics()
+                              ->GetCounter(ParquetMetrics::READ_STORAGE_BYTES)
+                              .value(),
+                          before);
+                reader->Warmup();
+                const uint64_t warmed = fs->bytes->load();
+                if (block_cache) {
+                    ASSERT_EQ(warmed, before);
+                } else {
+                    ASSERT_GT(warmed, before);
+                }
+                ASSERT_EQ(reader->GetReaderMetrics()
+                              ->GetCounter(ParquetMetrics::READ_STORAGE_BYTES)
+                              .value(),
+                          warmed);
+                ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch,
+                                     reader->NextBatchWithBitmap());
+                ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+                ReaderUtils::ReleaseReadBatch(std::move(batch.first));
+                ASSERT_EQ(fs->bytes->load(), warmed);
+                ASSERT_EQ(reader->GetReaderMetrics()
+                              ->GetCounter(ParquetMetrics::READ_STORAGE_BYTES)
+                              .value(),
+                          warmed);
+                reader->Close();
+                ASSERT_EQ(reader->GetReaderMetrics()
+                              ->GetCounter(ParquetMetrics::READ_STORAGE_BYTES)
+                              .value(),
+                          warmed);
+            }
+        }
+    }
+}
+
+TEST_F(ParquetFileBatchReaderTest, ClosedSynchronousReaderReleasesAllFileDescriptors) {
+    if (!std::filesystem::exists("/proc/self/fd")) {
+        GTEST_SKIP() << "file-descriptor inspection requires procfs";
+    }
+    WriteArray(file_path_, struct_array_, schema_, 10, false, 10);
+    const auto path = std::filesystem::canonical(file_path_);
+    auto descriptors = [&]() {
+        size_t count = 0;
+        for (const auto& fd : std::filesystem::directory_iterator("/proc/self/fd")) {
+            std::error_code error;
+            if (std::filesystem::read_symlink(fd.path(), error) == path && !error) {
+                ++count;
+            }
+        }
+        return count;
+    };
+    DataFileReadOptions options;
+    options.read_batch_size = 10;
+    auto pool = GetDefaultPool();
+    ASSERT_OK_AND_ASSIGN(FileStatus status, fs_->GetFileStatus(file_path_));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ReaderBuilder> builder,
+        DataFileReaderFactory::CreateReaderBuilder("parquet", {}, {}, options, pool));
+    const size_t before = descriptors();
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileBatchReader> reader,
+        DataFileReaderFactory::Open("parquet", file_path_, status.GetLen(), builder.get(), options,
+                                    fs_, nullptr, pool, GetArrowPool(pool)));
+    ASSERT_EQ(descriptors(), before + 2);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> schema, reader->GetFileSchema());
+    ASSERT_OK(reader->SetReadSchema(schema.get(), nullptr, std::nullopt));
+    reader->Warmup();
+    const auto metrics = reader->GetReaderMetrics()->GetAllCounters();
+    reader->Close();
+    ASSERT_EQ(descriptors(), before);
+    ASSERT_EQ(reader->GetReaderMetrics()->GetAllCounters(), metrics);
+    reader->Close();
+    ASSERT_EQ(descriptors(), before);
 }
 
 }  // namespace paimon::parquet::test
