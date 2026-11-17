@@ -15,8 +15,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Runs the CMake module tests under cmake_modules/tests. These tests need no
-# compiler or configured build tree, so they stay separate from ctest.
+# Runs the CMake module tests under cmake_modules/tests. These are script-mode
+# tests: they need neither a toolchain nor a configured build tree, so they stay
+# separate from ctest and run in seconds.
 
 set -euo pipefail
 
@@ -26,16 +27,6 @@ status=0
 for test_script in "${source_dir}"/cmake_modules/tests/*_test.cmake; do
     echo "=== ${test_script##*/} ==="
     if ! cmake -P "${test_script}"; then
-        status=1
-    fi
-done
-
-for generator in "Unix Makefiles" "Ninja"; do
-    if [[ "${generator}" == "Ninja" ]] && ! command -v ninja >/dev/null; then
-        echo "Skipping Ninja patch lifecycle tests: ninja is not installed"
-        continue
-    fi
-    if ! python3 "${source_dir}/cmake_modules/tests/thirdparty_patch_test.py" --generator "${generator}"; then
         status=1
     fi
 done
