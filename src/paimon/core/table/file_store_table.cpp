@@ -592,7 +592,8 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::CreateTableRead(
         return std::make_unique<AppendOnlyTableRead>(path_factory, internal_context, memory_pool,
                                                      executor);
     }
-    return KeyValueTableRead::Create(path_factory, internal_context, memory_pool, executor);
+    return KeyValueTableRead::Create(path_factory, internal_context, /*force_keep_delete=*/false,
+                                     memory_pool, executor);
 }
 
 Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(

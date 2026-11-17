@@ -247,6 +247,11 @@ struct PAIMON_EXPORT Options {
     /// The default value is 1024.
     static const char READ_BATCH_SIZE[];
 
+    /// "read.preparation-window" - C++-specific limit on file readers per append/raw split,
+    /// including readers under construction. Accepts positive 32-bit integers and defaults to 4.
+    /// Build parallelism, batch prefetch and warmup are configured independently.
+    static const char READ_PREPARATION_WINDOW[];
+
     /// "write.batch-size" - Write batch size for any file format if it supports.
     /// The default value is 1024.
     static const char WRITE_BATCH_SIZE[];

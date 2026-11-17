@@ -37,12 +37,13 @@ class FileStorePathFactory;
 class InternalReadContext;
 class MemoryPool;
 class RealtimeSplit;
+struct RealtimePartitionBucketView;
 
 class KeyValueTableRead : public TableRead {
  public:
-    static Result<std::unique_ptr<TableRead>> Create(
+    static Result<std::unique_ptr<KeyValueTableRead>> Create(
         const std::shared_ptr<FileStorePathFactory>& path_factory,
-        const std::shared_ptr<InternalReadContext>& context,
+        const std::shared_ptr<InternalReadContext>& context, bool force_keep_delete,
         const std::shared_ptr<MemoryPool>& memory_pool, const std::shared_ptr<Executor>& executor);
 
     Result<std::unique_ptr<BatchReader>> CreateReader(const std::shared_ptr<Split>& split) override;
@@ -60,17 +61,23 @@ class KeyValueTableRead : public TableRead {
                       const std::shared_ptr<FileStorePathFactory>& path_factory,
                       const std::shared_ptr<InternalReadContext>& context,
                       const std::shared_ptr<arrow::Schema>& realtime_primary_key_logical_schema,
+                      bool force_keep_delete, const std::shared_ptr<MemoryPool>& memory_pool,
                       const std::shared_ptr<Executor>& executor);
 
     Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
-        const std::shared_ptr<RealtimeSplit>& realtime_split, bool release_ticket);
+        const std::shared_ptr<RealtimeSplit>& realtime_split);
+
+    Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
+        const std::shared_ptr<RealtimeSplit>& realtime_split,
+        const RealtimePartitionBucketView& memory);
 
     std::vector<std::unique_ptr<SplitRead>> split_reads_;
     std::shared_ptr<FileStorePathFactory> path_factory_;
     std::shared_ptr<InternalReadContext> context_;
     std::shared_ptr<arrow::Schema> realtime_primary_key_logical_schema_;
+    bool force_keep_delete_;
+    std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<Executor> executor_;
-    bool force_keep_delete_ = false;
 };
 
 }  // namespace paimon

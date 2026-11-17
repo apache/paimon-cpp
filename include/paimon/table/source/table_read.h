@@ -48,13 +48,12 @@ class PAIMON_EXPORT TableRead {
     /// @return A Result containing a unique pointer to the `TableRead` instance.
     static Result<std::unique_ptr<TableRead>> Create(std::unique_ptr<ReadContext> context);
 
-    /// Creates a `BatchReader` instance for reading data.
+    /// The append-only and primary-key implementations open one split at a time in input order.
+    /// Their readers may outlive this TableRead. Creation rejects null splits and validates
+    /// real-time views before consuming any tickets. The reader retains those views and returns
+    /// a terminal error if a split fails to open when reached.
     ///
-    /// This method creates a BatchReader that will be responsible for reading data from the
-    /// provided splits.
-    ///
-    /// @param splits A vector of shared pointers to `Split` instances representing the
-    ///                    data to be read.
+    /// @param splits The splits to read.
     /// @return A Result containing a unique pointer to the `BatchReader` instance.
     /// @note `BatchReader`s created by the same `TableRead` are not thread-safe for
     /// concurrent reading.
