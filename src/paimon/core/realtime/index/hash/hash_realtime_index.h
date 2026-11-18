@@ -62,6 +62,9 @@ class HashRealtimeIndex final : public RealtimeIndex,
      public:
         Reader(std::shared_ptr<const HashRealtimeIndex> index, const OffsetRange& offset_range);
 
+        std::optional<double> EstimateSelectivity(
+            const std::shared_ptr<LeafPredicate>& predicate) const override;
+
         Result<std::optional<RoaringBitmap64>> VisitEqual(const Literal& literal) override;
         Result<std::optional<RoaringBitmap64>> VisitIn(
             const std::vector<Literal>& literals) override;

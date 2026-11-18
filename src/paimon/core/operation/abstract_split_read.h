@@ -88,6 +88,8 @@ class AbstractSplitRead : public SplitRead {
  protected:
     virtual Result<std::unique_ptr<FileBatchReader>> CreatePreciseFileIndexReader(
         const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
+        const std::shared_ptr<arrow::Schema>& read_schema,
+        const std::shared_ptr<Predicate>& predicate,
         const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& path_factory,
@@ -105,8 +107,8 @@ class AbstractSplitRead : public SplitRead {
                       const std::shared_ptr<MemoryPool>& memory_pool,
                       const std::shared_ptr<Executor>& executor);
 
-    /// Creates raw readers using each file's predicate for pushdown. The provider is called once
-    /// per file and may be called concurrently.
+    /// Creates raw readers using each file's predicate for pushdown or precise evaluation before
+    /// root search. The provider is called once per file and may be called concurrently.
     Result<std::vector<std::unique_ptr<FileBatchReader>>> CreateRawFileReadersWithPredicateProvider(
         const BinaryRow& partition, const std::vector<std::shared_ptr<DataFileMeta>>& data_files,
         const std::shared_ptr<arrow::Schema>& read_schema, PredicateProvider predicate_provider,
