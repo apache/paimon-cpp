@@ -8990,8 +8990,8 @@ TEST_F(RealtimeWriteInteTest, TestReopenRealtimeContextAfterRollback) {
     ASSERT_OK(writer->Close());
 }
 
-// TODO(xinyu.lxy): Refactor this concurrent test and re-enable it.
-TEST_F(RealtimeWriteInteTest, DISABLED_TestConcurrentWritePrepareCommitReadAndRefresh) {
+// TODO(xinyu.lxy): Refactor this concurrent test.
+TEST_F(RealtimeWriteInteTest, TestConcurrentWritePrepareCommitReadAndRefresh) {
     auto run_test = [this](bool primary_key) {
         dir_ = UniqueTestDirectory::Create("local");
         ASSERT_NE(nullptr, dir_);

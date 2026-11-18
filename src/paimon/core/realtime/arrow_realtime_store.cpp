@@ -648,7 +648,8 @@ class ArrowRealtimeStore::AppendQueryBatchReader : public BatchReader {
             const StoredBatch& stored = memory_segment->GetBatches()[batch_index];
             row_count = stored.data->length();
             statistics = &stored.statistics;
-            source = stored.data;
+            // Readers share buffers, but need separate wrappers for Arrow's lazy field caches.
+            source = std::make_shared<arrow::StructArray>(stored.data->data());
             batch_range = stored.offset_range;
         } else if (spilled_segment) {
             const SpilledBatch& stored = spilled_segment->GetBatches()[batch_index];
@@ -965,12 +966,13 @@ Result<bool> ArrowRealtimeStore::MayMatchStatistics(
         return true;
     }
     const BatchStatistics& batch_statistics = statistics.value();
-    std::shared_ptr<InternalRow> min_row = std::make_shared<ColumnarRow>(
-        batch_statistics.min_values, batch_statistics.min_values->fields(), memory_pool,
-        /*row_id=*/0);
-    std::shared_ptr<InternalRow> max_row = std::make_shared<ColumnarRow>(
-        batch_statistics.max_values, batch_statistics.max_values->fields(), memory_pool,
-        /*row_id=*/0);
+    // Keep Arrow's lazy field caches local while sharing the statistics buffers.
+    auto min_values = std::make_shared<arrow::StructArray>(batch_statistics.min_values->data());
+    auto max_values = std::make_shared<arrow::StructArray>(batch_statistics.max_values->data());
+    std::shared_ptr<InternalRow> min_row =
+        std::make_shared<ColumnarRow>(min_values, min_values->fields(), memory_pool, /*row_id=*/0);
+    std::shared_ptr<InternalRow> max_row =
+        std::make_shared<ColumnarRow>(max_values, max_values->fields(), memory_pool, /*row_id=*/0);
     ProjectedRow projected_min(min_row, statistics_mapping);
     ProjectedRow projected_max(max_row, statistics_mapping);
     std::shared_ptr<InternalArray> null_counts =

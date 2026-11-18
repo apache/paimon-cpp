@@ -114,6 +114,7 @@ class BitmapSelectingRealtimeStore final : public RealtimeStore {
                 if (!batch.second.IsEmpty()) {
                     return batch;
                 }
+                ReaderUtils::ReleaseReadBatch(std::move(batch.first));
             }
         }
         std::shared_ptr<Metrics> GetReaderMetrics() const override {

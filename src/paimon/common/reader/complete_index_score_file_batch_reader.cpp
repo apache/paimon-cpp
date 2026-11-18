@@ -75,6 +75,7 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreFileBatchReader::Next
     const size_t score_count = batch_with_bitmap.second.Cardinality();
     for (const auto& [field_name, scores] : scores_) {
         if (score_cursor_ > scores.size() || score_count > scores.size() - score_cursor_) {
+            ReaderUtils::ReleaseReadBatch(std::move(batch_with_bitmap.first));
             return Status::Invalid(
                 fmt::format("Index score count {} for field '{}' is smaller than rows read {}",
                             scores.size(), field_name, score_cursor_ + score_count));
