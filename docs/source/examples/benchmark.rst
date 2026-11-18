@@ -165,6 +165,14 @@ visible in both directions. Read cases additionally report ``rows_read``,
 ``batches``, and ``row_groups`` / ``row_groups_after_filter`` from the reader's
 own metrics.
 
+Read cases also report ``first_batch_ns``, the mean time from opening the file
+through returning the first batch, including metadata, schema setup and
+pre-buffering. ``peak_memory_bytes`` is the maximum tracked Arrow allocation
+across iterations, including pre-buffered data and decoder state. It excludes
+fixture generation and allocations outside the reader's Arrow pool, so it is
+not a process-wide memory measurement. Returned batches are released as they
+are consumed.
+
 Compare filtered cases on ``ns_per_input_row`` and ``bytes_per_input_row``, not
 ``ns_per_row`` and ``bytes_per_row``. The latter pair divides by the rows a case
 actually materialized, so pruning shrinks numerator and denominator together and
@@ -205,6 +213,16 @@ Read batch size sweep, repeated for a stable comparison::
 
    paimon-parquet-format-benchmark \
        --benchmark_filter=BM_ParquetRead_BatchSize \
+       --benchmark_repetitions=5 \
+       --benchmark_report_aggregates_only=true
+
+Page-filtered decoding with 64, 1024 and 4096 rows per batch, paired with
+page-index filtering disabled. The predicate partially selects the first row
+group; compare ``first_batch_ns`` and ``peak_memory_bytes`` across batch sizes,
+and check ``read_bytes`` to distinguish decoding changes from page pruning::
+
+   paimon-parquet-format-benchmark \
+       --benchmark_filter=BM_ParquetRead_FilteredBatchSize \
        --benchmark_repetitions=5 \
        --benchmark_report_aggregates_only=true
 
