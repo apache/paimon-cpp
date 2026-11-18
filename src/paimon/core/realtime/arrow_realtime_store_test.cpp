@@ -656,8 +656,13 @@ TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingTimeBatch) {
     std::unique_ptr<ArrowSchema> read_schema = MakeReadSchema(schema_);
     std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterThan(
         /*field_index=*/2, /*field_name=*/"t", FieldType::TIME, Literal(FieldType::TIME, 1000));
-    RealtimeQueryContext context{read_schema.get(), predicate,
-                                 view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+    RealtimeQueryContext context{read_schema.get(),
+                                 predicate,
+                                 view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+                                 1024,
+                                 /*selection=*/nullptr,
+                                 /*offset_deletions=*/nullptr,
+                                 /*enable_index_pruning=*/true};
     ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<BatchReader>> readers,
                          store->CreateQueryReaders(view, context));
     ASSERT_EQ(1, readers.size());
