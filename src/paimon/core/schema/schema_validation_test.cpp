@@ -28,6 +28,7 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
@@ -2156,6 +2157,55 @@ TEST(SchemaValidationTest, TestMapSharedShreddingRejectsPostponeBucketMode) {
                                              /*primary_keys=*/{"f0"}, options));
     ASSERT_NOK_WITH_MSG(SchemaValidation::ValidateTableSchema(*table_schema),
                         "MAP shared-shredding currently does not support postpone bucket mode.");
+}
+
+TEST(SchemaValidationTest, GeospatialRestrictions) {
+    ASSERT_OK_AND_ASSIGN(auto geo, GeospatialType::GeographyField("geo"));
+    ASSERT_OK_AND_ASSIGN(auto geom, GeospatialType::GeometryField("geo"));
+    for (const auto& field :
+         {geo, geom, arrow::field("geo", arrow::struct_({geo->WithName("nested")})),
+          arrow::field("geo", arrow::list(geom)),
+          arrow::field("geo",
+                       std::make_shared<arrow::MapType>(geom->WithNullable(false),
+                                                        arrow::field("value", arrow::binary()))),
+          arrow::field("geo", arrow::map(arrow::int32(), geo))}) {
+        SCOPED_TRACE(field->ToString(true));
+        auto arrow_schema = arrow::schema({arrow::field("id", arrow::int32()), field});
+        auto validate = [&](const std::vector<std::string>& partitions,
+                            const std::vector<std::string>& primary,
+                            const std::map<std::string, std::string>& options) -> Status {
+            PAIMON_ASSIGN_OR_RAISE(
+                std::unique_ptr<TableSchema> schema,
+                TableSchema::Create(0, arrow_schema, partitions, primary, options));
+            return SchemaValidation::ValidateTableSchema(*schema);
+        };
+        ASSERT_OK(validate({}, {}, {{Options::FILE_FORMAT, "parquet"}}));
+        ASSERT_NOK_WITH_MSG(validate({"geo"}, {}, {}), "GEOMETRY/GEOGRAPHY");
+        ASSERT_NOK_WITH_MSG(validate({}, {"geo"}, {}), "GEOMETRY/GEOGRAPHY");
+        ASSERT_NOK_WITH_MSG(
+            validate({}, {}, {{Options::BUCKET, "1"}, {Options::BUCKET_KEY, "geo"}}),
+            "GEOMETRY/GEOGRAPHY");
+        ASSERT_NOK_WITH_MSG(validate({}, {"id"}, {{Options::SEQUENCE_FIELD, "geo"}}),
+                            "GEOMETRY/GEOGRAPHY");
+        ASSERT_NOK_WITH_MSG(validate({}, {"id"}, {{"fields.geo.sequence-group", "id"}}),
+                            "GEOMETRY/GEOGRAPHY");
+        for (const char* key : {"clustering.columns", "sort.columns"}) {
+            ASSERT_OK(validate({}, {}, {{key, "id"}}));
+            ASSERT_NOK_WITH_MSG(validate({}, {}, {{key, "id, geo"}}), "GEOMETRY/GEOGRAPHY");
+        }
+        for (const auto& option :
+             {std::make_pair(Options::FILE_FORMAT, "orc"),
+              std::make_pair(Options::FILE_FORMAT, "avro"),
+              std::make_pair(Options::FILE_FORMAT, "blob"),
+              std::make_pair(Options::FILE_FORMAT, "lance"),
+              std::make_pair(Options::FILE_FORMAT, "mosaic"),
+              std::make_pair(Options::FILE_FORMAT, "vortex"),
+              std::make_pair(Options::FILE_FORMAT_PER_LEVEL, "0:parquet,1:orc"),
+              std::make_pair(Options::CHANGELOG_FILE_FORMAT, "avro")}) {
+            ASSERT_NOK_WITH_MSG(validate({}, {}, {{option.first, option.second}}),
+                                "GEOMETRY/GEOGRAPHY only supports parquet");
+        }
+    }
 }
 
 }  // namespace paimon::test

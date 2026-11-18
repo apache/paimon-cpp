@@ -127,6 +127,8 @@ Result<std::shared_ptr<ArrowType>> FromByteArray(const ::parquet::LogicalType& l
         case ::parquet::LogicalType::Type::ENUM:
         case ::parquet::LogicalType::Type::JSON:
         case ::parquet::LogicalType::Type::BSON:
+        case ::parquet::LogicalType::Type::GEOMETRY:
+        case ::parquet::LogicalType::Type::GEOGRAPHY:
             return ::arrow::binary();
         default:
             return Status::NotImplemented("Unhandled logical logical_type ",

@@ -28,6 +28,7 @@
 #include "fmt/format.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_string.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/format/column_stats.h"
 
 namespace paimon {
@@ -137,18 +138,18 @@ Status SimpleStatsCollector::Collect(const BinaryRow& row) {
             case arrow::Type::STRING:
             case arrow::Type::BINARY: {
                 if (column_stats_[i] == nullptr) {
-                    column_stats_[i] = ColumnStats::CreateStringColumnStats(
-                        std::nullopt, std::nullopt, std::nullopt);
+                    column_stats_[i] =
+                        ColumnStats::CreateStringColumnStats(std::nullopt, std::nullopt, 0);
                 }
                 auto typed_stats = dynamic_cast<StringColumnStats*>(column_stats_[i].get());
                 if (typed_stats == nullptr) {
                     assert(false);
                     return Status::Invalid("cast typed stats failed");
                 }
-                if (!row.IsNullAt(i)) {
-                    typed_stats->Collect(row.GetString(i).ToString());
-                } else {
+                if (row.IsNullAt(i)) {
                     typed_stats->Collect(std::nullopt);
+                } else if (!GeospatialType::IsGeospatial(*field)) {
+                    typed_stats->Collect(row.GetString(i).ToString());
                 }
                 break;
             }

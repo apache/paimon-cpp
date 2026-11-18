@@ -298,6 +298,8 @@ Result<CoreOptions> FileStoreTable::ResolveOptions(
     if (type != bound_type) {
         return Status::Invalid("context type contradicts the loaded table");
     }
+    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateGeospatialOptions(
+        checked_cast<const TableSchema&>(*schema_).Fields(), options));
     return CoreOptions::FromMap(options, file_system_, fs_scheme_map_);
 }
 

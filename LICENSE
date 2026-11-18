@@ -353,6 +353,7 @@ This product includes code from Apache Arrow.
   * third_party/versions.txt
 * Upstream source patches:
   * cmake_modules/arrow.diff
+  * cmake_modules/arrow_geospatial.diff
 
 Copyright: 2016-2024 The Apache Software Foundation.
 Home page: https://arrow.apache.org/

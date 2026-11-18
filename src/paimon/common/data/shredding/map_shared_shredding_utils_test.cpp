@@ -24,6 +24,7 @@
 #include "arrow/type.h"
 #include "arrow/util/key_value_metadata.h"
 #include "gtest/gtest.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/core/core_options.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -184,27 +185,23 @@ TEST(MapSharedShreddingUtilsTest, LogicalToPhysicalSchemaNoShreddingColumns) {
 }
 
 TEST(MapSharedShreddingUtilsTest, BuildSpecificPhysicalStructTypeWithOverflow) {
-    auto actual = MapSharedShreddingUtils::BuildSpecificPhysicalStructType(
-        arrow::int64(), /*physical_col_ids=*/{3, 1}, /*value_nullable=*/false,
-        /*include_overflow=*/true);
-
-    auto expected = arrow::struct_({
-        arrow::field("__field_mapping", arrow::list(arrow::int32()), true),
-        arrow::field("__col_1", arrow::int64(), false),
-        arrow::field("__col_3", arrow::int64(), false),
-        arrow::field("__overflow",
-                     arrow::map(arrow::int32(), arrow::field("value", arrow::int64(), false)),
-                     true),
-    });
-    ASSERT_TRUE(actual->Equals(*expected)) << "Expected:\n"
-                                           << expected->ToString() << "\nActual:\n"
-                                           << actual->ToString();
+    ASSERT_OK_AND_ASSIGN(auto geo,
+                         GeospatialType::GeographyField("place", "EPSG:4326", "karney", false));
+    for (const auto& item : {arrow::field("value", arrow::int64(), false), geo}) {
+        auto actual = MapSharedShreddingUtils::BuildSpecificPhysicalStructType(item, {3, 1}, true);
+        auto expected = arrow::struct_({
+            arrow::field("__field_mapping", arrow::list(arrow::int32())),
+            item->WithName("__col_1"),
+            item->WithName("__col_3"),
+            arrow::field("__overflow", arrow::map(arrow::int32(), item->WithName("value"))),
+        });
+        ASSERT_TRUE(actual->Equals(*expected, true)) << actual->ToString();
+    }
 }
 
 TEST(MapSharedShreddingUtilsTest, BuildSpecificPhysicalStructTypeWithoutOverflow) {
     auto actual = MapSharedShreddingUtils::BuildSpecificPhysicalStructType(
-        arrow::utf8(), /*physical_col_ids=*/{3}, /*value_nullable=*/true,
-        /*include_overflow=*/false);
+        arrow::field("value", arrow::utf8()), {3}, false);
 
     auto expected = arrow::struct_({
         arrow::field("__field_mapping", arrow::list(arrow::int32()), true),

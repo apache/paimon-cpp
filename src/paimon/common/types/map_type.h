@@ -29,16 +29,16 @@
 
 namespace paimon {
 
-// NOTE:
-// In contrast to Java Paimon, this C++ implementation does NOT allow nullable keys in MapType.
-// This restriction is due to the limitations of Apache Arrow, which does not support nullable map
-// keys.
-//
-// When using this class, ensure that the key type is always non-nullable.
-// Attempting to use a nullable key will result in incorrect behavior or runtime errors.
 class MapType : public DataType {
  public:
     static constexpr char TYPE[] = "MAP";
+    // Java allows nullable MAP keys in table schemas. Arrow requires physical keys to be non-null.
+    static constexpr char KEY_NULLABLE[] = "paimon.map_key_nullable";
+
+    static bool HasNullableKey(const std::shared_ptr<const arrow::KeyValueMetadata>& metadata) {
+        int32_t index = metadata ? metadata->FindKey(KEY_NULLABLE) : -1;
+        return index >= 0 && metadata->value(index) == "true";
+    }
 
     MapType(const std::shared_ptr<arrow::DataType>& type, bool nullable,
             const std::shared_ptr<const arrow::KeyValueMetadata>& metadata)
@@ -53,10 +53,11 @@ class MapType : public DataType {
             *allocator);
         auto type = checked_cast<arrow::MapType*>(type_.get());
         auto key_field = type->key_field();
+        bool key_nullable = key_field->nullable() || HasNullableKey(metadata_);
         // The key and value metadata is load-bearing: it is what marks an extension type such as
         // VARIANT.
         std::shared_ptr<DataType> key_data_type =
-            DataType::Create(key_field->type(), key_field->nullable(), key_field->metadata());
+            DataType::Create(key_field->type(), key_nullable, key_field->metadata());
         obj.AddMember(rapidjson::StringRef("key"),
                       RapidJsonUtil::SerializeValue(*key_data_type, allocator).Move(), *allocator);
         auto value_field = type->item_field();

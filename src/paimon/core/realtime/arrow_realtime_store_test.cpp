@@ -29,6 +29,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/realtime/realtime_offset_batch_reader.h"
@@ -637,6 +638,38 @@ TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingBatch) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> unfiltered,
                          ReadResultCollector::CollectResult(std::move(unfiltered_readers[0])));
     ASSERT_EQ(std::vector<int64_t>({0, 1, 10, 11}), ReadIds(unfiltered));
+}
+
+TEST_F(ArrowRealtimeStoreTest, GeospatialStatisticsKeepNullCountsWithoutBounds) {
+    ASSERT_OK_AND_ASSIGN(auto geometry, GeospatialType::GeometryField("geo"));
+    ASSERT_OK_AND_ASSIGN(auto geography, GeospatialType::GeographyField("geo"));
+    for (const auto& field : {geometry, geography}) {
+        SCOPED_TRACE(field->ToString(true));
+        schema_ = arrow::schema(
+            {DataField::ConvertDataFieldToArrowField(SpecialFields::RealtimeOffset()),
+             arrow::field("id", arrow::int64()), field, arrow::field("bytes", arrow::binary())});
+        ASSERT_OK_AND_ASSIGN(auto store, CreateStore(StatisticsMode::FULL));
+        auto data =
+            arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema_->fields()), R"([
+                [0, 0, "\u0001\u0007\u0000\u0000\u0000\u0000\u0000\u0000\u0000", "a"],
+                [1, 1, null, "z"]
+            ])");
+        ASSERT_TRUE(data.ok()) << data.status().ToString();
+        ASSERT_OK_AND_ASSIGN(auto statistics, store->CollectStatistics(
+                                                  checked_pointer_cast<arrow::StructArray>(*data)));
+        ASSERT_TRUE(statistics);
+        ASSERT_TRUE(statistics->min_values->field(2)->IsNull(0));
+        ASSERT_TRUE(statistics->max_values->field(2)->IsNull(0));
+        auto null_counts = checked_pointer_cast<arrow::Int64Array>(statistics->null_counts);
+        ASSERT_EQ(null_counts->Value(2), 1);
+        ASSERT_EQ(null_counts->Value(3), 0);
+        ASSERT_EQ(
+            checked_pointer_cast<arrow::BinaryArray>(statistics->min_values->field(3))->GetView(0),
+            "a");
+        ASSERT_EQ(
+            checked_pointer_cast<arrow::BinaryArray>(statistics->max_values->field(3))->GetView(0),
+            "z");
+    }
 }
 
 TEST_F(ArrowRealtimeStoreTest, TestFullStatisticsPrunesNonMatchingTimeBatch) {

@@ -43,6 +43,7 @@
 #include "arrow/util/thread_pool.h"
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -874,10 +875,16 @@ Result<::parquet::ArrowReaderProperties> ParquetFileBatchReader::CreateArrowRead
 
 // Nested column index computation
 
-Status ParquetFileBatchReader::CollectLeafIndices(const std::shared_ptr<arrow::DataType>& read_type,
-                                                  const std::shared_ptr<arrow::DataType>& file_type,
+Status ParquetFileBatchReader::CollectLeafIndices(const std::shared_ptr<arrow::Field>& read_field,
+                                                  const std::shared_ptr<arrow::Field>& file_field,
                                                   int32_t* leaf_index,
                                                   std::vector<int32_t>* indices) {
+    const auto& read_type = read_field->type();
+    const auto& file_type = file_field->type();
+    if (file_type->id() != read_type->id() || GeospatialType::IsGeospatial(*file_field) ||
+        GeospatialType::IsGeospatial(*read_field)) {
+        PAIMON_RETURN_NOT_OK(GeospatialType::ValidateEvolution(*file_field, *read_field));
+    }
     if (file_type->id() == arrow::Type::STRUCT) {
         for (const auto& file_child : file_type->fields()) {
             std::shared_ptr<arrow::Field> read_child = nullptr;
@@ -888,8 +895,8 @@ Status ParquetFileBatchReader::CollectLeafIndices(const std::shared_ptr<arrow::D
                 }
             }
             if (read_child) {
-                PAIMON_RETURN_NOT_OK(CollectLeafIndices(read_child->type(), file_child->type(),
-                                                        leaf_index, indices));
+                PAIMON_RETURN_NOT_OK(
+                    CollectLeafIndices(read_child, file_child, leaf_index, indices));
             } else {
                 SkipLeafIndices(file_child->type(), leaf_index);
             }
@@ -904,7 +911,7 @@ Status ParquetFileBatchReader::CollectLeafIndices(const std::shared_ptr<arrow::D
         }
         const auto& read_list = static_cast<const arrow::ListType&>(*read_type);
         const auto& file_list = static_cast<const arrow::ListType&>(*file_type);
-        PAIMON_RETURN_NOT_OK(CollectLeafIndices(read_list.value_type(), file_list.value_type(),
+        PAIMON_RETURN_NOT_OK(CollectLeafIndices(read_list.value_field(), file_list.value_field(),
                                                 leaf_index, indices));
     } else if (file_type->id() == arrow::Type::FIXED_SIZE_LIST) {
         if (!HasSameNestedProjectionShape(read_type, file_type)) {
@@ -914,8 +921,8 @@ Status ParquetFileBatchReader::CollectLeafIndices(const std::shared_ptr<arrow::D
         }
         const auto& read_vector = checked_cast<const arrow::FixedSizeListType&>(*read_type);
         const auto& file_vector = checked_cast<const arrow::FixedSizeListType&>(*file_type);
-        PAIMON_RETURN_NOT_OK(CollectLeafIndices(read_vector.value_type(), file_vector.value_type(),
-                                                leaf_index, indices));
+        PAIMON_RETURN_NOT_OK(CollectLeafIndices(read_vector.value_field(),
+                                                file_vector.value_field(), leaf_index, indices));
     } else if (file_type->id() == arrow::Type::MAP) {
         if (!HasSameNestedProjectionShape(read_type, file_type)) {
             return Status::Invalid(fmt::format(
@@ -925,9 +932,9 @@ Status ParquetFileBatchReader::CollectLeafIndices(const std::shared_ptr<arrow::D
         const auto& read_map = static_cast<const arrow::MapType&>(*read_type);
         const auto& file_map = static_cast<const arrow::MapType&>(*file_type);
         PAIMON_RETURN_NOT_OK(
-            CollectLeafIndices(read_map.key_type(), file_map.key_type(), leaf_index, indices));
+            CollectLeafIndices(read_map.key_field(), file_map.key_field(), leaf_index, indices));
         PAIMON_RETURN_NOT_OK(
-            CollectLeafIndices(read_map.item_type(), file_map.item_type(), leaf_index, indices));
+            CollectLeafIndices(read_map.item_field(), file_map.item_field(), leaf_index, indices));
     } else {
         // Leaf column — collect its index.
         indices->push_back((*leaf_index)++);
@@ -974,8 +981,8 @@ Result<std::vector<int32_t>> ParquetFileBatchReader::ComputeNestedColumnIndices(
                             read_field->name()));
         }
         int32_t leaf_index = file_field_leaf_starts[file_field_idx];
-        PAIMON_RETURN_NOT_OK(CollectLeafIndices(
-            read_field->type(), file_fields[file_field_idx]->type(), &leaf_index, &indices));
+        PAIMON_RETURN_NOT_OK(
+            CollectLeafIndices(read_field, file_fields[file_field_idx], &leaf_index, &indices));
     }
     return indices;
 }

@@ -107,6 +107,21 @@ class PredicateValidator {
                                 field_name, schema_field_idx, leaf_predicate->FieldIndex()));
             }
             // check field type (schema vs. predicate)
+            if (GeospatialType::IsGeospatial(*schema.field(schema_field_idx))) {
+                PAIMON_ASSIGN_OR_RAISE(FieldType type, FieldTypeUtils::ConvertToFieldType(
+                                                           schema.field(schema_field_idx)));
+                if (type != leaf_predicate->GetFieldType()) {
+                    return Status::Invalid("Geospatial predicate type mismatch for field ",
+                                           field_name);
+                }
+                auto function = leaf_predicate->GetFunction().GetType();
+                if (function != Function::Type::IS_NULL &&
+                    function != Function::Type::IS_NOT_NULL) {
+                    return Status::NotImplemented(
+                        "GEOMETRY/GEOGRAPHY only supports null predicates");
+                }
+                return Status::OK();
+            }
             const std::shared_ptr<arrow::DataType>& schema_type =
                 schema.field(schema_field_idx)->type();
             PAIMON_RETURN_NOT_OK(ValidateDataTypeWithSchemaAndPredicate(

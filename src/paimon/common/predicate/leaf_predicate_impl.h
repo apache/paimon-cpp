@@ -27,6 +27,7 @@
 #include "paimon/common/predicate/leaf_function.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/predicate/predicate_filter.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/predicate/leaf_predicate.h"
 namespace paimon {
@@ -44,10 +45,15 @@ class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
     Result<std::vector<char>> Test(const arrow::Array& array,
                                    arrow::MemoryPool* pool) const override {
         const auto& struct_array = checked_cast<const arrow::StructArray&>(array);
-        if (field_index_ >= struct_array.num_fields()) {
+        if (field_index_ < 0 || field_index_ >= struct_array.num_fields()) {
             return Status::Invalid(
                 fmt::format("field index {} exceed field count {} in struct array", field_index_,
                             struct_array.num_fields()));
+        }
+        const auto function = leaf_function_.GetType();
+        if (function != Function::Type::IS_NULL && function != Function::Type::IS_NOT_NULL &&
+            GeospatialType::IsGeospatial(*struct_array.type()->field(field_index_))) {
+            return Status::NotImplemented("GEOMETRY/GEOGRAPHY only supports null predicates");
         }
         const auto& field_array = struct_array.field(field_index_);
         return leaf_function_.Test(*field_array, literals_, pool);
@@ -55,9 +61,22 @@ class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
 
     Result<bool> Test(const std::shared_ptr<arrow::Schema>& schema,
                       const InternalRow& row) const override {
-        if (field_index_ >= row.GetFieldCount()) {
+        if (field_index_ < 0 || field_index_ >= row.GetFieldCount()) {
             return Status::Invalid(fmt::format("field index {} exceed field count {} in row",
                                                field_index_, row.GetFieldCount()));
+        }
+        // Partition filters can omit the schema for types without precision or scale parameters.
+        if (schema && field_index_ >= schema->num_fields()) {
+            return Status::Invalid("Predicate field index exceeds schema field count");
+        }
+        if (schema && GeospatialType::IsGeospatial(*schema->field(field_index_))) {
+            if (leaf_function_.GetType() == Function::Type::IS_NULL) {
+                return row.IsNullAt(field_index_);
+            }
+            if (leaf_function_.GetType() == Function::Type::IS_NOT_NULL) {
+                return !row.IsNullAt(field_index_);
+            }
+            return Status::NotImplemented("GEOMETRY/GEOGRAPHY only supports null predicates");
         }
         PAIMON_ASSIGN_OR_RAISE(Literal value, LiteralConverter::ConvertLiteralsFromRow(
                                                   schema, row, field_index_, field_type_));
@@ -67,6 +86,22 @@ class LeafPredicateImpl : public LeafPredicate, public PredicateFilter {
     Result<bool> Test(const std::shared_ptr<arrow::Schema>& schema, int64_t row_count,
                       const InternalRow& min_values, const InternalRow& max_values,
                       const InternalArray& null_counts) const override {
+        if (field_index_ < 0 || (schema && field_index_ >= schema->num_fields()) ||
+            field_index_ >= null_counts.Size()) {
+            return Status::Invalid("Predicate field index exceeds statistics field count");
+        }
+        if (schema && GeospatialType::IsGeospatial(*schema->field(field_index_))) {
+            if (null_counts.IsNullAt(field_index_)) {
+                return true;
+            }
+            if (leaf_function_.GetType() == Function::Type::IS_NULL) {
+                return null_counts.GetLong(field_index_) > 0;
+            }
+            if (leaf_function_.GetType() == Function::Type::IS_NOT_NULL) {
+                return null_counts.GetLong(field_index_) < row_count;
+            }
+            return true;
+        }
         PAIMON_ASSIGN_OR_RAISE(Literal min_value,
                                LiteralConverter::ConvertLiteralsFromRow(schema, min_values,
                                                                         field_index_, field_type_));

@@ -38,6 +38,7 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/io/offset_input_stream.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -402,6 +403,7 @@ Status BlobFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,
                                       arrow::ImportSchema(read_schema));
+    PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*arrow_schema, "blob"));
     if (arrow_schema->num_fields() != 1) {
         return Status::Invalid(
             fmt::format("read schema field number {} is not 1", arrow_schema->num_fields()));

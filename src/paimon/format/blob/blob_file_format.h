@@ -23,6 +23,7 @@
 #include <string>
 
 #include "arrow/c/bridge.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/format/blob/blob_reader_builder.h"
 #include "paimon/format/blob/blob_stats_extractor.h"
@@ -56,6 +57,7 @@ class BlobFileFormat : public FileFormat {
                                                                int32_t batch_size) const override {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> typed_schema,
                                           arrow::ImportSchema(schema));
+        PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*typed_schema, Identifier()));
         auto data_type = arrow::struct_(typed_schema->fields());
         return std::make_unique<BlobWriterBuilder>(data_type, options_);
     }
@@ -64,6 +66,7 @@ class BlobFileFormat : public FileFormat {
         ::ArrowSchema* schema) const override {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> typed_schema,
                                           arrow::ImportSchema(schema));
+        PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*typed_schema, Identifier()));
         return std::make_unique<BlobStatsExtractor>(typed_schema);
     }
 

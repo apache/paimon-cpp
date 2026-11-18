@@ -2022,12 +2022,15 @@ macro(build_arrow)
 
     set(ARROW_CONFIGURE SOURCE_SUBDIR "cpp" CMAKE_ARGS ${ARROW_CMAKE_ARGS})
     set(PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/arrow.diff")
+    set(GEOSPATIAL_PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/arrow_geospatial.diff")
     externalproject_add(arrow_ep
                         URL ${ARROW_SOURCE_URL}
                         URL_HASH "SHA256=${PAIMON_ARROW_BUILD_SHA256_CHECKSUM}"
                         LOG_PATCH ON
                         PATCH_COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> bash -c
                                       "[ -f .patched ] && echo '<SOURCE_DIR> patch already applied, ignore...' || patch -s -N -p1 -i '${PATCH_FILE}' && touch .patched"
+                        COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> bash -c
+                                "[ -f .geospatial-patched ] || (patch -s -N -p1 -i '${GEOSPATIAL_PATCH_FILE}' && touch .geospatial-patched)"
                         GIT_SUBMODULES "" GIT_SUBMODULES_RECURSE FALSE ${ARROW_CONFIGURE}
                         UPDATE_DISCONNECTED 1
                         BUILD_BYPRODUCTS "${ARROW_STATIC_LIB}"

@@ -83,7 +83,7 @@ std::shared_ptr<CastExecutor> CastExecutorFactory::GetCastExecutor(const FieldTy
 Result<std::shared_ptr<CastExecutor>> CastExecutorFactory::GetCastExecutor(
     const DataField& src_field, const FieldType& target) const {
     PAIMON_ASSIGN_OR_RAISE(FieldType src,
-                           FieldTypeUtils::ConvertToFieldType(src_field.Type()->id()));
+                           FieldTypeUtils::ConvertToFieldType(src_field.ArrowField()));
     if (src == FieldType::TIME && target == FieldType::STRING) {
         PAIMON_ASSIGN_OR_RAISE(int32_t precision,
                                DataType::GetTimePrecision(*src_field.ArrowField()));

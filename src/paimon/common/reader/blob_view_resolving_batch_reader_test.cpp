@@ -36,6 +36,7 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/blob_view_struct.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/data/blob_descriptor.h"
@@ -174,6 +175,17 @@ TEST_F(BlobViewResolvingBatchReaderTest, TestResolvesBlobViewColumn) {
                          MakeBlobViewStructBytes("db", "tbl", /*field_id=*/3, /*row_id=*/200));
     std::shared_ptr<arrow::StructArray> src_struct =
         BuildStructArray({row0_view, row1_view}, {true, true});
+    ASSERT_OK_AND_ASSIGN(auto geography,
+                         GeospatialType::GeographyField("location", "EPSG:4326", "karney"));
+    arrow::BinaryBuilder wkb_builder;
+    ASSERT_TRUE(wkb_builder.Append(std::string("\x01\x07\0\0\0\0\0\0\0", 9)).ok());
+    ASSERT_TRUE(wkb_builder.AppendNull().ok());
+    std::shared_ptr<arrow::Array> wkb;
+    ASSERT_TRUE(wkb_builder.Finish(&wkb).ok());
+    auto combined = arrow::StructArray::Make({src_struct->field(0), wkb},
+                                             {src_struct->type()->field(0), geography});
+    ASSERT_TRUE(combined.ok());
+    src_struct = *combined;
 
     ASSERT_OK_AND_ASSIGN(auto expected_row0_descriptor,
                          MakeBlobDescriptorBytes("/path/a", /*offset=*/0, /*length=*/8));
@@ -195,8 +207,12 @@ TEST_F(BlobViewResolvingBatchReaderTest, TestResolvesBlobViewColumn) {
     auto reader = std::make_unique<BlobViewResolvingBatchReader>(
         std::move(inner_reader), std::vector<std::string>{"blob_col"}, std::move(resolver),
         GetArrowPool(pool_));
-    ASSERT_OK_AND_ASSIGN(auto result_array, ReadResultCollector::CollectResult(std::move(reader)));
+    ASSERT_OK_AND_ASSIGN(auto result_array,
+                         ReadResultCollector::CollectResult(std::move(reader), true));
+    ASSERT_TRUE(result_array->type()->Equals(*src_struct->type(), true));
     auto struct_array = std::dynamic_pointer_cast<arrow::StructArray>(result_array->chunk(0));
+    ASSERT_TRUE(struct_array);
+    ASSERT_TRUE(struct_array->field(1)->Equals(wkb));
 
     auto result_blob_column =
         std::dynamic_pointer_cast<arrow::LargeBinaryArray>(struct_array->field(0));

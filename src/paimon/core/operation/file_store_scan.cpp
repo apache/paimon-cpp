@@ -36,6 +36,7 @@
 #include "paimon/common/io/cache/cache_key.h"
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/data_file_meta.h"
@@ -89,7 +90,10 @@ Result<std::shared_ptr<Predicate>> FileStoreScan::ReconstructPredicateWithNonCas
             continue;
         }
         // Exclude fields requiring casting to avoid false negatives in stats filtering.
-        if (!data_iter->second.second.Type()->Equals(table_iter->second.Type())) {
+        const auto& data_field = data_iter->second.second;
+        const auto& table_field = table_iter->second;
+        if (!data_field.Type()->Equals(table_field.Type()) ||
+            !GeospatialType::Equals(*data_field.ArrowField(), *table_field.ArrowField())) {
             excluded_field_names.insert(field_name);
         }
     }

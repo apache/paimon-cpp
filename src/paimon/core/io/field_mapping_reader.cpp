@@ -181,13 +181,13 @@ Result<BatchReader::ReadBatchWithBitmap> FieldMappingReader::NextBatchWithBitmap
                                       arrow::ImportArray(c_array.get(), c_schema.get()));
 
     arrow::ArrayVector target_array(field_count_);
-    std::vector<std::string> target_field_names(field_count_);
+    arrow::FieldVector target_fields(field_count_);
     // mapping non-partition array
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> casted_non_partition_array,
                            CastNonPartitionArrayIfNeed(non_partition_array));
     PAIMON_RETURN_NOT_OK(MappingFields(
         casted_non_partition_array, non_partition_info_.non_partition_read_schema,
-        non_partition_info_.idx_in_target_read_schema, &target_array, &target_field_names));
+        non_partition_info_.idx_in_target_read_schema, &target_array, &target_fields));
 
     // mapping partition array
     if (partition_info_ != std::nullopt) {
@@ -198,7 +198,7 @@ Result<BatchReader::ReadBatchWithBitmap> FieldMappingReader::NextBatchWithBitmap
         auto trim_partition_array = partition_array_->Slice(0, non_partition_array->length());
         PAIMON_RETURN_NOT_OK(MappingFields(
             trim_partition_array, partition_info_.value().partition_read_schema,
-            partition_info_.value().idx_in_target_read_schema, &target_array, &target_field_names));
+            partition_info_.value().idx_in_target_read_schema, &target_array, &target_fields));
     }
     // mapping non-exist array
     if (non_exist_field_info_ != std::nullopt) {
@@ -210,12 +210,12 @@ Result<BatchReader::ReadBatchWithBitmap> FieldMappingReader::NextBatchWithBitmap
         PAIMON_RETURN_NOT_OK(MappingFields(trim_non_exist_array,
                                            non_exist_field_info_.value().non_exist_read_schema,
                                            non_exist_field_info_.value().idx_in_target_read_schema,
-                                           &target_array, &target_field_names));
+                                           &target_array, &target_fields));
     }
 
     // construct target array
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> arrow_array,
-                                      arrow::StructArray::Make(target_array, target_field_names));
+                                      arrow::StructArray::Make(target_array, target_fields));
     std::unique_ptr<ArrowArray> target_c_arrow_array = std::make_unique<ArrowArray>();
     std::unique_ptr<ArrowSchema> target_c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
@@ -339,7 +339,7 @@ Status FieldMappingReader::MappingFields(const std::shared_ptr<arrow::Array>& da
                                          const std::vector<DataField>& read_fields_of_data_array,
                                          const std::vector<int32_t>& idx_in_target_schema,
                                          arrow::ArrayVector* target_array,
-                                         std::vector<std::string>* target_field_names) {
+                                         arrow::FieldVector* target_fields) {
     auto* struct_array = checked_cast<arrow::StructArray*>(data_array.get());
     assert(struct_array->fields().size() == idx_in_target_schema.size());
     for (size_t i = 0; i < idx_in_target_schema.size(); i++) {
@@ -353,8 +353,9 @@ Status FieldMappingReader::MappingFields(const std::shared_ptr<arrow::Array>& da
                                        field_array, read_field.ArrowField(), arrow_pool_.get()));
         }
 
+        (*target_fields)[idx_in_target_schema[i]] =
+            read_field.ArrowField()->WithType(field_array->type());
         (*target_array)[idx_in_target_schema[i]] = std::move(field_array);
-        (*target_field_names)[idx_in_target_schema[i]] = read_field.Name();
     }
     return Status::OK();
 }

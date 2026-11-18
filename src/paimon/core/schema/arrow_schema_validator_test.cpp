@@ -30,6 +30,7 @@
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/types/data_type.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -108,6 +109,32 @@ TEST(ArrowSchemaValidatorTest, TestInvalidTimePrecision) {
     }
     auto seconds = DataType::Create(arrow::time32(arrow::TimeUnit::SECOND), true, nullptr);
     ASSERT_NOK_WITH_MSG(seconds->ToJsonString(), "Only millisecond TIME is supported");
+}
+
+TEST(ArrowSchemaValidatorTest, GeospatialMetadataValidation) {
+    ASSERT_OK_AND_ASSIGN(auto geometry, GeospatialType::GeometryField("geo"));
+    ASSERT_OK_AND_ASSIGN(auto geography, GeospatialType::GeographyField("geo"));
+    for (const auto& valid : {geometry, geography}) {
+        auto invalid_metadata = valid->WithMergedMetadata(arrow::KeyValueMetadata::Make(
+            {GeospatialType::kExtensionMetadataKey}, {R"({"crs":null})"}));
+        for (const auto& leaf : {valid, valid->WithType(arrow::utf8()), invalid_metadata}) {
+            for (const auto& field :
+                 {leaf, arrow::field("row", arrow::struct_({leaf})),
+                  arrow::field("array", arrow::list(leaf)),
+                  arrow::field("map", arrow::map(arrow::int32(), leaf)),
+                  arrow::field("map", std::make_shared<arrow::MapType>(
+                                          leaf->WithNullable(false),
+                                          arrow::field("value", arrow::int32())))}) {
+                SCOPED_TRACE(field->ToString(true));
+                auto status = ArrowSchemaValidator::ValidateSchema(*arrow::schema({field}));
+                if (leaf == valid) {
+                    ASSERT_OK(status);
+                } else {
+                    ASSERT_NOK_WITH_MSG(status, "geoarrow.wkb");
+                }
+            }
+        }
+    }
 }
 
 TEST(ArrowSchemaValidatorTest, TestValidateNoRedundantFields) {

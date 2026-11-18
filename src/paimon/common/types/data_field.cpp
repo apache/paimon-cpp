@@ -29,6 +29,7 @@
 #include "fmt/format.h"
 #include "paimon/common/types/data_type.h"
 #include "paimon/common/types/data_type_json_parser.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/rapidjson_util.h"
@@ -42,7 +43,7 @@ namespace paimon {
 
 bool DataField::operator==(const DataField& other) const {
     return id_ == other.id_ && field_->Equals(other.field_, /*check_metadata=*/false) &&
-           description_ == other.description_;
+           GeospatialType::Equals(*field_, *other.field_) && description_ == other.description_;
 }
 
 rapidjson::Value DataField::ToJson(rapidjson::Document::AllocatorType* allocator) const

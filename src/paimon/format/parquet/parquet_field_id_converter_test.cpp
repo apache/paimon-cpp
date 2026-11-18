@@ -26,6 +26,7 @@
 #include "arrow/api.h"
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/status.h"
@@ -159,6 +160,34 @@ TEST_F(ParquetFieldIdConverterTest, TestSimple) {
     PrintFieldMetadata(old_schema, ParquetFieldIdConverter::IdConvertType::PARQUET_TO_PAIMON_ID,
                        &old_field_infos);
     ASSERT_EQ(expected_field_infos, old_field_infos);
+}
+
+TEST_F(ParquetFieldIdConverterTest, GeospatialContainerFieldIds) {
+    const std::string json = R"({
+        "id":10,"name":"mapping","type":{"type":"MAP","key":"GEOMETRY NOT NULL",
+            "value":{"type":"ARRAY","element":{"type":"ROW","fields":[
+                {"id":20,"name":"locations","type":{"type":"ARRAY","element":"GEOGRAPHY"}}
+            ]}}}
+    })";
+    ASSERT_OK_AND_ASSIGN(auto data_field, DataField::FromJsonString(json));
+    auto schema = DataField::ConvertDataFieldsToArrowSchema({data_field});
+    ASSERT_OK_AND_ASSIGN(auto converted,
+                         ParquetFieldIdConverter::AddParquetIdsFromPaimonIds(schema));
+    std::vector<FieldInfo> actual;
+    PrintFieldMetadata(converted, ParquetFieldIdConverter::IdConvertType::PAIMON_TO_PARQUET_ID,
+                       &actual);
+    const std::vector<FieldInfo> expected = {
+        {"mapping", arrow::Type::MAP, "10"},       {"key", arrow::Type::BINARY, "536860670"},
+        {"value", arrow::Type::LIST, "536881152"}, {"item", arrow::Type::STRUCT, "536881153"},
+        {"locations", arrow::Type::LIST, "20"},    {"item", arrow::Type::BINARY, "536891392"}};
+    ASSERT_EQ(actual, expected);
+    ASSERT_TRUE(GeospatialType::Equals(*schema->field(0), *converted->field(0)));
+    ASSERT_OK_AND_ASSIGN(auto repeated,
+                         ParquetFieldIdConverter::AddParquetIdsFromPaimonIds(converted));
+    ASSERT_TRUE(converted->Equals(*repeated, true));
+    ASSERT_OK_AND_ASSIGN(auto restored,
+                         ParquetFieldIdConverter::GetPaimonIdsFromParquetIds(converted));
+    ASSERT_TRUE(GeospatialType::Equals(*schema->field(0), *restored->field(0)));
 }
 
 TEST_F(ParquetFieldIdConverterTest, TestNestedType) {

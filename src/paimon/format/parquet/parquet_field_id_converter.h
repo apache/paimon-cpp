@@ -19,6 +19,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "arrow/api.h"
@@ -45,10 +46,12 @@ class ParquetFieldIdConverter {
     enum class IdConvertType {
         PARQUET_TO_PAIMON_ID = 1,
         PAIMON_TO_PARQUET_ID = 2,
+        PAIMON_TO_PARQUET_WITH_ELEMENT_IDS,
     };
 
     static arrow::Result<std::shared_ptr<arrow::Field>> ProcessField(
-        const std::shared_ptr<arrow::Field>& field, IdConvertType convert_type);
+        const std::shared_ptr<arrow::Field>& field, IdConvertType convert_type,
+        std::optional<int32_t> owner_id = std::nullopt, int32_t depth = 0);
 
     static arrow::Result<std::shared_ptr<const arrow::KeyValueMetadata>> CopyId(
         const std::shared_ptr<const arrow::KeyValueMetadata>& metadata, IdConvertType convert_type);

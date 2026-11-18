@@ -127,7 +127,8 @@ CompleteRowTrackingFieldsBatchReader::NextBatchWithBitmap() {
     // re-construct result array with read schema
     arrow::ArrayVector sub_array_vec;
     sub_array_vec.reserve(read_schema_->num_fields());
-    for (const auto& field : read_schema_->fields()) {
+    arrow::FieldVector fields = read_schema_->fields();
+    for (auto& field : fields) {
         const auto& field_name = field->name();
         if (field_name == row_id_field_name) {
             sub_array_vec.push_back(row_id_array);
@@ -141,12 +142,12 @@ CompleteRowTrackingFieldsBatchReader::NextBatchWithBitmap() {
                     "Data file does not contain field {} in CompleteRowTrackingFieldsBatchReader",
                     field_name));
             }
+            field = field->WithType(sub_array->type());
             sub_array_vec.push_back(sub_array);
         }
     }
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-        std::shared_ptr<arrow::Array> target_array,
-        arrow::StructArray::Make(sub_array_vec, read_schema_->field_names()));
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> target_array,
+                                      arrow::StructArray::Make(sub_array_vec, fields));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*target_array, c_array.get(), c_schema.get()));
     PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));

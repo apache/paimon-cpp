@@ -52,6 +52,15 @@ class SchemaValidation {
 
     static Status ValidateTableSchema(const TableSchema& schema);
 
+    static Status ValidateGeospatialKeys(const std::vector<DataField>& fields,
+                                         const std::vector<std::string>& primary_keys,
+                                         const std::vector<std::string>& partition_keys,
+                                         const std::vector<std::string>& bucket_keys);
+
+    /// Checks geospatial format and ordering restrictions against the effective table options.
+    static Status ValidateGeospatialOptions(const std::vector<DataField>& fields,
+                                            const std::map<std::string, std::string>& options);
+
     /// Validates real-time options after operation-specific options have been merged with the
     /// table schema options.
     static Status ValidateRealtime(const TableSchema& schema, const CoreOptions& options);

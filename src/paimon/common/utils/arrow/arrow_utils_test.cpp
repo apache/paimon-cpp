@@ -32,6 +32,7 @@
 #include "arrow/util/byte_size.h"
 #include "gtest/gtest.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
@@ -1027,6 +1028,38 @@ TEST(ArrowUtilsTest, TestDictionaryArrayMemoryUsage) {
 }
 
 TEST(ArrowUtilsTest, TestEqualsIgnoreNullable) {
+    {
+        ASSERT_OK_AND_ASSIGN(auto geometry, GeospatialType::GeometryField("g", "EPSG:4326"));
+        ASSERT_OK_AND_ASSIGN(auto geography, GeospatialType::GeographyField("g", "EPSG:4326"));
+        ASSERT_OK_AND_ASSIGN(auto other_crs, GeospatialType::GeometryField("g", "EPSG:3857"));
+        ASSERT_OK_AND_ASSIGN(auto other_edges,
+                             GeospatialType::GeographyField("g", "EPSG:4326", "karney"));
+        auto nested_types = [](const std::shared_ptr<arrow::Field>& field) {
+            return std::vector<std::shared_ptr<arrow::DataType>>{
+                arrow::struct_({field}), arrow::list(field),
+                std::make_shared<arrow::MapType>(field->WithNullable(false),
+                                                 arrow::field("value", arrow::int32())),
+                arrow::map(arrow::int32(), field)};
+        };
+        for (const auto& field : {geometry, geography}) {
+            auto source_types = nested_types(field);
+            ASSERT_OK_AND_ASSIGN(
+                auto same,
+                field == geometry
+                    ? GeospatialType::GeometryField("g", "epsg:4326", false)
+                    : GeospatialType::GeographyField("g", "epsg:4326", "spherical", false));
+            for (const auto& other : {same, arrow::field("g", arrow::binary()), other_crs,
+                                      other_edges, field == geometry ? geography : geometry}) {
+                auto target_types = nested_types(other);
+                for (size_t i = 0; i < source_types.size(); ++i) {
+                    ASSERT_EQ(ArrowUtils::EqualsIgnoreNullable(source_types[i], target_types[i]),
+                              other == same)
+                        << source_types[i]->ToString(true) << " -> "
+                        << target_types[i]->ToString(true);
+                }
+            }
+        }
+    }
     {
         // test simple
         ASSERT_FALSE(ArrowUtils::EqualsIgnoreNullable(arrow::int32(), arrow::int64()));

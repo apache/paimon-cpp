@@ -20,6 +20,7 @@
 
 #include "arrow/type_fwd.h"
 #include "gtest/gtest.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/data/decimal.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/predicate/full_text_match.h"
@@ -32,6 +33,40 @@ class Schema;
 }  // namespace arrow
 
 namespace paimon::test {
+
+TEST(PredicateValidatorTest, GeospatialNullPredicates) {
+    ASSERT_OK_AND_ASSIGN(auto geom, GeospatialType::GeometryField("g"));
+    ASSERT_OK_AND_ASSIGN(auto geog, GeospatialType::GeographyField("g"));
+    for (const auto& field : {geom, geog}) {
+        SCOPED_TRACE(field->ToString(true));
+        auto schema = arrow::schema({field});
+        ASSERT_OK_AND_ASSIGN(auto type, GeospatialType::FromField(*field));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(
+            *schema, PredicateBuilder::IsNull(0, "g", type.Type()), true));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(
+            *schema, PredicateBuilder::IsNotNull(0, "g", type.Type()), true));
+        ASSERT_NOK(PredicateValidator::ValidatePredicateWithSchema(
+            *schema, PredicateBuilder::IsNull(0, "g", FieldType::BINARY), true));
+        for (FieldType predicate_type : {FieldType::BINARY, type.Type()}) {
+            auto wkb = Literal(predicate_type, "wkb", 3, false);
+            const char* expected_error = predicate_type == FieldType::BINARY
+                                             ? "Geospatial predicate type mismatch"
+                                             : "only supports null predicates";
+            for (const auto& comparison : {PredicateBuilder::Equal(0, "g", predicate_type, wkb),
+                                           PredicateBuilder::LessThan(0, "g", predicate_type, wkb),
+                                           PredicateBuilder::In(0, "g", predicate_type, {wkb})}) {
+                ASSERT_NOK_WITH_MSG(
+                    PredicateValidator::ValidatePredicateWithSchema(*schema, comparison, true),
+                    expected_error);
+                if (predicate_type == FieldType::BINARY) {
+                    ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(
+                        *arrow::schema({arrow::field("g", arrow::binary())}), comparison, true));
+                }
+            }
+        }
+    }
+}
+
 TEST(PredicateValidatorTest, TestFullTextMatchRequiresProjectedStringField) {
     auto schema =
         arrow::schema({arrow::field("id", arrow::int32()), arrow::field("text", arrow::utf8())});

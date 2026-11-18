@@ -1,0 +1,1384 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Backport GEOMETRY/GEOGRAPHY logical types from Apache Arrow 21.0.0.
+# Binary/WKB native schema mapping and null-count-only statistics retain C++17 support.
+diff --git a/cpp/cmake_modules/ThirdpartyToolchain.cmake b/cpp/cmake_modules/ThirdpartyToolchain.cmake
+--- a/cpp/cmake_modules/ThirdpartyToolchain.cmake
++++ b/cpp/cmake_modules/ThirdpartyToolchain.cmake
+@@ -410,7 +410,7 @@
+   set(ARROW_WITH_AZURE_SDK ON)
+ endif()
+
+-if(ARROW_JSON)
++if(ARROW_JSON OR ARROW_PARQUET)
+   set(ARROW_WITH_RAPIDJSON ON)
+ endif()
+
+diff --git a/cpp/src/arrow/c/bridge.cc b/cpp/src/arrow/c/bridge.cc
+--- a/cpp/src/arrow/c/bridge.cc
++++ b/cpp/src/arrow/c/bridge.cc
+@@ -1298,13 +1298,10 @@
+     }
+
+     bool keys_sorted = (c_struct_->flags & ARROW_FLAG_MAP_KEYS_SORTED);
+-    bool values_nullable = value_type->field(1)->nullable();
+-    // Some implementations of Arrow (such as Rust) use a non-standard field name
+-    // for key ("keys") and value ("values") fields. For simplicity, we override
+-    // them on import.
+-    auto values_field =
+-        ::arrow::field("value", value_type->field(1)->type(), values_nullable);
+-    type_ = map(value_type->field(0)->type(), values_field, keys_sorted);
++    // Normalize the C Data Interface child names while keeping logical type metadata.
++    auto key = value_type->field(0)->WithName("key")->WithNullable(false);
++    auto item = value_type->field(1)->WithName("value");
++    type_ = std::make_shared<MapType>(std::move(key), std::move(item), keys_sorted);
+     return Status::OK();
+   }
+
+diff --git a/cpp/src/generated/parquet_types.cpp b/cpp/src/generated/parquet_types.cpp
+--- a/cpp/src/generated/parquet_types.cpp
++++ b/cpp/src/generated/parquet_types.cpp
+@@ -372,6 +372,41 @@
+   }
+ }
+
++int _kEdgeInterpolationAlgorithmValues[] = {
++  EdgeInterpolationAlgorithm::SPHERICAL,
++  EdgeInterpolationAlgorithm::VINCENTY,
++  EdgeInterpolationAlgorithm::THOMAS,
++  EdgeInterpolationAlgorithm::ANDOYER,
++  EdgeInterpolationAlgorithm::KARNEY
++};
++const char* _kEdgeInterpolationAlgorithmNames[] = {
++  "SPHERICAL",
++  "VINCENTY",
++  "THOMAS",
++  "ANDOYER",
++  "KARNEY"
++};
++const std::map<int, const char*> _EdgeInterpolationAlgorithm_VALUES_TO_NAMES(::apache::thrift::TEnumIterator(5, _kEdgeInterpolationAlgorithmValues, _kEdgeInterpolationAlgorithmNames), ::apache::thrift::TEnumIterator(-1, nullptr, nullptr));
++
++std::ostream& operator<<(std::ostream& out, const EdgeInterpolationAlgorithm::type& val) {
++  std::map<int, const char*>::const_iterator it = _EdgeInterpolationAlgorithm_VALUES_TO_NAMES.find(val);
++  if (it != _EdgeInterpolationAlgorithm_VALUES_TO_NAMES.end()) {
++    out << it->second;
++  } else {
++    out << static_cast<int>(val);
++  }
++  return out;
++}
++
++std::string to_string(const EdgeInterpolationAlgorithm::type& val) {
++  std::map<int, const char*>::const_iterator it = _EdgeInterpolationAlgorithm_VALUES_TO_NAMES.find(val);
++  if (it != _EdgeInterpolationAlgorithm_VALUES_TO_NAMES.end()) {
++    return std::string(it->second);
++  } else {
++    return std::to_string(static_cast<int>(val));
++  }
++}
++
+ int _kEncodingValues[] = {
+   /**
+    * Default encoding.
+@@ -1562,6 +1597,140 @@
+ }
+
+
++GeometryType::~GeometryType() noexcept {
++}
++
++GeometryType::GeometryType() noexcept
++   : crs() {
++}
++
++void GeometryType::__set_crs(const std::string& val) {
++  this->crs = val;
++__isset.crs = true;
++}
++std::ostream& operator<<(std::ostream& out, const GeometryType& obj)
++{
++  obj.printTo(out);
++  return out;
++}
++
++
++void swap(GeometryType &a, GeometryType &b) {
++  using ::std::swap;
++  swap(a.crs, b.crs);
++  swap(a.__isset, b.__isset);
++}
++
++bool GeometryType::operator==(const GeometryType & rhs) const
++{
++  if (__isset.crs != rhs.__isset.crs)
++    return false;
++  else if (__isset.crs && !(crs == rhs.crs))
++    return false;
++  return true;
++}
++
++GeometryType::GeometryType(const GeometryType& other110) {
++  crs = other110.crs;
++  __isset = other110.__isset;
++}
++GeometryType::GeometryType(GeometryType&& other111) noexcept {
++  crs = std::move(other111.crs);
++  __isset = other111.__isset;
++}
++GeometryType& GeometryType::operator=(const GeometryType& other112) {
++  crs = other112.crs;
++  __isset = other112.__isset;
++  return *this;
++}
++GeometryType& GeometryType::operator=(GeometryType&& other113) noexcept {
++  crs = std::move(other113.crs);
++  __isset = other113.__isset;
++  return *this;
++}
++void GeometryType::printTo(std::ostream& out) const {
++  using ::apache::thrift::to_string;
++  out << "GeometryType(";
++  out << "crs="; (__isset.crs ? (out << to_string(crs)) : (out << "<null>"));
++  out << ")";
++}
++
++
++GeographyType::~GeographyType() noexcept {
++}
++
++GeographyType::GeographyType() noexcept
++   : crs(),
++     algorithm(static_cast<EdgeInterpolationAlgorithm::type>(0)) {
++}
++
++void GeographyType::__set_crs(const std::string& val) {
++  this->crs = val;
++__isset.crs = true;
++}
++
++void GeographyType::__set_algorithm(const EdgeInterpolationAlgorithm::type val) {
++  this->algorithm = val;
++__isset.algorithm = true;
++}
++std::ostream& operator<<(std::ostream& out, const GeographyType& obj)
++{
++  obj.printTo(out);
++  return out;
++}
++
++
++void swap(GeographyType &a, GeographyType &b) {
++  using ::std::swap;
++  swap(a.crs, b.crs);
++  swap(a.algorithm, b.algorithm);
++  swap(a.__isset, b.__isset);
++}
++
++bool GeographyType::operator==(const GeographyType & rhs) const
++{
++  if (__isset.crs != rhs.__isset.crs)
++    return false;
++  else if (__isset.crs && !(crs == rhs.crs))
++    return false;
++  if (__isset.algorithm != rhs.__isset.algorithm)
++    return false;
++  else if (__isset.algorithm && !(algorithm == rhs.algorithm))
++    return false;
++  return true;
++}
++
++GeographyType::GeographyType(const GeographyType& other115) {
++  crs = other115.crs;
++  algorithm = other115.algorithm;
++  __isset = other115.__isset;
++}
++GeographyType::GeographyType(GeographyType&& other116) noexcept {
++  crs = std::move(other116.crs);
++  algorithm = other116.algorithm;
++  __isset = other116.__isset;
++}
++GeographyType& GeographyType::operator=(const GeographyType& other117) {
++  crs = other117.crs;
++  algorithm = other117.algorithm;
++  __isset = other117.__isset;
++  return *this;
++}
++GeographyType& GeographyType::operator=(GeographyType&& other118) noexcept {
++  crs = std::move(other118.crs);
++  algorithm = other118.algorithm;
++  __isset = other118.__isset;
++  return *this;
++}
++void GeographyType::printTo(std::ostream& out) const {
++  using ::apache::thrift::to_string;
++  out << "GeographyType(";
++  out << "crs="; (__isset.crs ? (out << to_string(crs)) : (out << "<null>"));
++  out << ", " << "algorithm="; (__isset.algorithm ? (out << to_string(algorithm)) : (out << "<null>"));
++  out << ")";
++}
++
++
+ LogicalType::~LogicalType() noexcept {
+ }
+
+@@ -1631,6 +1800,15 @@
+ __isset.UUID = true;
+ }
+
++void LogicalType::__set_GEOMETRY(const GeometryType& val) {
++  this->GEOMETRY = val;
++__isset.GEOMETRY = true;
++}
++
++void LogicalType::__set_GEOGRAPHY(const GeographyType& val) {
++  this->GEOGRAPHY = val;
++__isset.GEOGRAPHY = true;
++}
+ void LogicalType::__set_FLOAT16(const Float16Type& val) {
+   this->FLOAT16 = val;
+ __isset.FLOAT16 = true;
+@@ -1658,10 +1836,12 @@
+   swap(a.BSON, b.BSON);
+   swap(a.UUID, b.UUID);
+   swap(a.FLOAT16, b.FLOAT16);
++  swap(a.GEOMETRY, b.GEOMETRY);
++  swap(a.GEOGRAPHY, b.GEOGRAPHY);
+   swap(a.__isset, b.__isset);
+ }
+
+-LogicalType::LogicalType(const LogicalType& other92) noexcept {
++LogicalType::LogicalType(const LogicalType& other92) {
+   STRING = other92.STRING;
+   MAP = other92.MAP;
+   LIST = other92.LIST;
+@@ -1676,6 +1856,8 @@
+   BSON = other92.BSON;
+   UUID = other92.UUID;
+   FLOAT16 = other92.FLOAT16;
++  GEOMETRY = other92.GEOMETRY;
++  GEOGRAPHY = other92.GEOGRAPHY;
+   __isset = other92.__isset;
+ }
+ LogicalType::LogicalType(LogicalType&& other93) noexcept {
+@@ -1693,9 +1875,11 @@
+   BSON = std::move(other93.BSON);
+   UUID = std::move(other93.UUID);
+   FLOAT16 = std::move(other93.FLOAT16);
++  GEOMETRY = std::move(other93.GEOMETRY);
++  GEOGRAPHY = std::move(other93.GEOGRAPHY);
+   __isset = other93.__isset;
+ }
+-LogicalType& LogicalType::operator=(const LogicalType& other94) noexcept {
++LogicalType& LogicalType::operator=(const LogicalType& other94) {
+   STRING = other94.STRING;
+   MAP = other94.MAP;
+   LIST = other94.LIST;
+@@ -1710,6 +1894,8 @@
+   BSON = other94.BSON;
+   UUID = other94.UUID;
+   FLOAT16 = other94.FLOAT16;
++  GEOMETRY = other94.GEOMETRY;
++  GEOGRAPHY = other94.GEOGRAPHY;
+   __isset = other94.__isset;
+   return *this;
+ }
+@@ -1728,6 +1914,8 @@
+   BSON = std::move(other95.BSON);
+   UUID = std::move(other95.UUID);
+   FLOAT16 = std::move(other95.FLOAT16);
++  GEOMETRY = std::move(other95.GEOMETRY);
++  GEOGRAPHY = std::move(other95.GEOGRAPHY);
+   __isset = other95.__isset;
+   return *this;
+ }
+@@ -1748,6 +1936,8 @@
+   out << ", " << "BSON="; (__isset.BSON ? (out << to_string(BSON)) : (out << "<null>"));
+   out << ", " << "UUID="; (__isset.UUID ? (out << to_string(UUID)) : (out << "<null>"));
+   out << ", " << "FLOAT16="; (__isset.FLOAT16 ? (out << to_string(FLOAT16)) : (out << "<null>"));
++  out << ", " << "GEOMETRY="; (__isset.GEOMETRY ? (out << to_string(GEOMETRY)) : (out << "<null>"));
++  out << ", " << "GEOGRAPHY="; (__isset.GEOGRAPHY ? (out << to_string(GEOGRAPHY)) : (out << "<null>"));
+   out << ")";
+ }
+
+diff --git a/cpp/src/generated/parquet_types.h b/cpp/src/generated/parquet_types.h
+--- a/cpp/src/generated/parquet_types.h
++++ b/cpp/src/generated/parquet_types.h
+@@ -217,6 +217,22 @@
+  * enums are also used to specify the encoding of definition and repetition levels.
+  * See the accompanying doc for the details of the more complicated encodings.
+  */
++struct EdgeInterpolationAlgorithm {
++  enum type {
++    SPHERICAL = 0,
++    VINCENTY = 1,
++    THOMAS = 2,
++    ANDOYER = 3,
++    KARNEY = 4
++  };
++};
++
++extern const std::map<int, const char*> _EdgeInterpolationAlgorithm_VALUES_TO_NAMES;
++
++std::ostream& operator<<(std::ostream& out, const EdgeInterpolationAlgorithm::type& val);
++
++std::string to_string(const EdgeInterpolationAlgorithm::type& val);
++
+ struct Encoding {
+   enum type {
+     /**
+@@ -1467,8 +1483,127 @@
+
+ std::ostream& operator<<(std::ostream& out, const BsonType& obj);
+
++typedef struct _GeometryType__isset {
++  _GeometryType__isset() : crs(false) {}
++  bool crs :1;
++} _GeometryType__isset;
++
++/**
++ * Embedded Geometry logical type annotation
++ *
++ * Geospatial features in the Well-Known Binary (WKB) format and edges interpolation
++ * is always linear/planar.
++ *
++ * A custom CRS can be set by the crs field. If unset, it defaults to "OGC:CRS84",
++ * which means that the geometries must be stored in longitude, latitude based on
++ * the WGS84 datum.
++ *
++ * Allowed for physical type: BYTE_ARRAY.
++ *
++ * See Geospatial.md for details.
++ */
++class GeometryType {
++ public:
++
++  GeometryType(const GeometryType&);
++  GeometryType(GeometryType&&) noexcept;
++  GeometryType& operator=(const GeometryType&);
++  GeometryType& operator=(GeometryType&&) noexcept;
++  GeometryType() noexcept;
++
++  virtual ~GeometryType() noexcept;
++  std::string crs;
++
++  _GeometryType__isset __isset;
++
++  void __set_crs(const std::string& val);
++
++  bool operator == (const GeometryType & rhs) const;
++  bool operator != (const GeometryType &rhs) const {
++    return !(*this == rhs);
++  }
++
++  bool operator < (const GeometryType & ) const;
++
++  template <class Protocol_>
++  uint32_t read(Protocol_* iprot);
++  template <class Protocol_>
++  uint32_t write(Protocol_* oprot) const;
++
++  virtual void printTo(std::ostream& out) const;
++};
++
++void swap(GeometryType &a, GeometryType &b);
++
++std::ostream& operator<<(std::ostream& out, const GeometryType& obj);
++
++typedef struct _GeographyType__isset {
++  _GeographyType__isset() : crs(false), algorithm(false) {}
++  bool crs :1;
++  bool algorithm :1;
++} _GeographyType__isset;
++
++/**
++ * Embedded Geography logical type annotation
++ *
++ * Geospatial features in the WKB format with an explicit (non-linear/non-planar)
++ * edges interpolation algorithm.
++ *
++ * A custom geographic CRS can be set by the crs field, where longitudes are
++ * bound by [-180, 180] and latitudes are bound by [-90, 90]. If unset, the CRS
++ * defaults to "OGC:CRS84".
++ *
++ * An optional algorithm can be set to correctly interpret edges interpolation
++ * of the geometries. If unset, the algorithm defaults to SPHERICAL.
++ *
++ * Allowed for physical type: BYTE_ARRAY.
++ *
++ * See Geospatial.md for details.
++ */
++class GeographyType {
++ public:
++
++  GeographyType(const GeographyType&);
++  GeographyType(GeographyType&&) noexcept;
++  GeographyType& operator=(const GeographyType&);
++  GeographyType& operator=(GeographyType&&) noexcept;
++  GeographyType() noexcept;
++
++  virtual ~GeographyType() noexcept;
++  std::string crs;
++  /**
++   *
++   * @see EdgeInterpolationAlgorithm
++   */
++  EdgeInterpolationAlgorithm::type algorithm;
++
++  _GeographyType__isset __isset;
++
++  void __set_crs(const std::string& val);
++
++  void __set_algorithm(const EdgeInterpolationAlgorithm::type val);
++
++  bool operator == (const GeographyType & rhs) const;
++  bool operator != (const GeographyType &rhs) const {
++    return !(*this == rhs);
++  }
++
++  bool operator < (const GeographyType & ) const;
++
++  template <class Protocol_>
++  uint32_t read(Protocol_* iprot);
++  template <class Protocol_>
++  uint32_t write(Protocol_* oprot) const;
++
++  virtual void printTo(std::ostream& out) const;
++};
++
++void swap(GeographyType &a, GeographyType &b);
++
++std::ostream& operator<<(std::ostream& out, const GeographyType& obj);
++
+ typedef struct _LogicalType__isset {
+-  _LogicalType__isset() : STRING(false), MAP(false), LIST(false), ENUM(false), DECIMAL(false), DATE(false), TIME(false), TIMESTAMP(false), INTEGER(false), UNKNOWN(false), JSON(false), BSON(false), UUID(false), FLOAT16(false) {}
++  _LogicalType__isset() : STRING(false), MAP(false), LIST(false), ENUM(false), DECIMAL(false), DATE(false), TIME(false), TIMESTAMP(false), INTEGER(false), UNKNOWN(false), JSON(false), BSON(false), UUID(false), FLOAT16(false), GEOMETRY(false), GEOGRAPHY(false) {}
+   bool STRING :1;
+   bool MAP :1;
+   bool LIST :1;
+@@ -1483,6 +1618,8 @@
+   bool BSON :1;
+   bool UUID :1;
+   bool FLOAT16 :1;
++  bool GEOMETRY :1;
++  bool GEOGRAPHY :1;
+ } _LogicalType__isset;
+
+ /**
+@@ -1495,9 +1632,9 @@
+ class LogicalType {
+  public:
+
+-  LogicalType(const LogicalType&) noexcept;
++  LogicalType(const LogicalType&);
+   LogicalType(LogicalType&&) noexcept;
+-  LogicalType& operator=(const LogicalType&) noexcept;
++  LogicalType& operator=(const LogicalType&);
+   LogicalType& operator=(LogicalType&&) noexcept;
+   LogicalType() noexcept {
+   }
+@@ -1517,6 +1654,8 @@
+   BsonType BSON;
+   UUIDType UUID;
+   Float16Type FLOAT16;
++  GeometryType GEOMETRY;
++  GeographyType GEOGRAPHY;
+
+   _LogicalType__isset __isset;
+
+@@ -1547,6 +1686,8 @@
+   void __set_UUID(const UUIDType& val);
+
+   void __set_FLOAT16(const Float16Type& val);
++  void __set_GEOMETRY(const GeometryType& val);
++  void __set_GEOGRAPHY(const GeographyType& val);
+
+   bool operator == (const LogicalType & rhs) const
+   {
+@@ -1605,6 +1746,14 @@
+     if (__isset.FLOAT16 != rhs.__isset.FLOAT16)
+       return false;
+     else if (__isset.FLOAT16 && !(FLOAT16 == rhs.FLOAT16))
++      return false;
++    if (__isset.GEOMETRY != rhs.__isset.GEOMETRY)
++      return false;
++    else if (__isset.GEOMETRY && !(GEOMETRY == rhs.GEOMETRY))
++      return false;
++    if (__isset.GEOGRAPHY != rhs.__isset.GEOGRAPHY)
++      return false;
++    else if (__isset.GEOGRAPHY && !(GEOGRAPHY == rhs.GEOGRAPHY))
+       return false;
+     return true;
+   }
+diff --git a/cpp/src/generated/parquet_types.tcc b/cpp/src/generated/parquet_types.tcc
+--- a/cpp/src/generated/parquet_types.tcc
++++ b/cpp/src/generated/parquet_types.tcc
+@@ -1189,6 +1189,137 @@
+ }
+
+ template <class Protocol_>
++uint32_t GeometryType::read(Protocol_* iprot) {
++
++  ::apache::thrift::protocol::TInputRecursionTracker tracker(*iprot);
++  uint32_t xfer = 0;
++  std::string fname;
++  ::apache::thrift::protocol::TType ftype;
++  int16_t fid;
++
++  xfer += iprot->readStructBegin(fname);
++
++  using ::apache::thrift::protocol::TProtocolException;
++
++
++  while (true)
++  {
++    xfer += iprot->readFieldBegin(fname, ftype, fid);
++    if (ftype == ::apache::thrift::protocol::T_STOP) {
++      break;
++    }
++    switch (fid)
++    {
++      case 1:
++        if (ftype == ::apache::thrift::protocol::T_STRING) {
++          xfer += iprot->readString(this->crs);
++          this->__isset.crs = true;
++        } else {
++          xfer += iprot->skip(ftype);
++        }
++        break;
++      default:
++        xfer += iprot->skip(ftype);
++        break;
++    }
++    xfer += iprot->readFieldEnd();
++  }
++
++  xfer += iprot->readStructEnd();
++
++  return xfer;
++}
++
++template <class Protocol_>
++uint32_t GeometryType::write(Protocol_* oprot) const {
++  uint32_t xfer = 0;
++  ::apache::thrift::protocol::TOutputRecursionTracker tracker(*oprot);
++  xfer += oprot->writeStructBegin("GeometryType");
++
++  if (this->__isset.crs) {
++    xfer += oprot->writeFieldBegin("crs", ::apache::thrift::protocol::T_STRING, 1);
++    xfer += oprot->writeString(this->crs);
++    xfer += oprot->writeFieldEnd();
++  }
++  xfer += oprot->writeFieldStop();
++  xfer += oprot->writeStructEnd();
++  return xfer;
++}
++
++template <class Protocol_>
++uint32_t GeographyType::read(Protocol_* iprot) {
++
++  ::apache::thrift::protocol::TInputRecursionTracker tracker(*iprot);
++  uint32_t xfer = 0;
++  std::string fname;
++  ::apache::thrift::protocol::TType ftype;
++  int16_t fid;
++
++  xfer += iprot->readStructBegin(fname);
++
++  using ::apache::thrift::protocol::TProtocolException;
++
++
++  while (true)
++  {
++    xfer += iprot->readFieldBegin(fname, ftype, fid);
++    if (ftype == ::apache::thrift::protocol::T_STOP) {
++      break;
++    }
++    switch (fid)
++    {
++      case 1:
++        if (ftype == ::apache::thrift::protocol::T_STRING) {
++          xfer += iprot->readString(this->crs);
++          this->__isset.crs = true;
++        } else {
++          xfer += iprot->skip(ftype);
++        }
++        break;
++      case 2:
++        if (ftype == ::apache::thrift::protocol::T_I32) {
++          int32_t ecast114;
++          xfer += iprot->readI32(ecast114);
++          this->algorithm = static_cast<EdgeInterpolationAlgorithm::type>(ecast114);
++          this->__isset.algorithm = true;
++        } else {
++          xfer += iprot->skip(ftype);
++        }
++        break;
++      default:
++        xfer += iprot->skip(ftype);
++        break;
++    }
++    xfer += iprot->readFieldEnd();
++  }
++
++  xfer += iprot->readStructEnd();
++
++  return xfer;
++}
++
++template <class Protocol_>
++uint32_t GeographyType::write(Protocol_* oprot) const {
++  uint32_t xfer = 0;
++  ::apache::thrift::protocol::TOutputRecursionTracker tracker(*oprot);
++  xfer += oprot->writeStructBegin("GeographyType");
++
++  if (this->__isset.crs) {
++    xfer += oprot->writeFieldBegin("crs", ::apache::thrift::protocol::T_STRING, 1);
++    xfer += oprot->writeString(this->crs);
++    xfer += oprot->writeFieldEnd();
++  }
++  if (this->__isset.algorithm) {
++    xfer += oprot->writeFieldBegin("algorithm", ::apache::thrift::protocol::T_I32, 2);
++    xfer += oprot->writeI32(static_cast<int32_t>(this->algorithm));
++    xfer += oprot->writeFieldEnd();
++  }
++  xfer += oprot->writeFieldStop();
++  xfer += oprot->writeStructEnd();
++  return xfer;
++}
++
++template <class Protocol_>
+ uint32_t LogicalType::read(Protocol_* iprot) {
+
+   ::apache::thrift::protocol::TInputRecursionTracker tracker(*iprot);
+@@ -1322,6 +1453,22 @@
+           xfer += iprot->skip(ftype);
+         }
+         break;
++      case 17:
++        if (ftype == ::apache::thrift::protocol::T_STRUCT) {
++          xfer += this->GEOMETRY.read(iprot);
++          this->__isset.GEOMETRY = true;
++        } else {
++          xfer += iprot->skip(ftype);
++        }
++        break;
++      case 18:
++        if (ftype == ::apache::thrift::protocol::T_STRUCT) {
++          xfer += this->GEOGRAPHY.read(iprot);
++          this->__isset.GEOGRAPHY = true;
++        } else {
++          xfer += iprot->skip(ftype);
++        }
++        break;
+       default:
+         xfer += iprot->skip(ftype);
+         break;
+@@ -1408,6 +1555,16 @@
+   if (this->__isset.FLOAT16) {
+     xfer += oprot->writeFieldBegin("FLOAT16", ::apache::thrift::protocol::T_STRUCT, 15);
+     xfer += this->FLOAT16.write(oprot);
++    xfer += oprot->writeFieldEnd();
++  }
++  if (this->__isset.GEOMETRY) {
++    xfer += oprot->writeFieldBegin("GEOMETRY", ::apache::thrift::protocol::T_STRUCT, 17);
++    xfer += this->GEOMETRY.write(oprot);
++    xfer += oprot->writeFieldEnd();
++  }
++  if (this->__isset.GEOGRAPHY) {
++    xfer += oprot->writeFieldBegin("GEOGRAPHY", ::apache::thrift::protocol::T_STRUCT, 18);
++    xfer += this->GEOGRAPHY.write(oprot);
+     xfer += oprot->writeFieldEnd();
+   }
+   xfer += oprot->writeFieldStop();
+diff --git a/cpp/src/parquet/CMakeLists.txt b/cpp/src/parquet/CMakeLists.txt
+--- a/cpp/src/parquet/CMakeLists.txt
++++ b/cpp/src/parquet/CMakeLists.txt
+@@ -340,6 +340,7 @@
+
+ # Thrift requires these definitions for some types that we use
+ foreach(LIB_TARGET ${PARQUET_LIBRARIES})
++  target_link_libraries(${LIB_TARGET} PRIVATE "$<BUILD_INTERFACE:RapidJSON>")
+   target_compile_definitions(${LIB_TARGET}
+                              PRIVATE PARQUET_EXPORTING
+                              PRIVATE HAVE_INTTYPES_H
+diff --git a/cpp/src/parquet/arrow/schema.cc b/cpp/src/parquet/arrow/schema.cc
+--- a/cpp/src/parquet/arrow/schema.cc
++++ b/cpp/src/parquet/arrow/schema.cc
+@@ -28,6 +28,10 @@
+ #include "arrow/type.h"
+ #include "arrow/util/base64.h"
+ #include "arrow/util/checked_cast.h"
++#include "arrow/json/rapidjson_defs.h"
++#include <rapidjson/document.h>
++#include <rapidjson/stringbuffer.h>
++#include <rapidjson/writer.h>
+ #include "arrow/util/key_value_metadata.h"
+ #include "arrow/util/logging.h"
+ #include "arrow/util/string.h"
+@@ -276,10 +280,86 @@
+   }
+ }
+
++constexpr char kExtensionName[] = "ARROW:extension:name";
++constexpr char kExtensionMetadata[] = "ARROW:extension:metadata";
++constexpr char kWkbExtension[] = "geoarrow.wkb";
++
++::arrow::Result<std::shared_ptr<const LogicalType>> GeospatialLogicalType(
++    const Field& field) {
++  const auto& metadata = field.metadata();
++  int index = metadata ? metadata->FindKey(kExtensionName) : -1;
++  if (index < 0 || metadata->value(index) != kWkbExtension) {
++    return LogicalType::None();
++  }
++  if (field.type()->id() != ArrowTypeId::BINARY) {
++    return Status::Invalid("geoarrow.wkb requires Binary storage");
++  }
++
++  std::string crs = "OGC:CRS84";
++  std::string edges = "planar";
++  if (metadata->Contains(kExtensionMetadata)) {
++    ASSIGN_OR_RAISE(auto json, metadata->Get(kExtensionMetadata));
++    ::arrow::rapidjson::Document doc;
++    doc.Parse(json.data(), json.size());
++    if (doc.HasParseError() || !doc.IsObject()) {
++      return Status::Invalid("Invalid geoarrow.wkb metadata");
++    }
++    if (doc.HasMember("crs")) {
++      if (!doc["crs"].IsString() || doc["crs"].GetStringLength() == 0) {
++        return Status::Invalid("geoarrow.wkb requires a nonempty CRS");
++      }
++      crs.assign(doc["crs"].GetString(), doc["crs"].GetStringLength());
++    }
++    if (doc.HasMember("edges")) {
++      if (!doc["edges"].IsString()) {
++        return Status::Invalid("geoarrow.wkb edges must be a string");
++      }
++      edges.assign(doc["edges"].GetString(), doc["edges"].GetStringLength());
++    }
++  }
++  if (edges == "planar") return LogicalType::Geometry(std::move(crs));
++
++  using Algorithm = LogicalType::EdgeInterpolationAlgorithm;
++  static constexpr std::pair<std::string_view, Algorithm> algorithms[] = {
++      {"spherical", Algorithm::SPHERICAL}, {"vincenty", Algorithm::VINCENTY},
++      {"thomas", Algorithm::THOMAS}, {"andoyer", Algorithm::ANDOYER},
++      {"karney", Algorithm::KARNEY}};
++  for (const auto& [name, algorithm] : algorithms) {
++    if (::arrow::internal::AsciiEqualsCaseInsensitive(edges, name)) {
++      return LogicalType::Geography(std::move(crs), algorithm);
++    }
++  }
++  return Status::Invalid("Invalid geoarrow.wkb edge interpolation algorithm: ", edges);
++}
++
++std::shared_ptr<const KeyValueMetadata> GeospatialMetadata(const LogicalType& type) {
++  if (!type.is_geometry() && !type.is_geography()) return nullptr;
++  namespace rj = ::arrow::rapidjson;
++  std::string_view crs;
++  rj::StringBuffer buffer;
++  rj::Writer<rj::StringBuffer> writer(buffer);
++  writer.StartObject();
++  if (type.is_geography()) {
++    const auto& geography = checked_cast<const GeographyLogicalType&>(type);
++    crs = geography.crs();
++    writer.Key("edges");
++    auto edges = geography.algorithm_name();
++    writer.String(edges.data(), static_cast<rj::SizeType>(edges.size()));
++  } else {
++    crs = checked_cast<const GeometryLogicalType&>(type).crs();
++  }
++  if (crs.empty()) crs = "OGC:CRS84";
++  writer.Key("crs");
++  writer.String(crs.data(), static_cast<rj::SizeType>(crs.size()));
++  writer.EndObject();
++  return ::arrow::key_value_metadata({kExtensionName, kExtensionMetadata},
++                                     {kWkbExtension, buffer.GetString()});
++}
++
+ Status FieldToNode(const std::string& name, const std::shared_ptr<Field>& field,
+                    const WriterProperties& properties,
+                    const ArrowWriterProperties& arrow_properties, NodePtr* out) {
+-  std::shared_ptr<const LogicalType> logical_type = LogicalType::None();
++  ASSIGN_OR_RAISE(auto logical_type, GeospatialLogicalType(*field));
+   ParquetType::type type;
+   Repetition::type repetition = RepetitionFromNullable(field->nullable());
+   int field_id = FieldIdFromMetadata(field->metadata());
+@@ -497,7 +577,8 @@
+ Status PopulateLeaf(int column_index, const std::shared_ptr<Field>& field,
+                     LevelInfo current_levels, SchemaTreeContext* ctx,
+                     const SchemaField* parent, SchemaField* out) {
+-  out->field = field;
++  auto geo_metadata = GeospatialMetadata(*ctx->schema->Column(column_index)->logical_type());
++  out->field = geo_metadata ? field->WithMergedMetadata(geo_metadata) : field;
+   out->column_index = column_index;
+   out->level_info = current_levels;
+   ctx->RecordLeaf(out);
+@@ -772,7 +853,7 @@
+       RETURN_NOT_OK(PopulateLeaf(column_index, child_field, current_levels, ctx, out,
+                                  &out->children[0]));
+
+-      out->field = ::arrow::field(node.name(), ::arrow::list(child_field),
++      out->field = ::arrow::field(node.name(), ::arrow::list(out->children[0].field),
+                                   /*nullable=*/false, FieldIdMetadata(node.field_id()));
+       out->level_info = current_levels;
+       // At this point current_levels has consider this list the ancestor so restore
+diff --git a/cpp/src/parquet/arrow/schema_internal.cc b/cpp/src/parquet/arrow/schema_internal.cc
+--- a/cpp/src/parquet/arrow/schema_internal.cc
++++ b/cpp/src/parquet/arrow/schema_internal.cc
+@@ -116,6 +116,8 @@
+     case LogicalType::Type::NONE:
+     case LogicalType::Type::ENUM:
+     case LogicalType::Type::JSON:
++    case LogicalType::Type::GEOMETRY:
++    case LogicalType::Type::GEOGRAPHY:
+     case LogicalType::Type::BSON:
+       return ::arrow::binary();
+     default:
+diff --git a/cpp/src/parquet/column_writer.cc b/cpp/src/parquet/column_writer.cc
+--- a/cpp/src/parquet/column_writer.cc
++++ b/cpp/src/parquet/column_writer.cc
+@@ -1224,7 +1224,8 @@
+     current_dict_encoder_ = dynamic_cast<DictEncoder<DType>*>(current_encoder_.get());
+
+     if (properties->statistics_enabled(descr_->path()) &&
+-        (SortOrder::UNKNOWN != descr_->sort_order())) {
++        (SortOrder::UNKNOWN != descr_->sort_order() ||
++         descr_->logical_type()->is_geometry() || descr_->logical_type()->is_geography())) {
+       page_statistics_ = MakeStatistics<DType>(descr_, allocator_);
+       chunk_statistics_ = MakeStatistics<DType>(descr_, allocator_);
+     }
+diff --git a/cpp/src/parquet/metadata.cc b/cpp/src/parquet/metadata.cc
+--- a/cpp/src/parquet/metadata.cc
++++ b/cpp/src/parquet/metadata.cc
+@@ -255,13 +255,16 @@
+     DCHECK(writer_version_ != nullptr);
+     // If the column statistics don't exist or column sort order is unknown
+     // we cannot use the column stats
++    const auto& logical_type = descr_->logical_type();
++    const bool geospatial = logical_type->is_geometry() || logical_type->is_geography();
+     if (!column_metadata_->__isset.statistics ||
+-        descr_->sort_order() == SortOrder::UNKNOWN) {
++        (descr_->sort_order() == SortOrder::UNKNOWN && !geospatial)) {
+       return false;
+     }
+     if (possible_stats_ == nullptr) {
+       possible_stats_ = MakeColumnStats(*column_metadata_, descr_);
+     }
++    if (geospatial) return possible_stats_->HasNullCount();
+     EncodedStatistics encodedStatistics = possible_stats_->Encode();
+     return writer_version_->HasCorrectStatistics(type(), encodedStatistics,
+                                                  descr_->sort_order());
+diff --git a/cpp/src/parquet/parquet.thrift b/cpp/src/parquet/parquet.thrift
+--- a/cpp/src/parquet/parquet.thrift
++++ b/cpp/src/parquet/parquet.thrift
+@@ -374,6 +374,54 @@
+ struct BsonType {
+ }
+
++enum EdgeInterpolationAlgorithm {
++  SPHERICAL = 0;
++  VINCENTY = 1;
++  THOMAS = 2;
++  ANDOYER = 3;
++  KARNEY = 4;
++}
++
++/**
++ * Embedded Geometry logical type annotation
++ *
++ * Geospatial features in the Well-Known Binary (WKB) format and edges interpolation
++ * is always linear/planar.
++ *
++ * A custom CRS can be set by the crs field. If unset, it defaults to "OGC:CRS84",
++ * which means that the geometries must be stored in longitude, latitude based on
++ * the WGS84 datum.
++ *
++ * Allowed for physical type: BYTE_ARRAY.
++ *
++ * See Geospatial.md for details.
++ */
++struct GeometryType {
++  1: optional string crs;
++}
++
++/**
++ * Embedded Geography logical type annotation
++ *
++ * Geospatial features in the WKB format with an explicit (non-linear/non-planar)
++ * edges interpolation algorithm.
++ *
++ * A custom geographic CRS can be set by the crs field, where longitudes are
++ * bound by [-180, 180] and latitudes are bound by [-90, 90]. If unset, the CRS
++ * defaults to "OGC:CRS84".
++ *
++ * An optional algorithm can be set to correctly interpret edges interpolation
++ * of the geometries. If unset, the algorithm defaults to SPHERICAL.
++ *
++ * Allowed for physical type: BYTE_ARRAY.
++ *
++ * See Geospatial.md for details.
++ */
++struct GeographyType {
++  1: optional string crs;
++  2: optional EdgeInterpolationAlgorithm algorithm;
++}
++
+ /**
+  * LogicalType annotations to replace ConvertedType.
+  *
+@@ -403,6 +451,8 @@
+   12: JsonType JSON           // use ConvertedType JSON
+   13: BsonType BSON           // use ConvertedType BSON
+   14: UUIDType UUID           // no compatible ConvertedType
++  17: GeometryType GEOMETRY
++  18: GeographyType GEOGRAPHY
+   15: Float16Type FLOAT16     // no compatible ConvertedType
+ }
+
+diff --git a/cpp/src/parquet/statistics.cc b/cpp/src/parquet/statistics.cc
+--- a/cpp/src/parquet/statistics.cc
++++ b/cpp/src/parquet/statistics.cc
+@@ -569,7 +569,10 @@
+         min_buffer_(AllocateBuffer(pool_, 0)),
+         max_buffer_(AllocateBuffer(pool_, 0)),
+         logical_type_(LogicalTypeId(descr_)) {
+-    comparator_ = MakeComparator<DType>(descr);
++    if (logical_type_ != LogicalType::Type::GEOMETRY &&
++        logical_type_ != LogicalType::Type::GEOGRAPHY) {
++      comparator_ = MakeComparator<DType>(descr);
++    }
+     TypedStatisticsImpl::Reset();
+   }
+
+@@ -606,13 +609,13 @@
+       has_distinct_count_ = false;
+     }
+
+-    if (!encoded_min.empty()) {
++    if (comparator_ && !encoded_min.empty()) {
+       PlainDecode(encoded_min, &min_);
+     }
+-    if (!encoded_max.empty()) {
++    if (comparator_ && !encoded_max.empty()) {
+       PlainDecode(encoded_max, &max_);
+     }
+-    has_min_max_ = has_min_max;
++    has_min_max_ = comparator_ && has_min_max;
+   }
+
+   bool HasDistinctCount() const override { return has_distinct_count_; };
+@@ -667,6 +670,8 @@
+   }
+
+   void SetMinMax(const T& arg_min, const T& arg_max) override {
++    if (logical_type_ == LogicalType::Type::GEOMETRY ||
++        logical_type_ == LogicalType::Type::GEOGRAPHY) return;
+     SetMinMaxPair({arg_min, arg_max});
+   }
+
+@@ -707,7 +712,7 @@
+       IncrementNumValues(values.length() - values.null_count());
+     }
+
+-    if (values.null_count() == values.length()) {
++    if (!comparator_ || values.null_count() == values.length()) {
+       return;
+     }
+
+@@ -863,7 +868,7 @@
+   IncrementNullCount(null_count);
+   IncrementNumValues(num_values);
+
+-  if (num_values == 0) return;
++  if (!comparator_ || num_values == 0) return;
+   SetMinMaxPair(comparator_->GetMinMax(values, num_values));
+ }
+
+@@ -878,7 +883,7 @@
+   IncrementNullCount(null_count);
+   IncrementNumValues(num_values);
+
+-  if (num_values == 0) return;
++  if (!comparator_ || num_values == 0) return;
+   SetMinMaxPair(comparator_->GetMinMaxSpaced(values, num_spaced_values, valid_bits,
+                                              valid_bits_offset));
+ }
+diff --git a/cpp/src/parquet/types.cc b/cpp/src/parquet/types.cc
+--- a/cpp/src/parquet/types.cc
++++ b/cpp/src/parquet/types.cc
+@@ -22,6 +22,10 @@
+ #include <string>
+
+ #include "arrow/util/checked_cast.h"
++#include "arrow/json/rapidjson_defs.h"
++#include <rapidjson/document.h>
++#include <rapidjson/stringbuffer.h>
++#include <rapidjson/writer.h>
+ #include "arrow/util/compression.h"
+ #include "arrow/util/logging.h"
+
+@@ -463,6 +467,32 @@
+     return UUIDLogicalType::Make();
+   } else if (type.__isset.FLOAT16) {
+     return Float16LogicalType::Make();
++  } else if (type.__isset.GEOMETRY) {
++    std::string crs;
++    if (type.GEOMETRY.__isset.crs) {
++      crs = type.GEOMETRY.crs;
++    }
++
++    return GeometryLogicalType::Make(std::move(crs));
++  } else if (type.__isset.GEOGRAPHY) {
++    std::string crs;
++    if (type.GEOGRAPHY.__isset.crs) {
++      crs = type.GEOGRAPHY.crs;
++    }
++
++    LogicalType::EdgeInterpolationAlgorithm algorithm;
++    if (!type.GEOGRAPHY.__isset.algorithm) {
++      algorithm = LogicalType::EdgeInterpolationAlgorithm::SPHERICAL;
++    } else {
++      int32_t value = static_cast<int32_t>(type.GEOGRAPHY.algorithm);
++      if (value < 0 || value > 4) {
++        throw ParquetException("Unrecognized geography edge interpolation algorithm");
++      }
++      algorithm = static_cast<LogicalType::EdgeInterpolationAlgorithm>(value + 1);
++    }
++
++    return GeographyLogicalType::Make(std::move(crs), algorithm);
++
+   } else {
+     throw ParquetException("Metadata contains Thrift LogicalType that is not recognized");
+   }
+@@ -518,6 +548,15 @@
+
+ std::shared_ptr<const LogicalType> LogicalType::Float16() {
+   return Float16LogicalType::Make();
++}
++
++std::shared_ptr<const LogicalType> LogicalType::Geometry(std::string crs) {
++  return GeometryLogicalType::Make(std::move(crs));
++}
++
++std::shared_ptr<const LogicalType> LogicalType::Geography(
++    std::string crs, LogicalType::EdgeInterpolationAlgorithm algorithm) {
++  return GeographyLogicalType::Make(std::move(crs), algorithm);
+ }
+
+ std::shared_ptr<const LogicalType> LogicalType::None() { return NoLogicalType::Make(); }
+@@ -602,6 +641,8 @@
+   class BSON;
+   class UUID;
+   class Float16;
++  class Geometry;
++  class Geography;
+   class No;
+   class Undefined;
+
+@@ -673,6 +714,12 @@
+ bool LogicalType::is_UUID() const { return impl_->type() == LogicalType::Type::UUID; }
+ bool LogicalType::is_float16() const {
+   return impl_->type() == LogicalType::Type::FLOAT16;
++}
++bool LogicalType::is_geometry() const {
++  return impl_->type() == LogicalType::Type::GEOMETRY;
++}
++bool LogicalType::is_geography() const {
++  return impl_->type() == LogicalType::Type::GEOGRAPHY;
+ }
+ bool LogicalType::is_none() const { return impl_->type() == LogicalType::Type::NONE; }
+ bool LogicalType::is_valid() const {
+@@ -1603,6 +1650,198 @@
+
+ GENERATE_MAKE(Float16)
+
++namespace {
++void WriteCrsKeyAndValue(const std::string_view crs, std::ostream& json) {
++  // There is no restriction on the crs value here, and it may contain quotes
++  // or backslashes that would result in invalid JSON if unescaped.
++  namespace rj = ::arrow::rapidjson;
++  rj::StringBuffer buffer;
++  rj::Writer<rj::StringBuffer> writer(buffer);
++  rj::Value v;
++  v.SetString(crs.data(), static_cast<int32_t>(crs.size()));
++  v.Accept(writer);
++  json << R"(, "crs": )" << buffer.GetString();
++}
++}  // namespace
++
++class LogicalType::Impl::Geometry final : public LogicalType::Impl::Incompatible,
++                                          public LogicalType::Impl::SimpleApplicable {
++ public:
++  friend class GeometryLogicalType;
++
++  std::string ToString() const override;
++  std::string ToJSON() const override;
++  format::LogicalType ToThrift() const override;
++  bool Equals(const LogicalType& other) const override;
++
++  const std::string& crs() const { return crs_; }
++
++ private:
++  explicit Geometry(std::string crs)
++      : LogicalType::Impl(LogicalType::Type::GEOMETRY, SortOrder::UNKNOWN),
++        LogicalType::Impl::SimpleApplicable(parquet::Type::BYTE_ARRAY),
++        crs_(std::move(crs)) {}
++
++  std::string crs_;
++};
++
++std::string LogicalType::Impl::Geometry::ToString() const {
++  std::stringstream type;
++  type << "Geometry(crs=" << crs_ << ")";
++  return type.str();
++}
++
++std::string LogicalType::Impl::Geometry::ToJSON() const {
++  std::stringstream json;
++  json << R"({"Type": "Geometry")";
++
++  if (!crs_.empty()) {
++    WriteCrsKeyAndValue(crs_, json);
++  }
++
++  json << "}";
++  return json.str();
++}
++
++format::LogicalType LogicalType::Impl::Geometry::ToThrift() const {
++  format::LogicalType type;
++  format::GeometryType geometry_type;
++
++  // Canonically export crs of "" as an unset CRS
++  if (!crs_.empty()) {
++    geometry_type.__set_crs(crs_);
++  }
++
++  type.__set_GEOMETRY(geometry_type);
++  return type;
++}
++
++bool LogicalType::Impl::Geometry::Equals(const LogicalType& other) const {
++  if (other.is_geometry()) {
++    const auto& other_geometry = checked_cast<const GeometryLogicalType&>(other);
++    return crs() == other_geometry.crs();
++  } else {
++    return false;
++  }
++}
++
++const std::string& GeometryLogicalType::crs() const {
++  return (dynamic_cast<const LogicalType::Impl::Geometry&>(*impl_)).crs();
++}
++
++std::shared_ptr<const LogicalType> GeometryLogicalType::Make(std::string crs) {
++  auto logical_type = std::shared_ptr<GeometryLogicalType>(new GeometryLogicalType());
++  logical_type->impl_.reset(new LogicalType::Impl::Geometry(std::move(crs)));
++  return logical_type;
++}
++
++class LogicalType::Impl::Geography final : public LogicalType::Impl::Incompatible,
++                                           public LogicalType::Impl::SimpleApplicable {
++ public:
++  friend class GeographyLogicalType;
++
++  std::string ToString() const override;
++  std::string ToJSON() const override;
++  format::LogicalType ToThrift() const override;
++  bool Equals(const LogicalType& other) const override;
++
++  const std::string& crs() const { return crs_; }
++  LogicalType::EdgeInterpolationAlgorithm algorithm() const { return algorithm_; }
++
++  std::string_view algorithm_name() const {
++    switch (algorithm_) {
++      case LogicalType::EdgeInterpolationAlgorithm::SPHERICAL:
++        return "spherical";
++      case LogicalType::EdgeInterpolationAlgorithm::VINCENTY:
++        return "vincenty";
++      case LogicalType::EdgeInterpolationAlgorithm::THOMAS:
++        return "thomas";
++      case LogicalType::EdgeInterpolationAlgorithm::ANDOYER:
++        return "andoyer";
++      case LogicalType::EdgeInterpolationAlgorithm::KARNEY:
++        return "karney";
++      default:
++        return "unknown";
++    }
++  }
++
++ private:
++  Geography(std::string crs, LogicalType::EdgeInterpolationAlgorithm algorithm)
++      : LogicalType::Impl(LogicalType::Type::GEOGRAPHY, SortOrder::UNKNOWN),
++        LogicalType::Impl::SimpleApplicable(parquet::Type::BYTE_ARRAY),
++        crs_(std::move(crs)),
++        algorithm_(algorithm) {}
++
++  std::string crs_;
++  LogicalType::EdgeInterpolationAlgorithm algorithm_;
++};
++
++std::string LogicalType::Impl::Geography::ToString() const {
++  std::stringstream type;
++  type << "Geography(crs=" << crs_ << ", algorithm=" << algorithm_name() << ")";
++  return type.str();
++}
++
++std::string LogicalType::Impl::Geography::ToJSON() const {
++  std::stringstream json;
++  json << R"({"Type": "Geography")";
++
++  if (!crs_.empty()) {
++    WriteCrsKeyAndValue(crs_, json);
++  }
++
++  if (algorithm_ != LogicalType::EdgeInterpolationAlgorithm::SPHERICAL) {
++    json << R"(, "algorithm": ")" << algorithm_name() << R"(")";
++  }
++
++  json << "}";
++  return json.str();
++}
++
++format::LogicalType LogicalType::Impl::Geography::ToThrift() const {
++  format::LogicalType type;
++  format::GeographyType geography_type;
++
++  // Canonically export crs of "" as an unset CRS
++  if (!crs_.empty()) {
++    geography_type.__set_crs(crs_);
++  }
++
++  geography_type.__set_algorithm(static_cast<format::EdgeInterpolationAlgorithm::type>(
++      static_cast<int32_t>(algorithm_) - 1));
++
++  type.__set_GEOGRAPHY(geography_type);
++  return type;
++}
++
++bool LogicalType::Impl::Geography::Equals(const LogicalType& other) const {
++  if (other.is_geography()) {
++    const auto& other_geography = checked_cast<const GeographyLogicalType&>(other);
++    return crs() == other_geography.crs() && algorithm() == other_geography.algorithm();
++  } else {
++    return false;
++  }
++}
++
++const std::string& GeographyLogicalType::crs() const {
++  return (dynamic_cast<const LogicalType::Impl::Geography&>(*impl_)).crs();
++}
++
++LogicalType::EdgeInterpolationAlgorithm GeographyLogicalType::algorithm() const {
++  return (dynamic_cast<const LogicalType::Impl::Geography&>(*impl_)).algorithm();
++}
++
++std::string_view GeographyLogicalType::algorithm_name() const {
++  return (dynamic_cast<const LogicalType::Impl::Geography&>(*impl_)).algorithm_name();
++}
++
++std::shared_ptr<const LogicalType> GeographyLogicalType::Make(
++    std::string crs, LogicalType::EdgeInterpolationAlgorithm algorithm) {
++  auto logical_type = std::shared_ptr<GeographyLogicalType>(new GeographyLogicalType());
++  logical_type->impl_.reset(new LogicalType::Impl::Geography(std::move(crs), algorithm));
++  return logical_type;
++}
++
+ class LogicalType::Impl::No final : public LogicalType::Impl::SimpleCompatible,
+                                     public LogicalType::Impl::UniversalApplicable {
+  public:
+diff --git a/cpp/src/parquet/types.h b/cpp/src/parquet/types.h
+--- a/cpp/src/parquet/types.h
++++ b/cpp/src/parquet/types.h
+@@ -158,12 +158,23 @@
+       BSON,
+       UUID,
+       FLOAT16,
++      GEOMETRY,
++      GEOGRAPHY,
+       NONE  // Not a real logical type; should always be last element
+     };
+   };
+
+   struct TimeUnit {
+     enum unit { UNKNOWN = 0, MILLIS = 1, MICROS, NANOS };
++  };
++
++  enum class EdgeInterpolationAlgorithm {
++    UNKNOWN = 0,
++    SPHERICAL = 1,
++    VINCENTY = 2,
++    THOMAS = 3,
++    ANDOYER = 4,
++    KARNEY = 5
+   };
+
+   /// \brief If possible, return a logical type equivalent to the given legacy
+@@ -212,6 +223,12 @@
+   static std::shared_ptr<const LogicalType> BSON();
+   static std::shared_ptr<const LogicalType> UUID();
+   static std::shared_ptr<const LogicalType> Float16();
++
++  static std::shared_ptr<const LogicalType> Geometry(std::string crs = "");
++
++  static std::shared_ptr<const LogicalType> Geography(
++      std::string crs = "", LogicalType::EdgeInterpolationAlgorithm algorithm =
++                                EdgeInterpolationAlgorithm::SPHERICAL);
+
+   /// \brief Create a placeholder for when no logical type is specified
+   static std::shared_ptr<const LogicalType> None();
+@@ -266,6 +283,8 @@
+   bool is_BSON() const;
+   bool is_UUID() const;
+   bool is_float16() const;
++  bool is_geometry() const;
++  bool is_geography() const;
+   bool is_none() const;
+   /// \brief Return true if this logical type is of a known type.
+   bool is_valid() const;
+@@ -444,6 +463,30 @@
+
+  private:
+   Float16LogicalType() = default;
++};
++
++class PARQUET_EXPORT GeometryLogicalType : public LogicalType {
++ public:
++  static std::shared_ptr<const LogicalType> Make(std::string crs = "");
++
++  const std::string& crs() const;
++
++ private:
++  GeometryLogicalType() = default;
++};
++
++class PARQUET_EXPORT GeographyLogicalType : public LogicalType {
++ public:
++  static std::shared_ptr<const LogicalType> Make(
++      std::string crs = "", LogicalType::EdgeInterpolationAlgorithm algorithm =
++                                EdgeInterpolationAlgorithm::SPHERICAL);
++
++  const std::string& crs() const;
++  LogicalType::EdgeInterpolationAlgorithm algorithm() const;
++  std::string_view algorithm_name() const;
++
++ private:
++  GeographyLogicalType() = default;
+ };
+
+ /// \brief Allowed for any physical type.

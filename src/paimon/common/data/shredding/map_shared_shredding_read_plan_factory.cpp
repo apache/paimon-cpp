@@ -226,8 +226,7 @@ MapSharedShreddingReadPlanFactory::CreateMapReadPlan(
     }
     std::shared_ptr<arrow::DataType> physical_type =
         MapSharedShreddingUtils::BuildSpecificPhysicalStructType(
-            logical_map_type->item_type(), selected_physical_column_ids,
-            logical_map_type->item_field()->nullable(), include_overflow);
+            logical_map_type->item_field(), selected_physical_column_ids, include_overflow);
     auto physical_read_field = logical_map_field->WithType(physical_type);
     std::shared_ptr<ShreddingColumnReadPlan> read_plan = std::make_shared<FullMapReadPlan>(
         logical_map_field, physical_read_field, ResolveSelectedKeyIds(meta, selected_keys));
@@ -267,8 +266,7 @@ MapSharedShreddingReadPlanFactory::CreateSharedSelectedKeysReadPlan(
     }
     std::shared_ptr<arrow::DataType> physical_type =
         MapSharedShreddingUtils::BuildSpecificPhysicalStructType(
-            value_field->type(), selected_physical_column_ids, value_field->nullable(),
-            include_overflow);
+            value_field, selected_physical_column_ids, include_overflow);
     auto physical_read_field = selected_keys_field->WithType(physical_type);
     std::shared_ptr<ShreddingColumnReadPlan> read_plan =
         std::make_shared<SharedSelectedKeysReadPlan>(selected_keys_field, physical_read_field,

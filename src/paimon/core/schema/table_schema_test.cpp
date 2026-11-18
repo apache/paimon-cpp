@@ -26,6 +26,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/string_utils.h"
@@ -141,18 +142,23 @@ TEST_F(TableSchemaTest, TestCreateWithAllFieldsHaveFieldId) {
     ASSERT_EQ(table_schema->Options(), options);
 }
 
-TEST_F(TableSchemaTest, TestGetFieldTypeForVariant) {
+TEST_F(TableSchemaTest, GetFieldTypeDistinguishesLogicalTypes) {
+    ASSERT_OK_AND_ASSIGN(auto geometry, GeospatialType::GeometryField("shape"));
+    ASSERT_OK_AND_ASSIGN(auto geography, GeospatialType::GeographyField("position"));
     arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
-                                 VariantTypeUtils::ToArrowField("v")};
+                                 VariantTypeUtils::ToArrowField("v"), geometry, geography,
+                                 arrow::field("bytes", arrow::binary())};
     ASSERT_OK_AND_ASSIGN(auto table_schema,
-                         TableSchema::Create(/*schema_id=*/0, arrow::schema(fields),
-                                             /*partition_keys=*/{}, /*primary_keys=*/{},
-                                             /*options=*/{}));
-    ASSERT_OK_AND_ASSIGN(FieldType id_type, table_schema->GetFieldType("id"));
-    ASSERT_EQ(id_type, FieldType::INT);
-    // The variant marker must disambiguate the physical struct into FieldType::VARIANT.
-    ASSERT_OK_AND_ASSIGN(FieldType variant_type, table_schema->GetFieldType("v"));
-    ASSERT_EQ(variant_type, FieldType::VARIANT);
+                         TableSchema::Create(0, arrow::schema(fields), {}, {}, {}));
+    const std::pair<const char*, FieldType> expected[] = {{"id", FieldType::INT},
+                                                          {"v", FieldType::VARIANT},
+                                                          {"shape", FieldType::GEOMETRY},
+                                                          {"position", FieldType::GEOGRAPHY},
+                                                          {"bytes", FieldType::BINARY}};
+    for (const auto& [name, type] : expected) {
+        ASSERT_OK_AND_ASSIGN(FieldType actual, table_schema->GetFieldType(name));
+        ASSERT_EQ(actual, type) << name;
+    }
 }
 
 TEST_F(TableSchemaTest, TestComputeHighestFieldId) {

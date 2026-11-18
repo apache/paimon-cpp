@@ -28,6 +28,8 @@
 #include "arrow/ipc/api.h"
 #include "arrow/util/range.h"
 #include "gtest/gtest.h"
+#include "paimon/common/types/data_field.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
@@ -87,8 +89,9 @@ class DataEvolutionFileReaderTest : public ::testing::Test,
             // check result array
             ASSERT_OK_AND_ASSIGN(auto result_array,
                                  paimon::test::ReadResultCollector::CollectResult(
-                                     std::move(data_evolution_file_reader)));
+                                     std::move(data_evolution_file_reader), true));
             auto expected_chunk_array = std::make_shared<arrow::ChunkedArray>(expected_array);
+            ASSERT_TRUE(result_array->type()->Equals(*expected_array->type(), true));
             ASSERT_TRUE(result_array->Equals(expected_chunk_array));
         }
     }
@@ -327,11 +330,17 @@ TEST_P(DataEvolutionFileReaderTest, TestSimple) {
 }
 
 TEST_P(DataEvolutionFileReaderTest, TestWithNonExistField) {
+    ASSERT_OK_AND_ASSIGN(auto geometry, GeospatialType::GeometryField("f2", "EPSG:3857", false));
+    ASSERT_OK_AND_ASSIGN(auto geography,
+                         GeospatialType::GeographyField("f4", "EPSG:4326", "karney"));
     arrow::FieldVector read_fields = {
-        arrow::field("f0", arrow::int32()),        arrow::field("f1", arrow::int32()),
-        arrow::field("f2", arrow::utf8()),         arrow::field("f3", arrow::int32()),
-        arrow::field("f4", arrow::utf8()),         arrow::field("f5", arrow::int32()),
-        arrow::field("non-field", arrow::int32()),
+        arrow::field("f0", arrow::int32()),
+        arrow::field("f1", arrow::int32()),
+        DataField::ConvertDataFieldToArrowField(DataField(2, geometry)),
+        arrow::field("f3", arrow::int32()),
+        DataField::ConvertDataFieldToArrowField(DataField(4, geography)),
+        arrow::field("f5", arrow::int32()),
+        geography->WithName("non-field"),
     };
     auto read_schema = arrow::schema(read_fields);
 

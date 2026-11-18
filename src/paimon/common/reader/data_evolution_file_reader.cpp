@@ -101,6 +101,7 @@ Result<BatchReader::ReadBatchWithBitmap> DataEvolutionFileReader::NextBatchWithB
     }
     int32_t read_field_count = read_schema_->num_fields();
     arrow::ArrayVector target_sub_array_vec;
+    arrow::FieldVector fields = read_schema_->fields();
     target_sub_array_vec.reserve(read_field_count);
     for (int32_t i = 0; i < read_field_count; i++) {
         if (reader_offsets_[i] == -1) {
@@ -112,11 +113,12 @@ Result<BatchReader::ReadBatchWithBitmap> DataEvolutionFileReader::NextBatchWithB
         const auto& sub_array = array_for_each_reader[reader_offsets_[i]];
         assert(sub_array->num_fields() > field_offsets_[i]);
         // Each file is already aligned to its read schema by its FieldMappingReader.
-        target_sub_array_vec.push_back(sub_array->field(field_offsets_[i]));
+        auto column = sub_array->field(field_offsets_[i]);
+        fields[i] = fields[i]->WithType(column->type());
+        target_sub_array_vec.push_back(std::move(column));
     }
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-        std::shared_ptr<arrow::Array> target_array,
-        arrow::StructArray::Make(target_sub_array_vec, read_schema_->field_names()));
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> target_array,
+                                      arrow::StructArray::Make(target_sub_array_vec, fields));
     std::unique_ptr<ArrowArray> target_c_arrow_array = std::make_unique<ArrowArray>();
     std::unique_ptr<ArrowSchema> target_c_schema = std::make_unique<ArrowSchema>();
     PAIMON_RETURN_NOT_OK_FROM_ARROW(

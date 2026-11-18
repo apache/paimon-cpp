@@ -44,6 +44,7 @@
 #include "paimon/common/options/memory_size.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/arrow/vector_utils.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
@@ -233,10 +234,82 @@ bool SchemaValidation::IsComplexType(const std::shared_ptr<arrow::Field>& field)
             BlobUtils::IsBlobField(field));
 }
 
+Status SchemaValidation::ValidateGeospatialKeys(const std::vector<DataField>& fields,
+                                                const std::vector<std::string>& primary_keys,
+                                                const std::vector<std::string>& partition_keys,
+                                                const std::vector<std::string>& bucket_keys) {
+    if (primary_keys.empty() && partition_keys.empty() && bucket_keys.empty()) {
+        return Status::OK();
+    }
+    for (const auto& field : fields) {
+        if (GeospatialType::ContainsGeospatial(*field.ArrowField())) {
+            for (const auto* keys : {&primary_keys, &partition_keys, &bucket_keys}) {
+                if (std::find(keys->begin(), keys->end(), field.Name()) != keys->end()) {
+                    return Status::Invalid(
+                        "GEOMETRY/GEOGRAPHY field cannot be a primary, partition or bucket key: ",
+                        field.Name());
+                }
+            }
+        }
+    }
+    return Status::OK();
+}
+
+Status SchemaValidation::ValidateGeospatialOptions(
+    const std::vector<DataField>& fields, const std::map<std::string, std::string>& options) {
+    std::set<std::string> geospatial_names;
+    for (const auto& field : fields) {
+        if (GeospatialType::ContainsGeospatial(*field.ArrowField())) {
+            geospatial_names.insert(field.Name());
+        }
+    }
+    if (geospatial_names.empty()) {
+        return Status::OK();
+    }
+
+    auto validate_format = [](const std::string& key, const std::string& format) -> Status {
+        if (!StringUtils::EqualsIgnoreCase(format, "parquet")) {
+            return Status::Invalid(fmt::format(
+                "GEOMETRY/GEOGRAPHY only supports parquet data files, but {} is {}.", key, format));
+        }
+        return Status::OK();
+    };
+    for (const char* key : {Options::FILE_FORMAT, Options::CHANGELOG_FILE_FORMAT}) {
+        auto it = options.find(key);
+        if (it != options.end()) {
+            PAIMON_RETURN_NOT_OK(validate_format(key, it->second));
+        }
+    }
+    PAIMON_RETURN_NOT_OK(
+        ValidatePerLevelOption(options, Options::FILE_FORMAT_PER_LEVEL, validate_format));
+    auto validate_ordering = [&](const std::string& columns, const std::string& role) -> Status {
+        for (auto name : StringUtils::Split(columns, Options::FIELDS_SEPARATOR)) {
+            StringUtils::Trim(&name);
+            if (geospatial_names.count(name)) {
+                return Status::Invalid(
+                    fmt::format("GEOMETRY/GEOGRAPHY field '{}' cannot be used in {}.", name, role));
+            }
+        }
+        return Status::OK();
+    };
+    for (const char* key :
+         {Options::BUCKET_KEY, Options::SEQUENCE_FIELD, "clustering.columns", "sort.columns"}) {
+        auto it = options.find(key);
+        if (it != options.end()) {
+            PAIMON_RETURN_NOT_OK(validate_ordering(it->second, key));
+        }
+    }
+    for (const auto& group : CoreOptions::ParseFieldsSequenceGroups(options)) {
+        PAIMON_RETURN_NOT_OK(validate_ordering(group.first, "a sequence group ordering key"));
+    }
+    return Status::OK();
+}
+
 Status SchemaValidation::ValidateGenericSchema(const std::vector<DataField>& fields,
                                                const std::vector<std::string>& bucket_keys,
                                                const std::vector<std::string>& primary_keys,
                                                const std::vector<std::string>& partition_keys) {
+    PAIMON_RETURN_NOT_OK(ValidateGeospatialKeys(fields, primary_keys, partition_keys, bucket_keys));
     std::vector<std::string> field_names;
     field_names.reserve(fields.size());
     for (const DataField& field : fields) {
@@ -326,6 +399,13 @@ Status SchemaValidation::ValidateFormatTableSchema(
     // kept; this only has to fail for a format nothing here can read.
     PAIMON_RETURN_NOT_OK(FormatTable::ParseFormat(file_format));
 
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<::ArrowSchema> c_schema, schema.GetArrowSchema());
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,
+                                      arrow::ImportSchema(c_schema.get()));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> fields,
+                           DataField::ConvertArrowSchemaToDataFields(arrow_schema));
+    PAIMON_RETURN_NOT_OK(ValidateGeospatialOptions(fields, effective_options));
+
     // The remaining options are read through `CoreOptions`, so a default only ever changes in one
     // place. `target-file-row-num` is validated there, so it needs no check of its own here.
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
@@ -377,9 +457,6 @@ Status SchemaValidation::ValidateFormatTableSchema(
     // building the computer that does the round trip, not by listing the types it accepts, which
     // would be a second list to keep in step.
     if (!schema.PartitionKeys().empty()) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<::ArrowSchema> c_schema, schema.GetArrowSchema());
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,
-                                          arrow::ImportSchema(c_schema.get()));
         Result<std::unique_ptr<BinaryRowPartitionComputer>> partition_computer =
             BinaryRowPartitionComputer::Create(
                 schema.PartitionKeys(), arrow_schema, core_options.GetPartitionDefaultName(),
@@ -401,6 +478,7 @@ Status SchemaValidation::ValidateFormatTableSchema(
 
 Status SchemaValidation::ValidateTableSchema(const TableSchema& schema) {
     PAIMON_RETURN_NOT_OK(ValidateGenericTableSchema(schema));
+    PAIMON_RETURN_NOT_OK(ValidateGeospatialOptions(schema.Fields(), schema.Options()));
 
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(schema.Options()));
     PAIMON_RETURN_NOT_OK(ValidateBucket(schema, options));

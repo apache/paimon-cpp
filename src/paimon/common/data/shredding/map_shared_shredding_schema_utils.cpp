@@ -99,8 +99,8 @@ Result<std::unique_ptr<struct ArrowSchema>> MapSharedShreddingAccessBuilder::Bui
             encoded_keys.push_back(',');
         }
         encoded_keys.append(impl_->keys[i]);
-        fields.push_back(arrow::field(impl_->keys[i], impl_->map_type->item_type(),
-                                      /*nullable=*/true));
+        fields.push_back(
+            impl_->map_type->item_field()->WithName(impl_->keys[i])->WithNullable(true));
     }
     auto metadata = arrow::KeyValueMetadata::Make({DataField::MAP_SELECTED_KEYS}, {encoded_keys});
     auto access_field = impl_->map_field->WithType(arrow::struct_(std::move(fields)))

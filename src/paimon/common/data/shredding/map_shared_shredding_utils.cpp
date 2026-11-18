@@ -83,36 +83,34 @@ Result<std::vector<std::string>> MapSharedShreddingUtils::DetectShreddingColumns
 
 // ---- Schema conversion ----
 std::shared_ptr<arrow::DataType> MapSharedShreddingUtils::BuildSpecificPhysicalStructType(
-    const std::shared_ptr<arrow::DataType>& value_type, const std::set<int32_t>& physical_col_ids,
-    bool value_nullable, bool include_overflow) {
+    const std::shared_ptr<arrow::Field>& value_field, const std::set<int32_t>& physical_col_ids,
+    bool include_overflow) {
     std::vector<int32_t> sorted_cols(physical_col_ids.begin(), physical_col_ids.end());
-    return InnerBuildSpecificPhysicalStructType(value_type, sorted_cols, value_nullable,
-                                                include_overflow);
+    return InnerBuildSpecificPhysicalStructType(value_field, sorted_cols, include_overflow);
 }
 
 std::shared_ptr<arrow::DataType> MapSharedShreddingUtils::BuildPhysicalStructType(
-    const std::shared_ptr<arrow::DataType>& value_type, int32_t num_columns, bool value_nullable) {
+    const std::shared_ptr<arrow::Field>& value_field, int32_t num_columns) {
     std::vector<int32_t> sorted_cols(num_columns);
     std::iota(sorted_cols.begin(), sorted_cols.end(), 0);
-    return InnerBuildSpecificPhysicalStructType(value_type, sorted_cols, value_nullable,
+    return InnerBuildSpecificPhysicalStructType(value_field, sorted_cols,
                                                 /*include_overflow=*/true);
 }
 
 std::shared_ptr<arrow::DataType> MapSharedShreddingUtils::InnerBuildSpecificPhysicalStructType(
-    const std::shared_ptr<arrow::DataType>& value_type, const std::vector<int32_t>& sorted_cols,
-    bool value_nullable, bool include_overflow) {
+    const std::shared_ptr<arrow::Field>& value_field, const std::vector<int32_t>& sorted_cols,
+    bool include_overflow) {
     arrow::FieldVector struct_fields;
     struct_fields.reserve(sorted_cols.size() + 2);
     struct_fields.push_back(
         arrow::field(MapSharedShreddingDefine::kFieldMapping, arrow::list(arrow::int32()), true));
     for (const auto& col : sorted_cols) {
-        struct_fields.push_back(arrow::field(MapSharedShreddingDefine::PhysicalColumnName(col),
-                                             value_type, value_nullable));
+        struct_fields.push_back(
+            value_field->WithName(MapSharedShreddingDefine::PhysicalColumnName(col)));
     }
     if (include_overflow) {
-        struct_fields.push_back(arrow::field(
-            MapSharedShreddingDefine::kOverflow,
-            arrow::map(arrow::int32(), arrow::field("value", value_type, value_nullable)), true));
+        auto overflow_type = arrow::map(arrow::int32(), value_field->WithName("value"));
+        struct_fields.push_back(arrow::field(MapSharedShreddingDefine::kOverflow, overflow_type));
     }
     return arrow::struct_(std::move(struct_fields));
 }
@@ -133,9 +131,7 @@ Result<std::shared_ptr<arrow::Schema>> MapSharedShreddingUtils::LogicalToPhysica
                                 field->name(), field->type()->name()));
             }
             auto map_type = checked_pointer_cast<arrow::MapType>(field->type());
-            auto value_type = map_type->item_type();
-            bool value_nullable = map_type->item_field()->nullable();
-            auto physical_type = BuildPhysicalStructType(value_type, it->second, value_nullable);
+            auto physical_type = BuildPhysicalStructType(map_type->item_field(), it->second);
             auto physical_field = field->WithType(physical_type);
             physical_fields.push_back(physical_field);
         } else {

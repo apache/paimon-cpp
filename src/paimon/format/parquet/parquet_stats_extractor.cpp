@@ -22,6 +22,7 @@
 #include <optional>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 #include "arrow/memory_pool.h"
 #include "arrow/type.h"
@@ -288,6 +289,8 @@ ParquetStatsExtractor::ExtractFromMetadata(const ::parquet::FileMetaData& file_m
     result_stats.reserve(field_count);
 
     std::unordered_map<std::string, std::shared_ptr<::parquet::Statistics>> merged_stats;
+    std::vector<std::optional<int64_t>> geospatial_null_counts(
+        file_metadata.schema()->num_columns(), 0);
 
     for (int32_t row_group_idx = 0; row_group_idx < file_metadata.num_row_groups();
          ++row_group_idx) {
@@ -295,6 +298,20 @@ ParquetStatsExtractor::ExtractFromMetadata(const ::parquet::FileMetaData& file_m
             file_metadata.RowGroup(row_group_idx);
         for (int32_t col_idx = 0; col_idx < row_group->num_columns(); ++col_idx) {
             auto column_chunk = row_group->ColumnChunk(col_idx);
+            const auto& logical_type = file_metadata.schema()->Column(col_idx)->logical_type();
+            if (logical_type->is_geometry() || logical_type->is_geography()) {
+                auto& null_count = geospatial_null_counts[col_idx];
+                if (null_count) {
+                    auto stats = column_chunk->statistics();
+                    if (stats && stats->HasNullCount()) {
+                        *null_count += stats->null_count();
+                    } else {
+                        // A partial null count could incorrectly prune the entire file.
+                        null_count.reset();
+                    }
+                }
+                continue;
+            }
             if (!column_chunk->is_stats_set()) {
                 continue;
             }
@@ -322,6 +339,13 @@ ParquetStatsExtractor::ExtractFromMetadata(const ::parquet::FileMetaData& file_m
             result_stats.push_back(ColumnStats::CreateNestedColumnStats(nested_type, std::nullopt));
         } else {
             auto primitive_node = checked_pointer_cast<::parquet::schema::PrimitiveNode>(node);
+            const auto& logical_type = primitive_node->logical_type();
+            if (logical_type->is_geometry() || logical_type->is_geography()) {
+                int32_t column_idx = file_metadata.schema()->GetColumnIndex(*primitive_node);
+                result_stats.push_back(ColumnStats::CreateStringColumnStats(
+                    std::nullopt, std::nullopt, geospatial_null_counts[column_idx]));
+                continue;
+            }
             auto iter = merged_stats.find(node->name());
             const std::shared_ptr<::parquet::Statistics>& parquet_stats =
                 iter == merged_stats.end() ? nullptr : iter->second;

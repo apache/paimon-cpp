@@ -39,6 +39,7 @@
 #include "paimon/common/utils/rapidjson_util.h"
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/schema/arrow_schema_validator.h"
+#include "paimon/core/schema/schema_validation.h"
 #include "paimon/defs.h"
 #include "paimon/status.h"
 #include "paimon/utils/special_field_ids.h"
@@ -148,7 +149,8 @@ Result<std::shared_ptr<arrow::Field>> TableSchema::AssignFieldIdsRecursively(
         // in-memory schema and the same schema reloaded from JSON remain equivalent.
         auto new_map_type =
             std::make_shared<arrow::MapType>(key_field, value_field, /*keys_sorted=*/false);
-        return arrow::field(field->name(), new_map_type, field->nullable(), metadata);
+        auto map_field = field->WithType(new_map_type);
+        return metadata ? map_field->WithMergedMetadata(metadata) : map_field;
     }
     return metadata ? field->WithMergedMetadata(metadata) : field;
 }
@@ -218,6 +220,8 @@ Status TableSchema::DeriveBucketInfo() {
     if (bucket_keys.empty()) {
         bucket_keys = keys;
     }
+    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateGeospatialKeys(fields_, primary_keys_,
+                                                                  partition_keys_, bucket_keys));
     bucket_keys_ = bucket_keys;
     PAIMON_ASSIGN_OR_RAISE(num_bucket_,
                            OptionsUtils::GetValueFromMap<int32_t>(Options(), Options::BUCKET, -1));

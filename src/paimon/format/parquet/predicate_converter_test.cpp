@@ -45,18 +45,13 @@ Literal BigIntLiteral(int64_t value) {
 TEST(PredicateConverterTest, TestSimple) {
     // "struct<f0:bigint,f1:double,f2:string,f3:int,f4:tinyint,f5:decimal(6,2),f6:date,f7:timestamp,
     // f8:time>";
-    {
-        auto predicate =
-            PredicateBuilder::IsNull(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT);
+    for (FieldType type : {FieldType::BIGINT, FieldType::GEOMETRY, FieldType::GEOGRAPHY}) {
+        auto predicate = PredicateBuilder::IsNull(0, "f0", type);
         ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(
                                                   predicate, /*predicate_node_count_limit=*/100));
         ASSERT_EQ("is_null(f0, {nan_is_null=false})", expression.ToString());
-    }
-    {
-        auto predicate =
-            PredicateBuilder::IsNotNull(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT);
-        ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(
-                                                  predicate, /*predicate_node_count_limit=*/100));
+        predicate = PredicateBuilder::IsNotNull(0, "f0", type);
+        ASSERT_OK_AND_ASSIGN(expression, PredicateConverter::Convert(predicate, 100));
         ASSERT_EQ("invert(is_null(f0, {nan_is_null=false}))", expression.ToString());
     }
     {
@@ -200,6 +195,15 @@ TEST(PredicateConverterTest, TestSimple) {
         ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(
                                                   predicate, /*predicate_node_count_limit=*/100));
         ASSERT_EQ("true", expression.ToString());
+    }
+    for (FieldType type : {FieldType::GEOMETRY, FieldType::GEOGRAPHY}) {
+        auto wkb = Literal(FieldType::BINARY, "wkb", 3);
+        for (const auto& predicate : {PredicateBuilder::Equal(0, "f0", type, wkb),
+                                      PredicateBuilder::LessThan(0, "f0", type, wkb),
+                                      PredicateBuilder::In(0, "f0", type, {wkb})}) {
+            ASSERT_OK_AND_ASSIGN(auto expression, PredicateConverter::Convert(predicate, 100));
+            ASSERT_EQ("true", expression.ToString());
+        }
     }
     {
         auto predicate = PredicateBuilder::LessOrEqual(

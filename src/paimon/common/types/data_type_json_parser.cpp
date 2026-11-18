@@ -35,6 +35,8 @@
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/types/data_type.h"
+#include "paimon/common/types/geospatial_type.h"
+#include "paimon/common/types/map_type.h"
 #include "paimon/common/types/vector_type.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/date_time_utils.h"
@@ -91,6 +93,7 @@ struct Token {
 struct AtomicTypeAttributes {
     bool is_blob = false;
     bool is_variant = false;
+    std::shared_ptr<arrow::Field> geospatial_field;
     std::optional<int32_t> time_precision;
 };
 
@@ -151,6 +154,8 @@ enum class Keyword : int32_t {
     ROW,
     BLOB,
     VARIANT,
+    GEOMETRY,
+    GEOGRAPHY,
     VECTOR,
     // NULL is keyword in c++
     NULL_,
@@ -201,6 +206,8 @@ const std::map<std::string, Keyword>& Keywords() {
         {"ROW", Keyword::ROW},
         {"BLOB", Keyword::BLOB},
         {"VARIANT", Keyword::VARIANT},
+        {"GEOMETRY", Keyword::GEOMETRY},
+        {"GEOGRAPHY", Keyword::GEOGRAPHY},
         {"VECTOR", Keyword::VECTOR},
         {"NULL", Keyword::NULL_},
         {"RAW", Keyword::RAW},
@@ -256,6 +263,9 @@ class TokenParser {
     Result<std::shared_ptr<arrow::DataType>> ParseTimestampType();
     Result<std::shared_ptr<arrow::DataType>> ParseTimestampLtzType();
     Result<std::shared_ptr<arrow::DataType>> ParseVectorType();
+    Result<std::string> ParseGeospatialParameter();
+    Result<std::shared_ptr<arrow::DataType>> ParseGeospatialType(bool geography,
+                                                                 AtomicTypeAttributes* attributes);
     Result<int32_t> ParseOptionalPrecision(int32_t default_precision);
 
  private:
@@ -487,6 +497,9 @@ Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseTypeByKeyword(
     AtomicTypeAttributes* attributes) {
     PAIMON_RETURN_NOT_OK(NextToken(TokenType::KEYWORD));
     switch (TokenAsKeyword()) {
+        case Keyword::GEOMETRY:
+        case Keyword::GEOGRAPHY:
+            return ParseGeospatialType(TokenAsKeyword() == Keyword::GEOGRAPHY, attributes);
         case Keyword::CHAR:
         case Keyword::VARCHAR:
             return ParseStringType<arrow::StringType>();
@@ -664,6 +677,38 @@ Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseVectorType() {
                                   length.value());
 }
 
+Result<std::string> TokenParser::ParseGeospatialParameter() {
+    PAIMON_RETURN_NOT_OK(NextToken());
+    const auto& token = GetToken();
+    if (token.type == TokenType::KEYWORD) {
+        return input_string_.substr(token.cursor_position + 1 - token.value.size(),
+                                    token.value.size());
+    }
+    if (token.type == TokenType::IDENTIFIER || token.type == TokenType::LITERAL_STRING) {
+        return token.value;
+    }
+    return Status::Invalid("Geospatial type parameter expected");
+}
+
+Result<std::shared_ptr<arrow::DataType>> TokenParser::ParseGeospatialType(
+    bool geography, AtomicTypeAttributes* attributes) {
+    std::string crs = GeospatialType::kDefaultCrs;
+    std::string edges = GeospatialType::kDefaultEdges;
+    if (HasNextToken({TokenType::BEGIN_PARAMETER})) {
+        PAIMON_RETURN_NOT_OK(NextToken(TokenType::BEGIN_PARAMETER));
+        PAIMON_ASSIGN_OR_RAISE(crs, ParseGeospatialParameter());
+        if (geography && HasNextToken({TokenType::LIST_SEPARATOR})) {
+            PAIMON_RETURN_NOT_OK(NextToken(TokenType::LIST_SEPARATOR));
+            PAIMON_ASSIGN_OR_RAISE(edges, ParseGeospatialParameter());
+        }
+        PAIMON_RETURN_NOT_OK(NextToken(TokenType::END_PARAMETER));
+    }
+    PAIMON_ASSIGN_OR_RAISE(attributes->geospatial_field,
+                           geography ? GeospatialType::GeographyField("", crs, edges)
+                                     : GeospatialType::GeometryField("", crs));
+    return arrow::binary();
+}
+
 Result<int32_t> TokenParser::ParseOptionalPrecision(int32_t default_precision) {
     auto precision = default_precision;
     if (HasNextToken({TokenType::BEGIN_PARAMETER})) {
@@ -770,7 +815,9 @@ Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseAtomicTypeField(
     const std::string type_str(type_json_value.GetString(), type_json_value.GetStringLength());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::DataType> type,
                            ParseAtomicType(type_str, &nullable, &attributes));
-    if (attributes.is_blob) {
+    if (attributes.geospatial_field) {
+        return attributes.geospatial_field->WithName(name)->WithNullable(nullable);
+    } else if (attributes.is_blob) {
         return BlobUtils::ToArrowField(name, nullable);
     } else if (attributes.is_variant) {
         return VariantTypeUtils::ToArrowField(name, nullable);
@@ -860,15 +907,15 @@ Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseMapType(
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> key,
                            ParseType("key", type_json_value["key"], field_id_assigner));
 
-    // NOTE: Unlike Java Paimon, this C++ implementation does not support nullable keys in
-    // MapType. This is a limitation of Apache Arrow, which does not allow null keys in its
-    // MapType. As a result, we explicitly set `nullable = false` for the map key, regardless of
-    // the original schema. Please be aware of this behavioral difference when migrating or
-    // interoperating with Java Paimon.
-    key = key->WithNullable(false);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Field> value,
                            ParseType("value", type_json_value["value"], field_id_assigner));
-    return arrow::field(name, std::make_shared<arrow::MapType>(key, value), nullable);
+    std::shared_ptr<arrow::KeyValueMetadata> metadata;
+    if (key->nullable() &&
+        (GeospatialType::ContainsGeospatial(*key) || GeospatialType::ContainsGeospatial(*value))) {
+        metadata = arrow::key_value_metadata({MapType::KEY_NULLABLE}, {"true"});
+    }
+    return arrow::field(name, std::make_shared<arrow::MapType>(key->WithNullable(false), value),
+                        nullable, metadata);
 }
 
 Result<std::shared_ptr<arrow::Field>> DataTypeJsonParser::ParseRowType(

@@ -38,6 +38,7 @@
 #include "arrow/util/bitmap_ops.h"
 #include "arrow/util/compression.h"
 #include "fmt/format.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/string_utils.h"
@@ -672,6 +673,10 @@ bool ArrowUtils::EqualsIgnoreNullable(const std::shared_ptr<arrow::DataType>& ty
         const auto& field = type->field(i);
         const auto& other_field = other_type->field(i);
         if (field->name() != other_field->name()) {
+            return false;
+        }
+        if ((GeospatialType::IsGeospatial(*field) || GeospatialType::IsGeospatial(*other_field)) &&
+            !GeospatialType::Equals(*field, *other_field)) {
             return false;
         }
         if (!EqualsIgnoreNullable(field->type(), other_field->type())) {

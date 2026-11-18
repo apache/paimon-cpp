@@ -68,12 +68,9 @@ Result<BatchReader::ReadBatch> BlobViewResolvingBatchReader::NextBatch() {
     const auto struct_type = struct_array->struct_type();
 
     arrow::ArrayVector new_fields = struct_array->fields();
-    std::vector<std::string> field_names;
-    field_names.reserve(struct_type->num_fields());
 
     for (int32_t field_idx = 0; field_idx < struct_type->num_fields(); ++field_idx) {
         const auto& field = struct_type->field(field_idx);
-        field_names.push_back(field->name());
         if (read_blob_view_fields_.find(field->name()) == read_blob_view_fields_.end()) {
             continue;
         }
@@ -87,7 +84,7 @@ Result<BatchReader::ReadBatch> BlobViewResolvingBatchReader::NextBatch() {
         PAIMON_ASSIGN_OR_RAISE(new_fields[field_idx], ResolveBinaryColumn(large_binary_array));
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::StructArray> resolved_struct_array,
-                                      arrow::StructArray::Make(new_fields, field_names));
+                                      arrow::StructArray::Make(new_fields, struct_type->fields()));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(
         arrow::ExportArray(*resolved_struct_array, c_array.get(), c_schema.get()));
     PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));

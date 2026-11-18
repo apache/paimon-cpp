@@ -22,7 +22,7 @@
 #include <utility>
 
 #include "arrow/c/bridge.h"
-#include "arrow/c/helpers.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/format/avro/avro_reader_builder.h"
 #include "paimon/format/avro/avro_stats_extractor.h"
@@ -51,12 +51,15 @@ Result<std::unique_ptr<WriterBuilder>> AvroFileFormat::CreateWriterBuilder(
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> typed_schema,
                                       arrow::ImportSchema(schema));
+    PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*typed_schema, "avro"));
     return std::make_unique<AvroWriterBuilder>(typed_schema, batch_size, options_);
 }
 
 Result<std::unique_ptr<FormatStatsExtractor>> AvroFileFormat::CreateStatsExtractor(
     ::ArrowSchema* schema) const {
-    ArrowSchemaRelease(schema);
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> typed_schema,
+                                      arrow::ImportSchema(schema));
+    PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*typed_schema, "avro"));
     return std::make_unique<AvroStatsExtractor>(options_);
 }
 

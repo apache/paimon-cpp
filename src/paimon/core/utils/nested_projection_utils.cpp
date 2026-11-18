@@ -36,6 +36,7 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_access_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/vector_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/string_utils.h"
@@ -179,7 +180,9 @@ Result<bool> EqualWithFieldIds(const std::shared_ptr<arrow::DataType>& a,
     for (int32_t i = 0; i < a->num_fields(); ++i) {
         const auto& fa = a->field(i);
         const auto& fb = b->field(i);
-        if (fa->nullable() != fb->nullable()) {
+        if (fa->nullable() != fb->nullable() ||
+            ((GeospatialType::IsGeospatial(*fa) || GeospatialType::IsGeospatial(*fb)) &&
+             !GeospatialType::Equals(*fa, *fb))) {
             return false;
         }
         if (a->id() == arrow::Type::STRUCT) {
@@ -485,9 +488,11 @@ Result<std::vector<std::string>> NestedProjectionUtils::ValidateMapSharedShreddi
             fmt::format("selected-key metadata size {} does not match STRUCT field count {} for {}",
                         selected_keys.size(), struct_type->num_fields(), field->name()));
     }
-    const auto& value_type = struct_type->field(0)->type();
+    const auto& value_field = struct_type->field(0);
+    const auto& value_type = value_field->type();
     for (int32_t i = 1; i < struct_type->num_fields(); ++i) {
-        if (!struct_type->field(i)->type()->Equals(value_type)) {
+        if (!struct_type->field(i)->type()->Equals(value_type) ||
+            !GeospatialType::Equals(*struct_type->field(i), *value_field)) {
             return Status::Invalid(fmt::format(
                 "selected-key MAP fields must have the same value type, but {} and {} differ",
                 value_type->ToString(), struct_type->field(i)->type()->ToString()));
@@ -515,6 +520,8 @@ NestedProjectionUtils::BuildMapSharedShreddingAccessDataType(
     arrow::FieldVector data_children;
     data_children.reserve(read_struct->num_fields());
     for (const auto& read_child : read_struct->fields()) {
+        PAIMON_RETURN_NOT_OK(
+            GeospatialType::ValidateEvolution(*data_map->item_field(), *read_child));
         data_children.push_back(read_child->WithType(data_map->item_type()));
     }
     return arrow::struct_(std::move(data_children));

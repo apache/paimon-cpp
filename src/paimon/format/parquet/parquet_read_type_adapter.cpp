@@ -25,6 +25,7 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "paimon/common/data/blob_utils.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -63,9 +64,9 @@ Result<std::shared_ptr<arrow::DataType>> ParquetReadTypeAdapter::NormalizeFileTy
                                    NormalizeFileType(src_map_type->key_type()));
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::DataType> item_type,
                                    NormalizeFileType(src_map_type->item_type()));
-            return std::make_shared<arrow::MapType>(
-                src_map_type->key_field()->WithType(key_type),
-                src_map_type->item_field()->WithType(item_type));
+            return std::make_shared<arrow::MapType>(src_map_type->key_field()->WithType(key_type),
+                                                    src_map_type->item_field()->WithType(item_type),
+                                                    src_map_type->keys_sorted());
         }
         case arrow::Type::type::LIST: {
             auto* src_list_type = checked_cast<arrow::ListType*>(src_data_type.get());
@@ -94,6 +95,9 @@ Result<bool> ParquetReadTypeAdapter::NeedsArrayConversion(
 Result<bool> ParquetReadTypeAdapter::NeedsArrayConversionImpl(
     const std::shared_ptr<arrow::Field>& src_field,
     const std::shared_ptr<arrow::Field>& target_field) {
+    if (GeospatialType::IsGeospatial(*src_field) || GeospatialType::IsGeospatial(*target_field)) {
+        PAIMON_RETURN_NOT_OK(GeospatialType::ValidateEvolution(*src_field, *target_field));
+    }
     if (IsCompatibleBlob(src_field, target_field)) {
         return false;
     }
@@ -126,29 +130,25 @@ Result<bool> ParquetReadTypeAdapter::NeedsArrayConversionImpl(
                     fmt::format("source type {} and target type {} number of fields mismatch",
                                 src_data_type->ToString(), target_data_type->ToString()));
             }
+            bool needs_conversion = false;
             for (int32_t i = 0; i < src_struct_type->num_fields(); ++i) {
-                PAIMON_ASSIGN_OR_RAISE(bool need_cast,
+                PAIMON_ASSIGN_OR_RAISE(bool child_needs_conversion,
                                        NeedsArrayConversionImpl(src_struct_type->field(i),
                                                                 target_struct_type->field(i)));
-                if (need_cast) {
-                    return true;
-                }
+                needs_conversion |= child_needs_conversion;
             }
-            return false;
+            return needs_conversion;
         }
         case arrow::Type::type::MAP: {
             auto* src_map_type = checked_cast<arrow::MapType*>(src_data_type.get());
             auto* target_map_type = checked_cast<arrow::MapType*>(target_data_type.get());
             PAIMON_ASSIGN_OR_RAISE(
-                bool need_cast,
+                bool key_needs_conversion,
                 NeedsArrayConversionImpl(src_map_type->key_field(), target_map_type->key_field()));
-            if (need_cast) {
-                return true;
-            }
-            PAIMON_ASSIGN_OR_RAISE(need_cast,
+            PAIMON_ASSIGN_OR_RAISE(bool value_needs_conversion,
                                    NeedsArrayConversionImpl(src_map_type->item_field(),
                                                             target_map_type->item_field()));
-            return need_cast;
+            return key_needs_conversion || value_needs_conversion;
         }
         case arrow::Type::type::LIST: {
             auto* src_list_type = checked_cast<arrow::ListType*>(src_data_type.get());
@@ -172,7 +172,8 @@ Result<std::shared_ptr<arrow::Array>> ParquetReadTypeAdapter::AdaptArray(
     const std::shared_ptr<arrow::DataType>& target_data_type,
     const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     PAIMON_ASSIGN_OR_RAISE(bool need_cast, NeedsArrayConversion(array->type(), target_data_type));
-    if (!need_cast) {
+    if (!need_cast && (!GeospatialType::ContainsGeospatial(target_data_type->fields()) ||
+                       array->type()->Equals(*target_data_type, /*check_metadata=*/true))) {
         return array;
     }
 
@@ -195,25 +196,21 @@ Result<std::shared_ptr<arrow::Array>> ParquetReadTypeAdapter::AdaptArrayImpl(
     arrow::Type::type type = array->type()->id();
     switch (type) {
         case arrow::Type::type::STRUCT: {
-            auto* struct_array = checked_cast<arrow::StructArray*>(array.get());
-            arrow::ArrayVector target_sub_arrays;
-            std::vector<std::string> target_names;
-            target_sub_arrays.reserve(struct_array->num_fields());
-            target_names.reserve(struct_array->num_fields());
-            for (int32_t i = 0; i < struct_array->num_fields(); i++) {
-                const auto& field = struct_array->field(i);
-                PAIMON_ASSIGN_OR_RAISE(
-                    std::shared_ptr<arrow::Array> sub_array,
-                    AdaptArrayImpl(field, target_data_type->field(i)->type(), arrow_pool));
-                target_sub_arrays.push_back(sub_array);
-                target_names.push_back(target_data_type->field(i)->name());
+            // The parent's offset already applies to its children. Adapt unsliced child data
+            // so a sliced batch keeps its original offsets and validity bitmap.
+            auto data = array->data()->Copy();
+            arrow::FieldVector target_fields;
+            target_fields.reserve(target_data_type->num_fields());
+            for (int32_t i = 0; i < target_data_type->num_fields(); ++i) {
+                const auto& field = target_data_type->field(i);
+                PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Array> sub_array,
+                                       AdaptArrayImpl(arrow::MakeArray(data->child_data[i]),
+                                                      field->type(), arrow_pool));
+                data->child_data[i] = sub_array->data();
+                target_fields.push_back(field->WithType(sub_array->type()));
             }
-            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-                std::shared_ptr<arrow::Array> new_array,
-                arrow::StructArray::Make(target_sub_arrays, target_names,
-                                         struct_array->null_bitmap(), struct_array->null_count(),
-                                         struct_array->offset()));
-            return new_array;
+            data->type = arrow::struct_(std::move(target_fields));
+            return arrow::MakeArray(data);
         }
         case arrow::Type::type::MAP: {
             auto* map_array = checked_cast<arrow::MapArray*>(array.get());
@@ -225,9 +222,11 @@ Result<std::shared_ptr<arrow::Array>> ParquetReadTypeAdapter::AdaptArrayImpl(
                 std::shared_ptr<arrow::Array> item_array,
                 AdaptArrayImpl(map_array->items(), map_type->item_type(), arrow_pool));
             return std::make_shared<arrow::MapArray>(
-                arrow::map(key_array->type(), item_array->type()), map_array->length(),
-                map_array->value_offsets(), key_array, item_array, map_array->null_bitmap(),
-                map_array->null_count(), map_array->offset());
+                std::make_shared<arrow::MapType>(
+                    map_type->key_field()->WithType(key_array->type()),
+                    map_type->item_field()->WithType(item_array->type()), map_type->keys_sorted()),
+                map_array->length(), map_array->value_offsets(), key_array, item_array,
+                map_array->null_bitmap(), map_array->null_count(), map_array->offset());
         }
         case arrow::Type::type::LIST: {
             auto* list_array = checked_cast<arrow::ListArray*>(array.get());
@@ -236,9 +235,9 @@ Result<std::shared_ptr<arrow::Array>> ParquetReadTypeAdapter::AdaptArrayImpl(
                 std::shared_ptr<arrow::Array> value_array,
                 AdaptArrayImpl(list_array->values(), list_type->value_type(), arrow_pool));
             return std::make_shared<arrow::ListArray>(
-                arrow::list(value_array->type()), list_array->length(), list_array->value_offsets(),
-                value_array, list_array->null_bitmap(), list_array->null_count(),
-                list_array->offset());
+                arrow::list(list_type->value_field()->WithType(value_array->type())),
+                list_array->length(), list_array->value_offsets(), value_array,
+                list_array->null_bitmap(), list_array->null_count(), list_array->offset());
         }
         case arrow::Type::type::TIMESTAMP: {
             auto* ts_array = checked_cast<arrow::TimestampArray*>(array.get());
