@@ -72,17 +72,22 @@ int64_t DataSplitImpl::RowCount() const {
 std::vector<DataSplit::SimpleDataFileMeta> DataSplitImpl::GetFileList() const {
     std::vector<DataSplit::SimpleDataFileMeta> result_files;
     result_files.reserve(data_files_.size());
-    for (const auto& file : data_files_) {
+    for (size_t i = 0; i < data_files_.size(); ++i) {
+        const auto& file = data_files_[i];
         std::string result_file_path;
         if (!file->external_path) {
             result_file_path = PathUtil::JoinPath(bucket_path_, file->file_name);
         } else {
             result_file_path = file->external_path.value();
         }
+        std::optional<int64_t> delete_row_count = file->delete_row_count;
+        if (i < data_deletion_files_.size() && data_deletion_files_[i]) {
+            delete_row_count = data_deletion_files_[i]->cardinality;
+        }
         result_files.emplace_back(result_file_path, file->file_size, file->row_count,
                                   file->min_sequence_number, file->max_sequence_number,
                                   file->schema_id, file->level, file->creation_time,
-                                  file->delete_row_count);
+                                  delete_row_count);
     }
     return result_files;
 }

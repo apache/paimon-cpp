@@ -1190,6 +1190,10 @@ TEST(DataSplitTest, TestPartialMergedRowCountRawConvertibleWithoutDeletionFiles)
     // Java parity: rawConvertible and deletion files absent should return row_count sum.
     ASSERT_OK_AND_ASSIGN(std::optional<int64_t> merged_row_count, data_split->MergedRowCount());
     ASSERT_EQ(std::optional<int64_t>(7), merged_row_count);
+    auto files = data_split->GetFileList();
+    ASSERT_EQ(files.size(), 2);
+    ASSERT_EQ(files[0].delete_row_count, std::optional<int64_t>(0));
+    ASSERT_EQ(files[1].delete_row_count, std::optional<int64_t>(0));
 }
 
 TEST(DataSplitTest, TestPartialMergedRowCountRawConvertibleWithCardinality) {
@@ -1245,6 +1249,13 @@ TEST(DataSplitTest, TestPartialMergedRowCountRawConvertibleWithCardinality) {
     // Java parity: null + cardinality + cardinality => (7 + (2 - 2) + (3 - 1)) = 9.
     ASSERT_OK_AND_ASSIGN(std::optional<int64_t> merged_row_count, data_split->MergedRowCount());
     ASSERT_EQ(std::optional<int64_t>(9), merged_row_count);
+    auto files = data_split->GetFileList();
+    ASSERT_EQ(files.size(), 3);
+    ASSERT_EQ(files[0].delete_row_count, std::optional<int64_t>(0));
+    ASSERT_EQ(files[1].delete_row_count, std::optional<int64_t>(2));
+    ASSERT_EQ(files[2].delete_row_count, std::optional<int64_t>(1));
+    ASSERT_EQ(file_meta2->delete_row_count, std::optional<int64_t>(0));
+    ASSERT_EQ(file_meta3->delete_row_count, std::optional<int64_t>(0));
 }
 
 TEST(DataSplitTest, TestPartialMergedRowCountMixedCardinalityReturnsNullopt) {
@@ -1288,6 +1299,11 @@ TEST(DataSplitTest, TestPartialMergedRowCountMixedCardinalityReturnsNullopt) {
     // If any deletion file misses cardinality, metadata count is unknown and must not be partial.
     ASSERT_OK_AND_ASSIGN(std::optional<int64_t> merged_row_count, data_split->MergedRowCount());
     ASSERT_EQ(std::nullopt, merged_row_count);
+    auto files = data_split->GetFileList();
+    ASSERT_EQ(files.size(), 2);
+    ASSERT_EQ(files[0].delete_row_count, std::optional<int64_t>(2));
+    ASSERT_EQ(files[1].delete_row_count, std::nullopt);
+    ASSERT_EQ(file_meta2->delete_row_count, std::optional<int64_t>(0));
 }
 
 TEST(DataSplitTest, TestPartialMergedRowCountUnknownDeleteRowCountDoesNotBlockRawCount) {
