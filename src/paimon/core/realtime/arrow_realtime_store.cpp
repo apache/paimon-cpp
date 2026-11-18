@@ -516,7 +516,16 @@ class ArrowRealtimeStore::AppendQueryBatchReader : public BatchReader {
           selection_(selection),
           offset_deletions_(offset_deletions),
           enable_index_pruning_(enable_index_pruning),
-          metrics_(std::make_shared<MetricsImpl>()) {}
+          metrics_(std::make_shared<MetricsImpl>()) {
+        // Pinned segments are ordered and non-overlapping; skip the prefix outside this query.
+        const auto& segments = view_->GetSegments();
+        const auto first =
+            std::lower_bound(segments.begin(), segments.end(), offset_range_.begin,
+                             [](const std::shared_ptr<Segment>& segment, int64_t offset) {
+                                 return segment->GetOffsetRange().end <= offset;
+                             });
+        next_segment_ = first - segments.begin();
+    }
 
     Result<ReadBatch> NextBatch() override {
         PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch, NextBatchWithBitmap());
@@ -526,6 +535,10 @@ class ArrowRealtimeStore::AppendQueryBatchReader : public BatchReader {
     Result<ReadBatchWithBitmap> NextBatchWithBitmap() override {
         while (view_ && next_segment_ < view_->GetSegments().size()) {
             const std::shared_ptr<Segment>& segment = view_->GetSegments()[next_segment_];
+            if (segment->GetOffsetRange().begin >= offset_range_.end) {
+                next_segment_ = view_->GetSegments().size();
+                break;
+            }
             PAIMON_ASSIGN_OR_RAISE(bool may_match, PrepareSegment(segment));
             if (!may_match) {
                 NextSegment();

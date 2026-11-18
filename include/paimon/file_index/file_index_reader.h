@@ -41,7 +41,6 @@ struct FullTextMatch;
 /// whether a given data file may contain rows matching a specific predicate.
 /// @note Callers of `Visit*` for DECIMAL fields must ensure each literal's scale matches the scale
 /// of the indexed data; otherwise, index filtering results may be incorrect.
-/// TODO(lisizhuo.lsz): Add selectivity estimates for scalar indexes such as bitmap indexes.
 class PAIMON_EXPORT FileIndexReader : public IndexReaderCapabilities,
                                       public FunctionVisitor<std::shared_ptr<FileIndexResult>> {
  public:

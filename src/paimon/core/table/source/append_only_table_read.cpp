@@ -222,8 +222,9 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
     if (!memory_range || memory_range->end != realtime_split->MemoryEndOffset()) {
         return Status::Invalid("real-time read-view ticket does not match the split offset range");
     }
-    PAIMON_RETURN_NOT_OK(memory.ValidateTableSchema(
-        DataField::ConvertDataFieldsToArrowSchema(context_->GetTableSchema()->Fields())));
+    std::shared_ptr<arrow::Schema> table_schema =
+        DataField::ConvertDataFieldsToArrowSchema(context_->GetTableSchema()->Fields());
+    PAIMON_RETURN_NOT_OK(memory.ValidateTableSchema(table_schema));
 
     for (const std::shared_ptr<Split>& disk_split : realtime_split->DiskSplits()) {
         std::unique_ptr<BatchReader> disk_reader;
@@ -253,8 +254,6 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
         return result;
     }
 
-    std::shared_ptr<arrow::Schema> table_schema =
-        DataField::ConvertDataFieldsToArrowSchema(context_->GetTableSchema()->Fields());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RealtimeSchemaLayout> schema_layout,
                            RealtimeSchemaLayout::Create(memory.mode, table_schema));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RealtimeStoreReadPipeline> pipeline,

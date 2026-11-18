@@ -61,9 +61,6 @@ class IndexReaderUtils {
         const std::string& missing_error) {
         std::shared_ptr<Reader> selected;
         for (const auto& reader : readers) {
-            if (!reader) {
-                return Status::Invalid("Index source returned a null reader");
-            }
             if (!reader->SupportsSearch(type)) {
                 continue;
             }

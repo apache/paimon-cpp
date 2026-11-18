@@ -43,6 +43,7 @@ class PAIMON_EXPORT IndexReaderCapabilities {
     /// Values outside [0, 1] are also treated as unknown by evaluators.
     /// Estimates only guide predicate execution order and must never exclude rows.
     /// The default implementation returns std::nullopt.
+    /// TODO(lisizhuo.lsz): Add selectivity estimates for scalar indexes such as bitmap indexes.
     virtual std::optional<double> EstimateSelectivity(
         const std::shared_ptr<LeafPredicate>& predicate) const;
 };
