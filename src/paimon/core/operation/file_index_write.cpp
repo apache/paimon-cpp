@@ -64,6 +64,16 @@ namespace {
 using IndexPayloads =
     std::map<std::string, std::map<std::string, FileIndexFormat::Writer::PayloadWriter>>;
 
+using FileIndexRequests = std::map<std::string, const DataFileIndexInput*>;
+
+struct FileIndexWriteContext {
+    Snapshot snapshot;
+    std::shared_ptr<TableSchema> schema;
+    std::shared_ptr<SchemaManager> schema_manager;
+    std::shared_ptr<SnapshotManager> snapshot_manager;
+    CoreOptions options;
+};
+
 struct BucketUpdates {
     BinaryRow partition;
     int32_t bucket;
@@ -239,14 +249,11 @@ Result<std::map<std::string, ManifestEntry>> FindFiles(
     return files;
 }
 
-}  // namespace
-
-Result<std::vector<std::shared_ptr<CommitMessage>>> FileIndexWrite::PrepareCommit(
-    const std::string& table_path, const std::string& branch,
-    const std::map<std::string, std::string>& options,
-    const std::optional<int64_t>& base_snapshot_id, const std::vector<DataFileIndexInput>& files,
-    const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool,
-    const std::shared_ptr<Executor>& executor) {
+Result<FileIndexWriteContext> LoadWriteContext(const std::string& table_path,
+                                               const std::string& branch,
+                                               const std::map<std::string, std::string>& options,
+                                               const std::optional<int64_t>& base_snapshot_id,
+                                               const std::shared_ptr<FileSystem>& file_system) {
     if (table_path.empty()) {
         return Status::Invalid("FileIndexWrite requires a table path");
     }
@@ -284,7 +291,6 @@ Result<std::vector<std::shared_ptr<CommitMessage>>> FileIndexWrite::PrepareCommi
                            schema->MergeOptions(overrides));
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
                            CoreOptions::FromMap(configured_schema->Options(), file_system));
-    fs = core_options.GetFileSystem();
     if (core_options.GetBucket() != schema->NumBuckets()) {
         return Status::Invalid("FileIndexWrite cannot override the table's bucket count");
     }
@@ -292,8 +298,13 @@ Result<std::vector<std::shared_ptr<CommitMessage>>> FileIndexWrite::PrepareCommi
     if (format_version != FileIndexFormat::V_1 && format_version != FileIndexFormat::V_2) {
         return Status::Invalid("Unsupported file index format version");
     }
+    return FileIndexWriteContext{std::move(*snapshot), std::move(schema), std::move(schema_manager),
+                                 std::move(snapshot_manager), std::move(core_options)};
+}
+
+Result<FileIndexRequests> CollectIndexRequests(const std::vector<DataFileIndexInput>& files) {
     std::set<std::string> file_names;
-    std::map<std::string, const DataFileIndexInput*> requests;
+    FileIndexRequests requests;
     for (const auto& file : files) {
         PAIMON_RETURN_NOT_OK(
             PathUtil::CheckSinglePathComponent("data file name", file.data_file_name));
@@ -313,25 +324,14 @@ Result<std::vector<std::shared_ptr<CommitMessage>>> FileIndexWrite::PrepareCommi
             requests.emplace(file.data_file_name, &file);
         }
     }
+    return requests;
+}
+
+Result<std::vector<std::shared_ptr<CommitMessage>>> WriteIndexesAndBuildMessages(
+    const FileIndexRequests& requests, const std::map<std::string, ManifestEntry>& targets,
+    const std::shared_ptr<FileStorePathFactory>& paths, int32_t format_version,
+    const std::shared_ptr<FileSystem>& fs, const std::shared_ptr<MemoryPool>& memory_pool) {
     std::vector<std::shared_ptr<CommitMessage>> messages;
-    if (requests.empty()) {
-        return messages;
-    }
-    std::shared_ptr<MemoryPool> memory_pool = pool ? pool : GetDefaultPool();
-    std::shared_ptr<Executor> scan_executor = executor;
-    if (!scan_executor) {
-        scan_executor = CreateDefaultExecutor();
-    }
-    FileStore store(table_path, core_options);
-    auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(schema->Fields());
-    PAIMON_ASSIGN_OR_RAISE(
-        std::shared_ptr<FileStorePathFactory> paths,
-        store.NewPathFactory(arrow_schema, schema->PartitionKeys(),
-                             core_options.GetFileFormat()->Identifier(), memory_pool));
-    std::map<std::string, ManifestEntry> targets;
-    PAIMON_ASSIGN_OR_RAISE(
-        targets, FindFiles(store, schema, schema_manager, snapshot_manager, *snapshot, paths,
-                           requests, scan_executor, memory_pool));
     std::vector<std::string> generated;
     ScopeGuard cleanup([&]() {
         for (const auto& path : generated) {
@@ -365,6 +365,41 @@ Result<std::vector<std::shared_ptr<CommitMessage>>> FileIndexWrite::PrepareCommi
     }
     cleanup.Release();
     return messages;
+}
+
+}  // namespace
+
+Result<std::vector<std::shared_ptr<CommitMessage>>> FileIndexWrite::PrepareCommit(
+    const std::string& table_path, const std::string& branch,
+    const std::map<std::string, std::string>& options,
+    const std::optional<int64_t>& base_snapshot_id, const std::vector<DataFileIndexInput>& files,
+    const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool,
+    const std::shared_ptr<Executor>& executor) {
+    PAIMON_ASSIGN_OR_RAISE(
+        FileIndexWriteContext context,
+        LoadWriteContext(table_path, branch, options, base_snapshot_id, file_system));
+    PAIMON_ASSIGN_OR_RAISE(FileIndexRequests requests, CollectIndexRequests(files));
+    if (requests.empty()) {
+        return std::vector<std::shared_ptr<CommitMessage>>{};
+    }
+    std::shared_ptr<MemoryPool> memory_pool = pool ? pool : GetDefaultPool();
+    std::shared_ptr<Executor> scan_executor = executor;
+    if (!scan_executor) {
+        scan_executor = CreateDefaultExecutor();
+    }
+    FileStore store(table_path, context.options);
+    auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(context.schema->Fields());
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FileStorePathFactory> paths,
+        store.NewPathFactory(arrow_schema, context.schema->PartitionKeys(),
+                             context.options.GetFileFormat()->Identifier(), memory_pool));
+    std::map<std::string, ManifestEntry> targets;
+    PAIMON_ASSIGN_OR_RAISE(
+        targets, FindFiles(store, context.schema, context.schema_manager, context.snapshot_manager,
+                           context.snapshot, paths, requests, scan_executor, memory_pool));
+    return WriteIndexesAndBuildMessages(requests, targets, paths,
+                                        context.options.FileIndexFormatVersion(),
+                                        context.options.GetFileSystem(), memory_pool);
 }
 
 }  // namespace paimon
