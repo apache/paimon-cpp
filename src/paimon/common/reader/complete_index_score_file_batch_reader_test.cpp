@@ -311,8 +311,8 @@ TEST_F(CompleteIndexScoreFileBatchReaderTest, TestMultipleScoresWithEmptyResult)
                                                            /*read_batch_size=*/1);
         CompleteIndexScoreFileBatchReader reader(
             std::move(inner),
-            std::map<std::string, std::vector<float>>{{"score_a", {}}, {"score_b", {}}}, std::nullopt,
-            GetArrowPool(pool_));
+            std::map<std::string, std::vector<float>>{{"score_a", {}}, {"score_b", {}}},
+            std::nullopt, GetArrowPool(pool_));
         ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap eof, reader.NextBatchWithBitmap());
         ASSERT_TRUE(BatchReader::IsEofBatch(eof));
     }
@@ -379,8 +379,8 @@ TEST_F(CompleteIndexScoreFileBatchReaderTest, TestRejectsInvalidScoreFields) {
         auto data = arrow::ipc::internal::json::ArrayFromJSON(type, json).ValueOrDie();
         auto inner = std::make_unique<MockFileBatchReader>(data, type, /*read_batch_size=*/1);
         CompleteIndexScoreFileBatchReader reader(
-            std::move(inner), std::map<std::string, std::vector<float>>{{"score", {1.25f}}}, std::nullopt,
-            GetArrowPool(pool_));
+            std::move(inner), std::map<std::string, std::vector<float>>{{"score", {1.25f}}},
+            std::nullopt, GetArrowPool(pool_));
         ASSERT_NOK_WITH_MSG(reader.NextBatch(), message);
     };
     auto score = arrow::field("score", arrow::float32());

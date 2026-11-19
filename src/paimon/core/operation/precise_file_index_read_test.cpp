@@ -576,9 +576,7 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateIndexedLeafSkipsUnselectedSca
 
 TEST_F(PreciseFileIndexReadTest, TestMixedPredicateRechecksScalarIndexCandidates) {
     scalar_index_result_ = std::make_shared<BitmapIndexResult>(
-        []() -> Result<RoaringBitmap32> {
-            return RoaringBitmap32::From({0, 1});
-        },
+        []() -> Result<RoaringBitmap32> { return RoaringBitmap32::From({0, 1}); },
         /*is_exact=*/false);
     auto field = arrow::field("f3", arrow::float64());
     ASSERT_OK_AND_ASSIGN(auto writer, BitmapFileIndexWriter::Create(field, {}, pool_));

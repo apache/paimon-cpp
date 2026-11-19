@@ -95,14 +95,10 @@ TEST_F(BitmapIndexResultTest, TestCompoundIndexResult) {
 TEST_F(BitmapIndexResultTest, TestExactnessComposition) {
     auto candidate = CreateResult({1, 2, 3});
     auto exact = std::make_shared<BitmapIndexResult>(
-        []() -> Result<RoaringBitmap32> {
-            return RoaringBitmap32::From({1, 2, 3});
-        },
+        []() -> Result<RoaringBitmap32> { return RoaringBitmap32::From({1, 2, 3}); },
         /*is_exact=*/true);
     auto other_exact = std::make_shared<BitmapIndexResult>(
-        []() -> Result<RoaringBitmap32> {
-            return RoaringBitmap32::From({2, 4});
-        },
+        []() -> Result<RoaringBitmap32> { return RoaringBitmap32::From({2, 4}); },
         /*is_exact=*/true);
     ASSERT_FALSE(candidate->IsExact());
     ASSERT_TRUE(exact->IsExact());
