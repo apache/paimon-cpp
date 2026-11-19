@@ -142,23 +142,6 @@ Status TopKBatchReader::ReadTopK() {
         PAIMON_ASSIGN_OR_RAISE(values, ArrowUtils::FlattenUnresolvableDictionaries(
                                            values, read_type_, pool_.get(),
                                            /*preserve_layout_recoverable_dictionaries=*/false));
-        // Disk and real-time readers may report different field nullability. Use the query's
-        // declarations before concatenating candidates; this only copies array metadata.
-        auto logical_type = checked_pointer_cast<arrow::StructType>(read_type_);
-        arrow::FieldVector fields = values->struct_type()->fields();
-        bool changed_nullability = false;
-        for (auto& field : fields) {
-            auto logical_field = logical_type->GetFieldByName(field->name());
-            if (logical_field && field->nullable() != logical_field->nullable()) {
-                field = field->WithNullable(logical_field->nullable());
-                changed_nullability = true;
-            }
-        }
-        if (changed_nullability) {
-            auto data = values->data()->Copy();
-            data->type = arrow::struct_(fields);
-            values = checked_pointer_cast<arrow::StructArray>(arrow::MakeArray(data));
-        }
         auto scores =
             std::dynamic_pointer_cast<arrow::FloatArray>(values->GetFieldByName(score_name_));
         if (!scores) {

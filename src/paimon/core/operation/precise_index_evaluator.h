@@ -151,9 +151,6 @@ class PreciseIndexEvaluator {
                 PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<Reader>> readers,
                                        indexes->GetReaders(index_predicate->FieldName()));
                 for (const auto& reader : readers) {
-                    // TODO(lisizhuo.lsz): Pass remaining candidates through
-                    // IndexReaderUtils::VisitScalar to index readers so they can skip rows excluded
-                    // by earlier predicates, row ranges, or deletion vectors.
                     PAIMON_ASSIGN_OR_RAISE(std::optional<Bitmap> indexed,
                                            IndexReaderUtils::VisitScalar(reader, index_predicate));
                     if (indexed) {
@@ -164,7 +161,7 @@ class PreciseIndexEvaluator {
                     }
                 }
             }
-            // TODO(lisizhuo.lsz): Whether to ScanScalar depends on whether the index returns exact
+            // TODO(xinyu.lxy): Whether to ScanScalar depends on whether the index returns exact
             // results.
             if (!result.rows.IsEmpty()) {
                 // Scalar indexes may contain false positives, even if they return a bitmap.
@@ -305,8 +302,14 @@ class PreciseIndexEvaluator {
     template <typename Reader, typename Indexes>
     static Status ApplyRootSearch(const std::shared_ptr<VectorSearch>& vector_search,
                                   const std::shared_ptr<FullTextSearch>& full_text_search,
-                                  const std::string& score_field, Indexes* indexes,
+                                  const std::optional<std::string>& score_field, Indexes* indexes,
                                   Evaluation* evaluated) {
+        if (!vector_search && !full_text_search) {
+            return Status::OK();
+        }
+        if (!score_field) {
+            return Status::Invalid("Root search field name is missing");
+        }
         std::shared_ptr<ScoredResult> scored;
         if (vector_search) {
             PAIMON_ASSIGN_OR_RAISE(
@@ -322,14 +325,12 @@ class PreciseIndexEvaluator {
                                          IndexReaderCapabilities::SearchType::FULL_TEXT_SEARCH));
             PAIMON_ASSIGN_OR_RAISE(scored, reader->VisitFullTextSearch(FilterFullTextSearch(
                                                full_text_search, evaluated->rows)));
-        } else {
-            return Status::OK();
         }
         if (!scored) {
             return Status::Invalid("Root search returned a null result");
         }
         evaluated->rows &= scored->GetRowPositions();
-        evaluated->scores.emplace(score_field, std::move(scored));
+        evaluated->scores.emplace(score_field.value(), std::move(scored));
         return Status::OK();
     }
 

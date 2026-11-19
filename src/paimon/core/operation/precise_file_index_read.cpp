@@ -330,7 +330,7 @@ Result<RoaringBitmap32> PreciseFileIndexRead::ScanScalar(
 
 Status PreciseFileIndexRead::ApplyRootSearch(Evaluation* evaluated) const {
     return Evaluator::ApplyRootSearch<FileIndexReader>(vector_search_, full_text_search_,
-                                                       root_search_field_name_.value_or(""),
+                                                       root_search_field_name_,
                                                        indexes_.get(), evaluated);
 }
 

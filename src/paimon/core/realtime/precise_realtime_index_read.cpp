@@ -295,7 +295,12 @@ class RealtimeSourceRead {
     Status ApplyRootSearch(Evaluation* evaluated) {
         const auto& vector = context_->GetVectorSearch();
         const auto& text = context_->GetFullTextSearch();
-        const std::string field = vector ? vector->field_name : text ? text->field_name : "";
+        std::optional<std::string> field;
+        if (vector) {
+            field = vector->field_name;
+        } else if (text) {
+            field = text->field_name;
+        }
         return Evaluator::ApplyRootSearch<RealtimeIndexReader>(vector, text, field, this,
                                                                evaluated);
     }
