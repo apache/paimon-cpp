@@ -57,6 +57,7 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/bitmap_deletion_vector.h"
 #include "paimon/core/deletionvectors/deletion_vectors_index_file.h"
+#include "paimon/core/global_index/indexed_split_impl.h"
 #include "paimon/core/io/data_file_path_factory.h"
 #include "paimon/core/io/file_index_evaluator.h"
 #include "paimon/core/operation/commit/manifest_entry_changes.h"
@@ -204,10 +205,12 @@ class QueryTrackingRealtimeStore final : public DelegatingRealtimeStore {
  public:
     QueryTrackingRealtimeStore(const std::shared_ptr<RealtimeStore>& delegate,
                                const std::shared_ptr<std::atomic<bool>>& saw_query_predicate,
-                               const std::shared_ptr<std::weak_ptr<RealtimeReadView>>& query_view)
+                               const std::shared_ptr<std::weak_ptr<RealtimeReadView>>& query_view,
+                               const std::shared_ptr<std::atomic<int32_t>>& query_count = nullptr)
         : DelegatingRealtimeStore(delegate),
           saw_query_predicate_(saw_query_predicate),
-          query_view_(query_view) {}
+          query_view_(query_view),
+          query_count_(query_count) {}
 
     Result<std::shared_ptr<RealtimeReadView>> AcquireReadView() override {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeReadView> delegate_view,
@@ -219,6 +222,9 @@ class QueryTrackingRealtimeStore final : public DelegatingRealtimeStore {
     Result<std::vector<std::unique_ptr<BatchReader>>> CreateQueryReaders(
         const std::shared_ptr<RealtimeReadView>& view,
         const RealtimeQueryContext& context) override {
+        if (query_count_) {
+            ++*query_count_;
+        }
         if (context.predicate) {
             saw_query_predicate_->store(true, std::memory_order_release);
         }
@@ -234,6 +240,7 @@ class QueryTrackingRealtimeStore final : public DelegatingRealtimeStore {
  private:
     std::shared_ptr<std::atomic<bool>> saw_query_predicate_;
     std::shared_ptr<std::weak_ptr<RealtimeReadView>> query_view_;
+    std::shared_ptr<std::atomic<int32_t>> query_count_;
 };
 
 // Publishes a competing snapshot after the attempt has already materialized its DVs.
@@ -912,8 +919,7 @@ class RealtimeWriteInteTest : public ::testing::Test {
         return scan->CreatePlan();
     }
 
-    Result<std::unique_ptr<BatchReader>> CreateQueryReader(
-        const std::shared_ptr<Plan>& plan,
+    Result<std::unique_ptr<TableRead>> CreateQueryTableRead(
         const std::shared_ptr<RealtimeContext>& realtime_context) const {
         ReadContextBuilder read_builder(table_path_);
         read_builder.SetOptions(options_)
@@ -921,8 +927,14 @@ class RealtimeWriteInteTest : public ::testing::Test {
             .WithRealtimeContext(realtime_context)
             .WithMemoryPool(pool_);
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+        return TableRead::Create(std::move(read_context));
+    }
+
+    Result<std::unique_ptr<BatchReader>> CreateQueryReader(
+        const std::shared_ptr<Plan>& plan,
+        const std::shared_ptr<RealtimeContext>& realtime_context) const {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
-                               TableRead::Create(std::move(read_context)));
+                               CreateQueryTableRead(realtime_context));
         return table_read->CreateReader(plan->Splits());
     }
 
@@ -1012,8 +1024,10 @@ class RealtimeWriteInteTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::ChunkedArray> read_result,
                                ReadPlan(plan, realtime_context, {"id", "payload", "pt"}, predicate,
                                         enable_predicate_filter));
-        const std::shared_ptr<arrow::ChunkedArray>& result = read_result;
+        return ToRows(read_result);
+    }
 
+    static Result<std::vector<Row>> ToRows(const std::shared_ptr<arrow::ChunkedArray>& result) {
         std::vector<Row> rows;
         if (!result) {
             return rows;
@@ -4207,16 +4221,16 @@ TEST_F(RealtimeWriteInteTest, TestPkRead) {
                          TableRead::Create(std::move(read_context)));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
                          table_read->CreateReader(lifetime_plan->Splits()));
-    ASSERT_FALSE(query_view->expired());
 
     std::weak_ptr<RealtimeContext> weak_context = realtime_context;
     table_read.reset();
     lifetime_plan.reset();
     realtime_context.reset();
-    ASSERT_TRUE(weak_context.expired());
-    ASSERT_FALSE(query_view->expired());
+    ASSERT_FALSE(weak_context.expired());
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch read_batch, reader->NextBatch());
     ASSERT_FALSE(BatchReader::IsEofBatch(read_batch));
+    ASSERT_TRUE(weak_context.expired());
+    ASSERT_FALSE(query_view->expired());
     reader->Close();
     reader.reset();
     ASSERT_TRUE(query_view->expired());
@@ -6348,8 +6362,8 @@ TEST_F(RealtimeWriteInteTest, TestPlanExcludesRowsWrittenAfterMemoryEndOffset) {
     ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
-TEST_F(RealtimeWriteInteTest, TestReadFailsAfterRealtimeSplitTicketExpires) {
-    options_[Options::REALTIME_READ_VIEW_TTL] = "10 ms";
+TEST_F(RealtimeWriteInteTest, TestTicketExpiryPreservesCreatedReader) {
+    options_[Options::REALTIME_READ_VIEW_TTL] = "1 s";
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
@@ -6359,46 +6373,20 @@ TEST_F(RealtimeWriteInteTest, TestReadFailsAfterRealtimeSplitTicketExpires) {
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
                          MakeBatch(rows, /*partitioned=*/false));
     ASSERT_OK(writer->Write(std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, CreateQueryReader(realtime_context));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
                          CreatePlan(realtime_context, /*predicate=*/nullptr));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
     ASSERT_NOK_WITH_MSG(ReadRows(plan, realtime_context), "ticket does not exist or has expired");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                         ReadResultCollector::CollectResult(std::move(reader)));
+    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual, ToRows(result));
+    ASSERT_EQ(actual, rows);
     ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
-TEST_F(RealtimeWriteInteTest, TestSuccessfulReaderCreationConsumesRealtimeSplitTicket) {
-    CreateTable(/*partition_keys=*/{});
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
-                         RealtimeContext::Create());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
-                         CreateRealtimeWriter(realtime_context));
-    std::vector<Row> rows = MakeRows(/*first_id=*/0, /*count=*/3, /*partition=*/"p0");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
-                         MakeBatch(rows, /*partitioned=*/false));
-    ASSERT_OK(writer->Write(std::move(batch)));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan,
-                         CreatePlan(realtime_context, /*predicate=*/nullptr));
-
-    ReadContextBuilder read_builder(table_path_);
-    read_builder.SetOptions(options_)
-        .SetReadFieldNames({"id", "payload", "pt"})
-        .WithRealtimeContext(realtime_context)
-        .WithMemoryPool(pool_);
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
-                         TableRead::Create(std::move(read_context)));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> first_reader,
-                         table_read->CreateReader(plan->Splits()));
-    first_reader->Close();
-    first_reader.reset();
-
-    ASSERT_NOK_WITH_MSG(table_read->CreateReader(plan->Splits()),
-                        "ticket does not exist or has expired");
-    ASSERT_OK(PrepareAndClose(writer.get()));
-}
-
-TEST_F(RealtimeWriteInteTest, TestFailedReaderCreationPreservesRealtimeSplitTicket) {
+TEST_F(RealtimeWriteInteTest, TestRealtimeReaderFailureTimingAndTicketConsumption) {
     CreateTable(/*partition_keys=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
                          RealtimeContext::Create());
@@ -6422,12 +6410,186 @@ TEST_F(RealtimeWriteInteTest, TestFailedReaderCreationPreservesRealtimeSplitTick
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
                          TableRead::Create(std::move(read_context)));
-    ASSERT_NOK_WITH_MSG(table_read->CreateReader(plan->Splits()),
+    ASSERT_NOK_WITH_MSG(table_read->CreateReader(plan->Splits().front()),
                         "cannot cast predicate unsupported");
 
     ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
     ASSERT_EQ(rows, actual_rows);
+    ASSERT_OK_AND_ASSIGN(plan, CreatePlan(realtime_context, nullptr));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                         table_read->CreateReader(plan->Splits()));
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "cannot cast predicate unsupported");
+    ASSERT_NOK_WITH_MSG(reader->NextBatchWithBitmap(), "cannot cast predicate unsupported");
+    reader->Close();
+    ASSERT_NOK_WITH_MSG(ReadRows(plan, realtime_context), "ticket does not exist or has expired");
+
+    read_builder.SetOptions(options_)
+        .SetReadFieldNames({"id", "payload", "pt"})
+        .WithRealtimeContext(realtime_context)
+        .WithMemoryPool(pool_);
+    ASSERT_OK_AND_ASSIGN(read_context, read_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(table_read, TableRead::Create(std::move(read_context)));
+    for (bool multi_split : {false, true}) {
+        SCOPED_TRACE(multi_split);
+        ASSERT_OK_AND_ASSIGN(plan, CreatePlan(realtime_context, nullptr));
+        ASSERT_EQ(plan->Splits().size(), 1);
+        ASSERT_OK_AND_ASSIGN(reader, multi_split
+                                         ? table_read->CreateReader(plan->Splits())
+                                         : table_read->CreateReader(plan->Splits().front()));
+        reader->Close();
+        ASSERT_NOK_WITH_MSG(table_read->CreateReader(plan->Splits().front()),
+                            "ticket does not exist or has expired");
+        ASSERT_NOK_WITH_MSG(table_read->CreateReader(plan->Splits()),
+                            "ticket does not exist or has expired");
+    }
     ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
+TEST_F(RealtimeWriteInteTest, TestLazyMultiSplitReadersRetainViewsAndStopOpening) {
+    for (bool primary_key : {false, true}) {
+        SCOPED_TRACE(primary_key);
+        dir_ = UniqueTestDirectory::Create("local");
+        ASSERT_NE(dir_, nullptr);
+        table_path_ = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+        if (primary_key) {
+            CreatePkTable({"pt"});
+        } else {
+            CreateTable({"pt"});
+        }
+        auto query_count = std::make_shared<std::atomic<int32_t>>(0);
+        auto factory = MakeDecoratingFactory<QueryTrackingRealtimeStore>(
+            std::make_shared<std::atomic<bool>>(false),
+            std::make_shared<std::weak_ptr<RealtimeReadView>>(), query_count);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> realtime_context,
+                             RealtimeContext::Create(factory));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context_impl,
+                             RealtimeContextImpl::Cast(realtime_context));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer,
+                             CreateRealtimeWriter(realtime_context));
+        const std::map<std::string, int64_t> ids = {{"p0", 0}, {"p1", 10}, {"p2", 20}};
+        for (const auto& [partition, id] : ids) {
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> batch,
+                                 MakeBatch({Row{id, "value", partition}}, true));
+            ASSERT_OK(writer->Write(std::move(batch)));
+        }
+        for (int32_t batches_before_close : {0, 1, -1}) {
+            SCOPED_TRACE(batches_before_close);
+            query_count->store(0);
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, nullptr));
+            ASSERT_EQ(plan->Splits().size(), ids.size());
+            std::vector<Row> expected;
+            std::vector<std::string> tickets;
+            for (const auto& split : plan->Splits()) {
+                auto realtime_split = std::dynamic_pointer_cast<RealtimeSplit>(split);
+                ASSERT_NE(realtime_split, nullptr);
+                const std::string& partition = realtime_split->Partition().at("pt");
+                expected.emplace_back(ids.at(partition), "value", partition);
+                tickets.push_back(realtime_split->OpaqueTicket());
+            }
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                                 CreateQueryReader(plan, realtime_context));
+            plan.reset();
+            ASSERT_EQ(query_count->load(), 0);
+            for (const std::string& ticket : tickets) {
+                ASSERT_NOK_WITH_MSG(context_impl->ResolveReadView(ticket),
+                                    "ticket does not exist or has expired");
+            }
+            if (batches_before_close < 0) {
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                                     ReadResultCollector::CollectResult(reader.get()));
+                ASSERT_OK_AND_ASSIGN(std::vector<Row> actual, ToRows(result));
+                ASSERT_EQ(actual, expected);
+                ASSERT_EQ(query_count->load(), ids.size());
+            } else if (batches_before_close == 1) {
+                ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch,
+                                     reader->NextBatchWithBitmap());
+                ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+                ReaderUtils::ReleaseReadBatch(std::move(batch.first));
+                ASSERT_EQ(query_count->load(), 1);
+            }
+            const int32_t opened = query_count->load();
+            reader->Close();
+            reader->Close();
+            ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch eof, reader->NextBatch());
+            ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+            ASSERT_EQ(query_count->load(), opened);
+        }
+        query_count->store(0);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(realtime_context, nullptr));
+        ASSERT_EQ(plan->Splits().size(), ids.size());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                             CreateQueryTableRead(realtime_context));
+        auto first = std::dynamic_pointer_cast<RealtimeSplit>(plan->Splits().front());
+        ASSERT_NE(first, nullptr);
+        const int32_t version = first->Version();
+        const int32_t bucket = first->Bucket();
+        const int64_t committed_end = first->CommittedEndOffset();
+        const int64_t memory_end = first->MemoryEndOffset();
+        auto check_invalid = [&](int32_t split_version, int32_t split_bucket, int64_t begin,
+                                 int64_t end, std::vector<std::shared_ptr<Split>> disk_splits,
+                                 const char* error) {
+            SCOPED_TRACE(error);
+            auto split = std::make_shared<RealtimeSplit>(
+                split_version, first->SnapshotId(), first->Partition(), split_bucket,
+                std::move(disk_splits), begin, end, first->OpaqueTicket());
+            ASSERT_NOK_WITH_MSG(
+                read->CreateReader(std::vector<std::shared_ptr<Split>>{plan->Splits()[1], split}),
+                error);
+            ASSERT_NOK_WITH_MSG(read->CreateReader(split), error);
+        };
+        check_invalid(version + 1, bucket, committed_end, memory_end, {},
+                      "unsupported real-time split version");
+        check_invalid(version, bucket + 1, committed_end, memory_end, {},
+                      "belongs to another partition-bucket");
+        check_invalid(version, bucket, -1, memory_end, {},
+                      "committed end offset must not be negative");
+        check_invalid(version, bucket, memory_end + 1, memory_end, {},
+                      "memory end offset precedes committed end offset");
+        check_invalid(version, bucket, committed_end, memory_end + 1, {},
+                      "does not match the split offset range");
+        check_invalid(version, bucket, committed_end, memory_end, {nullptr}, "disk split is null");
+        ASSERT_NOK_WITH_MSG(read->CreateReader(std::vector<std::shared_ptr<Split>>{first, nullptr}),
+                            "split is null");
+        auto check_invalid_disk = [&](const std::shared_ptr<Split>& disk_split, const char* error) {
+            SCOPED_TRACE(error);
+            ASSERT_NOK_WITH_MSG(
+                read->CreateReader(std::vector<std::shared_ptr<Split>>{first, disk_split}), error);
+            check_invalid(version, bucket, committed_end, memory_end, {disk_split}, error);
+        };
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> empty,
+                             DataSplitImpl::Builder(BinaryRow::EmptyRow(), bucket, "", {}).Build());
+        check_invalid_disk(std::make_shared<IndexedSplitImpl>(nullptr, std::vector<Range>{}),
+                           "indexed split has no data split");
+        check_invalid_disk(std::make_shared<IndexedSplitImpl>(empty, std::vector<Range>{{0, 0}}),
+                           "row ranges mismatch data files");
+        if (primary_key) {
+            auto indexed = std::make_shared<IndexedSplitImpl>(empty, std::vector<Range>{});
+            check_invalid(version, bucket, committed_end, memory_end, {indexed},
+                          "merge input disk split is not a data split");
+        }
+        DataSplitImpl::Builder invalid_deletions(BinaryRow::EmptyRow(), bucket, "", {});
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> misaligned,
+                             invalid_deletions.WithDataDeletionFiles({std::nullopt}).Build());
+        check_invalid_disk(misaligned, "deletion files must be empty or match data files");
+        DataSplitImpl::Builder missing_file(BinaryRow::EmptyRow(), bucket, "", {nullptr});
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> missing, missing_file.Build());
+        check_invalid_disk(missing, "data file is null");
+        check_invalid_disk(std::make_shared<Split>(), "expected a data or indexed split");
+        SchemaManager schemas(dir_->GetFileSystem(), table_path_);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> original, schemas.ReadSchema(0));
+        std::vector<DataField> evolved_fields = original->Fields();
+        const int32_t new_field_id = original->HighestFieldId() + 1;
+        evolved_fields.emplace_back(new_field_id, arrow::field("extra", arrow::utf8()));
+        ASSERT_OK(TestHelper::WriteNextSchema(dir_->GetFileSystem(), table_path_, evolved_fields,
+                                              new_field_id, original->Options()));
+        ASSERT_NOK_WITH_MSG(CreateQueryReader(plan, realtime_context),
+                            "real-time store schema mismatch");
+        ASSERT_EQ(query_count->load(), 0);
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> retry,
+                             read->CreateReader(plan->Splits()));
+        retry->Close();
+        ASSERT_OK(PrepareAndClose(writer.get()));
+    }
 }
 
 TEST_F(RealtimeWriteInteTest, TestCloseWriterWithBuildingDataInvalidatesContext) {

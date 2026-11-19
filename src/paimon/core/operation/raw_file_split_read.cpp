@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "fmt/format.h"
+#include "paimon/common/executor/reader_build_executor.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/types/data_field.h"
@@ -179,9 +180,10 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReaderWithPredicate
         }
         return std::unique_ptr<BatchReader>(std::move(readers.front()));
     };
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<ConcatBatchReader> concat_batch_reader,
-        ConcatBatchReader::CreateLazy(data_files.size(), std::move(factory), arrow_pool_));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ConcatBatchReader> concat_batch_reader,
+                           ConcatBatchReader::CreateLazy(data_files.size(), std::move(factory),
+                                                         options_.GetReadPreparationWindow(),
+                                                         arrow_pool_, GetReaderBuildExecutor()));
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<BatchReader> batch_reader,
         ApplyPredicateFilterIfNeeded(

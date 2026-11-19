@@ -26,6 +26,8 @@
 #include <functional>
 #include <future>
 #include <new>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -36,6 +38,7 @@
 #include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/executor/future.h"
+#include "paimon/common/executor/reader_build_executor.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
@@ -243,9 +246,11 @@ class ConcatBatchReaderTest : public ::testing::Test {
                 SCOPED_TRACE(lazy);
                 std::unique_ptr<ConcatBatchReader> concat_reader;
                 if (lazy) {
-                    ASSERT_OK_AND_ASSIGN(concat_reader,
-                                         ConcatBatchReader::CreateLazy(batches.size(), factory,
-                                                                       GetArrowPool(pool_)));
+                    ASSERT_OK_AND_ASSIGN(
+                        concat_reader,
+                        ConcatBatchReader::CreateLazy(
+                            batches.size(), factory, ConcatBatchReader::kDefaultPreparationWindow,
+                            GetArrowPool(pool_), GetReaderBuildExecutor()));
                 } else {
                     std::vector<std::unique_ptr<BatchReader>> readers;
                     for (size_t i = 0; i < batches.size(); i++) {
@@ -407,11 +412,13 @@ TEST_F(ConcatBatchReaderTest, TestCollectMetricsAfterReleasingReaders) {
 }
 
 TEST_F(ConcatBatchReaderTest, TestWarmupLooksOneReaderAhead) {
-    for (bool lazy : {false, true}) {
-        SCOPED_TRACE(lazy);
+    const std::vector<std::optional<int32_t>> windows = {std::nullopt, 1, 4, 8};
+    for (const auto& window : windows) {
+        SCOPED_TRACE(window.value_or(0));
+        const bool lookahead = !window || window.value() > 1;
         std::vector<std::string> events;
         std::vector<std::shared_ptr<arrow::Array>> data;
-        for (size_t i = 0; i < ConcatBatchReader::kPreparationWindow + 2; i++) {
+        for (size_t i = 0; i < ConcatBatchReader::kDefaultPreparationWindow + 2; i++) {
             data.push_back(ReaderData(i)->Slice(0, i == 0 ? 2 : 1));
         }
         ConcatBatchReader::ReaderFactory factory =
@@ -421,9 +428,10 @@ TEST_F(ConcatBatchReaderTest, TestWarmupLooksOneReaderAhead) {
         };
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(1));
         std::unique_ptr<ConcatBatchReader> reader;
-        if (lazy) {
-            ASSERT_OK_AND_ASSIGN(reader, ConcatBatchReader::CreateLazy(
-                                             data.size(), factory, GetArrowPool(pool_), executor));
+        if (window) {
+            ASSERT_OK_AND_ASSIGN(reader,
+                                 ConcatBatchReader::CreateLazy(data.size(), factory, window.value(),
+                                                               GetArrowPool(pool_), executor));
         } else {
             std::vector<std::unique_ptr<BatchReader>> readers;
             for (size_t i = 0; i < data.size(); i++) {
@@ -438,7 +446,11 @@ TEST_F(ConcatBatchReaderTest, TestWarmupLooksOneReaderAhead) {
         ASSERT_FALSE(BatchReader::IsEofBatch(batch));
         ReaderUtils::ReleaseReadBatch(std::move(batch.first));
         ASSERT_LT(FirstEvent(events, "warmup a"), FirstEvent(events, "read a"));
-        ASSERT_LT(FirstEvent(events, "warmup b"), FirstEvent(events, "read a"));
+        if (lookahead) {
+            ASSERT_LT(FirstEvent(events, "warmup b"), FirstEvent(events, "read a"));
+        } else {
+            ASSERT_EQ(CountEvent(events, "warmup b"), 0);
+        }
         ASSERT_EQ(CountEvent(events, "warmup c"), 0);
 
         ASSERT_OK_AND_ASSIGN(batch, reader->NextBatchWithBitmap());
@@ -449,16 +461,27 @@ TEST_F(ConcatBatchReaderTest, TestWarmupLooksOneReaderAhead) {
         ASSERT_OK_AND_ASSIGN(batch, reader->NextBatchWithBitmap());
         ASSERT_FALSE(BatchReader::IsEofBatch(batch));
         ReaderUtils::ReleaseReadBatch(std::move(batch.first));
-        ASSERT_LT(FirstEvent(events, "warmup c"), FirstEvent(events, "read b"));
+        ASSERT_LT(FirstEvent(events, "warmup b"), FirstEvent(events, "read b"));
+        if (lookahead) {
+            ASSERT_LT(FirstEvent(events, "warmup c"), FirstEvent(events, "read b"));
+        } else {
+            ASSERT_EQ(CountEvent(events, "warmup c"), 0);
+        }
         for (size_t i = 2; i < data.size(); i++) {
             ASSERT_EQ(Via(executor.get(), []() {}).wait_for(std::chrono::seconds(5)),
                       std::future_status::ready);
             ASSERT_OK_AND_ASSIGN(batch, reader->NextBatchWithBitmap());
             ASSERT_FALSE(BatchReader::IsEofBatch(batch));
             ReaderUtils::ReleaseReadBatch(std::move(batch.first));
+            ASSERT_LT(FirstEvent(events, "warmup " + std::string(1, 'a' + i)),
+                      FirstEvent(events, "read " + std::string(1, 'a' + i)));
             if (i + 1 < data.size()) {
-                ASSERT_LT(FirstEvent(events, "warmup " + std::string(1, 'a' + i + 1)),
-                          FirstEvent(events, "read " + std::string(1, 'a' + i)));
+                if (lookahead) {
+                    ASSERT_LT(FirstEvent(events, "warmup " + std::string(1, 'a' + i + 1)),
+                              FirstEvent(events, "read " + std::string(1, 'a' + i)));
+                } else {
+                    ASSERT_EQ(CountEvent(events, "warmup " + std::string(1, 'a' + i + 1)), 0);
+                }
             }
             if (i + 2 < data.size()) {
                 ASSERT_EQ(CountEvent(events, "warmup " + std::string(1, 'a' + i + 2)), 0);
@@ -502,97 +525,146 @@ TEST_F(ConcatBatchReaderTest, TestWarmupSkipsReaderThatIsNotFileBatchReader) {
     ASSERT_LT(FirstEvent(events, "warmup c"), FirstEvent(events, "read b"));
 }
 
+TEST_F(ConcatBatchReaderTest, LazyCreationRejectsInvalidInputsBeforeBuilding) {
+    std::atomic<int32_t> calls = 0;
+    ConcatBatchReader::ReaderFactory factory =
+        [&calls](size_t) -> Result<std::unique_ptr<BatchReader>> {
+        ++calls;
+        return std::unique_ptr<BatchReader>();
+    };
+    auto pool = GetArrowPool(pool_);
+    auto executor = GetReaderBuildExecutor();
+    for (size_t reader_count : {0, 3}) {
+        SCOPED_TRACE(reader_count);
+        ASSERT_NOK_WITH_MSG(ConcatBatchReader::CreateLazy(reader_count, {}, 1, pool, executor),
+                            "requires a factory and a build executor");
+        ASSERT_NOK_WITH_MSG(ConcatBatchReader::CreateLazy(reader_count, factory, 1, pool, nullptr),
+                            "requires a factory and a build executor");
+        for (int32_t window : {0, -1}) {
+            SCOPED_TRACE(window);
+            ASSERT_NOK_WITH_MSG(
+                ConcatBatchReader::CreateLazy(reader_count, factory, window, pool, executor),
+                "reader preparation window must be positive");
+        }
+    }
+    ASSERT_EQ(calls.load(), 0);
+}
+
 TEST_F(ConcatBatchReaderTest, LazyWindowPreservesOrderBitmapAndMetrics) {
     constexpr size_t kFiles = 31;
-    auto counts = std::make_shared<ReaderCounts>();
-    auto lifetime = std::make_shared<int32_t>(0);
-    std::weak_ptr<int32_t> weak_lifetime = lifetime;
-    ConcatBatchReader::ReaderFactory factory =
-        [counts, lifetime](size_t index) -> Result<std::unique_ptr<BatchReader>> {
-        if (index % 5 == 0) {
-            return std::unique_ptr<BatchReader>();
+    for (uint32_t threads : {1u, 3u}) {
+        SCOPED_TRACE(threads);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(threads));
+        for (int32_t window : {1, 2, 4, 8, 32}) {
+            SCOPED_TRACE(window);
+            auto counts = std::make_shared<ReaderCounts>();
+            auto lifetime = std::make_shared<int32_t>(0);
+            std::weak_ptr<int32_t> weak_lifetime = lifetime;
+            std::atomic<size_t> factory_calls = 0;
+            ConcatBatchReader::ReaderFactory factory =
+                [counts, lifetime,
+                 &factory_calls](size_t index) -> Result<std::unique_ptr<BatchReader>> {
+                factory_calls++;
+                if (index % 5 == 0) {
+                    return std::unique_ptr<BatchReader>();
+                }
+                auto data = ReaderData(index);
+                if (index % 5 == 1) {
+                    data = data->Slice(0, 0);
+                }
+                auto reader = std::make_unique<CountedFileBatchReader>(data, counts);
+                reader->SelectSecondRow();
+                return reader;
+            };
+            ASSERT_OK_AND_ASSIGN(auto reader,
+                                 ConcatBatchReader::CreateLazy(kFiles, std::move(factory), window,
+                                                               GetArrowPool(pool_), executor));
+            lifetime.reset();
+            const size_t initial = std::min<size_t>(window, kFiles);
+            ASSERT_EQ(factory_calls.load(), initial);
+            ASSERT_LE(counts->created.load(), initial);
+            uint64_t expected_rows = 0;
+            for (size_t i = 0; i < kFiles; i++) {
+                if (i % 5 <= 1) {
+                    continue;
+                }
+                auto expected = ReaderData(i);
+                std::shared_ptr<arrow::Array> actual;
+                if (i % 2 == 0) {
+                    ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatchWithBitmap());
+                    ASSERT_OK_AND_ASSIGN(actual,
+                                         ReadResultCollector::GetArray(std::move(batch.first)));
+                    ASSERT_EQ(batch.second, RoaringBitmap32::From({1}));
+                } else {
+                    ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
+                    ASSERT_OK_AND_ASSIGN(actual, ReadResultCollector::GetArray(std::move(batch)));
+                    expected = expected->Slice(1, 1);
+                }
+                ASSERT_NE(actual, nullptr);
+                ASSERT_TRUE(actual->Equals(expected)) << actual->ToString();
+                expected_rows += 2;
+            }
+            ASSERT_OK_AND_ASSIGN(auto eof, reader->NextBatch());
+            ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+            ASSERT_EQ(factory_calls.load(), kFiles);
+            ASSERT_LE(counts->peak.load(), initial);
+            ASSERT_EQ(counts->live.load(), 0);
+            ASSERT_EQ(counts->closed.load(), counts->created.load());
+            ASSERT_TRUE(weak_lifetime.expired());
+            ASSERT_OK_AND_ASSIGN(auto rows,
+                                 reader->GetReaderMetrics()->GetCounter("mock.number.of.rows"));
+            ASSERT_EQ(rows, expected_rows);
+            reader->Close();
+            ASSERT_OK_AND_ASSIGN(auto closed_rows,
+                                 reader->GetReaderMetrics()->GetCounter("mock.number.of.rows"));
+            ASSERT_EQ(rows, closed_rows);
+            ASSERT_OK_AND_ASSIGN(auto eof_with_bitmap, reader->NextBatchWithBitmap());
+            ASSERT_TRUE(BatchReader::IsEofBatch(eof_with_bitmap));
         }
-        auto data = ReaderData(index);
-        if (index % 5 == 1) {
-            data = data->Slice(0, 0);
-        }
-        auto reader = std::make_unique<CountedFileBatchReader>(data, counts);
-        reader->SelectSecondRow();
-        return reader;
-    };
-    ASSERT_OK_AND_ASSIGN(auto reader, ConcatBatchReader::CreateLazy(kFiles, std::move(factory),
-                                                                    GetArrowPool(pool_)));
-    lifetime.reset();
-    ASSERT_LE(counts->created.load(), ConcatBatchReader::kPreparationWindow);
-    uint64_t expected_rows = 0;
-    for (size_t i = 0; i < kFiles; i++) {
-        if (i % 5 <= 1) {
-            continue;
-        }
-        auto expected = ReaderData(i);
-        std::shared_ptr<arrow::Array> actual;
-        if (i % 2 == 0) {
-            ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatchWithBitmap());
-            ASSERT_OK_AND_ASSIGN(actual, ReadResultCollector::GetArray(std::move(batch.first)));
-            ASSERT_EQ(batch.second, RoaringBitmap32::From({1}));
-        } else {
-            ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
-            ASSERT_OK_AND_ASSIGN(actual, ReadResultCollector::GetArray(std::move(batch)));
-            expected = expected->Slice(1, 1);
-        }
-        ASSERT_NE(actual, nullptr);
-        ASSERT_TRUE(actual->Equals(expected)) << actual->ToString();
-        expected_rows += 2;
     }
-    ASSERT_OK_AND_ASSIGN(auto eof, reader->NextBatch());
-    ASSERT_TRUE(BatchReader::IsEofBatch(eof));
-    ASSERT_LE(counts->peak.load(), ConcatBatchReader::kPreparationWindow);
-    ASSERT_EQ(counts->live.load(), 0);
-    ASSERT_EQ(counts->closed.load(), counts->created.load());
-    ASSERT_TRUE(weak_lifetime.expired());
-    ASSERT_OK_AND_ASSIGN(auto rows, reader->GetReaderMetrics()->GetCounter("mock.number.of.rows"));
-    ASSERT_EQ(rows, expected_rows);
-    reader->Close();
-    ASSERT_OK_AND_ASSIGN(auto closed_rows,
-                         reader->GetReaderMetrics()->GetCounter("mock.number.of.rows"));
-    ASSERT_EQ(rows, closed_rows);
-    ASSERT_OK_AND_ASSIGN(auto eof_with_bitmap, reader->NextBatchWithBitmap());
-    ASSERT_TRUE(BatchReader::IsEofBatch(eof_with_bitmap));
 }
 
 TEST_F(ConcatBatchReaderTest, LazyEarlyCloseAndDestructionReleaseCreators) {
-    for (bool explicit_close : {false, true}) {
-        auto counts = std::make_shared<ReaderCounts>();
-        auto lifetime = std::make_shared<int32_t>(0);
-        std::weak_ptr<int32_t> weak_lifetime = lifetime;
-        ASSERT_OK_AND_ASSIGN(
-            auto reader,
-            ConcatBatchReader::CreateLazy(
-                100,
-                [counts, lifetime](size_t index) -> Result<std::unique_ptr<BatchReader>> {
-                    return std::make_unique<CountedFileBatchReader>(ReaderData(index), counts);
-                },
-                GetArrowPool(pool_)));
-        lifetime.reset();
-        ASSERT_EQ(counts->created.load(), ConcatBatchReader::kPreparationWindow);
-        ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatchWithBitmap());
-        ASSERT_FALSE(BatchReader::IsEofBatch(batch));
-        ASSERT_EQ(counts->created.load(), ConcatBatchReader::kPreparationWindow);
-        if (explicit_close) {
-            reader->Close();
-            reader->Close();
-            ASSERT_OK_AND_ASSIGN(auto eof, reader->NextBatchWithBitmap());
-            ASSERT_TRUE(BatchReader::IsEofBatch(eof));
-            ASSERT_EQ(counts->created.load(), ConcatBatchReader::kPreparationWindow);
-        } else {
-            reader.reset();
+    constexpr size_t kFiles = 11;
+    for (int32_t window : {1, 2, 4, 8, 32}) {
+        SCOPED_TRACE(window);
+        for (bool explicit_close : {false, true}) {
+            SCOPED_TRACE(explicit_close);
+            auto counts = std::make_shared<ReaderCounts>();
+            auto lifetime = std::make_shared<int32_t>(0);
+            std::weak_ptr<int32_t> weak_lifetime = lifetime;
+            ASSERT_OK_AND_ASSIGN(
+                auto reader,
+                ConcatBatchReader::CreateLazy(
+                    kFiles,
+                    [counts, lifetime](size_t index) -> Result<std::unique_ptr<BatchReader>> {
+                        return std::make_unique<CountedFileBatchReader>(ReaderData(index), counts);
+                    },
+                    window, GetArrowPool(pool_), GetReaderBuildExecutor()));
+            lifetime.reset();
+            const size_t initial = std::min<size_t>(window, kFiles);
+            ASSERT_EQ(counts->created.load(), initial);
+            ASSERT_EQ(counts->live.load(), initial);
+            ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatchWithBitmap());
+            ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+            ASSERT_EQ(counts->created.load(), initial);
+            if (explicit_close) {
+                reader->Close();
+                reader->Close();
+                ASSERT_OK_AND_ASSIGN(auto eof, reader->NextBatchWithBitmap());
+                ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+            } else {
+                reader.reset();
+            }
+            ASSERT_EQ(counts->created.load(), initial);
+            ASSERT_LE(counts->peak.load(), initial);
+            ASSERT_EQ(counts->live.load(), 0);
+            ASSERT_EQ(counts->closed.load(), initial);
+            ASSERT_TRUE(weak_lifetime.expired());
+            auto array = arrow::ImportArray(batch.first.first.get(), batch.first.second.get());
+            ASSERT_TRUE(array.ok()) << array.status().ToString();
+            ASSERT_TRUE(array.ValueOrDie()->Equals(ReaderData(0)));
         }
-        ASSERT_EQ(counts->live.load(), 0);
-        ASSERT_EQ(counts->closed.load(), ConcatBatchReader::kPreparationWindow);
-        ASSERT_TRUE(weak_lifetime.expired());
-        auto array = arrow::ImportArray(batch.first.first.get(), batch.first.second.get());
-        ASSERT_TRUE(array.ok()) << array.status().ToString();
-        ASSERT_TRUE(array.ValueOrDie()->Equals(ReaderData(0)));
     }
 }
 
@@ -610,17 +682,17 @@ TEST_F(ConcatBatchReaderTest, LazyEarlyCloseAndDestructionDrainExceptionalBuilds
             ConcatBatchReader::CreateLazy(
                 100,
                 [counts, lifetime, gate](size_t index) -> Result<std::unique_ptr<BatchReader>> {
-                    if (index == ConcatBatchReader::kPreparationWindow) {
+                    if (index == ConcatBatchReader::kDefaultPreparationWindow) {
                         gate.wait();
                         throw std::bad_alloc();
                     }
                     return std::make_unique<CountedFileBatchReader>(ReaderData(index), counts);
                 },
-                GetArrowPool(pool_), executor));
+                ConcatBatchReader::kDefaultPreparationWindow, GetArrowPool(pool_), executor));
         ScopeGuard unblock([&release]() { release.set_value(); });
         lifetime.reset();
         // Keep the failed build pending until we stop reading, so cleanup consumes its exception.
-        for (size_t i = 0; i < ConcatBatchReader::kPreparationWindow; i++) {
+        for (size_t i = 0; i < ConcatBatchReader::kDefaultPreparationWindow; i++) {
             ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
             ASSERT_FALSE(BatchReader::IsEofBatch(batch));
             ReaderUtils::ReleaseReadBatch(std::move(batch));
@@ -630,9 +702,9 @@ TEST_F(ConcatBatchReaderTest, LazyEarlyCloseAndDestructionDrainExceptionalBuilds
         // The single worker completes the failed build and the successful builds after it.
         ASSERT_EQ(Via(executor.get(), []() {}).wait_for(std::chrono::seconds(5)),
                   std::future_status::ready);
-        const size_t created = 2 * ConcatBatchReader::kPreparationWindow - 2;
+        const size_t created = 2 * ConcatBatchReader::kDefaultPreparationWindow - 2;
         ASSERT_EQ(counts->created.load(), created);
-        ASSERT_EQ(counts->live.load(), ConcatBatchReader::kPreparationWindow - 1);
+        ASSERT_EQ(counts->live.load(), ConcatBatchReader::kDefaultPreparationWindow - 1);
         ASSERT_FALSE(weak_lifetime.expired());
         if (explicit_close) {
             ASSERT_NO_THROW(reader->Close());
@@ -665,7 +737,7 @@ TEST_F(ConcatBatchReaderTest, LazyInitialFailureDrainsPartialWindow) {
             if (started_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
                 return Status::IOError("initial builds did not overlap");
             }
-            return Status::IOError("initial build failed");
+            throw std::runtime_error("initial build failed");
         }
         if (index == 2) {
             started.set_value();
@@ -678,8 +750,9 @@ TEST_F(ConcatBatchReaderTest, LazyInitialFailureDrainsPartialWindow) {
         return child;
     };
     auto create = std::async(std::launch::async, [&, factory = std::move(factory)]() mutable {
-        return ConcatBatchReader::CreateLazy(100, std::move(factory), GetArrowPool(pool_),
-                                             executor);
+        return ConcatBatchReader::CreateLazy(100, std::move(factory),
+                                             ConcatBatchReader::kDefaultPreparationWindow,
+                                             GetArrowPool(pool_), executor);
     });
     ScopeGuard unblock([&release]() { release.set_value(); });
     lifetime.reset();
@@ -688,115 +761,134 @@ TEST_F(ConcatBatchReaderTest, LazyInitialFailureDrainsPartialWindow) {
     EXPECT_FALSE(weak_lifetime.expired());
     release.set_value();
     unblock.Release();
-    ASSERT_NOK_WITH_MSG(create.get(), "initial build failed");
+    const auto result = create.get();
+    ASSERT_NOK_WITH_MSG(result, "initial build failed");
+    ASSERT_TRUE(result.status().IsUnknownError());
     ASSERT_EQ(counts->live.load(), 0);
     ASSERT_EQ(counts->created.load(), counts->closed.load());
-    ASSERT_LT(counts->created.load(), ConcatBatchReader::kPreparationWindow);
+    ASSERT_LT(counts->created.load(), ConcatBatchReader::kDefaultPreparationWindow);
     ASSERT_TRUE(weak_lifetime.expired());
 }
 
 TEST_F(ConcatBatchReaderTest, LazyDeferredFailuresAreTerminal) {
-    enum class Failure { Build, Read, Bitmap };
-    for (Failure failure : {Failure::Build, Failure::Read, Failure::Bitmap}) {
-        SCOPED_TRACE(static_cast<int32_t>(failure));
-        auto counts = std::make_shared<ReaderCounts>();
-        ASSERT_OK_AND_ASSIGN(
-            auto reader,
-            ConcatBatchReader::CreateLazy(
-                100,
-                [counts, failure](size_t index) -> Result<std::unique_ptr<BatchReader>> {
-                    const bool fail = index == ConcatBatchReader::kPreparationWindow;
-                    if (fail && failure == Failure::Build) {
-                        return Status::IOError("deferred failure");
-                    }
-                    auto child = std::make_unique<CountedFileBatchReader>(
-                        ReaderData(index), counts, fail && failure == Failure::Bitmap);
-                    if (fail && failure == Failure::Read) {
-                        child->SetNextBatchStatus(Status::IOError("deferred failure"));
-                    }
-                    return child;
-                },
-                GetArrowPool(pool_)));
-        for (size_t i = 0; i < ConcatBatchReader::kPreparationWindow; i++) {
-            ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
-            ASSERT_FALSE(BatchReader::IsEofBatch(batch));
-            ReaderUtils::ReleaseReadBatch(std::move(batch));
+    enum class Failure { Build, OutOfMemory, Read, Bitmap };
+    for (int32_t window : {1, 2, 4, 8}) {
+        SCOPED_TRACE(window);
+        for (Failure failure :
+             {Failure::Build, Failure::OutOfMemory, Failure::Read, Failure::Bitmap}) {
+            SCOPED_TRACE(static_cast<int32_t>(failure));
+            auto counts = std::make_shared<ReaderCounts>();
+            ASSERT_OK_AND_ASSIGN(
+                auto reader,
+                ConcatBatchReader::CreateLazy(
+                    100,
+                    [counts, failure,
+                     window](size_t index) -> Result<std::unique_ptr<BatchReader>> {
+                        const bool fail = index == static_cast<size_t>(window);
+                        if (fail && failure == Failure::Build) {
+                            return Status::IOError("deferred failure");
+                        }
+                        if (fail && failure == Failure::OutOfMemory) {
+                            throw std::bad_alloc();
+                        }
+                        auto child = std::make_unique<CountedFileBatchReader>(
+                            ReaderData(index), counts, fail && failure == Failure::Bitmap);
+                        if (fail && failure == Failure::Read) {
+                            child->SetNextBatchStatus(Status::IOError("deferred failure"));
+                        }
+                        return child;
+                    },
+                    window, GetArrowPool(pool_), GetReaderBuildExecutor()));
+            for (int32_t i = 0; i < window; i++) {
+                ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
+                ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+                ReaderUtils::ReleaseReadBatch(std::move(batch));
+            }
+            const auto result = reader->NextBatch();
+            ASSERT_FALSE(result.ok());
+            if (failure == Failure::OutOfMemory) {
+                ASSERT_TRUE(result.status().IsOutOfMemory());
+            } else {
+                const char* message =
+                    failure == Failure::Bitmap ? "at least one valid row" : "deferred failure";
+                ASSERT_NOK_WITH_MSG(result, message);
+            }
+            const size_t created = counts->created.load();
+            ASSERT_EQ(reader->NextBatchWithBitmap().status(), result.status());
+            ASSERT_EQ(reader->NextBatch().status(), result.status());
+            reader->Close();
+            ASSERT_EQ(counts->created.load(), created);
+            ASSERT_EQ(counts->live.load(), 0);
+            ASSERT_EQ(counts->closed.load(), created);
+            ASSERT_LE(counts->peak.load(), window);
         }
-        const std::string message =
-            failure == Failure::Bitmap ? "at least one valid row" : "deferred failure";
-        ASSERT_NOK_WITH_MSG(reader->NextBatch(), message);
-        const size_t created = counts->created.load();
-        ASSERT_NOK_WITH_MSG(reader->NextBatchWithBitmap(), message);
-        ASSERT_NOK_WITH_MSG(reader->NextBatch(), message);
-        reader->Close();
-        ASSERT_EQ(counts->created.load(), created);
-        ASSERT_EQ(counts->live.load(), 0);
-        ASSERT_EQ(counts->closed.load(), created);
-        ASSERT_LE(counts->peak.load(), ConcatBatchReader::kPreparationWindow);
     }
 }
 
 TEST_F(ConcatBatchReaderTest, LazyRefillOverlapsReadingAndCloseCancelsQueuedBuilds) {
-    for (bool explicit_close : {false, true}) {
-        SCOPED_TRACE(explicit_close);
-        auto counts = std::make_shared<ReaderCounts>();
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(1));
-        std::promise<void> started;
-        auto started_future = started.get_future();
-        std::promise<void> release;
-        auto gate = release.get_future().share();
-        std::promise<void> closing;
-        auto closing_future = closing.get_future();
-        ConcatBatchReader::ReaderFactory factory =
-            [counts, gate, &started,
-             &closing](size_t index) -> Result<std::unique_ptr<BatchReader>> {
-            if (index == ConcatBatchReader::kPreparationWindow) {
-                started.set_value();
-                gate.wait();
+    for (int32_t window : {2, 4, 8}) {
+        SCOPED_TRACE(window);
+        for (bool explicit_close : {false, true}) {
+            SCOPED_TRACE(explicit_close);
+            auto counts = std::make_shared<ReaderCounts>();
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(1));
+            std::promise<void> started;
+            auto started_future = started.get_future();
+            std::promise<void> release;
+            auto gate = release.get_future().share();
+            std::promise<void> closing;
+            auto closing_future = closing.get_future();
+            ConcatBatchReader::ReaderFactory factory =
+                [counts, gate, window, &started,
+                 &closing](size_t index) -> Result<std::unique_ptr<BatchReader>> {
+                if (index == static_cast<size_t>(window)) {
+                    started.set_value();
+                    gate.wait();
+                }
+                auto child = std::make_unique<CountedFileBatchReader>(ReaderData(index), counts);
+                if (index == static_cast<size_t>(window - 1)) {
+                    child->SetCloseCallback([&closing]() { closing.set_value(); });
+                }
+                return child;
+            };
+            ASSERT_OK_AND_ASSIGN(auto reader,
+                                 ConcatBatchReader::CreateLazy(100, std::move(factory), window,
+                                                               GetArrowPool(pool_), executor));
+            ScopeGuard unblock([&release]() { release.set_value(); });
+            auto read = std::async(std::launch::async, [&reader, window]() -> Status {
+                for (int32_t i = 0; i < window; i++) {
+                    PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch, reader->NextBatch());
+                    ReaderUtils::ReleaseReadBatch(std::move(batch));
+                }
+                return Status::OK();
+            });
+            EXPECT_EQ(read.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+            if (read.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                release.set_value();
+                unblock.Release();
+                ASSERT_OK(read.get());
+                return;
             }
-            auto child = std::make_unique<CountedFileBatchReader>(ReaderData(index), counts);
-            if (index == ConcatBatchReader::kPreparationWindow - 1) {
-                child->SetCloseCallback([&closing]() { closing.set_value(); });
-            }
-            return child;
-        };
-        ASSERT_OK_AND_ASSIGN(
-            auto reader,
-            ConcatBatchReader::CreateLazy(100, std::move(factory), GetArrowPool(pool_), executor));
-        ScopeGuard unblock([&release]() { release.set_value(); });
-        auto read = std::async(std::launch::async, [&reader]() -> Status {
-            for (size_t i = 0; i < ConcatBatchReader::kPreparationWindow; i++) {
-                PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch, reader->NextBatch());
-                ReaderUtils::ReleaseReadBatch(std::move(batch));
-            }
-            return Status::OK();
-        });
-        EXPECT_EQ(read.wait_for(std::chrono::seconds(5)), std::future_status::ready);
-        if (read.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            ASSERT_OK(read.get());
+            ASSERT_EQ(started_future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+            auto close = std::async(std::launch::async, [&reader, explicit_close]() {
+                if (explicit_close) {
+                    reader->Close();
+                } else {
+                    reader.reset();
+                }
+            });
+            const auto closing_status = closing_future.wait_for(std::chrono::seconds(5));
+            const auto close_status = close.wait_for(std::chrono::seconds(0));
             release.set_value();
             unblock.Release();
-            ASSERT_OK(read.get());
-            return;
+            close.get();
+            ASSERT_EQ(closing_status, std::future_status::ready);
+            ASSERT_EQ(close_status, std::future_status::timeout);
+            ASSERT_EQ(counts->created.load(), window + 1);
+            ASSERT_EQ(counts->closed.load(), counts->created.load());
+            ASSERT_EQ(counts->live.load(), 0);
         }
-        ASSERT_OK(read.get());
-        ASSERT_EQ(started_future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
-        auto close = std::async(std::launch::async, [&reader, explicit_close]() {
-            if (explicit_close) {
-                reader->Close();
-            } else {
-                reader.reset();
-            }
-        });
-        const auto closing_status = closing_future.wait_for(std::chrono::seconds(5));
-        const auto close_status = close.wait_for(std::chrono::seconds(0));
-        release.set_value();
-        unblock.Release();
-        close.get();
-        ASSERT_EQ(closing_status, std::future_status::ready);
-        ASSERT_EQ(close_status, std::future_status::timeout);
-        ASSERT_EQ(counts->created.load(), ConcatBatchReader::kPreparationWindow + 1);
-        ASSERT_EQ(counts->closed.load(), counts->created.load());
-        ASSERT_EQ(counts->live.load(), 0);
     }
 }
 

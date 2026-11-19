@@ -21,6 +21,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
+#include <new>
 #include <utility>
 
 #include "arrow/c/abi.h"
@@ -43,22 +45,35 @@ ConcatBatchReader::ConcatBatchReader(std::vector<std::unique_ptr<BatchReader>>&&
     }
 }
 
+ConcatBatchReader::ConcatBatchReader(size_t reader_count, std::shared_ptr<Preparation> preparation,
+                                     size_t preparation_window,
+                                     const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+                                     const std::shared_ptr<Executor>& build_executor)
+    : arrow_pool_(arrow_pool),
+      finished_reader_metrics_(std::make_shared<MetricsImpl>()),
+      preparation_(std::move(preparation)),
+      build_executor_(build_executor),
+      preparation_window_(preparation_window),
+      reader_count_(reader_count) {}
+
 ConcatBatchReader::~ConcatBatchReader() {
     ConcatBatchReader::Close();
 }
 
 Result<std::unique_ptr<ConcatBatchReader>> ConcatBatchReader::CreateLazy(
-    size_t reader_count, ReaderFactory factory,
+    size_t reader_count, ReaderFactory factory, int32_t preparation_window,
     const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
     const std::shared_ptr<Executor>& build_executor) {
     if (!factory || !build_executor) {
         return Status::Invalid("lazy reader requires a factory and a build executor");
     }
-    auto reader = std::make_unique<ConcatBatchReader>(std::vector<std::unique_ptr<BatchReader>>(),
-                                                      arrow_pool);
-    reader->preparation_ = std::make_shared<Preparation>(std::move(factory));
-    reader->build_executor_ = build_executor;
-    reader->reader_count_ = reader_count;
+    if (preparation_window <= 0) {
+        return Status::Invalid("reader preparation window must be positive");
+    }
+    auto preparation = std::make_shared<Preparation>(std::move(factory));
+    auto reader = std::unique_ptr<ConcatBatchReader>(
+        new ConcatBatchReader(reader_count, std::move(preparation),
+                              static_cast<size_t>(preparation_window), arrow_pool, build_executor));
     reader->FillWindow();
     for (auto& state : reader->readers_) {
         PAIMON_RETURN_NOT_OK(reader->ResolveReader(&state, /*wait=*/true));
@@ -67,7 +82,7 @@ Result<std::unique_ptr<ConcatBatchReader>> ConcatBatchReader::CreateLazy(
 }
 
 void ConcatBatchReader::FillWindow() {
-    while (next_reader_ < reader_count_ && readers_.size() < kPreparationWindow) {
+    while (next_reader_ < reader_count_ && readers_.size() < preparation_window_) {
         readers_.emplace_back();
         readers_.back().future =
             Via(build_executor_.get(),
@@ -85,8 +100,11 @@ void ConcatBatchReader::FillWindow() {
 }
 
 Status ConcatBatchReader::ResolveReader(ReaderState* state, bool wait) {
-    if (state->future.valid() &&
-        (wait || state->future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)) {
+    if (!state->future.valid() ||
+        (!wait && state->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)) {
+        return state->failure;
+    }
+    try {
         auto result = state->future.get();
         if (!result.ok()) {
             state->failure = result.status();
@@ -94,6 +112,13 @@ Status ConcatBatchReader::ResolveReader(ReaderState* state, bool wait) {
             state->reader = std::move(result).value();
             state->file_reader = dynamic_cast<FileBatchReader*>(state->reader.get());
         }
+    } catch (const std::bad_alloc&) {
+        state->failure = Status::OutOfMemory("out of memory preparing file reader");
+    } catch (const std::exception& e) {
+        state->failure = Status::UnknownError("file reader preparation failed: ", e.what());
+    } catch (...) {
+        state->failure =
+            Status::UnknownError("file reader preparation failed with an unknown exception");
     }
     return state->failure;
 }
@@ -117,8 +142,7 @@ void ConcatBatchReader::Close() {
         try {
             (void)ResolveReader(&state, /*wait=*/true);
         } catch (...) {
-            // Construction exceptions captured by Via must not escape destruction or prevent
-            // the remaining tasks from being drained.
+            // Keep draining even if recording a preparation failure runs out of memory.
         }
         CloseAndReleaseReader(&state);
     }

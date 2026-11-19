@@ -1948,8 +1948,10 @@ TEST_P(ScanAndReadInteTest, TestWithPKWithMorWithInvalidAggregateBatchScanSnapsh
 
     ASSERT_OK_AND_ASSIGN(auto result_plan, table_scan->CreatePlan());
     ASSERT_EQ(result_plan->SnapshotId().value(), 3);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                         table_read->CreateReader(result_plan->Splits()));
     ASSERT_NOK_WITH_MSG(
-        table_read->CreateReader(result_plan->Splits()),
+        reader->NextBatch(),
         "Use unsupported aggregation rbm32 or spell aggregate function incorrectly");
 }
 
