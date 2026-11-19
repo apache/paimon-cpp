@@ -563,12 +563,14 @@ TEST(ReadContextTest, TestFullTextPredicateAndRootTopKConfiguration) {
 }
 
 TEST(ReadContextTest, TestRootVectorSearchRequiresDistanceType) {
+    // Intentionally construct an invalid metric to verify that configuration rejects it.
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+    const auto invalid_distance_type = static_cast<VectorSearch::DistanceType>(0);
     auto search =
         std::make_shared<VectorSearch>("embedding", 3, std::vector<float>{1.0f}, nullptr, nullptr,
                                        std::nullopt, std::map<std::string, std::string>{});
     for (const auto& distance_type : std::vector<std::optional<VectorSearch::DistanceType>>{
-             std::nullopt, VectorSearch::DistanceType::UNKNOWN,
-             static_cast<VectorSearch::DistanceType>(0)}) {
+             std::nullopt, VectorSearch::DistanceType::UNKNOWN, invalid_distance_type}) {
         search->distance_type = distance_type;
         ReadContextBuilder builder("table_root_path");
         builder.EnablePreciseFileIndexEvaluate(true).SetVectorSearch(search);
