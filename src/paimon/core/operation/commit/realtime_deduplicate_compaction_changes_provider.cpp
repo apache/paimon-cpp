@@ -338,11 +338,8 @@ Status RealtimeDeduplicateCompactionChangesProvider::MaterializeBucketDeletions(
             update.final_file_names.insert(entry.FileName());
         }
     }
-    // TODO(lxy): Align FileEntry::Identifier with Java by including extra_files and
-    // embedded_index to support file-index rebuild commits through normal DELETE/ADD
-    // entries. For unchanged physical files and row positions, preserve the latest DV
-    // and skip redundant offset reads, lookups, and DV writes as a performance
-    // optimization.
+    // TODO(lxy): For index-only rewrites, preserve the latest DV and skip redundant offset
+    // reads, lookups, and DV writes.
     // Load latest bucket DVs and collect deleted offsets from the original inputs.
     std::map<std::string, std::shared_ptr<DeletionVector>> baseline;
     PAIMON_ASSIGN_OR_RAISE(baseline,

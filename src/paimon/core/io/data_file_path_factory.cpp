@@ -18,10 +18,13 @@
 
 #include "paimon/core/io/data_file_path_factory.h"
 
+#include <limits>
 #include <optional>
 #include <utility>
 
+#include "fmt/format.h"
 #include "paimon/common/utils/path_util.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/common/utils/uuid.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/macros.h"
@@ -64,6 +67,26 @@ std::string DataFilePathFactory::ToPath(const std::shared_ptr<DataFileMeta>& fil
 std::string DataFilePathFactory::ToFileIndexPath(const std::string& file_path) const {
     std::string parent = PathUtil::GetParentDirPath(file_path);
     return PathUtil::JoinPath(parent, PathUtil::GetName(file_path) + INDEX_PATH_SUFFIX);
+}
+
+std::string DataFilePathFactory::CreateNewFileIndexFilePath(const std::string& file_path) {
+    std::string file_name = PathUtil::GetName(file_path);
+    size_t dot = file_name.rfind('.');
+    size_t dash = file_name.rfind('-');
+    std::string parent = PathUtil::GetParentDirPath(file_path);
+    if (dash != std::string::npos && dash < dot) {
+        auto number =
+            StringUtils::StringToValue<int32_t>(file_name.substr(dash + 1, dot - dash - 1));
+        if (number) {
+            int32_t next = *number == std::numeric_limits<int32_t>::max()
+                               ? std::numeric_limits<int32_t>::min()
+                               : *number + 1;
+            return PathUtil::JoinPath(parent, fmt::format("{}{}{}", file_name.substr(0, dash + 1),
+                                                          next, INDEX_PATH_SUFFIX));
+        }
+    }
+    return PathUtil::JoinPath(parent,
+                              fmt::format("{}-1{}", file_name.substr(0, dot), INDEX_PATH_SUFFIX));
 }
 
 std::string DataFilePathFactory::ToAlignedPath(const std::string& file_name,

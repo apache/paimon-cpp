@@ -41,6 +41,10 @@ class FileIndexFormatUtils {
     FileIndexFormatUtils() = delete;
     ~FileIndexFormatUtils() = delete;
 
+    /// Reads a V1 or V2 container's metadata without opening any index backend.
+    static Result<FileIndexEntries> ReadIndexEntries(const std::shared_ptr<InputStream>& input,
+                                                     const std::shared_ptr<MemoryPool>& pool);
+
     /// Creates a bounded, buffered input stream for the container's index metadata.
     static Result<std::shared_ptr<InputStream>> CreateMetadataInputStream(
         const std::shared_ptr<InputStream>& input, int64_t start, int64_t length,

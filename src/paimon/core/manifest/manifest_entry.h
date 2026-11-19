@@ -122,6 +122,7 @@ class ManifestEntry : public FileEntry {
 
     FileEntry::Identifier CreateIdentifier() const override {
         return FileEntry::Identifier(partition_, bucket_, file_->level, file_->file_name,
+                                     file_->extra_files, file_->embedded_index,
                                      file_->external_path);
     }
 
