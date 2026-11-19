@@ -349,6 +349,8 @@ TEST_F(KeyValueFileStoreWriteTest, TestWriteWithInvalidBatch) {
         ASSERT_OK_AND_ASSIGN(auto file_store_write,
                              FileStoreWrite::Create(std::move(write_context)));
         ASSERT_NOK_WITH_MSG(file_store_write->Write(nullptr), "batch is null pointer");
+        ASSERT_NOK_WITH_MSG(file_store_write->CompactFiles({}, 0, {"unused.parquet"}),
+                            "only supports fixed-bucket append tables");
     }
     {
         arrow::Schema typed_schema(fields);
