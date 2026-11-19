@@ -181,8 +181,9 @@ Result<std::shared_ptr<ScoredRealtimeIndexResult>> LuminaRealtimeIndexReader::Vi
                (!user_filter || user_filter(static_cast<int64_t>(offset)));
     };
     ::lumina::api::Query query(vector_search->query.data(), vector_search->query.size());
-    // Charge scratch allocations to the query, separately from retained index memory.
-    LuminaMemoryPool session_pool(/*track_memory=*/false, pool_);
+    // Use the search session pool when provided, otherwise the reader's query pool.
+    LuminaMemoryPool session_pool(/*track_memory=*/false,
+                                  vector_search->pool ? vector_search->pool : pool_);
     PAIMON_ASSIGN_OR_RAISE_FROM_LUMINA(
         ::lumina::api::SearchResult hits,
         index_->filter_->SearchWithFilter(query, std::move(filter), options, session_pool));

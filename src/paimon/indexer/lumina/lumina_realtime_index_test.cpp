@@ -417,17 +417,34 @@ TEST_P(LuminaRealtimeIndexTest, InsertionFailureKeepsPinnedRangeAndDisablesWrite
     ASSERT_NOK_WITH_MSG(Add("[[3, [3, 0]]]"), "cannot write after an insertion failure");
 }
 
-TEST_P(LuminaRealtimeIndexTest, SearchUsesQueryPool) {
+TEST_P(LuminaRealtimeIndexTest, SearchUsesSessionPoolAndFallsBackToReaderPool) {
     ASSERT_OK(Add("[[0, [1, 0]], [2, [2, 0]]]"));
     const uint64_t index_memory = index_->GetMemoryUsage();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeIndexReader> reader, Reader(0, 3));
+    const uint64_t reader_usage = query_pool_->CurrentUsage();
+    const uint64_t reader_peak = query_pool_->MaxMemoryUsage();
+    std::shared_ptr<MemoryPool> session_pool = GetMemoryPool();
+    auto search = Search(/*limit=*/10);
+    search->pool = session_pool;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredRealtimeIndexResult> result,
-                         reader->VisitVectorSearch(Search(/*limit=*/10)));
+                         reader->VisitVectorSearch(search));
     Check(result, RoaringBitmap64::From({0, 2}), {1, 4});
     if (GetParam() == "flatnsw") {
-        ASSERT_GT(query_pool_->MaxMemoryUsage(), 0);
+        ASSERT_GT(session_pool->MaxMemoryUsage(), 0);
     }
-    ASSERT_EQ(0, query_pool_->CurrentUsage());
+    ASSERT_EQ(0, session_pool->CurrentUsage());
+    ASSERT_EQ(reader_peak, query_pool_->MaxMemoryUsage());
+    ASSERT_EQ(reader_usage, query_pool_->CurrentUsage());
+    ASSERT_EQ(index_memory, index_->GetMemoryUsage());
+    ASSERT_EQ(index_memory, pool_->CurrentUsage());
+
+    search->pool.reset();
+    ASSERT_OK_AND_ASSIGN(result, reader->VisitVectorSearch(search));
+    Check(result, RoaringBitmap64::From({0, 2}), {1, 4});
+    if (GetParam() == "flatnsw") {
+        ASSERT_GT(query_pool_->MaxMemoryUsage(), reader_peak);
+    }
+    ASSERT_EQ(reader_usage, query_pool_->CurrentUsage());
     ASSERT_EQ(index_memory, index_->GetMemoryUsage());
     ASSERT_EQ(index_memory, pool_->CurrentUsage());
     ASSERT_NOK_WITH_MSG(index_->CreateReader(OffsetRange(0, 3), nullptr),
