@@ -198,7 +198,7 @@ function(add_paimon_lib LIB_NAME)
             target_link_options(${LIB_NAME}_shared PRIVATE ${SHARED_LINK_OPTIONS})
         endif()
 
-        install(TARGETS ${LIB_NAME}_shared ${INSTALL_IS_OPTIONAL}
+        install(TARGETS ${LIB_NAME}_shared
                 EXPORT PaimonTargets
                 RUNTIME DESTINATION ${RUNTIME_INSTALL_DIR}
                 LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -245,7 +245,7 @@ function(add_paimon_lib LIB_NAME)
         target_link_libraries(${LIB_NAME}_static
                               PUBLIC "$<BUILD_INTERFACE:paimon_sanitizer_flags>")
 
-        install(TARGETS ${LIB_NAME}_static ${INSTALL_IS_OPTIONAL}
+        install(TARGETS ${LIB_NAME}_static
                 EXPORT PaimonTargets
                 RUNTIME DESTINATION ${RUNTIME_INSTALL_DIR}
                 LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

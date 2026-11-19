@@ -55,9 +55,9 @@ build directory (`build-clang` below), the source directory and cargo cache are 
 cmake --build build-clang --target vortex_ep
 
 # Run this module's Rust tests directly.
-cd "$(sed -n 's/^source_dir=//p' \
-  build-clang/vortex_ep-prefix/src/vortex_ep-stamp/vortex_ep-source_dirinfo.txt)"
-FLATC=<path to flatc> CARGO_TARGET_DIR=<repo>/build-clang/vortex_ep-cargo \
+cd build-clang/vortex_ep-prefix/src/vortex_ep
+FLATC=<path to flatc> \
+  CARGO_TARGET_DIR=<repo>/build-clang/vortex_ep-prefix/src/vortex_ep-build \
   cargo test --locked --release -p vortex-ffi callback_io
 ```
 

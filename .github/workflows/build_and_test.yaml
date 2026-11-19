@@ -126,7 +126,7 @@ jobs:
       - name: Install build and debugging dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gdb libcurl4-openssl-dev libssl-dev
+          sudo apt-get install -y gdb libcurl4-openssl-dev libssl-dev patchutils
       - name: Install and verify regression compiler
         if: matrix.gcc_version
         shell: bash

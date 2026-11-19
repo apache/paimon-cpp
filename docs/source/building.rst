@@ -34,6 +34,7 @@ Building requires:
 
 * A C++17-enabled compiler. On Linux, gcc 8 and higher should be sufficient.
   Windows is not supported for now.
+* ``patch`` and ``lsdiff`` (provided by ``patchutils``) for patched dependencies.
 * At least 2GB of RAM for a minimal build, 8GB for a minimal
   debug build with tests and 16GB for a full build.
 
@@ -43,7 +44,9 @@ On Ubuntu/Debian you can install the requirements with:
 
    sudo apt-get install \
         build-essential \
-        cmake
+        cmake \
+        patch \
+        patchutils
 
 We also provide a docker template to help you get started quickly. See in
 ``.devcontainer`` folder for more details.
@@ -261,6 +264,20 @@ must override them to ``BUNDLED``:
 All other enabled dependencies must be available as system packages or under
 the specified prefix. When ORC support is disabled, the ``ORC_SOURCE`` override
 can be omitted.
+
+Some third-party dependencies require project-specific patches.
+Repeated builds reuse these dependencies when their versions, patches, and build
+inputs are unchanged.
+
+If an existing build cannot be safely reused after an update, cleanup, or interrupted
+patching, the build stops and lists the paths to clean. Remove all listed paths,
+then re-run CMake and build. No files are deleted automatically. Older build
+directories may also require this cleanup when first using the patch checks.
+
+Compilation or installation failures after successful patching can be retried
+without cleanup if the inputs are unchanged. Avoid manually modifying dependency
+sources or installed files in the build directory; clean and rebuild the affected
+dependency if its files are damaged.
 
 Package-manager-specific modes are intentionally out of scope for this first
 dependency source interface. They can still be used through standard CMake

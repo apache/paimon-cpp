@@ -133,6 +133,7 @@ enabled=1\n' > /etc/yum.repos.d/CentOS-SCLo-scl.repo \
         ninja-build \
         make \
         patch \
+        patchutils \
         curl \
         wget \
         unzip \
