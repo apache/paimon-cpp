@@ -116,6 +116,24 @@ TEST_F(BloomFilterIndexReaderTest, TestStringType) {
     ASSERT_TRUE(reader->VisitEqual(Literal(FieldType::STRING)).value()->IsRemain().value());
 }
 
+TEST_F(BloomFilterIndexReaderTest, TestEmptyLiterals) {
+    const std::vector<std::string> inputs = {"[[1], [null]]", "[[null]]", "[]"};
+    for (const std::string& json : inputs) {
+        ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> bytes,
+                             WriteIndex(arrow::int32(), json, {{"items", "10"}}));
+        auto input_stream = std::make_shared<ByteArrayInputStream>(bytes->data(), bytes->size());
+        BloomFilterFileIndex file_index({});
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<FileIndexReader> reader,
+            file_index.CreateReader(CreateArrowSchema(arrow::int32()).get(),
+                                    /*start=*/0, /*length=*/bytes->size(), input_stream, pool_));
+        ASSERT_TRUE(reader);
+
+        ASSERT_NOK_WITH_MSG(reader->VisitIn({}), "literals cannot be empty in In predicate");
+        ASSERT_NOK_WITH_MSG(reader->VisitNotIn({}), "literals cannot be empty in NotIn predicate");
+    }
+}
+
 TEST_F(BloomFilterIndexReaderTest, TestIntegerTypes) {
     // data: 1, 2, -1, 123
     std::vector<uint8_t> index_bytes = {0, 0, 0, 6, 24, 4, 79, 0, 35, 128, 1, 136, 26, 64, 129};

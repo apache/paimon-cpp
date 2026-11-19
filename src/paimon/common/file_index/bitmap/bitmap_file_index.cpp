@@ -295,7 +295,7 @@ Result<std::shared_ptr<FileIndexResult>> BitmapFileIndexReader::VisitIn(
 Result<std::shared_ptr<FileIndexResult>> BitmapFileIndexReader::VisitNotIn(
     const std::vector<Literal>& literals) {
     if (literals.empty()) {
-        return Status::Invalid("literals cannot be empty in In predicate");
+        return Status::Invalid("literals cannot be empty in NotIn predicate");
     }
     return std::make_shared<BitmapIndexResult>(
         [literals = literals, reader = shared_from_this()]() -> Result<RoaringBitmap32> {
