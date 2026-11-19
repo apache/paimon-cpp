@@ -96,6 +96,7 @@ class PAIMON_EXPORT PredicateBuilder {
     /// Create an IN predicate (field IN (literal1, literal2, ...)).
     ///
     /// Tests whether the field value matches any of the provided literal values.
+    /// @note Empty literal lists will be rejected.
     static std::shared_ptr<Predicate> In(int32_t field_index, const std::string& field_name,
                                          const FieldType& field_type,
                                          const std::vector<Literal>& literals);
@@ -103,6 +104,7 @@ class PAIMON_EXPORT PredicateBuilder {
     /// Create a NOT IN predicate (field NOT IN (literal1, literal2, ...)).
     ///
     /// Tests whether the field value does not match any of the provided literal values.
+    /// @note Empty literal lists will be rejected.
     static std::shared_ptr<Predicate> NotIn(int32_t field_index, const std::string& field_name,
                                             const FieldType& field_type,
                                             const std::vector<Literal>& literals);

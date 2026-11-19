@@ -74,6 +74,37 @@ TEST(PredicateValidatorTest, TestFullTextMatchAllowsOrAndRepeatedFields) {
     ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, disjunction, true));
 }
 
+TEST(PredicateValidatorTest, TestRejectEmptyInLiterals) {
+    auto schema = arrow::schema({arrow::field("f0", arrow::int32())});
+    auto valid = PredicateBuilder::Equal(0, "f0", FieldType::INT, Literal(1));
+    for (const auto& predicate : {PredicateBuilder::In(0, "f0", FieldType::INT, {}),
+                                  PredicateBuilder::NotIn(0, "f0", FieldType::INT, {})}) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> conjunction,
+                             PredicateBuilder::And({valid, predicate}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> disjunction,
+                             PredicateBuilder::Or({valid, conjunction}));
+        for (bool validate_field_idx : {false, true}) {
+            for (const auto& candidate : {predicate, conjunction, disjunction}) {
+                ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(
+                                        *schema, candidate, validate_field_idx),
+                                    "literals cannot be empty");
+            }
+        }
+    }
+}
+
+TEST(PredicateValidatorTest, TestAcceptNonEmptyInAndNullChecks) {
+    auto schema = arrow::schema({arrow::field("f0", arrow::int32())});
+    for (const auto& predicate : {
+             PredicateBuilder::In(0, "f0", FieldType::INT, {Literal(1), Literal(2)}),
+             PredicateBuilder::NotIn(0, "f0", FieldType::INT, {Literal(1), Literal(2)}),
+             PredicateBuilder::IsNull(0, "f0", FieldType::INT),
+             PredicateBuilder::IsNotNull(0, "f0", FieldType::INT),
+         }) {
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate, true));
+    }
+}
+
 TEST(PredicateValidatorTest, TestValidateLiterals) {
     std::string str("apple");
     std::shared_ptr<arrow::Schema> schema = arrow::schema(arrow::FieldVector({

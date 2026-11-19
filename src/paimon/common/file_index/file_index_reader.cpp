@@ -75,6 +75,9 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitGreaterThan(const
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitIn(
     const std::vector<Literal>& literals) {
+    if (literals.empty()) {
+        return Status::Invalid("literals cannot be empty in In predicate");
+    }
     std::shared_ptr<FileIndexResult> file_index_result;
     for (const Literal& key : literals) {
         if (!file_index_result) {
@@ -89,6 +92,9 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitIn(
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitNotIn(
     const std::vector<Literal>& literals) {
+    if (literals.empty()) {
+        return Status::Invalid("literals cannot be empty in NotIn predicate");
+    }
     std::shared_ptr<FileIndexResult> file_index_result;
     for (const Literal& key : literals) {
         if (!file_index_result) {

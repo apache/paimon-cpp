@@ -413,6 +413,9 @@ Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::Vis
 
 Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::VisitIn(
     const std::vector<Literal>& literals) {
+    if (literals.empty()) {
+        return Status::Invalid("literals cannot be empty in In predicate");
+    }
     BitmapIndexResult::BitmapSupplier bitmap_supplier =
         [literals = literals, reader = shared_from_this()]() -> Result<RoaringBitmap32> {
         std::vector<RoaringBitmap32> result_bitmaps;
@@ -438,6 +441,9 @@ Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::Vis
 
 Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::VisitNotIn(
     const std::vector<Literal>& literals) {
+    if (literals.empty()) {
+        return Status::Invalid("literals cannot be empty in NotIn predicate");
+    }
     BitmapIndexResult::BitmapSupplier bitmap_supplier =
         [literals = literals, reader = shared_from_this()]() -> Result<RoaringBitmap32> {
         auto ebm =
