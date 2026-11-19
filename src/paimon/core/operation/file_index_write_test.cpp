@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -158,7 +159,7 @@ class PayloadInput : public MockInputStream {
     int64_t position_ = 0;
 };
 
-enum class OutputFailure { NONE, CREATE, WRITE, FLUSH, CLOSE };
+enum class OutputFailure { NONE, CREATE, WRITE, FLUSH, CLOSE, RENAME };
 
 class IndexOutput : public OutputStream {
  public:
@@ -204,7 +205,8 @@ class IndexFileSystem : public LocalFileSystem {
  public:
     Result<std::unique_ptr<OutputStream>> Create(const std::string& path,
                                                  bool overwrite) const override {
-        if (!StringUtils::EndsWith(path, ".index")) {
+        if (!StringUtils::EndsWith(path, ".index") &&
+            !(StringUtils::EndsWith(path, ".tmp") && path.find(".index.") != std::string::npos)) {
             return LocalFileSystem::Create(path, overwrite);
         }
         ++create_attempts;
@@ -218,6 +220,19 @@ class IndexFileSystem : public LocalFileSystem {
             std::make_unique<IndexOutput>(std::move(output), failure));
     }
 
+    Status Rename(const std::string& src, const std::string& dst) const override {
+        rename_attempts.emplace_back(src, dst);
+        if (before_rename) {
+            PAIMON_RETURN_NOT_OK(before_rename(src, dst));
+        }
+        if (failure == OutputFailure::RENAME) {
+            return Status::IOError("injected index rename failure");
+        }
+        PAIMON_RETURN_NOT_OK(LocalFileSystem::Rename(src, dst));
+        published.push_back(dst);
+        return Status::OK();
+    }
+
     Status Delete(const std::string& path, bool recursive = true) const override {
         delete_attempts.push_back(path);
         if (fail_delete) {
@@ -227,9 +242,12 @@ class IndexFileSystem : public LocalFileSystem {
     }
 
     OutputFailure failure = OutputFailure::NONE;
+    std::function<Status(const std::string&, const std::string&)> before_rename;
     bool fail_delete = false;
     mutable int32_t create_attempts = 0;
     mutable std::vector<std::string> created;
+    mutable std::vector<std::string> published;
+    mutable std::vector<std::pair<std::string, std::string>> rename_attempts;
     mutable std::vector<std::string> delete_attempts;
 };
 
@@ -1001,6 +1019,144 @@ TEST_F(FileIndexWriteTest, ShortReadsPreservePayload) {
     ASSERT_OK(Commit(updates));
 }
 
+TEST_F(FileIndexWriteTest, PublishesCompleteTemporaryIndex) {
+    ASSERT_OK(CreateTable());
+    ASSERT_OK_AND_ASSIGN(Messages written, WriteData());
+    ASSERT_OK_AND_ASSIGN(auto file, NewFile(written));
+    ASSERT_OK_AND_ASSIGN(auto paths, Paths());
+    auto payload = std::make_shared<PayloadInput>("new payload");
+    for (int32_t version : {1, 2}) {
+        auto fs = std::make_shared<IndexFileSystem>();
+        fs->before_rename = [&](const std::string& src, const std::string& dst) -> Status {
+            EXPECT_NE(src, dst);
+            EXPECT_TRUE(StringUtils::EndsWith(src, ".tmp"));
+            EXPECT_EQ(PathUtil::GetParentDirPath(src), PathUtil::GetParentDirPath(dst));
+            PAIMON_ASSIGN_OR_RAISE(bool exists, fs_->Exists(dst));
+            EXPECT_FALSE(exists);
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input, fs_->Open(src));
+            ScopeGuard close([&input]() { [[maybe_unused]] Status ignored = input->Close(); });
+            PAIMON_ASSIGN_OR_RAISE(FileIndexFormatUtils::FileIndexEntries entries,
+                                   FileIndexFormatUtils::ReadIndexEntries(input, pool_));
+            EXPECT_FALSE(entries.empty());
+            return Status::OK();
+        };
+        ASSERT_OK_AND_ASSIGN(
+            Messages updates,
+            FileIndexWrite::PrepareCommit(
+                table_path_, branch_,
+                {{Options::FILE_INDEX_FORMAT_VERSION, std::to_string(version)}}, std::nullopt,
+                {{file->file_name, {{"value", "opaque", payload}}}}, fs, pool_, executor_));
+        ASSERT_EQ(1u, fs->created.size());
+        ASSERT_EQ(1u, fs->published.size());
+        ASSERT_EQ(1u, fs->rename_attempts.size());
+        ASSERT_EQ(paths->ToFileIndexPath(paths->ToPath(file)), fs->published[0]);
+        ASSERT_EQ(fs->created[0], fs->rename_attempts[0].first);
+        ASSERT_EQ(fs->published[0], fs->rename_attempts[0].second);
+        AssertRemoved(fs->created);
+        ASSERT_OK_AND_ASSIGN(auto after, UpdatedFile(updates));
+        ASSERT_OK_AND_ASSIGN(PayloadBytes actual, ReadPayloads(after));
+        ASSERT_EQ(payload->BytesValue(), actual.at("value").at("opaque"));
+        ASSERT_OK(Abort(updates));
+        AssertRemoved(fs->published);
+    }
+}
+
+TEST_F(FileIndexWriteTest, ReusesExistingIndexAndPreparesWholeBatch) {
+    ASSERT_OK(CreateTable());
+    ASSERT_OK_AND_ASSIGN(Messages first_write, WriteData());
+    ASSERT_OK_AND_ASSIGN(Messages second_write, WriteData());
+    ASSERT_OK_AND_ASSIGN(auto first, NewFile(first_write));
+    ASSERT_OK_AND_ASSIGN(auto second, NewFile(second_write));
+    if (second->file_name < first->file_name) {
+        std::swap(first, second);
+    }
+    ASSERT_OK_AND_ASSIGN(Snapshot base, LatestSnapshot());
+    ASSERT_OK_AND_ASSIGN(auto paths, Paths());
+    const std::string target = paths->ToFileIndexPath(paths->ToPath(first));
+    ASSERT_OK(WriteContainer(first, PathUtil::GetName(target),
+                             {{"value", {{"opaque", "existing payload"}}}}));
+    std::string existing_bytes;
+    ASSERT_OK(fs_->ReadFile(target, &existing_bytes));
+    auto fs = std::make_shared<IndexFileSystem>();
+    auto unused_payload = std::make_shared<PayloadInput>("unused payload");
+    unused_payload->fail_length = true;
+    unused_payload->fail_read = true;
+    auto payload = std::make_shared<PayloadInput>("payload");
+    ASSERT_OK_AND_ASSIGN(
+        Messages updates,
+        FileIndexWrite::PrepareCommit(table_path_, branch_, {}, std::nullopt,
+                                      {{first->file_name, {{"value", "opaque", unused_payload}}},
+                                       {second->file_name, {{"value", "opaque", payload}}}},
+                                      fs, pool_, executor_));
+    ASSERT_EQ(1, fs->create_attempts);
+    ASSERT_EQ(1u, fs->created.size());
+    ASSERT_EQ(1u, fs->published.size());
+    ASSERT_EQ(1u, fs->rename_attempts.size());
+    ASSERT_TRUE(fs->delete_attempts.empty());
+    ASSERT_EQ(0, unused_payload->close_count);
+    AssertRemoved(fs->created);
+    ASSERT_OK_AND_ASSIGN(auto update, OnlyMessage(updates));
+    const auto& increment = update->GetCompactIncrement();
+    ASSERT_EQ(2u, increment.CompactBefore().size());
+    ASSERT_EQ(2u, increment.CompactAfter().size());
+    ASSERT_EQ(*first, *increment.CompactBefore()[0]);
+    ASSERT_EQ(*second, *increment.CompactBefore()[1]);
+    ASSERT_EQ(first->file_name, increment.CompactAfter()[0]->file_name);
+    ASSERT_EQ(second->file_name, increment.CompactAfter()[1]->file_name);
+    ASSERT_OK_AND_ASSIGN(PayloadBytes reused, ReadPayloads(increment.CompactAfter()[0]));
+    ASSERT_EQ("existing payload", reused.at("value").at("opaque"));
+    ASSERT_OK_AND_ASSIGN(PayloadBytes actual, ReadPayloads(increment.CompactAfter()[1]));
+    ASSERT_EQ(payload->BytesValue(), actual.at("value").at("opaque"));
+    ASSERT_EQ(0, std::count(fs->delete_attempts.begin(), fs->delete_attempts.end(), target));
+    std::string content;
+    ASSERT_OK(fs_->ReadFile(target, &content));
+    ASSERT_EQ(existing_bytes, content);
+    ASSERT_OK_AND_ASSIGN(Snapshot unchanged, LatestSnapshot());
+    ASSERT_EQ(base.Id(), unchanged.Id());
+    ASSERT_OK(Commit(updates));
+}
+
+TEST_F(FileIndexWriteTest, PreparesCommitForTargetsCreatedDuringRename) {
+    for (const Status& error : {Status::Exist("native exist"), Status::Invalid("native invalid"),
+                                Status::IOError("native IO error")}) {
+        SCOPED_TRACE(error.ToString());
+        ASSERT_OK(CreateTable());
+        ASSERT_OK_AND_ASSIGN(Messages written, WriteData());
+        ASSERT_OK_AND_ASSIGN(auto file, NewFile(written));
+        ASSERT_OK_AND_ASSIGN(auto paths, Paths());
+        const std::string target = paths->ToFileIndexPath(paths->ToPath(file));
+        auto payload = std::make_shared<PayloadInput>("payload");
+        auto fs = std::make_shared<IndexFileSystem>();
+        fs->fail_delete = true;
+        fs->before_rename = [&](const std::string&, const std::string& dst) -> Status {
+            PAIMON_RETURN_NOT_OK(
+                WriteContainer(file, PathUtil::GetName(dst),
+                               {{"value", {{"opaque", "another writer's payload"}}}}));
+            return error;
+        };
+        ASSERT_OK_AND_ASSIGN(
+            Messages updates,
+            FileIndexWrite::PrepareCommit(table_path_, branch_, {}, std::nullopt,
+                                          {{file->file_name, {{"value", "opaque", payload}}}}, fs,
+                                          pool_, executor_));
+        ASSERT_OK_AND_ASSIGN(auto after, UpdatedFile(updates));
+        ASSERT_EQ(file->file_name, after->file_name);
+        ASSERT_EQ(1u, after->extra_files.size());
+        ASSERT_EQ(PathUtil::GetName(target), after->extra_files[0]);
+        ASSERT_EQ(1u, fs->rename_attempts.size());
+        ASSERT_TRUE(fs->published.empty());
+        ASSERT_EQ(1u, fs->created.size());
+        ASSERT_EQ(fs->created, fs->delete_attempts);
+        ASSERT_OK_AND_ASSIGN(bool temporary_exists, fs_->Exists(fs->created[0]));
+        ASSERT_TRUE(temporary_exists);
+        fs->fail_delete = false;
+        ASSERT_OK(fs->Delete(fs->created[0], false));
+        ASSERT_OK_AND_ASSIGN(PayloadBytes actual, ReadPayloads(after));
+        ASSERT_EQ("another writer's payload", actual.at("value").at("opaque"));
+        ASSERT_OK(Commit(updates));
+    }
+}
+
 TEST_F(FileIndexWriteTest, PayloadFailuresRemoveAllGeneratedIndexes) {
     ASSERT_OK(CreateTable({{"file-index.bitmap.columns", "value"},
                            {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "0B"}}));
@@ -1031,6 +1187,7 @@ TEST_F(FileIndexWriteTest, PayloadFailuresRemoveAllGeneratedIndexes) {
                 fs, pool_, executor_));
             ASSERT_FALSE(fs->created.empty());
             AssertRemoved(fs->created);
+            AssertRemoved(fs->published);
             ASSERT_EQ(0, good->close_count);
             ASSERT_EQ(0, bad->close_count);
             ASSERT_OK_AND_ASSIGN(Snapshot unchanged, LatestSnapshot());
@@ -1052,7 +1209,7 @@ TEST_F(FileIndexWriteTest, OutputFailuresRemovePartialIndexes) {
     auto payload = std::make_shared<PayloadInput>("payload");
     for (int32_t version : {1, 2}) {
         for (auto failure : {OutputFailure::CREATE, OutputFailure::WRITE, OutputFailure::FLUSH,
-                             OutputFailure::CLOSE}) {
+                             OutputFailure::CLOSE, OutputFailure::RENAME}) {
             auto fs = std::make_shared<IndexFileSystem>();
             fs->failure = failure;
             ASSERT_NOK(FileIndexWrite::PrepareCommit(
@@ -1064,6 +1221,12 @@ TEST_F(FileIndexWriteTest, OutputFailuresRemovePartialIndexes) {
                 ASSERT_EQ(1u, fs->created.size());
             }
             AssertRemoved(fs->created);
+            ASSERT_TRUE(fs->published.empty());
+            if (failure == OutputFailure::RENAME) {
+                ASSERT_EQ(1u, fs->rename_attempts.size());
+            } else {
+                ASSERT_TRUE(fs->rename_attempts.empty());
+            }
         }
     }
     ASSERT_EQ(0, payload->close_count);
@@ -1092,9 +1255,12 @@ TEST_F(FileIndexWriteTest, CleanupFailuresPreserveOriginalError) {
                                       fs, pool_, executor_),
         "injected payload read failure");
     ASSERT_EQ(2u, fs->created.size());
-    ASSERT_EQ(fs->created, fs->delete_attempts);
+    ASSERT_EQ(1u, fs->published.size());
+    const std::vector<std::string> cleanup_paths = {fs->published[0], fs->created[1]};
+    ASSERT_EQ(cleanup_paths, fs->delete_attempts);
     fs->fail_delete = false;
-    for (const auto& path : fs->created) {
+    AssertRemoved({fs->created[0]});
+    for (const auto& path : cleanup_paths) {
         ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(path));
         ASSERT_TRUE(exists);
         ASSERT_OK(fs->Delete(path, false));
