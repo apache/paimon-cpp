@@ -104,11 +104,11 @@ respectively. Adjust ``target-file-size`` to move the threshold.
 
 Custom Compaction
 ~~~~~~~~~~~~~~~~~
-``FileStoreWrite::CustomizeCompact`` asynchronously rewrites selected files.
-``CompactRequest`` specifies partition values, a bucket, and distinct data file
-basenames. As with ``Compact``, each partition-bucket restores the latest snapshot
-when its writer is initialized and reuses that state. Files need not be contiguous;
-compaction thresholds do not apply.
+``FileStoreWrite::CompactFiles(partition, bucket, file_names)`` asynchronously
+rewrites selected files, accepting partition values, a bucket, and distinct data
+file basenames. As with ``Compact``, each partition-bucket restores the latest
+snapshot when its writer is initialized and reuses that state. Files need not be
+contiguous; compaction thresholds do not apply.
 
 Supports fixed-bucket append tables with or without deletion vectors. Requires
 ``bucket-append-ordered = false``, ``write-only = false`` and a dedicated writer

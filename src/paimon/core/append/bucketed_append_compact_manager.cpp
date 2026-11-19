@@ -69,7 +69,7 @@ Status BucketedAppendCompactManager::TriggerCompaction(bool full_compaction) {
     return Status::OK();
 }
 
-Status BucketedAppendCompactManager::CustomizeCompact(const std::vector<std::string>& file_names) {
+Status BucketedAppendCompactManager::CompactFiles(const std::vector<std::string>& file_names) {
     if (task_future_.valid()) {
         return Status::Invalid("a compaction task is still running");
     }

@@ -90,7 +90,7 @@ class BucketedAppendCompactManager : public CompactFutureManager {
 
     Status TriggerCompaction(bool full_compaction) override;
 
-    Status CustomizeCompact(const std::vector<std::string>& file_names);
+    Status CompactFiles(const std::vector<std::string>& file_names);
 
     bool ShouldWaitForLatestCompaction() const override {
         return false;

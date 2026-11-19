@@ -143,7 +143,9 @@ Status AppendOnlyFileStoreWrite::Compact(const std::map<std::string, std::string
     return AbstractFileStoreWrite::Compact(partition, bucket, full_compaction);
 }
 
-Status AppendOnlyFileStoreWrite::CustomizeCompact(const CompactRequest& request) {
+Status AppendOnlyFileStoreWrite::CompactFiles(const std::map<std::string, std::string>& partition,
+                                              int32_t bucket,
+                                              const std::vector<std::string>& file_names) {
     if (realtime_context_ || options_.RealtimeEnabled() ||
         !options_.GetRealtimeDeduplicateKeyFields().empty()) {
         return Status::NotImplemented("custom compaction does not support real-time mode");
@@ -164,28 +166,26 @@ Status AppendOnlyFileStoreWrite::CustomizeCompact(const CompactRequest& request)
     if (regular_write_) {
         return Status::Invalid("cannot mix custom compaction with Write or Compact");
     }
-    if (request.bucket < 0 || request.bucket >= options_.GetBucket()) {
+    if (bucket < 0 || bucket >= options_.GetBucket()) {
         return Status::Invalid("custom compaction bucket is out of range");
     }
-    if (request.file_names.empty()) {
+    if (file_names.empty()) {
         return Status::Invalid("custom compaction requires at least one input file");
     }
-    if (request.partition.size() != table_schema_->PartitionKeys().size()) {
+    if (partition.size() != table_schema_->PartitionKeys().size()) {
         return Status::Invalid("custom compaction requires exactly the table partition keys");
     }
-    for (const std::string& name : request.file_names) {
+    for (const std::string& name : file_names) {
         PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("data file", name));
     }
-    PAIMON_ASSIGN_OR_RAISE(BinaryRow partition,
-                           file_store_path_factory_->ToBinaryRow(request.partition));
+    PAIMON_ASSIGN_OR_RAISE(BinaryRow part, file_store_path_factory_->ToBinaryRow(partition));
     custom_compaction_ = true;
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BatchWriter> writer,
-                           GetWriter(partition, request.bucket));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BatchWriter> writer, GetWriter(part, bucket));
     auto append_writer = std::dynamic_pointer_cast<AppendOnlyWriter>(writer);
     if (!append_writer) {
         return Status::Invalid("custom compaction requires an append-only writer");
     }
-    return append_writer->CustomizeCompact(request.file_names);
+    return append_writer->CompactFiles(file_names);
 }
 
 Status AppendOnlyFileStoreWrite::RefreshCommittedSnapshot(int64_t snapshot_id) {

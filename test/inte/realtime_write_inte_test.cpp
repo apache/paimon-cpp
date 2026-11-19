@@ -1997,7 +1997,7 @@ TEST_P(RealtimeDeduplicateCompactionInteTest, TestCommitTransfersLatestDvToCompa
                          write_builder.SetOptions(options_).WithStreamingMode(true).Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> compactor,
                          FileStoreWrite::Create(std::move(write_context)));
-    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact({{}, 0, {"unused.parquet"}}), "real-time mode");
+    ASSERT_NOK_WITH_MSG(compactor->CompactFiles({}, 0, {"unused.parquet"}), "real-time mode");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> forbidden_batch,
                          MakeBatch({{99, "not-written", "p0"}}, /*partitioned=*/false));
     ASSERT_NOK_WITH_MSG(compactor->Write(std::move(forbidden_batch)), "only supports compaction");

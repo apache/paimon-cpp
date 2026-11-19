@@ -20,7 +20,8 @@
 
 namespace paimon {
 
-Status FileStoreWrite::CustomizeCompact(const CompactRequest&) {
+Status FileStoreWrite::CompactFiles(const std::map<std::string, std::string>&, int32_t,
+                                    const std::vector<std::string>&) {
     return Status::NotImplemented("custom compaction only supports fixed-bucket append tables");
 }
 

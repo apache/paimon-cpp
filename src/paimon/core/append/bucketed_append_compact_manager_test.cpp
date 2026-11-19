@@ -312,7 +312,7 @@ TEST_F(BucketedAppendCompactManagerTest, TestPick) {
                NewFile(2601, 2610), NewFile(2611, 2620), NewFile(2621, 2630)});
 }
 
-TEST_F(BucketedAppendCompactManagerTest, TestCustomizeCompactUsesAsyncResultLifecycle) {
+TEST_F(BucketedAppendCompactManagerTest, TestCompactFilesUsesAsyncResultLifecycle) {
     auto cancellation_controller = std::make_shared<CancellationController>();
     auto files = GenerateDataFileMeta();
     std::vector<std::shared_ptr<DataFileMeta>> selected = {files[0], files[2]};
@@ -341,15 +341,14 @@ TEST_F(BucketedAppendCompactManagerTest, TestCustomizeCompactUsesAsyncResultLife
     // Unblock the rewrite before an assertion failure joins the submission future.
     ScopeGuard unblock([&release]() { release.set_value(); });
     cancellation_controller->Cancel();
-    submission =
-        std::async(std::launch::async, [&]() { return manager.CustomizeCompact(file_names); });
+    submission = std::async(std::launch::async, [&]() { return manager.CompactFiles(file_names); });
     ASSERT_EQ(std::future_status::ready, submission.wait_for(std::chrono::seconds(5)));
     ASSERT_OK(submission.get());
     ASSERT_FALSE(cancellation_controller->IsCancelled());
     ASSERT_OK_AND_ASSIGN(auto pending, manager.GetCompactionResult(/*blocking=*/false));
     ASSERT_FALSE(pending);
     ASSERT_TRUE(manager.CompactNotCompleted());
-    ASSERT_NOK_WITH_MSG(manager.CustomizeCompact(file_names), "still running");
+    ASSERT_NOK_WITH_MSG(manager.CompactFiles(file_names), "still running");
     release.set_value();
     unblock.Release();
     ASSERT_OK_AND_ASSIGN(auto result, manager.GetCompactionResult(/*blocking=*/true));
@@ -359,11 +358,11 @@ TEST_F(BucketedAppendCompactManagerTest, TestCustomizeCompactUsesAsyncResultLife
     ExpectVectorsEqual(outputs, result.value()->After());
     std::vector<std::shared_ptr<DataFileMeta>> active = {outputs[0], files[1], outputs[1]};
     ExpectVectorsEqual(active, manager.AllFiles());
-    ASSERT_NOK_WITH_MSG(manager.CustomizeCompact(file_names), "not active");
+    ASSERT_NOK_WITH_MSG(manager.CompactFiles(file_names), "not active");
     ExpectVectorsEqual(active, manager.AllFiles());
     ASSERT_OK(manager.TriggerCompaction(/*full_compaction=*/false));
     ASSERT_FALSE(manager.CompactNotCompleted());
-    ASSERT_OK(manager.CustomizeCompact({outputs[1]->file_name, outputs[0]->file_name}));
+    ASSERT_OK(manager.CompactFiles({outputs[1]->file_name, outputs[0]->file_name}));
     ASSERT_OK_AND_ASSIGN(auto next_result, manager.GetCompactionResult(/*blocking=*/true));
     ASSERT_TRUE(next_result);
     ExpectVectorsEqual(outputs, next_result.value()->Before());

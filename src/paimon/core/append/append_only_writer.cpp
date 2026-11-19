@@ -111,13 +111,13 @@ Status AppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     return writer_->Write(batch->GetData());
 }
 
-Status AppendOnlyWriter::CustomizeCompact(const std::vector<std::string>& file_names) {
+Status AppendOnlyWriter::CompactFiles(const std::vector<std::string>& file_names) {
     auto manager = std::dynamic_pointer_cast<BucketedAppendCompactManager>(compact_manager_);
     if (!manager) {
         return Status::Invalid("custom compaction requires a bucketed append compact manager");
     }
     PAIMON_RETURN_NOT_OK(Sync());
-    return manager->CustomizeCompact(file_names);
+    return manager->CompactFiles(file_names);
 }
 
 Result<CommitIncrement> AppendOnlyWriter::PrepareCommit(bool wait_compaction) {

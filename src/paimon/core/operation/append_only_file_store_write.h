@@ -95,7 +95,8 @@ class AppendOnlyFileStoreWrite : public AbstractFileStoreWrite {
     Status Write(std::unique_ptr<RecordBatch>&& batch) override;
     Status Compact(const std::map<std::string, std::string>& partition, int32_t bucket,
                    bool full_compaction) override;
-    Status CustomizeCompact(const CompactRequest& request) override;
+    Status CompactFiles(const std::map<std::string, std::string>& partition, int32_t bucket,
+                        const std::vector<std::string>& file_names) override;
 
     /// Rewrites the given files into new compacted files.
     ///

@@ -207,7 +207,7 @@ std::vector<std::string> GetTestValuesForAppendCompactionInteTest() {
 INSTANTIATE_TEST_SUITE_P(FileFormat, AppendCompactionInteTest,
                          ::testing::ValuesIn(GetTestValuesForAppendCompactionInteTest()));
 
-TEST_P(AppendCompactionInteTest, TestCustomizeCompactFilesWithGap) {
+TEST_P(AppendCompactionInteTest, TestCompactFilesWithGap) {
     for (bool with_dv : {false, true}) {
         SCOPED_TRACE(with_dv);
         auto dir = UniqueTestDirectory::Create();
@@ -241,8 +241,8 @@ TEST_P(AppendCompactionInteTest, TestCustomizeCompactFilesWithGap) {
         ASSERT_EQ(3, files.size());
         // Reverse the inputs and leave the middle file untouched. Neither order nor adjacency
         // of the supplied names determines eligibility.
-        CompactRequest request{{{"f1", "10"}}, 1, {files[2]->file_name, files[0]->file_name}};
-        ASSERT_OK(compactor->write_->CustomizeCompact(request));
+        ASSERT_OK(compactor->write_->CompactFiles({{"f1", "10"}}, 1,
+                                                  {files[2]->file_name, files[0]->file_name}));
         ASSERT_OK_AND_ASSIGN(auto messages, compactor->write_->PrepareCommit(true, identifier));
         ASSERT_EQ(1, messages.size());
         auto message = messages[0];
@@ -306,7 +306,7 @@ TEST_P(AppendCompactionInteTest, TestCustomizeCompactFilesWithGap) {
     }
 }
 
-TEST_P(AppendCompactionInteTest, TestCustomizeCompactSingleFullyDeletedFile) {
+TEST_P(AppendCompactionInteTest, TestCompactFilesSingleFullyDeletedFile) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto schema =
@@ -334,7 +334,7 @@ TEST_P(AppendCompactionInteTest, TestCustomizeCompactSingleFullyDeletedFile) {
     std::sort(files.begin(), files.end(), BucketedAppendCompactManager::FileComparator(true));
     ASSERT_EQ(3, files.size());
     ASSERT_EQ(1, files.back()->row_count);
-    ASSERT_OK(write->CustomizeCompact({{{"f1", "10"}}, 1, {files.back()->file_name}}));
+    ASSERT_OK(write->CompactFiles({{"f1", "10"}}, 1, {files.back()->file_name}));
     ASSERT_OK_AND_ASSIGN(auto messages, compactor->write_->PrepareCommit(true, identifier));
     ASSERT_EQ(1, messages.size());
     auto message = messages[0];

@@ -269,7 +269,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestWriteWithInvalidBatch) {
     }
 }
 
-TEST_F(AppendOnlyFileStoreWriteTest, TestCustomizeCompactValidationAndRestoredSnapshot) {
+TEST_F(AppendOnlyFileStoreWriteTest, TestCompactFilesValidationAndRestoredSnapshot) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     auto schema =
@@ -301,64 +301,69 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestCustomizeCompactValidationAndRestoredSn
                                builder.SetOptions(opts).WithWriteSchema(columns).Finish());
         return FileStoreWrite::Create(std::move(context));
     };
-    CompactRequest request{{}, 0, {first_name}};
+    std::map<std::string, std::string> partition;
+    int32_t bucket = 0;
+    std::vector<std::string> file_names = {first_name};
     ASSERT_OK_AND_ASSIGN(auto ordered, new_writer(options));
-    ASSERT_NOK_WITH_MSG(ordered->CustomizeCompact(request), "bucket-append-ordered=false");
+    ASSERT_NOK_WITH_MSG(ordered->CompactFiles(partition, bucket, file_names),
+                        "bucket-append-ordered=false");
     ASSERT_OK(ordered->Close());
     options[Options::BUCKET_APPEND_ORDERED] = "false";
     auto write_only_options = options;
     write_only_options[Options::WRITE_ONLY] = "true";
     ASSERT_OK_AND_ASSIGN(auto write_only, new_writer(write_only_options));
-    ASSERT_NOK_WITH_MSG(write_only->CustomizeCompact(request), "write-only=false");
+    ASSERT_NOK_WITH_MSG(write_only->CompactFiles(partition, bucket, file_names),
+                        "write-only=false");
     ASSERT_OK(write_only->Close());
     ASSERT_OK_AND_ASSIGN(auto partial, new_writer(options, {"id"}));
-    ASSERT_NOK_WITH_MSG(partial->CustomizeCompact(request), "full write schema");
+    ASSERT_NOK_WITH_MSG(partial->CompactFiles(partition, bucket, file_names), "full write schema");
     ASSERT_OK(partial->Close());
     auto realtime_options = options;
     realtime_options[Options::REALTIME_ENABLED] = "true";
     ASSERT_OK_AND_ASSIGN(auto realtime, new_writer(realtime_options));
-    ASSERT_NOK_WITH_MSG(realtime->CustomizeCompact(request), "real-time mode");
+    ASSERT_NOK_WITH_MSG(realtime->CompactFiles(partition, bucket, file_names), "real-time mode");
     ASSERT_OK(realtime->Close());
     auto unaware_options = options;
     unaware_options[Options::BUCKET] = "-1";
     ASSERT_OK_AND_ASSIGN(auto unaware, new_writer(unaware_options));
-    ASSERT_NOK_WITH_MSG(unaware->CustomizeCompact(request), "fixed-bucket append");
+    ASSERT_NOK_WITH_MSG(unaware->CompactFiles(partition, bucket, file_names),
+                        "fixed-bucket append");
     ASSERT_OK(unaware->Close());
     ASSERT_OK_AND_ASSIGN(auto compactor, new_writer(options));
-    for (int32_t bucket : {-1, 2}) {
-        request.bucket = bucket;
-        ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "out of range");
+    for (int32_t invalid_bucket : {-1, 2}) {
+        ASSERT_NOK_WITH_MSG(compactor->CompactFiles(partition, invalid_bucket, file_names),
+                            "out of range");
     }
-    request.bucket = 0;
-    request.partition = {{"unknown", "value"}};
-    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "partition keys");
-    request.partition.clear();
-    request.file_names.clear();
-    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "at least one");
-    request.file_names = {first_name, first_name};
-    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "distinct file names");
-    request.file_names = {"../" + first_name};
-    ASSERT_NOK(compactor->CustomizeCompact(request));
-    request.file_names = {"missing.parquet"};
-    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "not active");
-    request.file_names = {first_name};
-    request.bucket = 1;
-    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "not active");
-    request.bucket = 0;
-    request.file_names = {second_name};
-    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "not active");
+    partition = {{"unknown", "value"}};
+    ASSERT_NOK_WITH_MSG(compactor->CompactFiles(partition, bucket, file_names), "partition keys");
+    partition.clear();
+    file_names.clear();
+    ASSERT_NOK_WITH_MSG(compactor->CompactFiles(partition, bucket, file_names), "at least one");
+    file_names = {first_name, first_name};
+    ASSERT_NOK_WITH_MSG(compactor->CompactFiles(partition, bucket, file_names),
+                        "distinct file names");
+    file_names = {"../" + first_name};
+    ASSERT_NOK(compactor->CompactFiles(partition, bucket, file_names));
+    file_names = {"missing.parquet"};
+    ASSERT_NOK_WITH_MSG(compactor->CompactFiles(partition, bucket, file_names), "not active");
+    file_names = {first_name};
+    bucket = 1;
+    ASSERT_NOK_WITH_MSG(compactor->CompactFiles(partition, bucket, file_names), "not active");
+    bucket = 0;
+    file_names = {second_name};
+    ASSERT_NOK_WITH_MSG(compactor->CompactFiles(partition, bucket, file_names), "not active");
     ASSERT_OK_AND_ASSIGN(auto restored_snapshot, compactor->GetBaseSnapshotId({}, 0));
     ASSERT_TRUE(restored_snapshot);
     auto third = WriteAndPrepare(path, schema, options, R"([[4, "d"]])", 2);
     Commit(path, options, third);
     const std::string third_name = OnlyNewFile(third)->file_name;
-    request.file_names = {third_name};
-    ASSERT_NOK_WITH_MSG(compactor->CustomizeCompact(request), "not active");
+    file_names = {third_name};
+    ASSERT_NOK_WITH_MSG(compactor->CompactFiles(partition, bucket, file_names), "not active");
     ASSERT_OK_AND_ASSIGN(auto reused_snapshot, compactor->GetBaseSnapshotId({}, 0));
     ASSERT_EQ(restored_snapshot, reused_snapshot);
-    request.file_names = {first_name};
-    ASSERT_OK(compactor->CustomizeCompact(request));
-    ASSERT_OK(compactor->CustomizeCompact({{}, 1, {second_name}}));
+    file_names = {first_name};
+    ASSERT_OK(compactor->CompactFiles(partition, bucket, file_names));
+    ASSERT_OK(compactor->CompactFiles({}, 1, {second_name}));
     ASSERT_OK_AND_ASSIGN(auto messages, compactor->PrepareCommit());
     ASSERT_EQ(2, messages.size());
     std::shared_ptr<CommitMessageImpl> impl;
@@ -393,7 +398,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestCustomizeCompactValidationAndRestoredSn
     ASSERT_FALSE(exists);
     ASSERT_OK_AND_ASSIGN(auto mixed, new_writer(options));
     ASSERT_OK(mixed->Write(MakeBatch(schema, R"([[4, "d"]])")));
-    ASSERT_NOK_WITH_MSG(mixed->CustomizeCompact(request), "cannot mix");
+    ASSERT_NOK_WITH_MSG(mixed->CompactFiles(partition, bucket, file_names), "cannot mix");
     ASSERT_OK(mixed->Close());
 }
 
@@ -482,7 +487,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestRealtimeWriteTracksExternalOffsetRange)
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<WriteContext> write_context, builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto file_store_write, FileStoreWrite::Create(std::move(write_context)));
 
-    ASSERT_NOK_WITH_MSG(file_store_write->CustomizeCompact({{}, 0, {"unused.parquet"}}),
+    ASSERT_NOK_WITH_MSG(file_store_write->CompactFiles({}, 0, {"unused.parquet"}),
                         "real-time mode");
     ASSERT_OK(file_store_write->Write(MakeBatch(realtime_schema, R"([
         [10, 1, "a"],
