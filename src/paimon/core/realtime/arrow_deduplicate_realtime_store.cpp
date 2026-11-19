@@ -259,8 +259,8 @@ class ArrowDeduplicateRealtimeStore::IndexReadSource final : public RealtimeInde
     }
 
     Result<std::vector<std::shared_ptr<RealtimeIndexReader>>> CreateIndexReaders(
-        const std::string& field_name) const override {
-        return source_->CreateIndexReaders(field_name);
+        const std::string& field_name, const std::shared_ptr<MemoryPool>& pool) const override {
+        return source_->CreateIndexReaders(field_name, pool);
     }
 
  private:

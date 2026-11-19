@@ -29,6 +29,7 @@
 struct ArrowArray;
 
 namespace paimon {
+class MemoryPool;
 class RealtimeIndexReader;
 
 /// Append-only in-memory index for one field, supporting one writer and concurrent readers.
@@ -40,8 +41,9 @@ class PAIMON_EXPORT RealtimeIndex {
     virtual Status AddBatch(::ArrowArray* batch) = 0;
 
     /// Creates a reader for [begin, end), sharing postings without copying.
+    /// The pool belongs to the query and is used for reader/search allocations.
     virtual Result<std::shared_ptr<RealtimeIndexReader>> CreateReader(
-        const OffsetRange& offset_range) const = 0;
+        const OffsetRange& offset_range, const std::shared_ptr<MemoryPool>& pool) const = 0;
 
     virtual uint64_t GetMemoryUsage() const = 0;
 };

@@ -437,6 +437,33 @@ filtering. Keep predicate fields in the read schema and enable
 In-memory and disk indexes are configured independently. Use
 ``file-index.<type>.columns`` to enable indexes for committed files.
 
+Real-time Vector Search
+~~~~~~~~~~~~~~~~~~~~~~
+
+Build with ``-DPAIMON_ENABLE_LUMINA=ON`` for ``LIST<FLOAT>`` vector indexes
+using ``bruteforce`` or ``flatnsw`` with ``rawf32`` encoding:
+
+.. code-block:: text
+
+   realtime.index.lumina.columns = embedding
+   realtime.index.lumina.embedding.index.type = bruteforce
+   realtime.index.lumina.embedding.index.dimension = 2
+   realtime.index.lumina.embedding.distance.metric = l2
+   realtime.index.lumina.embedding.encoding.type = rawf32
+
+For disk indexes, repeat these settings with the ``file-index.lumina`` prefix,
+keeping dimension and distance metric consistent. Append deduplicate mode also
+requires ``_REALTIME_OFFSET`` in ``file-index.bitmap.columns``.
+
+Use ``ReadContextBuilder::EnablePreciseFileIndexEvaluate(true)`` with
+``SetVectorSearch()``. Keep scalar predicate fields in the read projection and
+project ``_embedding_INDEX_SCORE`` for scores. Scalar filters, including those
+without indexes, and committed or pending DVs are applied before vector TopK.
+
+TopK is per memory segment or data file; apply global ranking in the calling
+engine.
+Real-time vector tag predicates are unsupported.
+
 Implementation by Mode
 ----------------------
 
@@ -634,8 +661,9 @@ Current restrictions include:
 * Native tables on the main branch with fixed positive bucket counts and full
   write schemas only.
 * Process-local batch union scans only. Streaming scans, limit pushdown,
-  global-index result splits, vector/full-text search, and count-only real-time
-  readers are unsupported.
+  global-index result splits, and count-only real-time readers are unsupported.
+  Precise index evaluation and Lumina vector search support append and append
+  deduplicate modes; primary-key real-time search is unsupported.
 * PK mode supports deduplicate with default delete handling, or partial update
   with deletion vectors disabled and its existing delete and sequence-group
   options. Both require ascending sequence order and ``changelog-producer=none``. Custom

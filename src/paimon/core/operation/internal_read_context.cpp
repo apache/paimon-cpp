@@ -47,6 +47,7 @@
 #include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/core/schema/arrow_schema_validator.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/full_text_search.h"

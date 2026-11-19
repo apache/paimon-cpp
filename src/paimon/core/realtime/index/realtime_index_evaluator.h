@@ -29,6 +29,7 @@
 namespace paimon {
 class CompoundPredicate;
 class LeafPredicate;
+class MemoryPool;
 class Predicate;
 class RealtimeIndexSet;
 
@@ -39,16 +40,19 @@ class RealtimeIndexEvaluator {
 
     static Result<std::optional<RoaringBitmap64>> Evaluate(
         const std::shared_ptr<RealtimeIndexSet>& indexes,
-        const std::shared_ptr<Predicate>& predicate, const OffsetRange& offset_range);
+        const std::shared_ptr<Predicate>& predicate, const OffsetRange& offset_range,
+        const std::shared_ptr<MemoryPool>& pool);
 
  private:
     static Result<std::optional<RoaringBitmap64>> EvaluateCompound(
         const std::shared_ptr<RealtimeIndexSet>& indexes,
-        const std::shared_ptr<CompoundPredicate>& compound, const OffsetRange& offset_range);
+        const std::shared_ptr<CompoundPredicate>& compound, const OffsetRange& offset_range,
+        const std::shared_ptr<MemoryPool>& pool);
 
     static Result<std::optional<RoaringBitmap64>> EvaluateLeaf(
         const std::shared_ptr<RealtimeIndexSet>& indexes,
-        const std::shared_ptr<LeafPredicate>& leaf, const OffsetRange& offset_range);
+        const std::shared_ptr<LeafPredicate>& leaf, const OffsetRange& offset_range,
+        const std::shared_ptr<MemoryPool>& pool);
 };
 
 }  // namespace paimon

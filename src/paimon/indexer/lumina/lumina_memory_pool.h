@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <memory_resource>
 
@@ -25,7 +27,8 @@
 namespace paimon::lumina {
 class LuminaMemoryPool : public std::pmr::memory_resource {
  public:
-    explicit LuminaMemoryPool(const std::shared_ptr<MemoryPool>& pool) : pool_(pool) {}
+    explicit LuminaMemoryPool(bool track_memory, const std::shared_ptr<MemoryPool>& pool)
+        : pool_(pool), track_memory_(track_memory) {}
 
     ~LuminaMemoryPool() override = default;
 
@@ -36,17 +39,30 @@ class LuminaMemoryPool : public std::pmr::memory_resource {
         return pool_;
     }
 
+    /// Bytes currently allocated through this resource, excluding other users of the same pool.
+    /// Returns zero when memory tracking is disabled.
+    uint64_t GetMemoryUsage() const {
+        return track_memory_ ? memory_usage_.load(std::memory_order_relaxed) : 0;
+    }
+
  private:
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
         static const size_t min_alignment = alignof(std::max_align_t);
         if (alignment < min_alignment) {
             alignment = min_alignment;
         }
-        return pool_->Malloc(bytes, alignment);
+        void* ptr = pool_->Malloc(bytes, alignment);
+        if (track_memory_) {
+            memory_usage_.fetch_add(bytes, std::memory_order_relaxed);
+        }
+        return ptr;
     }
 
     void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
         pool_->Free(p, bytes, alignment);
+        if (track_memory_) {
+            memory_usage_.fetch_sub(bytes, std::memory_order_relaxed);
+        }
     }
 
     bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
@@ -55,5 +71,7 @@ class LuminaMemoryPool : public std::pmr::memory_resource {
 
  private:
     std::shared_ptr<MemoryPool> pool_;
+    const bool track_memory_;
+    std::atomic<uint64_t> memory_usage_{0};
 };
 }  // namespace paimon::lumina

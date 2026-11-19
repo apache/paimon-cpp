@@ -6779,7 +6779,8 @@ class RealtimePreciseIndexInteTest : public RealtimeWriteInteTest {
             schema_ = arrow::schema(fields_);
             options_[Options::DELETION_VECTORS_ENABLED] = "true";
             options_[Options::REALTIME_DEDUPLICATE_KEY_FIELDS] = "id";
-            options_["file-index.bitmap.columns"] = SpecialFields::RealtimeOffset().Name();
+            options_.try_emplace("file-index.bitmap.columns",
+                                 SpecialFields::RealtimeOffset().Name());
         }
         CreateTable(/*partition_keys=*/{});
     }
@@ -6909,6 +6910,10 @@ class RealtimePreciseIndexInteTest : public RealtimeWriteInteTest {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> context, builder.Finish());
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> read,
                                TableRead::Create(std::move(context)));
+        if (options_.count("realtime.index.inte-mock-vector.columns") == 0 &&
+            options_.count("realtime.index.inte-mock-text.columns") == 0) {
+            return read->CreateReader(plan->Splits());
+        }
         std::vector<std::shared_ptr<Split>> splits;
         for (const auto& split : plan->Splits()) {
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Split> indexed, WithSearchIndexes(split));
@@ -6943,6 +6948,10 @@ class RealtimePreciseIndexInteTest : public RealtimeWriteInteTest {
                              CreateSearchReader(plan, realtime_context, query));
         ASSERT_NO_FATAL_FAILURE(CheckSearchResult(std::move(reader), query, expected_json));
     }
+
+#ifdef PAIMON_ENABLE_LUMINA
+    void CheckLuminaDeduplicateSearch(const std::string& index_type);
+#endif
 
     std::shared_ptr<MockSearchState> vector_state_;
     std::shared_ptr<MockSearchState> text_state_;
@@ -7410,6 +7419,116 @@ TEST_F(RealtimePreciseIndexInteTest, TestFullTextOrUnindexedScalarAcrossDiskAndM
     }
     ASSERT_OK(PrepareAndClose(writer.get()));
 }
+
+#ifdef PAIMON_ENABLE_LUMINA
+void RealtimePreciseIndexInteTest::CheckLuminaDeduplicateSearch(const std::string& index_type) {
+    options_.erase("realtime.index.inte-mock-vector.columns");
+    options_.erase("realtime.index.inte-mock-text.columns");
+    options_[Options::FILE_INDEX_READ_ENABLED] = "true";
+    options_["realtime.index.hash.columns"] = "payload";
+    options_["realtime.index.lumina.columns"] = "embedding";
+    options_["file-index.bitmap.columns"] = "_REALTIME_OFFSET,payload";
+    options_["file-index.lumina.columns"] = "embedding";
+    for (const std::string prefix :
+         {"realtime.index.lumina.embedding.", "file-index.lumina.embedding."}) {
+        options_[prefix + "index.type"] = index_type;
+        options_[prefix + "index.dimension"] = "2";
+        options_[prefix + "distance.metric"] = "l2";
+        options_[prefix + "encoding.type"] = "rawf32";
+    }
+    CreateSearchTable(/*deduplicate=*/true);
+    ASSERT_FALSE(HasFatalFailure());
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter(context));
+    ASSERT_OK(WriteSearchBatch(R"([
+        [0,1,"keep","keep",[0,0]], [1,2,"keep","keep",[1,0]],
+        [2,3,"drop","keep",[2,0]], [3,4,"keep","drop",[3,0]],
+        [4,5,"keep","keep",[4,0]], [5,6,"keep","keep",[5,0]]
+    ])",
+                               {}, writer.get()));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> initial,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_OK_AND_ASSIGN(int64_t initial_snapshot, Commit(initial, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(initial_snapshot));
+
+    // Persist a file DV for the closest disk vector.
+    ASSERT_OK(WriteSearchBatch(R"([[6,1,"keep","keep",[0,0]]])", {RecordBatch::RowKind::DELETE},
+                               writer.get()));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> deletion,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
+    ASSERT_OK_AND_ASSIGN(int64_t deleted_snapshot, Commit(deletion, /*commit_identifier=*/1));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(deleted_snapshot));
+
+    // Updating id=2 adds a pending offset DV for the next-closest disk vector.
+    ASSERT_OK(WriteSearchBatch(R"([
+        [7,2,"keep","keep",[6,0]], [8,7,"keep","keep",[0,0]],
+        [9,8,"drop","keep",[0.5,0]], [10,9,"keep","drop",[1,0]],
+        [11,10,"keep","keep",[7,0]], [12,11,"keep","keep",[8,0]]
+    ])",
+                               {}, writer.get()));
+    ASSERT_OK(writer->Seal());
+    // Delete the nearest sealed vector and leave a scalar-mismatching building vector.
+    ASSERT_OK(WriteSearchBatch(R"([
+        [13,7,"keep","keep",[0,0]], [14,12,"drop","keep",[0.25,0]]
+    ])",
+                               {RecordBatch::RowKind::DELETE, RecordBatch::RowKind::INSERT},
+                               writer.get()));
+
+    auto indexed = EqualString("payload", "keep");
+    auto unindexed = EqualString("pt", "keep");
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
+                         PredicateBuilder::And({indexed, unindexed}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, predicate));
+    auto vector = std::make_shared<VectorSearch>(
+        "embedding", /*limit=*/1, std::vector<float>{0.0f, 0.0f}, nullptr, nullptr,
+        VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
+    if (index_type == "flatnsw") {
+        vector->options["lumina.flatnsw.search.ef_search"] = "64";
+    }
+    SearchQuery query{
+        {"id", "payload", "pt", "_embedding_INDEX_SCORE"}, predicate, vector, nullptr};
+    const std::string expected = R"([[0,5,"keep","keep",16],[0,2,"keep","keep",36]])";
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(plan, context, query, expected));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> indexed_plan, CreatePlan(context, indexed));
+    SearchQuery indexed_query = query;
+    indexed_query.predicate = indexed;
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(indexed_plan, context, indexed_query,
+                                        R"([[0,4,"keep","drop",9],[0,9,"keep","drop",1]])"));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> unindexed_plan, CreatePlan(context, unindexed));
+    SearchQuery unindexed_query = query;
+    unindexed_query.predicate = unindexed;
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(
+        unindexed_plan, context, unindexed_query,
+        R"([[0,3,"drop","keep",4],[0,8,"drop","keep",0.25],[0,12,"drop","keep",0.0625]])"));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> pinned, CreatePlan(context, predicate));
+
+    // The same query must keep its results while memory data is committed to disk.
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> update,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> prepared, CreatePlan(context, predicate));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(prepared, context, query, expected));
+    ASSERT_OK_AND_ASSIGN(int64_t updated_snapshot, Commit(update, /*commit_identifier=*/2));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> committed, CreatePlan(context, predicate));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(committed, context, query, expected));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(updated_snapshot));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> refreshed, CreatePlan(context, predicate));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(refreshed, context, query, expected));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(pinned, context, query, expected));
+    ASSERT_OK(writer->Close());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> disk_only,
+                         CreatePlan(/*realtime_context=*/nullptr, predicate));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(disk_only, nullptr, query, expected));
+}
+
+TEST_F(RealtimePreciseIndexInteTest, TestLuminaBruteforceDeduplicateScalarVectorSearch) {
+    CheckLuminaDeduplicateSearch("bruteforce");
+}
+
+TEST_F(RealtimePreciseIndexInteTest, TestLuminaFlatnswDeduplicateScalarVectorSearch) {
+    CheckLuminaDeduplicateSearch("flatnsw");
+}
+#endif
 
 // TODO(xinyu.lxy): Refactor the real-time hash index tests.
 class RealtimeHashIndexInteTest : public RealtimeWriteInteTest {

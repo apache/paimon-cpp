@@ -1,0 +1,120 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+#include "paimon/core/realtime/realtime_utils.h"
+
+#include "arrow/api.h"
+#include "paimon/common/table/special_fields.h"
+#include "paimon/core/io/file_index_options.h"
+#include "paimon/core/schema/arrow_schema_validator.h"
+#include "paimon/core/utils/branch_manager.h"
+#include "paimon/file_index/file_indexer.h"
+#include "paimon/file_index/file_indexer_factory.h"
+#include "paimon/macros.h"
+#include "paimon/status.h"
+
+namespace paimon {
+
+Status RealtimeUtils::ValidateBranch(const std::string& branch) {
+    if (!BranchManager::IsMainBranch(BranchManager::NormalizeBranch(branch))) {
+        return Status::Invalid("real-time operations only support the main branch");
+    }
+    return Status::OK();
+}
+
+Result<int32_t> RealtimeUtils::GetDeduplicateKeyPosition(
+    const std::shared_ptr<arrow::Schema>& schema,
+    const std::vector<std::string>& deduplicate_key_fields) {
+    if (!schema) {
+        return Status::Invalid("real-time deduplicate schema must not be null");
+    }
+    // TODO(xinyu.lxy): Support multiple user-defined deduplicate key fields. This requires
+    // composite-key projection and serialization in the configured field order.
+    if (deduplicate_key_fields.size() != 1) {
+        return Status::Invalid(
+            "real-time deduplicate currently requires exactly one deduplicate key field");
+    }
+    const int32_t key_position = schema->GetFieldIndex(deduplicate_key_fields[0]);
+    if (key_position < 0) {
+        return Status::Invalid("real-time deduplicate key field does not exist: ",
+                               deduplicate_key_fields[0]);
+    }
+    return key_position;
+}
+
+Status RealtimeUtils::ValidateOffsetField(const std::shared_ptr<arrow::Schema>& schema) {
+    if (!schema) {
+        return Status::Invalid("real-time schema must not be null");
+    }
+    const std::shared_ptr<arrow::Field> offset_field =
+        schema->GetFieldByName(SpecialFields::RealtimeOffset().Name());
+    if (!offset_field || offset_field->type()->id() != arrow::Type::INT64 ||
+        offset_field->nullable()) {
+        return Status::Invalid("real-time schema requires non-null int64 _REALTIME_OFFSET");
+    }
+    return Status::OK();
+}
+
+Status RealtimeUtils::ValidateDeduplicateSchema(
+    const std::shared_ptr<arrow::Schema>& schema,
+    const std::vector<std::string>& deduplicate_key_fields) {
+    PAIMON_RETURN_NOT_OK(ValidateOffsetField(schema));
+    PAIMON_ASSIGN_OR_RAISE(int32_t key_position,
+                           GetDeduplicateKeyPosition(schema, deduplicate_key_fields));
+    const std::shared_ptr<arrow::Field>& key_field = schema->field(key_position);
+    if (key_field->name() == SpecialFields::RealtimeOffset().Name()) {
+        return Status::Invalid("real-time offset field cannot be used as the deduplicate key");
+    }
+    if (key_field->nullable()) {
+        return Status::Invalid("real-time deduplicate key field must be non-null: ",
+                               key_field->name());
+    }
+    if (ArrowSchemaValidator::IsNestedType(key_field->type())) {
+        return Status::Invalid("real-time deduplicate key field must not be nested: ",
+                               key_field->name());
+    }
+    return Status::OK();
+}
+
+Status RealtimeUtils::ValidateDeduplicateFileIndex(const CoreOptions& options) {
+    if (!options.FileIndexReadEnabled()) {
+        return Status::Invalid(
+            "real-time deduplicate mode requires 'file-index.read.enabled=true'");
+    }
+    PAIMON_ASSIGN_OR_RAISE(FileIndexOptions file_indexes,
+                           FileIndexOptions::FromCoreOptions(options));
+    const std::string& offset_name = SpecialFields::RealtimeOffset().Name();
+    for (const FileIndexDefinition& definition : file_indexes.Definitions()) {
+        if (definition.column_name != offset_name) {
+            continue;
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexer> indexer,
+                               FileIndexerFactory::Get(definition.index_type, definition.options));
+        if (indexer && indexer->SupportsExactPredicate(Function::Type::IN, FieldType::BIGINT) &&
+            indexer->SupportsExactPredicate(Function::Type::NOT_IN, FieldType::BIGINT)) {
+            return Status::OK();
+        }
+    }
+    return Status::Invalid(
+        "real-time deduplicate mode requires an index supporting exact BIGINT IN and NOT_IN "
+        "row positions on ",
+        offset_name);
+}
+
+}  // namespace paimon
