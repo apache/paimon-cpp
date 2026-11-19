@@ -29,7 +29,6 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
-#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/file_index/bitmap/bitmap_file_index.h"
@@ -68,10 +67,24 @@
 namespace paimon::test {
 namespace {
 
-class MockScalarFileIndexReader : public FileIndexReader {
+class TestScalarFileIndexReader : public FileIndexReader {
  public:
-    MOCK_METHOD(Result<std::shared_ptr<FileIndexResult>>, Evaluate,
-                (const std::shared_ptr<LeafPredicate>&, const RoaringBitmap32*), (override));
+    explicit TestScalarFileIndexReader(std::shared_ptr<FileIndexResult> result)
+        : result_(std::move(result)) {}
+
+    ~TestScalarFileIndexReader() override {
+        EXPECT_EQ(evaluate_count_, 1);
+    }
+
+    Result<std::shared_ptr<FileIndexResult>> Evaluate(const std::shared_ptr<LeafPredicate>&,
+                                                      const RoaringBitmap32*) override {
+        ++evaluate_count_;
+        return result_;
+    }
+
+ private:
+    std::shared_ptr<FileIndexResult> result_;
+    int32_t evaluate_count_ = 0;
 };
 
 class RecordingDoubleFunction final : public LeafFunction {
@@ -197,9 +210,7 @@ class PreciseFileIndexReadTest : public ::testing::Test {
                                          context->GetPredicate(), field_mapping_builder.get(),
                                          path_factory, {}));
         if (scalar_index_result_) {
-            auto reader = std::make_shared<MockScalarFileIndexReader>();
-            EXPECT_CALL(*reader, Evaluate(::testing::_, ::testing::_))
-                .WillOnce(::testing::Return(scalar_index_result_));
+            auto reader = std::make_shared<TestScalarFileIndexReader>(scalar_index_result_);
             precise_read->indexes_->field_readers_["f3"] = {std::move(reader)};
         }
         if (!deletion_vector) {

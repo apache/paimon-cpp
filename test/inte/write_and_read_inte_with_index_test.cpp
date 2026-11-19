@@ -141,12 +141,14 @@ class WriteAndReadInteWithIndexTest
     void CheckResult(const std::string& table_path,
                      const std::vector<std::shared_ptr<Split>> splits,
                      const std::shared_ptr<Predicate>& predicate,
-                     const std::shared_ptr<arrow::ChunkedArray>& expected_array) const {
+                     const std::shared_ptr<arrow::ChunkedArray>& expected_array,
+                     bool precise_file_index_evaluate = false) const {
         ReadContextBuilder context_builder(table_path);
         context_builder.AddOption("read.batch-size", "2")
             .AddOption("test.enable-adaptive-prefetch-strategy", "false")
             .SetPredicate(predicate)
-            .EnableLateMaterializing(false);
+            .EnableLateMaterializing(false)
+            .EnablePreciseFileIndexEvaluate(precise_file_index_evaluate);
         if (enable_prefetch_) {
             context_builder.EnablePrefetch(true).SetPrefetchBatchCount(3);
         }
@@ -728,9 +730,9 @@ class WriteAndReadInteWithIndexTest
     void CheckResultForBsi(const std::string& path,
                            const std::shared_ptr<arrow::DataType>& arrow_data_type,
                            const std::shared_ptr<Split> split) const {
+        std::shared_ptr<arrow::ChunkedArray> all_rows;
         {
             // test with non predicate
-            std::shared_ptr<arrow::ChunkedArray> expected_array;
             auto array_status =
                 arrow::ipc::internal::json::ChunkedArrayFromJSON(arrow_data_type, {R"([
 [0, "Alice", 100, -2, 11.1, 1745542802000123000],
@@ -742,9 +744,9 @@ class WriteAndReadInteWithIndexTest
 [0, "Tony", null, -2, 17.1, 1745542802000123001],
 [0, "Alice", 20, null, 18.1, -1724877000]
 ])"},
-                                                                 &expected_array);
+                                                                 &all_rows);
             ASSERT_TRUE(array_status.ok());
-            CheckResult(path, {split}, /*predicate=*/nullptr, expected_array);
+            CheckResult(path, {split}, /*predicate=*/nullptr, all_rows);
         }
         {
             // test is null predicate for f4
@@ -822,7 +824,8 @@ class WriteAndReadInteWithIndexTest
             CheckResult(path, {split}, predicate, expected_array);
         }
         {
-            // test less than predicate for f4
+            // Timestamp indexes truncate nanoseconds, so pruning alone must retain all rows.
+            // Precise evaluation rechecks the data for the less-than predicate on f4.
             auto predicate = PredicateBuilder::LessThan(/*field_index=*/4, /*field_name=*/"f4",
                                                         FieldType::TIMESTAMP,
                                                         Literal(Timestamp(1745542802000l, 123000)));
@@ -836,11 +839,12 @@ class WriteAndReadInteWithIndexTest
 ])"},
                                                                  &expected_array);
             ASSERT_TRUE(array_status.ok());
-            CheckResult(path, {split}, predicate, expected_array);
+            CheckResult(path, {split}, predicate, all_rows);
+            CheckResult(path, {split}, predicate, expected_array,
+                        /*precise_file_index_evaluate=*/true);
         }
         {
-            // test less or equal predicate for f4, as timestamp is normalized to long (micros),
-            // 123001 ns is approximated to 123 micro
+            // test less or equal predicate for f4 with nanosecond precision
             auto predicate = PredicateBuilder::LessOrEqual(
                 /*field_index=*/4, /*field_name=*/"f4", FieldType::TIMESTAMP,
                 Literal(Timestamp(1745542802000l, 123001)));
@@ -856,7 +860,9 @@ class WriteAndReadInteWithIndexTest
 ])"},
                                                                  &expected_array);
             ASSERT_TRUE(array_status.ok());
-            CheckResult(path, {split}, predicate, expected_array);
+            CheckResult(path, {split}, predicate, all_rows);
+            CheckResult(path, {split}, predicate, expected_array,
+                        /*precise_file_index_evaluate=*/true);
         }
         {
             // test in for f2
@@ -927,12 +933,13 @@ class WriteAndReadInteWithIndexTest
 [0, "Tony", 50, 1, 14.1, -1744877000],
 [0, "Lucy", 500, -1, 15.1, -1764877000],
 [0, "Bob", 100, 2, 16.1, null],
-[0, "Tony", null, -2, 17.1, 1745542802000123001],
 [0, "Alice", 20, null, 18.1, -1724877000]
 ])"},
                                                                  &expected_array);
             ASSERT_TRUE(array_status.ok());
-            CheckResult(path, {split}, predicate, expected_array);
+            CheckResult(path, {split}, predicate, all_rows);
+            CheckResult(path, {split}, predicate, expected_array,
+                        /*precise_file_index_evaluate=*/true);
         }
         {
             // test and predicate for is not null
