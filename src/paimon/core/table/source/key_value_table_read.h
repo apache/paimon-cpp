@@ -67,9 +67,6 @@ class KeyValueTableRead : public TableRead {
     Result<std::unique_ptr<BatchReader>> CreateDiskReader(const std::shared_ptr<Split>& split);
 
     Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
-        const std::shared_ptr<RealtimeSplit>& realtime_split);
-
-    Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
         const std::shared_ptr<RealtimeSplit>& realtime_split,
         const RealtimePartitionBucketView& memory);
 

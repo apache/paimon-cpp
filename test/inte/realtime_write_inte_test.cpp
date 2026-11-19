@@ -6411,14 +6411,14 @@ TEST_F(RealtimeWriteInteTest, TestRealtimeReaderFailureTimingAndTicketConsumptio
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
                          TableRead::Create(std::move(read_context)));
-    ASSERT_NOK_WITH_MSG(table_read->CreateReader(plan->Splits().front()),
-                        "cannot cast predicate unsupported");
-
-    ASSERT_OK_AND_ASSIGN(std::vector<Row> actual_rows, ReadRows(plan, realtime_context));
-    ASSERT_EQ(rows, actual_rows);
-    ASSERT_OK_AND_ASSIGN(plan, CreatePlan(realtime_context, nullptr));
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
-                         table_read->CreateReader(plan->Splits()));
+                         table_read->CreateReader(plan->Splits().front()));
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "cannot cast predicate unsupported");
+    reader->Close();
+    ASSERT_NOK_WITH_MSG(ReadRows(plan, realtime_context), "ticket does not exist or has expired");
+
+    ASSERT_OK_AND_ASSIGN(plan, CreatePlan(realtime_context, nullptr));
+    ASSERT_OK_AND_ASSIGN(reader, table_read->CreateReader(plan->Splits()));
     ASSERT_NOK_WITH_MSG(reader->NextBatch(), "cannot cast predicate unsupported");
     ASSERT_NOK_WITH_MSG(reader->NextBatchWithBitmap(), "cannot cast predicate unsupported");
     reader->Close();
@@ -6806,7 +6806,7 @@ class RealtimePreciseIndexInteTest : public RealtimeWriteInteTest {
 
     std::shared_ptr<VectorSearch> Vector(int32_t limit) const {
         return std::make_shared<VectorSearch>("embedding", limit, std::vector<float>{1.0f}, nullptr,
-                                              nullptr, VectorSearch::DistanceType::COSINE,
+                                              nullptr, VectorSearch::DistanceType::INNER_PRODUCT,
                                               std::map<std::string, std::string>{});
     }
 
@@ -7048,10 +7048,8 @@ TEST_F(RealtimePreciseIndexInteTest, TestVectorSearchAcrossDiskSealedAndBuilding
     auto predicate = EqualString("payload", "hit");
     SearchQuery query{{"id", "payload", "_embedding_INDEX_SCORE"}, predicate, Vector(1), nullptr};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, predicate));
-    // Each file or segment contributes its own Top1; the public reader concatenates all four.
-    ASSERT_NO_FATAL_FAILURE(CheckSearch(plan, context, query, R"([
-        [0,2,"hit",0.875], [0,4,"hit",0.75], [0,6,"hit",0.625], [0,8,"hit",0.5]
-    ])"));
+    // The public reader selects one global Top1 across disk, sealed and building sources.
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(plan, context, query, R"([[0,2,"hit",0.875]])"));
     ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
@@ -7071,10 +7069,8 @@ TEST_F(RealtimePreciseIndexInteTest, TestDeduplicateMemoryDvBeforeVectorTopK) {
                                writer.get()));
     SearchQuery query{{"id", "payload", "_embedding_INDEX_SCORE"}, nullptr, Vector(1), nullptr};
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, nullptr));
-    // Both higher-ranked offsets in the sealed segment are invisible. The surviving row must
-    // fill its Top1, and the replacement is returned separately by the building segment.
-    ASSERT_NO_FATAL_FAILURE(
-        CheckSearch(plan, context, query, R"([[0,3,"keep",0.75],[0,1,"new",0.875]])"));
+    // Deleted offsets cannot compete for the global Top1; the replacement wins across sources.
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(plan, context, query, R"([[0,1,"new",0.875]])"));
     ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
@@ -7106,7 +7102,7 @@ TEST_F(RealtimePreciseIndexInteTest, TestCommittedAndRealtimeDiskDvBeforeVectorT
     ASSERT_OK(WriteSearchBatch(R"([[4,2,"new","p0",[5]]])", {RecordBatch::RowKind::UPDATE_AFTER},
                                writer.get()));
     SearchQuery query{{"id", "payload", "_embedding_INDEX_SCORE"}, nullptr, Vector(1), nullptr};
-    const std::string expected = R"([[0,3,"keep",0.75],[0,2,"new",0.875]])";
+    const std::string expected = R"([[0,2,"new",0.875]])";
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> building, CreatePlan(context, nullptr));
     ASSERT_EQ(1, building->Splits().size());
     auto realtime = std::dynamic_pointer_cast<RealtimeSplit>(building->Splits()[0]);
@@ -7176,7 +7172,7 @@ TEST_F(RealtimePreciseIndexInteTest, TestPinnedSearchBoundsAndDvSurviveCommitAnd
                                 RecordBatch::RowKind::INSERT},
                                writer.get()));
     const std::string latest = R"([
-        [0,2,"disk-keep",0.75], [0,1,"memory-new",0.9375], [0,4,"later",0.96875]
+        [0,4,"later",0.96875], [0,1,"memory-new",0.9375], [0,2,"disk-keep",0.75]
     ])";
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> latest_plan, CreatePlan(context, nullptr));
     ASSERT_NO_FATAL_FAILURE(CheckSearch(latest_plan, context, query, latest));
@@ -7188,7 +7184,7 @@ TEST_F(RealtimePreciseIndexInteTest, TestPinnedSearchBoundsAndDvSurviveCommitAnd
     ASSERT_GT(snapshot, initial_snapshot);
     ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
     const std::string old = R"([
-        [0,2,"disk-keep",0.75], [0,1,"memory-old",0.875], [0,3,"memory-keep",0.625]
+        [0,1,"memory-old",0.875], [0,2,"disk-keep",0.75], [0,3,"memory-keep",0.625]
     ])";
     ASSERT_NO_FATAL_FAILURE(CheckSearch(old_plan, context, query, old));
     ASSERT_NO_FATAL_FAILURE(CheckSearchResult(std::move(old_reader), query, old));
@@ -7223,10 +7219,10 @@ TEST_F(RealtimePreciseIndexInteTest, TestScoreProjectionAcrossBatchSizes) {
     auto predicate = PredicateBuilder::GreaterThan(0, "id", FieldType::BIGINT, Literal(int64_t{1}));
     const std::vector<std::pair<std::vector<std::string>, std::string>> projections{
         {{"_embedding_INDEX_SCORE", "id"}, R"([
-            [0,0.5,2], [0,0.875,3], [0,0.625,4], [0,0.75,6], [0,0.25,7], [0,0.9375,8]
+            [0,0.9375,8], [0,0.875,3], [0,0.75,6]
         ])"},
         {{"id", "_embedding_INDEX_SCORE"}, R"([
-            [0,2,0.5], [0,3,0.875], [0,4,0.625], [0,6,0.75], [0,7,0.25], [0,8,0.9375]
+            [0,8,0.9375], [0,3,0.875], [0,6,0.75]
         ])"}};
     for (int32_t batch_size : {1, 2, 3, 8}) {
         SCOPED_TRACE(batch_size);
@@ -7399,13 +7395,13 @@ TEST_F(RealtimePreciseIndexInteTest, TestFullTextOrUnindexedScalarAcrossDiskAndM
         SCOPED_TRACE(children.front()->ToString());
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate, PredicateBuilder::Or(children));
         SearchQuery query{
-            {"pt", "id", "payload", "_embedding_INDEX_SCORE"}, predicate, Vector(3), nullptr};
+            {"pt", "id", "payload", "_embedding_INDEX_SCORE"}, predicate, Vector(6), nullptr};
         // Neither OR branch alone is safe for split pruning. Plan all sources, then evaluate
         // the union in the reader before TopK. Rows matching both branches must appear once.
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, nullptr));
         ASSERT_NO_FATAL_FAILURE(CheckSearch(plan, context, query, R"([
-            [0,"miss",1,"lake",0.875], [0,"keep",2,"other",0.5], [0,"keep",3,"lake",0.625],
-            [0,"miss",5,"lake",0.75], [0,"keep",6,"other",0.25], [0,"keep",7,"lake",0.375]
+            [0,"miss",1,"lake",0.875], [0,"miss",5,"lake",0.75], [0,"keep",3,"lake",0.625],
+            [0,"keep",2,"other",0.5], [0,"keep",7,"lake",0.375], [0,"keep",6,"other",0.25]
         ])"));
     }
     ASSERT_OK(PrepareAndClose(writer.get()));

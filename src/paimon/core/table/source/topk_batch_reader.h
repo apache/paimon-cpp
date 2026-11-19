@@ -36,10 +36,14 @@ class StructArray;
 }  // namespace arrow
 
 namespace paimon {
+class InternalReadContext;
 
 /// Selects and sorts the global TopK from all rows produced by the input reader.
 class TopKBatchReader : public BatchReader {
  public:
+    static std::unique_ptr<BatchReader> ApplyTopkReaderIfNeeded(std::unique_ptr<BatchReader> reader,
+                                                                const InternalReadContext& context);
+
     enum class ScoreOrder { ASCENDING, DESCENDING };
 
     TopKBatchReader(std::unique_ptr<BatchReader> reader, const std::string& score_field_name,

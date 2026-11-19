@@ -392,7 +392,10 @@ TEST(TableReadTest, TestPrimaryKeyFileIndexSearchDoesNotFallBackToMergeReader) {
     DataSplitImpl::Builder builder(partition, /*bucket=*/0, /*bucket_path=*/"", /*data_files=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> non_raw,
                          builder.WithSnapshot(1).IsStreaming(false).RawConvertible(false).Build());
-    ASSERT_NOK_WITH_MSG(reader->CreateReader(non_raw), "merge file reads");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> non_raw_reader,
+                         reader->CreateReader(non_raw));
+    ASSERT_NOK_WITH_MSG(non_raw_reader->NextBatch(), "merge file reads");
+    non_raw_reader->Close();
 
     DataSplitImpl::Builder raw_builder(partition, /*bucket=*/0, /*bucket_path=*/"",
                                        /*data_files=*/{});
@@ -403,7 +406,7 @@ TEST(TableReadTest, TestPrimaryKeyFileIndexSearchDoesNotFallBackToMergeReader) {
     std::vector<std::shared_ptr<Split>> splits = {raw, non_raw};
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> lazy_reader, reader->CreateReader(splits));
     ASSERT_NOK_WITH_MSG(lazy_reader->NextBatch(), "merge file reads");
-    ASSERT_NOK_WITH_MSG(lazy_reader->NextBatchWithBitmap(), "merge file reads");
+    lazy_reader->Close();
 
     auto* key_value_read = dynamic_cast<KeyValueTableRead*>(reader.get());
     ASSERT_NE(key_value_read, nullptr);

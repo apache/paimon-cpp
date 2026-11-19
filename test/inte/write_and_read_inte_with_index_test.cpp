@@ -2017,8 +2017,8 @@ TEST_P(WriteAndReadInteWithIndexTest, TestRootFullTextTopKAcrossFilesAndSplits) 
     std::shared_ptr<DataSplitImpl> source;
     ASSERT_NO_FATAL_FAILURE(CreateMultiFileSearchSplit(&path, &source));
     // File 0 has values 11.1 .. 18.1; file 1 has values 21.1 .. 24.1.
-    const std::vector<MockSearchFileIndex::ScoredRows> scored_rows = {
-        {{0, 6.0f}, {4, 4.0f}, {7, 2.0f}}, {{1, 5.0f}, {3, 3.0f}, {0, 1.0f}}};
+    std::vector<MockSearchFileIndex::ScoredRows> scored_rows = {{{0, 6.0f}, {4, 4.0f}, {7, 2.0f}},
+                                                                {{1, 5.0f}, {3, 3.0f}, {0, 1.0f}}};
     for (bool separate_splits : {false, true}) {
         std::vector<std::shared_ptr<Split>> splits;
         ASSERT_NO_FATAL_FAILURE(CreateRootSearchSplits(source,
@@ -2055,7 +2055,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestRootTopKWithMixedStringEncodings) {
     ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
     helper.reset();
 
-    const std::string path = dir_->Str() + "/foo.db/bar";
+    std::string path = dir_->Str() + "/foo.db/bar";
     options["parquet.enable.dictionary"] = "false";
     options["orc.dictionary-key-size-threshold"] = "0.0";
     ASSERT_OK_AND_ASSIGN(helper, TestHelper::Create(path, options, /*is_streaming_mode=*/false));
@@ -2132,7 +2132,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestRootVectorTopKAcrossFilesAndSplits) {
     for (VectorSearch::DistanceType metric :
          {VectorSearch::DistanceType::EUCLIDEAN, VectorSearch::DistanceType::COSINE,
           VectorSearch::DistanceType::INNER_PRODUCT}) {
-        const bool ascending = metric != VectorSearch::DistanceType::INNER_PRODUCT;
+        bool ascending = metric != VectorSearch::DistanceType::INNER_PRODUCT;
         std::vector<MockSearchFileIndex::ScoredRows> scored_rows = {
             {{0, 6.0f}, {4, 4.0f}, {7, 2.0f}}, {{1, 5.0f}, {3, 3.0f}, {0, 1.0f}}};
         if (ascending) {
@@ -2165,8 +2165,8 @@ TEST_P(WriteAndReadInteWithIndexTest, TestRootTopKScoreProjection) {
     std::string path;
     std::shared_ptr<DataSplitImpl> source;
     ASSERT_NO_FATAL_FAILURE(CreateMultiFileSearchSplit(&path, &source));
-    const std::vector<MockSearchFileIndex::ScoredRows> scored_rows = {
-        {{0, 6.0f}, {4, 4.0f}, {7, 2.0f}}, {{1, 5.0f}, {3, 3.0f}, {0, 1.0f}}};
+    std::vector<MockSearchFileIndex::ScoredRows> scored_rows = {{{0, 6.0f}, {4, 4.0f}, {7, 2.0f}},
+                                                                {{1, 5.0f}, {3, 3.0f}, {0, 1.0f}}};
     for (bool vector_search : {false, true}) {
         std::vector<std::shared_ptr<Split>> splits;
         ASSERT_NO_FATAL_FAILURE(
@@ -2255,7 +2255,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestRootTopKUsesQueryMetricAndRejectsMisma
         VectorSearch::DistanceType query_metric;
         float expected_score;
     };
-    const std::vector<TestCase> cases = {
+    std::vector<TestCase> cases = {
         {VectorSearch::DistanceType::EUCLIDEAN, VectorSearch::DistanceType::EUCLIDEAN,
          VectorSearch::DistanceType::COSINE, 0.0f},
         {VectorSearch::DistanceType::EUCLIDEAN, VectorSearch::DistanceType::COSINE,
@@ -2297,13 +2297,14 @@ TEST_P(WriteAndReadInteWithIndexTest, TestRootTopKUsesQueryMetricAndRejectsMisma
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
                              TableRead::Create(std::move(context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(split));
         if (test_case.first_metric != test_case.query_metric ||
             test_case.second_metric != test_case.query_metric) {
-            ASSERT_NOK_WITH_MSG(read->CreateReader(split),
+            ASSERT_NOK_WITH_MSG(reader->NextBatch(),
                                 "distance type for index and search not match");
+            reader->Close();
             continue;
         }
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(split));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                              ReadResultCollector::CollectResult(std::move(reader)));
         ASSERT_TRUE(result);

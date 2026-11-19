@@ -194,7 +194,8 @@ Result<std::unique_ptr<PreciseFileIndexRead>> PreciseFileIndexRead::Create(
     }
     return std::unique_ptr<PreciseFileIndexRead>(new PreciseFileIndexRead(
         split_read, partition, file, read_schema, predicate, field_mapping_builder, path_factory,
-        extra_format_options, std::move(indexes), mapped_leaves, vector_search, full_text_search, root_search_field_name));
+        extra_format_options, std::move(indexes), mapped_leaves, vector_search, full_text_search,
+        root_search_field_name));
 }
 
 PreciseFileIndexRead::PreciseFileIndexRead(
@@ -328,9 +329,9 @@ Result<RoaringBitmap32> PreciseFileIndexRead::ScanScalar(
 }
 
 Status PreciseFileIndexRead::ApplyRootSearch(Evaluation* evaluated) const {
-    return Evaluator::ApplyRootSearch<FileIndexReader>(
-        vector_search_, full_text_search_, root_search_field_name_.value_or(""), indexes_.get(),
-        evaluated);
+    return Evaluator::ApplyRootSearch<FileIndexReader>(vector_search_, full_text_search_,
+                                                       root_search_field_name_.value_or(""),
+                                                       indexes_.get(), evaluated);
 }
 
 Result<std::unique_ptr<FileBatchReader>> PreciseFileIndexRead::CreateReader(
@@ -351,16 +352,17 @@ Result<std::unique_ptr<FileBatchReader>> PreciseFileIndexRead::CreateReader(
         return std::unique_ptr<FileBatchReader>();
     }
     std::map<std::string, std::vector<float>> output_scores;
-    PAIMON_ASSIGN_OR_RAISE(
-        output_scores,
-        Evaluator::CreateOutputScores(evaluated, split_read_.context_->GetIndexScoreBindings(),
-                                      split_read_.context_->GetReadSchema(), root_search_field_name_));
+    PAIMON_ASSIGN_OR_RAISE(output_scores,
+                           Evaluator::CreateOutputScores(
+                               evaluated, split_read_.context_->GetIndexScoreBindings(),
+                               split_read_.context_->GetReadSchema(), root_search_field_name_));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> reader,
                            CreateSelectedFileReader(evaluated.rows, field_mapping_builder_));
     if (!output_scores.empty()) {
         std::optional<std::string> root_score_field_name;
         if (root_search_field_name_) {
-            root_score_field_name = SpecialFields::IndexScoreFieldName(root_search_field_name_.value());
+            root_score_field_name =
+                SpecialFields::IndexScoreFieldName(root_search_field_name_.value());
         }
         reader = std::make_unique<CompleteIndexScoreFileBatchReader>(
             std::move(reader), output_scores, root_score_field_name,

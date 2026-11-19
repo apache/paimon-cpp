@@ -51,9 +51,7 @@
 #include "paimon/core/table/source/topk_batch_reader.h"
 #include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
-#include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/predicate_utils.h"
-#include "paimon/predicate/vector_search.h"
 #include "paimon/status.h"
 
 namespace paimon {
@@ -211,15 +209,7 @@ void KeyValueTableRead::ForceKeepDelete(bool force_keep_delete) {
 
 Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateReader(
     const std::shared_ptr<Split>& split) {
-    if (context_->HasVectorOrFullTextSearch()) {
-        return CreateReader(std::vector<std::shared_ptr<Split>>{split});
-    }
-    std::shared_ptr<RealtimeSplit> realtime_split = std::dynamic_pointer_cast<RealtimeSplit>(split);
-    if (realtime_split) {
-        return CreateRealtimeReader(realtime_split);
-    }
-
-    return CreateDiskReader(split);
+    return CreateReader(std::vector<std::shared_ptr<Split>>{split});
 }
 
 Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateDiskReader(
@@ -281,43 +271,17 @@ Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateReader(
         std::shared_ptr<KeyValueTableRead> owned_read,
         Create(path_factory_, context_, force_keep_delete_, memory_pool_, executor_));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
-        TableReadUtils::CreateLazyReader(
-        splits, [owned_read](const std::shared_ptr<Split>& split) {
-            return owned_read->CreateDiskReader(split);
-        },
-        [owned_read](const std::shared_ptr<RealtimeSplit>& split,
-                     const RealtimePartitionBucketView& view) {
-            return owned_read->CreateRealtimeReader(split, view);
-        },
-        *context_));
-    if (!context_->HasVectorOrFullTextSearch()) {
-        return reader;
-    }
-    const auto& vector_search = context_->GetVectorSearch();
-    const auto& full_text_search = context_->GetFullTextSearch();
-    const std::string score_name = SpecialFields::IndexScoreFieldName(
-        vector_search ? vector_search->field_name : full_text_search->field_name);
-    const int32_t limit = vector_search ? vector_search->limit : full_text_search->limit;
-    const TopKBatchReader::ScoreOrder score_order =
-        vector_search && *vector_search->distance_type != VectorSearch::DistanceType::INNER_PRODUCT
-            ? TopKBatchReader::ScoreOrder::ASCENDING
-            : TopKBatchReader::ScoreOrder::DESCENDING;
-    return std::make_unique<TopKBatchReader>(std::move(reader), score_name, score_order, limit,
-                                             context_->GetCoreOptions().GetReadBatchSize(),
-                                             context_->GetReadSchema(),
-                                             context_->GetArrowMemoryPool());
-}
-
-Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateRealtimeReader(
-    const std::shared_ptr<RealtimeSplit>& realtime_split) {
-    PAIMON_ASSIGN_OR_RAISE(RealtimePartitionBucketView memory,
-                           TableReadUtils::ResolveRealtimeReadView(*realtime_split, *context_));
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
-                           CreateRealtimeReader(realtime_split, memory));
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
-                           RealtimeContextImpl::Cast(context_->GetRealtimeContext()));
-    PAIMON_RETURN_NOT_OK(realtime_context_impl->ReleaseReadView(realtime_split->OpaqueTicket()));
-    return reader;
+                           TableReadUtils::CreateLazyReader(
+                               splits,
+                               [owned_read](const std::shared_ptr<Split>& split) {
+                                   return owned_read->CreateDiskReader(split);
+                               },
+                               [owned_read](const std::shared_ptr<RealtimeSplit>& split,
+                                            const RealtimePartitionBucketView& view) {
+                                   return owned_read->CreateRealtimeReader(split, view);
+                               },
+                               *context_));
+    return TopKBatchReader::ApplyTopkReaderIfNeeded(std::move(reader), *context_);
 }
 
 Result<std::unique_ptr<BatchReader>> KeyValueTableRead::CreateRealtimeReader(

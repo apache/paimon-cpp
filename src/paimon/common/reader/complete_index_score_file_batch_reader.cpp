@@ -34,16 +34,6 @@
 
 namespace paimon {
 CompleteIndexScoreFileBatchReader::CompleteIndexScoreFileBatchReader(
-    std::unique_ptr<FileBatchReader>&& reader, const std::vector<float>& scores,
-    const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
-    : CompleteIndexScoreFileBatchReader(
-          std::move(reader), std::map<std::string, std::vector<float>>{}, std::nullopt, arrow_pool) {
-    if (!scores.empty()) {
-        scores_.emplace(SpecialFields::IndexScore().Name(), scores);
-    }
-}
-
-CompleteIndexScoreFileBatchReader::CompleteIndexScoreFileBatchReader(
     std::unique_ptr<FileBatchReader>&& reader,
     const std::map<std::string, std::vector<float>>& scores,
     const std::optional<std::string>& root_score_field_name,
@@ -104,8 +94,7 @@ Result<BatchReader::ReadBatchWithBitmap> CompleteIndexScoreFileBatchReader::Next
     PAIMON_ASSIGN_OR_RAISE(
         BatchReader::ReadBatchWithBitmap completed,
         IndexScoreBatchUtils::CompleteScores(
-            std::move(batch_with_bitmap), data, output_schema,
-            scores_,
+            std::move(batch_with_bitmap), data, output_schema, scores_,
             [this](const std::string&, const std::vector<float>& scores, int64_t,
                    size_t selected) -> Result<float> { return scores[score_cursor_ + selected]; },
             arrow_pool_));

@@ -192,9 +192,9 @@ class RealtimeSourceRead {
                 SpecialFields::IndexScoreFieldName(root_search_field_name.value());
             if (output_schema->GetAllFieldIndices(score_name).empty()) {
                 PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-                    output_schema, output_schema->AddField(
-                                       output_schema->num_fields(),
-                                       arrow::field(score_name, arrow::float32())));
+                    output_schema,
+                    output_schema->AddField(output_schema->num_fields(),
+                                            arrow::field(score_name, arrow::float32())));
             }
         }
         using AlignedScores = std::map<std::string, std::vector<float>>;
@@ -223,8 +223,7 @@ class RealtimeSourceRead {
                                ReadLogical(arrow::schema(fields), /*predicate=*/nullptr,
                                            std::make_shared<RoaringBitmap64>(evaluated.rows)));
         return std::unique_ptr<BatchReader>(std::make_unique<RealtimeScoreBatchReader>(
-            std::move(reader), output_schema, std::move(scores),
-            context_->GetArrowMemoryPool()));
+            std::move(reader), output_schema, std::move(scores), context_->GetArrowMemoryPool()));
     }
 
     Result<std::vector<std::shared_ptr<RealtimeIndexReader>>> GetReaders(

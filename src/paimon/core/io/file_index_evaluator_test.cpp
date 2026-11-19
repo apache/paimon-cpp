@@ -80,10 +80,15 @@ class CandidateIndexReader : public FileIndexReader {
     explicit CandidateIndexReader(std::shared_ptr<CandidateIndexState> state)
         : state_(std::move(state)) {}
 
-    Result<std::shared_ptr<FileIndexResult>> Evaluate(const std::shared_ptr<LeafPredicate>&,
-                                                      const RoaringBitmap32* candidates) override {
+    Result<std::shared_ptr<FileIndexResult>> Evaluate(
+        const std::shared_ptr<LeafPredicate>& predicate,
+        const RoaringBitmap32* candidates) override {
         state_->candidates.push_back(candidates ? std::optional<RoaringBitmap32>(*candidates)
                                                 : std::nullopt);
+        return FileIndexReader::Evaluate(predicate, candidates);
+    }
+
+    Result<std::shared_ptr<FileIndexResult>> VisitEqual(const Literal&) override {
         return state_->result;
     }
 
@@ -213,28 +218,32 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                                            FieldType::INT, Literal(10));
             ASSERT_OK_AND_ASSIGN(auto file_index_result, evaluator->Evaluate(predicate));
             ASSERT_TRUE(file_index_result->IsRemain().value());
-            ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
+            ASSERT_EQ(file_index_result, FileIndexResult::Remain());
+            ASSERT_FALSE(file_index_result->IsExact());
         }
         {
             auto predicate = PredicateBuilder::GreaterOrEqual(
                 /*field_index=*/1, /*field_name=*/"f1", FieldType::INT, Literal(10));
             ASSERT_OK_AND_ASSIGN(auto file_index_result, evaluator->Evaluate(predicate));
             ASSERT_TRUE(file_index_result->IsRemain().value());
-            ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
+            ASSERT_EQ(file_index_result, FileIndexResult::Remain());
+            ASSERT_FALSE(file_index_result->IsExact());
         }
         {
             auto predicate = PredicateBuilder::LessThan(/*field_index=*/1, /*field_name=*/"f1",
                                                         FieldType::INT, Literal(10));
             ASSERT_OK_AND_ASSIGN(auto file_index_result, evaluator->Evaluate(predicate));
             ASSERT_TRUE(file_index_result->IsRemain().value());
-            ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
+            ASSERT_EQ(file_index_result, FileIndexResult::Remain());
+            ASSERT_FALSE(file_index_result->IsExact());
         }
         {
             auto predicate = PredicateBuilder::LessOrEqual(/*field_index=*/1, /*field_name=*/"f1",
                                                            FieldType::INT, Literal(10));
             ASSERT_OK_AND_ASSIGN(auto file_index_result, evaluator->Evaluate(predicate));
             ASSERT_TRUE(file_index_result->IsRemain().value());
-            ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
+            ASSERT_EQ(file_index_result, FileIndexResult::Remain());
+            ASSERT_FALSE(file_index_result->IsExact());
         }
         {
             auto predicate = PredicateBuilder::In(
@@ -313,7 +322,8 @@ class FileIndexEvaluatorTest : public ::testing::Test {
                                                      FieldType::DOUBLE, Literal(14.1));
             ASSERT_OK_AND_ASSIGN(auto file_index_result, evaluator->Evaluate(predicate));
             ASSERT_TRUE(file_index_result->IsRemain().value());
-            ASSERT_FALSE(dynamic_cast<BitmapIndexResult*>(file_index_result.get()));
+            ASSERT_EQ(file_index_result, FileIndexResult::Remain());
+            ASSERT_FALSE(file_index_result->IsExact());
         }
     }
 
@@ -446,7 +456,7 @@ TEST_F(FileIndexEvaluatorTest, TestTimestampType) {
         FileIndexEvaluator::Create(data_schema, core_options_.ToMap(), data_file_path_factory,
                                    data_file_meta, /*file_system=*/fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(auto file_index_result, evaluator->Evaluate(predicate));
-    // Timestamp comparisons are inexact, so the predicate must be checked against the data.
+    // Timestamp comparisons are inexact, so defer to data filtering.
     ASSERT_EQ(file_index_result, FileIndexResult::Remain());
     ASSERT_FALSE(file_index_result->IsExact());
 }
@@ -951,7 +961,7 @@ TEST_P(FileIndexSearchEvaluatorTest, TestScalarIndexesUseFirstExactResult) {
     ASSERT_TRUE(result->IsExact());
     ASSERT_EQ(second->candidates.back(), candidates);
 
-    // Without any exact result, return Remain so the caller rechecks the original scope.
+    // Without any exact result, return Remain and require rechecking the input scope.
     second->result = make_bitmap_result(RoaringBitmap32::From({2, 3}), /*is_exact=*/false);
     for (bool remain : {false, true}) {
         if (remain) {
@@ -970,6 +980,7 @@ TEST_P(FileIndexSearchEvaluatorTest, TestScalarIndexesUseFirstExactResult) {
     second->result = FileIndexResult::Remain();
     ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, &candidates));
     ASSERT_EQ(result, FileIndexResult::Remain());
+    ASSERT_FALSE(result->IsExact());
 
     RoaringBitmap32 empty_candidates;
     const size_t first_executions = first->candidates.size();
@@ -1054,6 +1065,7 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionPrecheckAndMissingScalarIndex) {
     ASSERT_TRUE(scalar);
     ASSERT_OK_AND_ASSIGN(auto result, evaluator->EvaluateLeaf(scalar, false, nullptr));
     ASSERT_EQ(result, FileIndexResult::Remain());
+    ASSERT_FALSE(result->IsExact());
     ASSERT_OK_AND_ASSIGN(auto estimate, evaluator->EstimateSelectivity(scalar));
     ASSERT_FALSE(estimate.has_value());
 
@@ -1067,6 +1079,7 @@ TEST_P(FileIndexSearchEvaluatorTest, TestSessionPrecheckAndMissingScalarIndex) {
         "has no File Index");
     ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(scalar, false, nullptr));
     ASSERT_EQ(result, FileIndexResult::Remain());
+    ASSERT_FALSE(result->IsExact());
 }
 
 TEST_P(FileIndexSearchEvaluatorTest, TestEmptyScalarIndexDoesNotProvideSearchCapability) {

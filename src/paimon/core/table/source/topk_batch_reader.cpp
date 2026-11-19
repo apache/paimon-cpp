@@ -28,13 +28,36 @@
 #include "arrow/api.h"
 #include "arrow/array/concatenate.h"
 #include "arrow/c/bridge.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/fields_comparator.h"
+#include "paimon/core/operation/internal_read_context.h"
+#include "paimon/predicate/full_text_search.h"
+#include "paimon/predicate/vector_search.h"
 
 namespace paimon {
+
+std::unique_ptr<BatchReader> TopKBatchReader::ApplyTopkReaderIfNeeded(
+    std::unique_ptr<BatchReader> reader, const InternalReadContext& context) {
+    if (!context.HasVectorOrFullTextSearch()) {
+        return reader;
+    }
+    const auto& vector_search = context.GetVectorSearch();
+    const auto& full_text_search = context.GetFullTextSearch();
+    std::string score_name = SpecialFields::IndexScoreFieldName(
+        vector_search ? vector_search->field_name : full_text_search->field_name);
+    int32_t limit = vector_search ? vector_search->limit : full_text_search->limit;
+    ScoreOrder score_order =
+        vector_search && *vector_search->distance_type != VectorSearch::DistanceType::INNER_PRODUCT
+            ? ScoreOrder::ASCENDING
+            : ScoreOrder::DESCENDING;
+    return std::make_unique<TopKBatchReader>(std::move(reader), score_name, score_order, limit,
+                                             context.GetCoreOptions().GetReadBatchSize(),
+                                             context.GetReadSchema(), context.GetArrowMemoryPool());
+}
 
 TopKBatchReader::TopKBatchReader(std::unique_ptr<BatchReader> reader,
                                  const std::string& score_field_name, ScoreOrder score_order,
@@ -100,11 +123,12 @@ Status TopKBatchReader::ReadTopK() {
         return ascending ? comparison < 0 : comparison > 0;
     };
     while (true) {
-        // NextBatch applies all row-selection bitmaps, including deletion vectors.
-        PAIMON_ASSIGN_OR_RAISE(ReadBatch batch, reader_->NextBatch());
-        if (IsEofBatch(batch)) {
+        PAIMON_ASSIGN_OR_RAISE(ReadBatchWithBitmap batch_with_bitmap,
+                               reader_->NextBatchWithBitmap());
+        if (IsEofBatch(batch_with_bitmap)) {
             break;
         }
+        auto& [batch, bitmap] = batch_with_bitmap;
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
             std::shared_ptr<arrow::Array> array,
             arrow::ImportArray(batch.first.get(), batch.second.get()));
@@ -118,24 +142,51 @@ Status TopKBatchReader::ReadTopK() {
         PAIMON_ASSIGN_OR_RAISE(values, ArrowUtils::FlattenUnresolvableDictionaries(
                                            values, read_type_, pool_.get(),
                                            /*preserve_layout_recoverable_dictionaries=*/false));
+        // Disk and real-time readers may report different field nullability. Use the query's
+        // declarations before concatenating candidates; this only copies array metadata.
+        auto logical_type = checked_pointer_cast<arrow::StructType>(read_type_);
+        arrow::FieldVector fields = values->struct_type()->fields();
+        bool changed_nullability = false;
+        for (auto& field : fields) {
+            auto logical_field = logical_type->GetFieldByName(field->name());
+            if (logical_field && field->nullable() != logical_field->nullable()) {
+                field = field->WithNullable(logical_field->nullable());
+                changed_nullability = true;
+            }
+        }
+        if (changed_nullability) {
+            auto data = values->data()->Copy();
+            data->type = arrow::struct_(fields);
+            values = checked_pointer_cast<arrow::StructArray>(arrow::MakeArray(data));
+        }
         auto scores =
             std::dynamic_pointer_cast<arrow::FloatArray>(values->GetFieldByName(score_name_));
-        if (!scores || scores->null_count() != 0) {
+        if (!scores) {
             return Status::Invalid("TopK reader requires non-null float search scores");
         }
-        for (int64_t row = 0; row < values->length(); ++row) {
+        bool candidates_changed = false;
+        // Filtered rows may have null scores. Only valid rows participate in TopK.
+        for (auto iter = bitmap.Begin(); iter != bitmap.End(); ++iter) {
+            int64_t row = *iter;
+            if (scores->IsNull(row)) {
+                return Status::Invalid("TopK reader requires non-null float search scores");
+            }
             const float score = scores->Value(row);
             Candidate candidate{score, ordinal++, values, row};
             if (candidates.size() < static_cast<size_t>(limit_)) {
                 candidates.push_back(std::move(candidate));
                 std::push_heap(candidates.begin(), candidates.end(), better);
+                candidates_changed = true;
             } else if (better(candidate, candidates.front())) {
                 std::pop_heap(candidates.begin(), candidates.end(), better);
                 candidates.back() = std::move(candidate);
                 std::push_heap(candidates.begin(), candidates.end(), better);
+                candidates_changed = true;
             }
         }
-        PAIMON_RETURN_NOT_OK(CompactCandidates(&candidates));
+        if (candidates_changed) {
+            PAIMON_RETURN_NOT_OK(CompactCandidates(&candidates));
+        }
     }
     if (candidates.empty()) {
         return Status::OK();

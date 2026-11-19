@@ -217,22 +217,7 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateLeaf(
         if (!child->IsExact()) {
             continue;
         }
-        if (std::dynamic_pointer_cast<Skip>(child)) {
-            return child;
-        }
-        auto bitmap = std::dynamic_pointer_cast<BitmapIndexResult>(child);
-        assert(bitmap);
-        if (!candidates) {
-            return child;
-        }
-        return std::make_shared<BitmapIndexResult>(
-            [bitmap, rows = *candidates]() -> Result<RoaringBitmap32> {
-                PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap32* matches, bitmap->GetBitmap());
-                RoaringBitmap32 result(rows);
-                result &= *matches;
-                return result;
-            },
-            /*is_exact=*/true);
+        return child;
     }
     return FileIndexResult::Remain();
 }

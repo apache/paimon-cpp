@@ -329,7 +329,7 @@ class PreciseIndexEvaluator {
             return Status::Invalid("Root search returned a null result");
         }
         evaluated->rows &= scored->GetRowPositions();
-        evaluated->scores.insert_or_assign(score_field, std::move(scored));
+        evaluated->scores.emplace(score_field, std::move(scored));
         return Status::OK();
     }
 

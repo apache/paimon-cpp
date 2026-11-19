@@ -67,7 +67,9 @@ TEST_F(CompleteIndexScoreFileBatchReaderTest, TestFileReaderForwardsOperationsAn
     auto inner_reader = std::make_unique<MockFileBatchReader>(data, data->type(), /*batch_size=*/1);
     MockFileBatchReader* inner = inner_reader.get();
     auto reader = std::make_unique<CompleteIndexScoreFileBatchReader>(
-        std::move(inner_reader), std::vector<float>{1.25f, 2.5f}, GetArrowPool(GetDefaultPool()));
+        std::move(inner_reader),
+        std::map<std::string, std::vector<float>>{{"_INDEX_SCORE", {1.25f, 2.5f}}}, std::nullopt,
+        GetArrowPool(GetDefaultPool()));
 
     ASSERT_OK_AND_ASSIGN(uint64_t row_count, reader->GetNumberOfRows());
     EXPECT_EQ(2, row_count);
@@ -113,8 +115,10 @@ TEST_F(CompleteIndexScoreFileBatchReaderTest, TestFileScoresFollowSelectedRows) 
     auto inner = std::make_unique<MockFileBatchReader>(data, data->type(), selected,
                                                        /*read_batch_size=*/3);
     inner->EnableRandomizeBatchSize(false);
-    CompleteIndexScoreFileBatchReader reader(std::move(inner), std::vector<float>{1.25f, 2.5f},
-                                             GetArrowPool(pool_));
+    CompleteIndexScoreFileBatchReader reader(
+        std::move(inner),
+        std::map<std::string, std::vector<float>>{{"_INDEX_SCORE", {1.25f, 2.5f}}}, std::nullopt,
+        GetArrowPool(pool_));
 
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap batch, reader.NextBatchWithBitmap());
     EXPECT_EQ(selected, batch.second);
@@ -147,8 +151,10 @@ TEST_F(CompleteIndexScoreFileBatchReaderTest, TestScoresFollowSparseSelectionsAc
                                                        /*read_batch_size=*/3);
     inner->EnableRandomizeBatchSize(false);
     CompleteIndexScoreFileBatchReader reader(
-        std::move(inner), std::vector<float>{1.25f, 2.5f, 3.75f, 5.0f, 6.25f, 7.5f},
-        GetArrowPool(pool_));
+        std::move(inner),
+        std::map<std::string, std::vector<float>>{
+            {"_INDEX_SCORE", {1.25f, 2.5f, 3.75f, 5.0f, 6.25f, 7.5f}}},
+        std::nullopt, GetArrowPool(pool_));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
                          ReadResultCollector::CollectResult(&reader));
@@ -170,8 +176,10 @@ TEST_F(CompleteIndexScoreFileBatchReaderTest, TestSetReadSchemaReordersScoreColu
         arrow::ipc::internal::json::ArrayFromJSON(type, R"([[10, null], [11, null]])").ValueOrDie();
     auto inner = std::make_unique<MockFileBatchReader>(data, type, /*read_batch_size=*/1);
     inner->EnableRandomizeBatchSize(false);
-    CompleteIndexScoreFileBatchReader reader(std::move(inner), std::vector<float>{1.25f, 2.5f},
-                                             GetArrowPool(pool_));
+    CompleteIndexScoreFileBatchReader reader(
+        std::move(inner),
+        std::map<std::string, std::vector<float>>{{"_INDEX_SCORE", {1.25f, 2.5f}}}, std::nullopt,
+        GetArrowPool(pool_));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result_array,
                          ReadResultCollector::CollectResult(&reader));
@@ -383,13 +391,14 @@ TEST_F(CompleteIndexScoreFileBatchReaderTest, TestRejectsInvalidScoreFields) {
                 "Index score field 'score' must have float32 type");
 }
 
-TEST_F(CompleteIndexScoreFileBatchReaderTest, TestLegacyEmptyScoresPassThrough) {
+TEST_F(CompleteIndexScoreFileBatchReaderTest, TestEmptyScoreMapPassThrough) {
     auto type = arrow::struct_({arrow::field("f0", arrow::int32())});
     auto data = arrow::ipc::internal::json::ArrayFromJSON(type, "[[10], [11]]").ValueOrDie();
     auto inner = std::make_unique<MockFileBatchReader>(data, type, /*read_batch_size=*/2);
     inner->EnableRandomizeBatchSize(false);
-    CompleteIndexScoreFileBatchReader reader(std::move(inner), std::vector<float>{},
-                                             GetArrowPool(pool_));
+    CompleteIndexScoreFileBatchReader reader(std::move(inner),
+                                             std::map<std::string, std::vector<float>>{},
+                                             std::nullopt, GetArrowPool(pool_));
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader.NextBatch());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> result,
                          ReadResultCollector::GetArray(std::move(batch)));
