@@ -161,6 +161,16 @@ Result<std::shared_ptr<DataFileMeta>> WriteFileIndexes(
             extras.push_back(extra);
         }
     }
+    std::string index_path = source_path
+                                 ? DataFilePathFactory::CreateNewFileIndexFilePath(*source_path)
+                                 : paths->ToFileIndexPath(paths->ToPath(file));
+    PAIMON_ASSIGN_OR_RAISE(bool use_existing, fs->Exists(index_path));
+    extras.emplace_back(PathUtil::GetName(index_path));
+    auto indexed_file = file->CopyWithExtraFiles(extras);
+    indexed_file->embedded_index.reset();
+    if (use_existing) {
+        return indexed_file;
+    }
     std::shared_ptr<InputStream> source;
     ScopeGuard close_source([&source]() {
         if (source) {
@@ -181,12 +191,10 @@ Result<std::shared_ptr<DataFileMeta>> WriteFileIndexes(
                 CopyPayload(index.input, 0, length, pool);
         }
     }
-    std::string index_path = source_path
-                                 ? DataFilePathFactory::CreateNewFileIndexFilePath(*source_path)
-                                 : paths->ToFileIndexPath(paths->ToPath(file));
+    PAIMON_ASSIGN_OR_RAISE(std::string temporary_path, PathUtil::CreateTempPath(index_path));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> output,
-                           fs->Create(index_path, /*overwrite=*/false));
-    generated->push_back(index_path);
+                           fs->Create(temporary_path, /*overwrite=*/false));
+    generated->push_back(temporary_path);
     ScopeGuard close_output([&output]() { [[maybe_unused]] Status ignored = output->Close(); });
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileIndexFormat::Writer> writer,
                            FileIndexFormat::CreateWriter(output, format_version, pool));
@@ -198,9 +206,24 @@ Result<std::shared_ptr<DataFileMeta>> WriteFileIndexes(
     PAIMON_RETURN_NOT_OK(writer->Finish());
     PAIMON_RETURN_NOT_OK(writer->Close());
     close_output.Release();
-    extras.emplace_back(PathUtil::GetName(index_path));
-    auto indexed_file = file->CopyWithExtraFiles(extras);
-    indexed_file->embedded_index.reset();
+    PAIMON_ASSIGN_OR_RAISE(use_existing, fs->Exists(index_path));
+    if (!use_existing) {
+        Status renamed = fs->Rename(temporary_path, index_path);
+        if (!renamed.ok()) {
+            auto destination_exists = fs->Exists(index_path);
+            if (!renamed.IsExist() && !(destination_exists.ok() && destination_exists.value())) {
+                return renamed;
+            }
+            use_existing = true;
+        } else {
+            generated->back() = index_path;
+        }
+    }
+    if (use_existing) {
+        // Reuse the existing target without claiming it for failure cleanup.
+        [[maybe_unused]] Status ignored = fs->Delete(temporary_path, /*recursive=*/false);
+        generated->pop_back();
+    }
     return indexed_file;
 }
 

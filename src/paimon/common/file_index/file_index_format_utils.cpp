@@ -38,14 +38,13 @@ Result<FileIndexFormatUtils::FileIndexEntries> FileIndexFormatUtils::ReadIndexEn
         return Status::Invalid("This file is not file index file.");
     }
     PAIMON_ASSIGN_OR_RAISE(int32_t version, in.ReadValue<int32_t>());
+    if (version != FileIndexFormat::V_1 && version != FileIndexFormat::V_2) {
+        return Status::Invalid(fmt::format("Unsupported file index version {}", version));
+    }
     PAIMON_ASSIGN_OR_RAISE(int64_t file_length, input->Length());
-    if (version == FileIndexFormat::V_1) {
-        return FileIndexFormatV1::ReadIndexEntries(input, pool, file_length);
-    }
-    if (version == FileIndexFormat::V_2) {
-        return FileIndexFormatV2::ReadIndexEntries(input, pool, file_length);
-    }
-    return Status::Invalid(fmt::format("Unsupported file index version {}", version));
+    return version == FileIndexFormat::V_1
+               ? FileIndexFormatV1::ReadIndexEntries(input, pool, file_length)
+               : FileIndexFormatV2::ReadIndexEntries(input, pool, file_length);
 }
 
 Result<std::shared_ptr<InputStream>> FileIndexFormatUtils::CreateMetadataInputStream(

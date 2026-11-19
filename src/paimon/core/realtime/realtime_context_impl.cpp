@@ -47,6 +47,7 @@
 #include "paimon/core/core_options.h"
 #include "paimon/core/realtime/arrow_deduplicate_realtime_store.h"
 #include "paimon/core/realtime/realtime_deduplicate_state.h"
+#include "paimon/core/realtime/realtime_schema_layout.h"
 #include "paimon/macros.h"
 #include "paimon/realtime/realtime_store.h"
 #include "paimon/status.h"
@@ -66,6 +67,20 @@ std::string PartitionToString(const std::map<std::string, std::string>& partitio
 }
 
 }  // namespace
+
+Status RealtimePartitionBucketView::ValidateTableSchema(
+    const std::shared_ptr<arrow::Schema>& table_schema) const {
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RealtimeSchemaLayout> layout,
+                           RealtimeSchemaLayout::Create(mode, table_schema));
+    if (!write_schema ||
+        !write_schema->Equals(*layout->StoreWriteSchema(), /*check_metadata=*/true)) {
+        return Status::Invalid(
+            fmt::format("real-time store schema mismatch for partition {}, bucket {}; recreate the "
+                        "RealtimeContext",
+                        PartitionToString(partition_bucket.partition), partition_bucket.bucket));
+    }
+    return Status::OK();
+}
 
 struct RealtimeContextImpl::RefreshNotification {
     std::shared_ptr<RealtimeStore> store;
@@ -317,9 +332,9 @@ Result<RealtimeReadState> RealtimeContextImpl::AcquireReadState() {
         if (!read_view) {
             return Status::Invalid("real-time store returned a null read view");
         }
-        result.views.push_back(RealtimePartitionBucketView{partition_bucket, store.store,
-                                                           std::move(read_view), store.mode,
-                                                           std::move(offset_deletions)});
+        result.views.push_back(RealtimePartitionBucketView{
+            partition_bucket, store.store, std::move(read_view), store.mode,
+            std::move(offset_deletions), store.write_schema});
     }
     return result;
 }

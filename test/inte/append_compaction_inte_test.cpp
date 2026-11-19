@@ -16,6 +16,7 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <string>
@@ -205,6 +206,172 @@ std::vector<std::string> GetTestValuesForAppendCompactionInteTest() {
 
 INSTANTIATE_TEST_SUITE_P(FileFormat, AppendCompactionInteTest,
                          ::testing::ValuesIn(GetTestValuesForAppendCompactionInteTest()));
+
+TEST_P(AppendCompactionInteTest, TestCompactFilesWithGap) {
+    for (bool with_dv : {false, true}) {
+        SCOPED_TRACE(with_dv);
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        auto schema = arrow::schema(
+            {arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
+             arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())});
+        std::map<std::string, std::string> options = {
+            {Options::FILE_FORMAT, GetParam()},
+            {Options::BUCKET, "2"},
+            {Options::BUCKET_KEY, "f2"},
+            {Options::BUCKET_APPEND_ORDERED, "false"},
+            {Options::COMPACTION_MIN_FILE_NUM, "100"},
+            {Options::DELETION_VECTORS_ENABLED, with_dv ? "true" : "false"}};
+        ASSERT_OK_AND_ASSIGN(auto helper, TestHelper::Create(dir->Str(), schema, {"f1"}, {},
+                                                             options, /*is_streaming_mode=*/true));
+        ASSERT_OK_AND_ASSIGN(auto table_schema, helper->LatestSchema());
+        ASSERT_TRUE(table_schema);
+        auto gen = std::make_shared<DataGenerator>(*table_schema, pool_);
+        int64_t identifier = 0;
+        PrepareSimpleAppendData(gen, with_dv, helper.get(), &identifier);
+        ASSERT_OK(helper->write_->Close());
+        ASSERT_OK_AND_ASSIGN(auto compactor,
+                             TestHelper::Create(helper->table_path_, options, true));
+        auto* write = dynamic_cast<AppendOnlyFileStoreWrite*>(compactor->write_.get());
+        ASSERT_NE(nullptr, write);
+        auto partition = BinaryRowGenerator::GenerateRow({10}, pool_.get());
+        ASSERT_OK_AND_ASSIGN(auto restored, write->ScanExistingFileMetas(partition, 1));
+        auto files = restored->DataFiles();
+        std::sort(files.begin(), files.end(), BucketedAppendCompactManager::FileComparator(true));
+        ASSERT_EQ(3, files.size());
+        // Reverse the inputs and leave the middle file untouched. Neither order nor adjacency
+        // of the supplied names determines eligibility.
+        ASSERT_OK(compactor->write_->CompactFiles({{"f1", "10"}}, 1,
+                                                  {files[2]->file_name, files[0]->file_name}));
+        ASSERT_OK_AND_ASSIGN(auto messages, compactor->write_->PrepareCommit(true, identifier));
+        ASSERT_EQ(1, messages.size());
+        auto message = messages[0];
+        auto impl = std::dynamic_pointer_cast<CommitMessageImpl>(message);
+        ASSERT_TRUE(impl);
+        ASSERT_TRUE(impl->GetNewFilesIncrement().IsEmpty());
+        const auto& increment = impl->GetCompactIncrement();
+        ASSERT_EQ(2, increment.CompactBefore().size());
+        ASSERT_EQ(files[0]->file_name, increment.CompactBefore()[0]->file_name);
+        ASSERT_EQ(files[2]->file_name, increment.CompactBefore()[1]->file_name);
+        ASSERT_EQ(1, increment.CompactAfter().size());
+        ASSERT_EQ(with_dv ? 2 : 4, increment.CompactAfter()[0]->row_count);
+        ASSERT_EQ(with_dv ? 1 : 0, increment.NewIndexFiles().size());
+        ASSERT_OK_AND_ASSIGN(auto pending, compactor->write_->PrepareCommit(true, identifier));
+        for (const auto& pending_message : pending) {
+            auto pending_impl = std::dynamic_pointer_cast<CommitMessageImpl>(pending_message);
+            ASSERT_TRUE(pending_impl);
+            ASSERT_TRUE(pending_impl->IsEmpty());
+        }
+        // Closing the executor must leave the returned files available for publication.
+        ASSERT_OK(compactor->write_->Close());
+        ASSERT_OK_AND_ASSIGN(std::string bytes, CommitMessage::Serialize(message, pool_));
+        ASSERT_OK_AND_ASSIGN(
+            message, CommitMessage::Deserialize(CommitMessage::CurrentVersion(), bytes.data(),
+                                                bytes.size(), pool_));
+        ASSERT_OK(compactor->commit_->Commit({message}, identifier++));
+        ASSERT_OK_AND_ASSIGN(auto active, write->ScanExistingFileMetas(partition, 1));
+        ASSERT_EQ(2, active->DataFiles().size());
+        if (with_dv) {
+            ASSERT_OK_AND_ASSIGN(auto dvs, write->dv_maintainer_factory_->Create(
+                                               partition, 1, active->DeleteVectorsIndex()));
+            ASSERT_TRUE(dvs->DeletionVectorOf(files[1]->file_name));
+            ASSERT_FALSE(dvs->DeletionVectorOf(files[0]->file_name));
+            ASSERT_FALSE(dvs->DeletionVectorOf(files[2]->file_name));
+        }
+        ASSERT_OK_AND_ASSIGN(auto splits, helper->NewScan(StartupMode::LatestFull(), std::nullopt));
+        auto fields = schema->fields();
+        fields.insert(fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+        const std::string expected = with_dv ? R"([
+            [0, "Emily", 10, 0, 13.1], [0, "Tony", 10, 0, 14.1],
+            [0, "Bob", 10, 0, 12.1], [0, "Alex", 10, 0, 16.1]
+        ])"
+                                             : R"([
+            [0, "Bob", 10, 0, 12.1], [0, "Emily", 10, 0, 13.1],
+            [0, "Tony", 10, 0, 14.1], [0, "David", 10, 0, 17.1],
+            [0, "Emily", 10, 0, 15.1], [0, "Bob", 10, 0, 12.1],
+            [0, "Alex", 10, 0, 16.1]
+        ])";
+        bool checked = false;
+        for (const auto& split : splits) {
+            auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+            ASSERT_TRUE(data_split);
+            if (data_split->Partition() == partition && data_split->Bucket() == 1) {
+                ASSERT_OK_AND_ASSIGN(bool equal, helper->ReadAndCheckResult(arrow::struct_(fields),
+                                                                            {split}, expected));
+                ASSERT_TRUE(equal);
+                checked = true;
+            }
+        }
+        ASSERT_TRUE(checked);
+    }
+}
+
+TEST_P(AppendCompactionInteTest, TestCompactFilesSingleFullyDeletedFile) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto schema =
+        arrow::schema({arrow::field("f0", arrow::utf8()), arrow::field("f1", arrow::int32()),
+                       arrow::field("f2", arrow::int32()), arrow::field("f3", arrow::float64())});
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, GetParam()},
+                                                  {Options::BUCKET, "2"},
+                                                  {Options::BUCKET_KEY, "f2"},
+                                                  {Options::BUCKET_APPEND_ORDERED, "false"},
+                                                  {Options::DELETION_VECTORS_ENABLED, "true"}};
+    ASSERT_OK_AND_ASSIGN(auto helper, TestHelper::Create(dir->Str(), schema, {"f1"}, {}, options,
+                                                         /*is_streaming_mode=*/true));
+    ASSERT_OK_AND_ASSIGN(auto table_schema, helper->LatestSchema());
+    ASSERT_TRUE(table_schema);
+    auto gen = std::make_shared<DataGenerator>(*table_schema, pool_);
+    int64_t identifier = 0;
+    PrepareSimpleAppendData(gen, true, helper.get(), &identifier);
+    ASSERT_OK(helper->write_->Close());
+    ASSERT_OK_AND_ASSIGN(auto compactor, TestHelper::Create(helper->table_path_, options, true));
+    auto* write = dynamic_cast<AppendOnlyFileStoreWrite*>(compactor->write_.get());
+    ASSERT_NE(nullptr, write);
+    auto partition = BinaryRowGenerator::GenerateRow({10}, pool_.get());
+    ASSERT_OK_AND_ASSIGN(auto restored, write->ScanExistingFileMetas(partition, 1));
+    auto files = restored->DataFiles();
+    std::sort(files.begin(), files.end(), BucketedAppendCompactManager::FileComparator(true));
+    ASSERT_EQ(3, files.size());
+    ASSERT_EQ(1, files.back()->row_count);
+    ASSERT_OK(write->CompactFiles({{"f1", "10"}}, 1, {files.back()->file_name}));
+    ASSERT_OK_AND_ASSIGN(auto messages, compactor->write_->PrepareCommit(true, identifier));
+    ASSERT_EQ(1, messages.size());
+    auto message = messages[0];
+    auto impl = std::dynamic_pointer_cast<CommitMessageImpl>(message);
+    ASSERT_TRUE(impl);
+    ASSERT_EQ(1, impl->GetCompactIncrement().CompactBefore().size());
+    ASSERT_TRUE(impl->GetCompactIncrement().CompactAfter().empty());
+    ASSERT_OK(compactor->commit_->Commit({message}, identifier++));
+    ASSERT_OK_AND_ASSIGN(auto active, write->ScanExistingFileMetas(partition, 1));
+    ASSERT_EQ(2, active->DataFiles().size());
+    ASSERT_OK_AND_ASSIGN(auto dvs, write->dv_maintainer_factory_->Create(
+                                       partition, 1, active->DeleteVectorsIndex()));
+    ASSERT_TRUE(dvs->DeletionVectorOf(files[0]->file_name));
+    ASSERT_TRUE(dvs->DeletionVectorOf(files[1]->file_name));
+    ASSERT_FALSE(dvs->DeletionVectorOf(files[2]->file_name));
+    ASSERT_OK(compactor->write_->Close());
+
+    ASSERT_OK_AND_ASSIGN(auto splits, helper->NewScan(StartupMode::LatestFull(), std::nullopt));
+    std::vector<std::shared_ptr<Split>> target_splits;
+    for (const auto& split : splits) {
+        auto data_split = std::dynamic_pointer_cast<DataSplitImpl>(split);
+        ASSERT_TRUE(data_split);
+        if (data_split->Partition() == partition && data_split->Bucket() == 1) {
+            target_splits.push_back(split);
+        }
+    }
+    ASSERT_FALSE(target_splits.empty());
+    auto fields = schema->fields();
+    fields.insert(fields.begin(), arrow::field("_VALUE_KIND", arrow::int8()));
+    ASSERT_OK_AND_ASSIGN(bool equal,
+                         helper->ReadAndCheckResult(arrow::struct_(fields), target_splits,
+                                                    R"([
+        [0, "Emily", 10, 0, 13.1], [0, "Tony", 10, 0, 14.1],
+        [0, "Bob", 10, 0, 12.1], [0, "Alex", 10, 0, 16.1]
+    ])"));
+    ASSERT_TRUE(equal);
+}
 
 TEST_P(AppendCompactionInteTest, TestAppendTableStreamWriteFullCompaction) {
     auto dir = UniqueTestDirectory::Create();

@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "fmt/format.h"
+#include "paimon/common/executor/reader_build_executor.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/types/data_field.h"
@@ -179,9 +180,10 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReaderWithPredicate
         }
         return std::unique_ptr<BatchReader>(std::move(readers.front()));
     };
-    PAIMON_ASSIGN_OR_RAISE(
-        std::unique_ptr<ConcatBatchReader> concat_batch_reader,
-        ConcatBatchReader::CreateLazy(data_files.size(), std::move(factory), arrow_pool_));
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ConcatBatchReader> concat_batch_reader,
+                           ConcatBatchReader::CreateLazy(data_files.size(), std::move(factory),
+                                                         options_.GetReadPreparationWindow(),
+                                                         arrow_pool_, GetReaderBuildExecutor()));
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<BatchReader> batch_reader,
         ApplyPredicateFilterIfNeeded(
@@ -237,14 +239,15 @@ Result<bool> RawFileSplitRead::Match(const std::shared_ptr<Split>& split,
 
 Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::CreatePreciseFileIndexReader(
     const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
+    const std::shared_ptr<arrow::Schema>& read_schema, const std::shared_ptr<Predicate>& predicate,
     const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
     const std::optional<std::vector<Range>>& row_ranges,
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::map<std::string, std::string>& extra_format_options) const {
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<PreciseFileIndexRead> precise_read,
-        PreciseFileIndexRead::Create(*this, partition, file, field_mapping_builder, path_factory,
-                                     extra_format_options));
+        PreciseFileIndexRead::Create(*this, partition, file, read_schema, predicate,
+                                     field_mapping_builder, path_factory, extra_format_options));
     return precise_read->CreateReader(dv_factory, row_ranges);
 }
 

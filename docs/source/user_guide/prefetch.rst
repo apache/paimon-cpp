@@ -74,23 +74,60 @@ single-reader path.
 Sequential file preparation
 ===========================
 
-Append/raw reads construct a sliding window of at most four data-file reader
-stacks per split, including construction tasks still in flight. The initial
-window is built on the dedicated reader-build executor before ``CreateReader``
-returns. As a file reaches EOF, its reader is closed, its metrics are retained,
-and the next file is submitted for construction while prepared files are read.
+Append/raw reads construct a sliding window of data-file reader stacks per
+split, including construction tasks still in flight. The C++-specific option
+``read.preparation-window`` accepts a positive 32-bit integer and defaults to
+``4``. This limit is independent of the reader-build executor's
+parallelism, batch prefetch and warmup settings. A value of ``1`` retains only
+the current reader. Larger windows let the next files prepare while the
+current file is read. The dedicated reader-build executor constructs the
+initial window before ``CreateReader(split)`` returns. At EOF the split reader
+closes the finished file reader, records its metrics and submits the next
+file for construction.
 This bounds open streams and format metadata independently of the number of
 files in the split. Per-file metadata and owned creation inputs still scale
 with the split's file count. Merge-on-read keeps its eager input construction.
 
-Plan validation still runs during ``CreateReader``. File-open and reader-build
-errors in the initial window are returned there; errors for later files are
-returned through ``NextBatch`` or ``NextBatchWithBitmap`` when that file is
-reached. These errors are terminal. The returned reader retains its creation
-context, schemas, file system and memory pools, so it may outlive the object
-that created it. Closing or destroying it cancels queued construction, waits
-for already running construction, and releases the prepared readers without
-scheduling the unopened tail.
+The following example configures a window of eight readers per split.
+
+.. code-block:: cpp
+
+   paimon::ReadContextBuilder builder(table_path);
+   builder.AddOption(paimon::Options::READ_PREPARATION_WINDOW, "8");
+
+For ``CreateReader(split)``, plan validation still runs during creation.
+Creation returns file-open and reader-build errors from the initial window.
+For later files, ``NextBatch`` and ``NextBatchWithBitmap`` return the error
+when reading reaches the affected file. These errors are terminal.
+The returned reader retains its creation context, schemas, file system and
+memory pools, so it may outlive the object that created it. Closing or
+destroying it cancels queued construction, waits for already running
+construction, and releases the prepared readers without scheduling the
+unopened tail.
+
+In the append-only and primary-key implementations, ``CreateReader(splits)``
+opens splits in input order only when they are reached. The previous split
+is closed before the next is opened. A list of raw disk splits therefore
+retains at most one preparation window. A real-time split can group
+multiple disk inputs and open them together when it is reached. Closing
+before the first batch opens no data files.
+The returned reader owns its creation state and may outlive the ``TableRead``
+and the input split list. Errors opening a split or its initial files are
+terminal when reading reaches that split.
+
+``CreateReader(splits)`` validates disk split metadata, including disk splits
+inside real-time splits. It checks for missing inputs, misaligned deletion
+files, and mismatches between indexed files, row ranges and scores.
+Primary-key real-time merges require ordinary data splits as disk inputs.
+Creation also checks each real-time split's version, partition and bucket,
+offset bounds and pinned table schema before consuming any tickets.
+If validation fails, valid tickets remain available for retry.
+Successful creation consumes the tickets and retains the views across
+ticket expiry and committed-state refreshes. Close, EOF and read errors
+release the remaining creation state and retained views.
+
+Branch-fallback and query-authorization readers open their split lists
+during creation.
 
 Warmup
 ======
@@ -106,7 +143,8 @@ compaction as well, but does not cross split boundaries.
 
 For lazy append/raw readers, warmup uses the next file once its construction
 has completed; reading the current file never waits for lookahead construction.
-The construction window is independent of the warmup level below.
+The construction window is configured independently of the warmup level below.
+With ``read.preparation-window=1``, no next-file reader is retained for warmup.
 
 How far the next file is prepared is set with
 ``ReadContextBuilder::SetWarmupLevel()``. Append compaction builds its own read

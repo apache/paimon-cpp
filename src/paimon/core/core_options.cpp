@@ -29,6 +29,7 @@
 #include "paimon/common/fs/resolving_file_system.h"
 #include "paimon/common/options/memory_size.h"
 #include "paimon/common/options/time_duration.h"
+#include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/utils/math.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/path_util.h"
@@ -419,6 +420,7 @@ struct CoreOptions::Impl {
     int32_t manifest_merge_min_count = 30;
     int32_t scan_manifest_entry_cache_max_snapshots = 0;
     int32_t read_batch_size = 1024;
+    int32_t read_preparation_window = ConcatBatchReader::kDefaultPreparationWindow;
     int32_t write_batch_size = 1024;
     int32_t local_sort_max_num_file_handles = 128;
     int32_t commit_max_retries = 10;
@@ -461,7 +463,7 @@ struct CoreOptions::Impl {
     bool manifest_delete_file_drop_stats = false;
     bool write_buffer_spillable = true;
     bool write_only = false;
-    bool bucket_append_ordered = false;
+    bool bucket_append_ordered = true;
     bool deletion_vectors_enabled = false;
     bool pk_clustering_override = false;
     bool deletion_vectors_bitmap64 = false;
@@ -532,6 +534,12 @@ struct CoreOptions::Impl {
                                                     &source_split_open_file_cost));
         // Parse read.batch-size - read batch size for file formats
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::READ_BATCH_SIZE, &read_batch_size));
+        PAIMON_RETURN_NOT_OK(
+            parser.Parse(Options::READ_PREPARATION_WINDOW, &read_preparation_window));
+        if (read_preparation_window <= 0) {
+            return Status::Invalid(
+                fmt::format("{} must be positive", Options::READ_PREPARATION_WINDOW));
+        }
         // Parse write.batch-size - write batch size for file formats
         PAIMON_RETURN_NOT_OK(parser.Parse(Options::WRITE_BATCH_SIZE, &write_batch_size));
         // Parse write-buffer-size - data to build up in memory before flushing to disk
@@ -1331,6 +1339,10 @@ StartupMode CoreOptions::GetStartupMode() const {
 
 int32_t CoreOptions::GetReadBatchSize() const {
     return impl_->read_batch_size;
+}
+
+int32_t CoreOptions::GetReadPreparationWindow() const {
+    return impl_->read_preparation_window;
 }
 
 int32_t CoreOptions::GetWriteBatchSize() const {

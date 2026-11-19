@@ -24,15 +24,6 @@
 #include "paimon/status.h"
 
 namespace paimon {
-bool FileIndexReader::SupportsSearch(SearchType) const {
-    return false;
-}
-
-std::optional<double> FileIndexReader::EstimateSelectivity(
-    const std::shared_ptr<LeafPredicate>&) const {
-    return std::nullopt;
-}
-
 Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitIsNotNull() {
     return FileIndexResult::Remain();
 }
@@ -84,6 +75,9 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitGreaterThan(const
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitIn(
     const std::vector<Literal>& literals) {
+    if (literals.empty()) {
+        return Status::Invalid("literals cannot be empty in In predicate");
+    }
     std::shared_ptr<FileIndexResult> file_index_result;
     for (const Literal& key : literals) {
         if (!file_index_result) {
@@ -98,6 +92,9 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitIn(
 
 Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitNotIn(
     const std::vector<Literal>& literals) {
+    if (literals.empty()) {
+        return Status::Invalid("literals cannot be empty in NotIn predicate");
+    }
     std::shared_ptr<FileIndexResult> file_index_result;
     for (const Literal& key : literals) {
         if (!file_index_result) {

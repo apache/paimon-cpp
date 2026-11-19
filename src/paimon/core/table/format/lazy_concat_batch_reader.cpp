@@ -21,7 +21,6 @@
 #include <string>
 #include <utility>
 
-// `ReadBatch` holds `unique_ptr`s to these, so destroying one needs their definitions.
 #include "arrow/c/abi.h"
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
@@ -30,9 +29,8 @@
 namespace paimon {
 
 namespace {
-/// Says which file a failure came from, keeping the status code it carried.
-Status WithFileName(const std::string& name, const Status& status) {
-    return Status(status.code(), fmt::format("cannot read {}: {}", name, status.message()));
+Status WithSourceName(const std::string& name, const Status& status) {
+    return status.WithMessage(fmt::format("cannot read {}: {}", name, status.message()));
 }
 }  // namespace
 
@@ -50,45 +48,40 @@ void LazyConcatBatchReader::CloseCurrent() {
     if (current_reader_ == nullptr) {
         return;
     }
-    // Taken before the reader goes, or everything read through it is missing from the totals.
-    std::shared_ptr<Metrics> metrics = current_reader_->GetReaderMetrics();
+    // Closing drains pending preparation and prefetch work before taking the final metrics.
     current_reader_->Close();
-    if (metrics != nullptr) {
-        closed_metrics_->Merge(metrics);
-    }
-    // Released here rather than held to the end: a batch it handed out retains what it needs of
-    // it, so a partition of many files does not keep one reader per file alive.
+    closed_metrics_->Merge(current_reader_->GetReaderMetrics());
     current_reader_.reset();
     current_name_.clear();
 }
 
 Result<BatchReader::ReadBatchWithBitmap> LazyConcatBatchReader::NextBatchWithBitmap() {
-    // `BatchReader` promises a failure is terminal: keep answering with it rather than moving
-    // on to the next file.
     if (!failure_.ok()) {
         return failure_;
     }
     while (true) {
         if (current_reader_ == nullptr) {
             if (next_source_ >= sources_.size()) {
+                DoClose();
                 return BatchReader::MakeEofBatchWithBitmap();
             }
-            Source& source = sources_[next_source_];
+            Source source = std::exchange(sources_[next_source_++], Source{});
             Result<std::unique_ptr<BatchReader>> opened = source.open();
             if (!opened.ok()) {
-                failure_ = WithFileName(source.name, opened.status());
+                failure_ = WithSourceName(source.name, opened.status());
+                DoClose();
                 return failure_;
             }
-            next_source_++;
             current_reader_ = std::move(opened).value();
             if (current_reader_ == nullptr) {
                 continue;
             }
-            current_name_ = source.name;
+            current_name_ = std::move(source.name);
         }
         Result<BatchReader::ReadBatchWithBitmap> result = current_reader_->NextBatchWithBitmap();
         if (!result.ok()) {
-            failure_ = WithFileName(current_name_, result.status());
+            failure_ = WithSourceName(current_name_, result.status());
+            DoClose();
             return failure_;
         }
         if (!BatchReader::IsEofBatch(result.value())) {
@@ -101,7 +94,13 @@ Result<BatchReader::ReadBatchWithBitmap> LazyConcatBatchReader::NextBatchWithBit
 Result<BatchReader::ReadBatch> LazyConcatBatchReader::NextBatch() {
     PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatchWithBitmap batch_with_bitmap,
                            NextBatchWithBitmap());
-    return ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_);
+    auto result = ReaderUtils::ApplyBitmapToReadBatch(std::move(batch_with_bitmap), arrow_pool_);
+    if (!result.ok()) {
+        failure_ = WithSourceName(current_name_, result.status());
+        DoClose();
+        return failure_;
+    }
+    return result;
 }
 
 void LazyConcatBatchReader::Close() {
@@ -110,18 +109,15 @@ void LazyConcatBatchReader::Close() {
 
 void LazyConcatBatchReader::DoClose() {
     CloseCurrent();
-    // Whatever was never reached was never opened.
-    next_source_ = sources_.size();
+    std::vector<Source>().swap(sources_);
+    next_source_ = 0;
 }
 
 std::shared_ptr<Metrics> LazyConcatBatchReader::GetReaderMetrics() const {
     auto metrics = std::make_shared<MetricsImpl>();
     metrics->Merge(closed_metrics_);
     if (current_reader_ != nullptr) {
-        std::shared_ptr<Metrics> current = current_reader_->GetReaderMetrics();
-        if (current != nullptr) {
-            metrics->Merge(current);
-        }
+        metrics->Merge(current_reader_->GetReaderMetrics());
     }
     return metrics;
 }

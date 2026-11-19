@@ -28,6 +28,7 @@
 #include "paimon/file_index/file_index_result.h"
 #include "paimon/file_index/scored_file_index_result.h"
 #include "paimon/result.h"
+#include "paimon/status.h"
 #include "paimon/utils/roaring_bitmap32.h"
 
 namespace paimon {
@@ -99,6 +100,9 @@ class EmptyFileIndexReader : public FileIndexReader {
     }
     Result<std::shared_ptr<FileIndexResult>> VisitIn(
         const std::vector<Literal>& literals) override {
+        if (literals.empty()) {
+            return Status::Invalid("literals cannot be empty in In predicate");
+        }
         return FileIndexResult::Skip();
     }
 

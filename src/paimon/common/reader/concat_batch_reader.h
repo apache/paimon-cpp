@@ -21,6 +21,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <future>
@@ -29,32 +30,33 @@
 #include <vector>
 
 #include "arrow/api.h"
-#include "paimon/common/executor/reader_build_executor.h"
 #include "paimon/metrics.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 
 namespace paimon {
+class Executor;
 class FileBatchReader;
 class MemoryPool;
 
-/// This reader is to concatenate a list of BatchReaders and read them sequentially. The input list
-/// is already sorted by key and sequence number, and the key intervals do not overlap each other.
+/// Reads children in input order and releases each reader at EOF.
 class ConcatBatchReader : public BatchReader {
  public:
     /// Must own the state needed to build the indexed reader beyond its caller's lifetime.
     /// Called at most once per index, possibly concurrently. A null reader means a skipped file.
     using ReaderFactory = std::function<Result<std::unique_ptr<BatchReader>>(size_t)>;
 
-    static constexpr size_t kPreparationWindow = kReaderBuildMaxParallelNum;
+    static constexpr size_t kDefaultPreparationWindow = 4;
 
     /// Builds the initial window concurrently and refills it as readers reach EOF. Later
     /// construction failures are terminal read errors when the failed reader is reached.
+    /// The positive preparation window bounds retained readers, including in-flight builds,
+    /// independently of the build executor's parallelism.
     static Result<std::unique_ptr<ConcatBatchReader>> CreateLazy(
-        size_t reader_count, ReaderFactory factory,
+        size_t reader_count, ReaderFactory factory, int32_t preparation_window,
         const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
-        const std::shared_ptr<Executor>& build_executor = GetReaderBuildExecutor());
+        const std::shared_ptr<Executor>& build_executor);
 
     ConcatBatchReader(std::vector<std::unique_ptr<BatchReader>>&& readers,
                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
@@ -84,6 +86,11 @@ class ConcatBatchReader : public BatchReader {
         std::atomic<bool> cancelled = false;
     };
 
+    ConcatBatchReader(size_t reader_count, std::shared_ptr<Preparation> preparation,
+                      size_t preparation_window,
+                      const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+                      const std::shared_ptr<Executor>& build_executor);
+
     void FillWindow();
     Status ResolveReader(ReaderState* state, bool wait);
     void WarmupRange();
@@ -94,6 +101,7 @@ class ConcatBatchReader : public BatchReader {
     std::deque<ReaderState> readers_;
     std::shared_ptr<Preparation> preparation_;
     std::shared_ptr<Executor> build_executor_;
+    size_t preparation_window_ = 0;
     size_t reader_count_ = 0;
     size_t next_reader_ = 0;
     Status failure_;

@@ -91,6 +91,12 @@ TEST(FileIndexReaderTest, TestDefaultIndexReader) {
                         "does not support complete full-text matching");
 }
 
+TEST(FileIndexReaderTest, TestEmptyLiterals) {
+    FileIndexReader reader;
+    ASSERT_NOK_WITH_MSG(reader.VisitIn({}), "literals cannot be empty in In predicate");
+    ASSERT_NOK_WITH_MSG(reader.VisitNotIn({}), "literals cannot be empty in NotIn predicate");
+}
+
 TEST(FileIndexReaderTest, TestScalarVisitorAndUnknownSelectivity) {
     auto reader = std::make_shared<MockFileIndexReader>();
     auto predicate = std::dynamic_pointer_cast<LeafPredicate>(

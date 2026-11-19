@@ -34,21 +34,14 @@ namespace paimon {
 
 class MetricsImpl;
 
-/// Reads a sequence of readers one after another, opening each only when it is reached.
-///
-/// A split holds a whole partition's files and a reader holds its file open, so building them all
-/// up front could exhaust the file descriptors before returning a row. One file is open at a time,
-/// closed as soon as it runs out and its metrics taken first, so what it read stays in the totals.
-/// A batch it handed out outlives it, as `BatchReader` requires.
-///
-/// Every failure names the file it came from - the only thing telling one file of a partition from
-/// another - and is terminal.
+/// Opens one source at a time in input order. Returned batches own their resources, so each
+/// reader can close at EOF. Failures identify the source and terminate the read.
 class LazyConcatBatchReader : public BatchReader {
  public:
-    /// Opens one reader, at most once, when the previous reader runs out.
+    /// Called once when its source is reached. A null reader skips the source. Each returned
+    /// reader owns the dependencies it needs after the factory is released.
     using ReaderFactory = std::function<Result<std::unique_ptr<BatchReader>>()>;
 
-    /// One reader and the file it reads, named in every error that reader produces.
     struct Source {
         std::string name;
         ReaderFactory open;
@@ -65,19 +58,15 @@ class LazyConcatBatchReader : public BatchReader {
     std::shared_ptr<Metrics> GetReaderMetrics() const override;
 
  private:
-    /// Closes every reader; called by both `Close` and the destructor.
     void DoClose();
 
-    /// Closes and releases the reader in hand, keeping its metrics.
     void CloseCurrent();
 
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::vector<Source> sources_;
     size_t next_source_ = 0;
     std::unique_ptr<BatchReader> current_reader_;
-    /// The file `current_reader_` reads, kept so a failure part way through can name it.
     std::string current_name_;
-    /// The failure this reader stopped at, or OK while it has not failed.
     Status failure_;
     std::shared_ptr<MetricsImpl> closed_metrics_;
 };

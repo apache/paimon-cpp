@@ -126,6 +126,7 @@ class PAIMON_EXPORT CoreOptions {
     StartupMode GetStartupMode() const;
 
     int32_t GetReadBatchSize() const;
+    int32_t GetReadPreparationWindow() const;
     int32_t GetWriteBatchSize() const;
     int64_t GetWriteBufferSize() const;
     bool GetWriteBufferSpillable() const;

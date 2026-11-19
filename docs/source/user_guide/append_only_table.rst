@@ -24,6 +24,13 @@ If a table does not have a primary key defined, it is an append table.
 Ordinary append writes accept ``INSERT`` rows only and do not apply upserts
 or deletes by key.
 
+Fixed-bucket append tables preserve append order by default
+(``bucket-append-ordered = true``). Set it to ``false`` to allow unordered writes
+and custom compaction of files that are not contiguous in append order.
+In unordered mode, ``write-only = true`` skips restoring historical files and
+sequence numbers; with ``write-only = false``, historical files are restored for
+compaction even if the write context requests ignoring previous files.
+
 The experimental real-time append deduplicate mode is an exception. With
 ``realtime.deduplicate-key-fields`` configured, it also accepts ``UPDATE_AFTER``,
 ``DELETE`` and ``UPDATE_BEFORE``, using deletion vectors to hide superseded

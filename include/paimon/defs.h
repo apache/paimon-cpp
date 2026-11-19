@@ -247,6 +247,11 @@ struct PAIMON_EXPORT Options {
     /// The default value is 1024.
     static const char READ_BATCH_SIZE[];
 
+    /// "read.preparation-window" - C++-specific limit on file readers per append/raw split,
+    /// including readers under construction. Accepts positive 32-bit integers and defaults to 4.
+    /// Build parallelism, batch prefetch and warmup are configured independently.
+    static const char READ_PREPARATION_WINDOW[];
+
     /// "write.batch-size" - Write batch size for any file format if it supports.
     /// The default value is 1024.
     static const char WRITE_BATCH_SIZE[];
@@ -715,8 +720,8 @@ struct PAIMON_EXPORT Options {
     /// "write-only" - If set to "true", compactions and snapshot expiration will be skipped. This
     /// option is used along with dedicated compact jobs. Default value is "false".
     static const char WRITE_ONLY[];
-    /// "bucket-append-ordered" - Whether append writes in fixed bucket mode are ordered. This
-    /// option is used by commit conflict checks. Default value is "false".
+    /// "bucket-append-ordered" - Whether append writes in fixed bucket mode preserve append order.
+    /// Set to "false" to allow unordered writes and custom compaction. Default value is "true".
     static const char BUCKET_APPEND_ORDERED[];
     /// "write.sequence-number-init-mode" - Specify how to initialize the next sequence number for
     /// primary key table writers. Values can be: "scan", "snapshot". Default value is "scan".

@@ -33,6 +33,7 @@
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/options_utils.h"
+#include "paimon/common/utils/path_util.h"
 #include "paimon/core/append/append_only_writer.h"
 #include "paimon/core/append/bucketed_append_compact_manager.h"
 #include "paimon/core/compact/noop_compact_manager.h"
@@ -124,6 +125,68 @@ AppendOnlyFileStoreWrite::AppendOnlyFileStoreWrite(
 }
 
 AppendOnlyFileStoreWrite::~AppendOnlyFileStoreWrite() = default;
+
+Status AppendOnlyFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
+    if (custom_compaction_) {
+        return Status::Invalid("cannot mix custom compaction with Write or Compact");
+    }
+    regular_write_ = true;
+    return AbstractFileStoreWrite::Write(std::move(batch));
+}
+
+Status AppendOnlyFileStoreWrite::Compact(const std::map<std::string, std::string>& partition,
+                                         int32_t bucket, bool full_compaction) {
+    if (custom_compaction_) {
+        return Status::Invalid("cannot mix custom compaction with Write or Compact");
+    }
+    regular_write_ = true;
+    return AbstractFileStoreWrite::Compact(partition, bucket, full_compaction);
+}
+
+Status AppendOnlyFileStoreWrite::CompactFiles(const std::map<std::string, std::string>& partition,
+                                              int32_t bucket,
+                                              const std::vector<std::string>& file_names) {
+    if (realtime_context_ || options_.RealtimeEnabled() ||
+        !options_.GetRealtimeDeduplicateKeyFields().empty()) {
+        return Status::NotImplemented("custom compaction does not support real-time mode");
+    }
+    if (options_.GetBucket() <= 0 || options_.DataEvolutionEnabled()) {
+        return Status::NotImplemented(
+            "custom compaction only supports fixed-bucket append tables without data evolution");
+    }
+    if (options_.BucketAppendOrdered()) {
+        return Status::Invalid("custom compaction requires bucket-append-ordered=false");
+    }
+    if (options_.WriteOnly()) {
+        return Status::Invalid("custom compaction requires write-only=false");
+    }
+    if (write_cols_) {
+        return Status::Invalid("custom compaction requires the full write schema");
+    }
+    if (regular_write_) {
+        return Status::Invalid("cannot mix custom compaction with Write or Compact");
+    }
+    if (bucket < 0 || bucket >= options_.GetBucket()) {
+        return Status::Invalid("custom compaction bucket is out of range");
+    }
+    if (file_names.empty()) {
+        return Status::Invalid("custom compaction requires at least one input file");
+    }
+    if (partition.size() != table_schema_->PartitionKeys().size()) {
+        return Status::Invalid("custom compaction requires exactly the table partition keys");
+    }
+    for (const std::string& name : file_names) {
+        PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("data file", name));
+    }
+    PAIMON_ASSIGN_OR_RAISE(BinaryRow part, file_store_path_factory_->ToBinaryRow(partition));
+    custom_compaction_ = true;
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BatchWriter> writer, GetWriter(part, bucket));
+    auto append_writer = std::dynamic_pointer_cast<AppendOnlyWriter>(writer);
+    if (!append_writer) {
+        return Status::Invalid("custom compaction requires an append-only writer");
+    }
+    return append_writer->CompactFiles(file_names);
+}
 
 Status AppendOnlyFileStoreWrite::RefreshCommittedSnapshot(int64_t snapshot_id) {
     if (!realtime_context_) {

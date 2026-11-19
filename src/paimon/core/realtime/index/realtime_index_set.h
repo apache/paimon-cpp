@@ -60,6 +60,8 @@ class RealtimeIndexSet {
     std::vector<std::shared_ptr<RealtimeIndex>> FindIndexes(const std::string& field_name,
                                                             FieldType field_type) const;
 
+    std::vector<std::shared_ptr<RealtimeIndex>> FindIndexes(const std::string& field_name) const;
+
     uint64_t GetMemoryUsage() const;
 
  private:

@@ -23,18 +23,42 @@
 #include <optional>
 #include <vector>
 
+#include "paimon/index/index_reader_capabilities.h"
 #include "paimon/predicate/function_visitor.h"
+#include "paimon/realtime/index/realtime_index_result.h"
+#include "paimon/realtime/index/scored_realtime_index_result.h"
 #include "paimon/utils/roaring_bitmap64.h"
 #include "paimon/visibility.h"
 
 namespace paimon {
+class LeafPredicate;
+struct VectorSearch;
+struct FullTextSearch;
+struct FullTextMatch;
 
 /// Visits predicates on one indexed field, returning realtime offsets.
 /// nullopt means no pruning; an empty bitmap means no candidates. False negatives are not allowed.
 /// Unsupported predicates default to no pruning. Plugins override only the supported visits.
-class PAIMON_EXPORT RealtimeIndexReader : public FunctionVisitor<std::optional<RoaringBitmap64>> {
+class PAIMON_EXPORT RealtimeIndexReader : public IndexReaderCapabilities,
+                                          public FunctionVisitor<std::optional<RoaringBitmap64>> {
  public:
     ~RealtimeIndexReader() override = default;
+
+    /// Search pre-filters and result IDs use real-time offsets, not file-local row positions.
+    /// Apply filters and pinned visibility before TopK; filtering a truncated result is
+    /// insufficient. Search results must be stable for the pinned snapshot even while later writes
+    /// proceed.
+    virtual Result<std::shared_ptr<ScoredRealtimeIndexResult>> VisitVectorSearch(
+        const std::shared_ptr<VectorSearch>& search);
+
+    virtual Result<std::shared_ptr<ScoredRealtimeIndexResult>> VisitFullTextSearch(
+        const std::shared_ptr<FullTextSearch>& search);
+
+    /// Returns all matching offsets without TopK truncation. When needs_scores is true,
+    /// returns ScoredRealtimeIndexResult, including for an empty result; otherwise scores
+    /// need not be computed.
+    virtual Result<std::shared_ptr<RealtimeIndexResult>> VisitFullTextMatch(
+        const std::shared_ptr<FullTextMatch>& match, bool needs_scores);
 
     Result<std::optional<RoaringBitmap64>> VisitIsNotNull() override;
     Result<std::optional<RoaringBitmap64>> VisitIsNull() override;

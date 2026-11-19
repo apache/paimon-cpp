@@ -42,6 +42,12 @@ Use the payloads' snapshot as ``base_snapshot_id``; ``std::nullopt`` selects lat
 once. Null file system, pool or executor selects internal defaults. Input streams
 are borrowed synchronously and are not closed.
 
+Existing targets are reused without reading or writing index payloads, and commit
+messages are still prepared. Otherwise, index files are published from UUID temporary
+files using ``Rename``. If the target appears meanwhile, it is reused and the temporary
+file is cleaned up best-effort. Existing contents are not validated.
+Concurrent publication requires atomic rename without overwrite from the file system.
+
 Commit the messages with ``FileStoreCommit`` to the same table and branch.
 Serialize backfill commits with compaction/overwrite per partition/bucket,
 keeping base metadata valid through commit.

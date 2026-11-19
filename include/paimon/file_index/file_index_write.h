@@ -60,6 +60,10 @@ class PAIMON_EXPORT FileIndexWrite {
 
     /// Writes one external container per file, preserving indexes except supplied field/type pairs.
     /// Ignores the embedding threshold; preserves other extra files and historical index files.
+    /// Reuses existing targets without reading or writing index payloads; still prepares messages.
+    /// Otherwise publishes UUID temporary files via Rename. If the target appears meanwhile,
+    /// reuses it and cleans up the temporary file best-effort. Existing contents are not validated.
+    /// Concurrent publication requires atomic rename without overwrite from the file system.
     /// Payloads must use physical row positions, including DV-deleted rows. Do not use input
     /// streams concurrently. Null file system, pool or executor uses the corresponding default.
     ///
