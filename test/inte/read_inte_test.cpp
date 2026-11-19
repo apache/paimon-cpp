@@ -44,8 +44,6 @@
 #include "paimon/commit_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/factories/io_hook.h"
-#include "paimon/common/reader/complete_row_kind_batch_reader.h"
-#include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/types/data_type.h"
@@ -85,6 +83,7 @@
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
 #include "paimon/testing/utils/binary_row_generator.h"
+#include "paimon/testing/utils/counting_reader_file_system.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/test_helper.h"
@@ -380,8 +379,9 @@ TEST_P(ReadInteTest, TestAppendSimple) {
                                               DataField(2, arrow::field("f2", arrow::int32())),
                                               DataField(3, arrow::field("f3", arrow::float64()))};
 
+        auto fs = std::make_shared<CountingReaderFileSystem>("." + param.file_format);
         ReadContextBuilder context_builder(path);
-        context_builder.AddOption(Options::FILE_FORMAT, param.file_format);
+        context_builder.WithFileSystem(fs).AddOption(Options::FILE_FORMAT, param.file_format);
         context_builder.EnablePrefetch(param.enable_prefetch)
             .AddOption("test.enable-adaptive-prefetch-strategy", "false")
             .AddOption("orc.read.enable-metrics", "true");
@@ -410,19 +410,12 @@ TEST_P(ReadInteTest, TestAppendSimple) {
         auto data_splits = CreateDataSplits(input_data_splits, /*snapshot_id=*/3);
         ASSERT_EQ(data_splits.size(), 1);
         ASSERT_OK_AND_ASSIGN(auto batch_reader, table_read->CreateReader(data_splits));
+        ASSERT_EQ(fs->counts->opens.load(), 0);
 
-        auto split_concat_batch_reader = dynamic_cast<ConcatBatchReader*>(batch_reader.get());
-        ASSERT_TRUE(split_concat_batch_reader);
-        ASSERT_EQ(1, split_concat_batch_reader->readers_.size());
-        auto complete_batch_reader =
-            dynamic_cast<CompleteRowKindBatchReader*>(split_concat_batch_reader->readers_[0].get());
-        ASSERT_TRUE(complete_batch_reader);
-        auto file_concat_batch_reader =
-            dynamic_cast<ConcatBatchReader*>(complete_batch_reader->reader_.get());
-        ASSERT_TRUE(file_concat_batch_reader);
-        ASSERT_EQ(2, file_concat_batch_reader->readers_.size());
         ASSERT_OK_AND_ASSIGN(auto result_array,
                              ReadResultCollector::CollectResult(batch_reader.get()));
+        ASSERT_GE(fs->counts->opens.load(), file_list.size());
+        ASSERT_NE(result_array, nullptr);
         std::shared_ptr<Metrics> read_metrics = batch_reader->GetReaderMetrics();
 
         auto fields_with_row_kind = read_fields;

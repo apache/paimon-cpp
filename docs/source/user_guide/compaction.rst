@@ -102,6 +102,25 @@ size, so that a file already close to the target is not compacted twice.
 primary-key tables, which makes the derived threshold about 179 MiB and 89 MiB
 respectively. Adjust ``target-file-size`` to move the threshold.
 
+Custom Compaction
+~~~~~~~~~~~~~~~~~
+``FileStoreWrite::CompactFiles(partition, bucket, file_names)`` asynchronously
+rewrites selected files, accepting partition values, a bucket, and distinct data
+file basenames. As with ``Compact``, each partition-bucket restores the latest
+snapshot when its writer is initialized and reuses that state. Files need not be
+contiguous; compaction thresholds do not apply.
+
+Supports fixed-bucket append tables with or without deletion vectors. Requires
+``bucket-append-ordered = false``, ``write-only = false`` and a dedicated writer
+with the full schema. Real-time mode and data evolution are unsupported.
+
+Use ``PrepareCommit`` to collect results and background errors, following the
+usual ``Compact`` waiting rules. Commit or abort the returned messages through
+``FileStoreCommit``.
+
+Do not update deletion vectors or run another compaction for the same
+partition-bucket until the custom compaction result is committed or discarded.
+
 Dictionary Passthrough
 ~~~~~~~~~~~~~~~~~~~~~~
 An append-only compaction rewrite copies rows into the new file without

@@ -193,6 +193,9 @@ Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitNotEqu
 
 Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitIn(
     const std::vector<Literal>& literals) {
+    if (literals.empty()) {
+        return Status::Invalid("literals cannot be empty in In predicate");
+    }
     PAIMON_ASSIGN_OR_RAISE(std::vector<Literal> converted_literals,
                            type_adapter_->ToStorageLiterals(literals));
     return std::make_shared<BitmapIndexResult>(
@@ -204,6 +207,9 @@ Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitIn(
 
 Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitNotIn(
     const std::vector<Literal>& literals) {
+    if (literals.empty()) {
+        return Status::Invalid("literals cannot be empty in NotIn predicate");
+    }
     PAIMON_ASSIGN_OR_RAISE(std::vector<Literal> converted_literals,
                            type_adapter_->ToStorageLiterals(literals));
     return std::make_shared<BitmapIndexResult>(

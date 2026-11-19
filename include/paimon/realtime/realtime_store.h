@@ -42,6 +42,7 @@ namespace paimon {
 class FileSystem;
 class MemoryPool;
 class Predicate;
+class RoaringBitmap64;
 
 enum class PAIMON_EXPORT RealtimeStoreMode {
     APPEND_ONLY,
@@ -142,11 +143,22 @@ struct PAIMON_EXPORT RealtimeQueryContext {
     /// Optional predicate using field indexes from `read_schema`. A non-null predicate allows the
     /// plugin to prune candidate rows. Exact filtering is applied by the Paimon read framework.
     std::shared_ptr<Predicate> predicate;
-    /// Required [disk snapshot committed end, pinned memory end) bounds.
-    /// Pin memory before selecting the disk snapshot; keep these bounds for the query.
+    /// Required visible bounds within [disk snapshot committed end, pinned memory end).
+    /// Source-local reads may narrow this range. Pin memory before selecting the disk snapshot.
     OffsetRange offset_range;
     /// Maximum number of rows in a returned query batch.
     int32_t read_batch_size = 1024;
+    /// Optional real-time offsets to materialize. Null means no additional offset restriction;
+    /// an empty bitmap selects no rows. Stores must honor this selection before returning rows.
+    /// Offset selection is currently unsupported for primary-key merge.
+    std::shared_ptr<const RoaringBitmap64> selection;
+    /// Optional real-time offsets to exclude independently of selection. Null or an empty bitmap
+    /// excludes no additional rows. Stores must apply these deletions before returning rows.
+    /// Offset deletions are currently unsupported for primary-key merge.
+    std::shared_ptr<const RoaringBitmap64> offset_deletions;
+    /// Whether the store should evaluate scalar indexes. Statistics pruning remains available
+    /// when false; precise reads already perform index evaluation in the framework.
+    bool enable_index_pruning;
 };
 
 /// Customizable plugin interface for storing and querying real-time rows before Paimon data-file

@@ -19,25 +19,48 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <future>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "arrow/api.h"
 #include "paimon/metrics.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/result.h"
+#include "paimon/status.h"
 
 namespace paimon {
+class Executor;
 class FileBatchReader;
 class MemoryPool;
 
-/// This reader is to concatenate a list of BatchReaders and read them sequentially. The input list
-/// is already sorted by key and sequence number, and the key intervals do not overlap each other.
+/// Reads children in input order and releases each reader at EOF.
 class ConcatBatchReader : public BatchReader {
  public:
+    /// Must own the state needed to build the indexed reader beyond its caller's lifetime.
+    /// Called at most once per index, possibly concurrently. A null reader means a skipped file.
+    using ReaderFactory = std::function<Result<std::unique_ptr<BatchReader>>(size_t)>;
+
+    static constexpr size_t kDefaultPreparationWindow = 4;
+
+    /// Builds the initial window concurrently and refills it as readers reach EOF. Later
+    /// construction failures are terminal read errors when the failed reader is reached.
+    /// The positive preparation window bounds retained readers, including in-flight builds,
+    /// independently of the build executor's parallelism.
+    static Result<std::unique_ptr<ConcatBatchReader>> CreateLazy(
+        size_t reader_count, ReaderFactory factory, int32_t preparation_window,
+        const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+        const std::shared_ptr<Executor>& build_executor);
+
     ConcatBatchReader(std::vector<std::unique_ptr<BatchReader>>&& readers,
                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
+    ~ConcatBatchReader() override;
 
     Result<ReadBatch> NextBatch() override;
     Result<ReadBatchWithBitmap> NextBatchWithBitmap() override;
@@ -50,17 +73,37 @@ class ConcatBatchReader : public BatchReader {
     /// overlapped I/O and extra memory.
     static constexpr size_t kWarmupLookahead = 1;
 
-    /// Warms up \p count readers starting at \p idx, stopping at the end of the list. Warmup() is
-    /// idempotent, so this is safe to call on every batch.
-    void WarmupRange(size_t idx, size_t count);
-    void CloseAndReleaseReader(size_t reader_index);
+    struct ReaderState {
+        std::unique_ptr<BatchReader> reader;
+        FileBatchReader* file_reader = nullptr;
+        std::future<Result<std::unique_ptr<BatchReader>>> future;
+        Status failure;
+    };
+
+    struct Preparation {
+        explicit Preparation(ReaderFactory factory) : factory(std::move(factory)) {}
+        ReaderFactory factory;
+        std::atomic<bool> cancelled = false;
+    };
+
+    ConcatBatchReader(size_t reader_count, std::shared_ptr<Preparation> preparation,
+                      size_t preparation_window,
+                      const std::shared_ptr<arrow::MemoryPool>& arrow_pool,
+                      const std::shared_ptr<Executor>& build_executor);
+
+    void FillWindow();
+    Status ResolveReader(ReaderState* state, bool wait);
+    void WarmupRange();
+    void CloseAndReleaseReader(ReaderState* state);
 
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::shared_ptr<Metrics> finished_reader_metrics_;
-    std::vector<std::unique_ptr<BatchReader>> readers_;
-    // readers_[i] as a FileBatchReader, or nullptr when it is not one or has been released.
-    // Warmup() lives on FileBatchReader, so the cast is done once instead of on every batch.
-    std::vector<FileBatchReader*> file_readers_;
-    size_t current_;
+    std::deque<ReaderState> readers_;
+    std::shared_ptr<Preparation> preparation_;
+    std::shared_ptr<Executor> build_executor_;
+    size_t preparation_window_ = 0;
+    size_t reader_count_ = 0;
+    size_t next_reader_ = 0;
+    Status failure_;
 };
 }  // namespace paimon

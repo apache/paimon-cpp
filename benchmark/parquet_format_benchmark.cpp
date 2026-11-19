@@ -574,6 +574,8 @@ Result<int64_t> WriteParquetFile(const std::shared_ptr<FileSystem>& fs, const st
 
 struct ReadStats {
     int64_t rows = 0;
+    double first_batch_ns = 0;
+    int64_t peak_memory_bytes = 0;
     // Reader-side counterpart of file size: makes pruning and skipping visible apart from CPU.
     uint64_t storage_bytes = 0;
     // Without these a filtered case shows only that it got faster, not that pruning is why.
@@ -598,15 +600,18 @@ Result<ReadStats> ReadParquetFile(const std::shared_ptr<FileSystem>& fs, const s
                                   const std::map<std::string, std::string>& options,
                                   int32_t batch_size,
                                   const std::shared_ptr<arrow::MemoryPool>& pool) {
+    const auto started = std::chrono::steady_clock::now();
+    auto read_pool = std::make_shared<arrow::ProxyMemoryPool>(pool.get());
     PAIMON_ASSIGN_OR_RAISE(FileStatus file_status, fs->GetFileStatus(path));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<InputStream> input, fs->Open(path));
-    auto in_stream = std::make_shared<ArrowInputStreamAdapter>(input, file_status.GetLen(), pool);
+    auto in_stream =
+        std::make_shared<ArrowInputStreamAdapter>(input, file_status.GetLen(), read_pool);
     // Held separately so the counter outlives the adapter the reader takes ownership of.
     std::shared_ptr<std::atomic<uint64_t>> storage_read_bytes = in_stream->StorageReadBytes();
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<ParquetFileBatchReader> reader,
         ParquetFileBatchReader::Create(std::move(in_stream), options, batch_size,
-                                       /*file_metadata=*/nullptr, storage_read_bytes, pool,
+                                       /*file_metadata=*/nullptr, storage_read_bytes, read_pool,
                                        /*hints=*/std::nullopt));
 
     // SetReadSchema imports the C schema and takes ownership of it.
@@ -620,6 +625,12 @@ Result<ReadStats> ReadParquetFile(const std::shared_ptr<FileSystem>& fs, const s
         if (BatchReader::IsEofBatch(batch)) {
             break;
         }
+        if (stats.batches == 0) {
+            stats.first_batch_ns =
+                std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - started)
+                    .count();
+        }
+        ++stats.batches;
         stats.rows += batch.first->length;
         ArrowArrayRelease(batch.first.get());
         ArrowSchemaRelease(batch.second.get());
@@ -636,6 +647,7 @@ Result<ReadStats> ReadParquetFile(const std::shared_ptr<FileSystem>& fs, const s
                            ReadCounter(metrics, paimon::parquet::ParquetMetrics::READ_BATCH_COUNT));
     reader->Close();
     stats.storage_bytes = storage_read_bytes->load();
+    stats.peak_memory_bytes = read_pool->max_memory();
     return stats;
 }
 
@@ -1201,6 +1213,8 @@ void RunReadBenchmark(::benchmark::State& state, const ReadFixture& fixture,
     }
 
     ReadStats stats;
+    double first_batch_ns = 0;
+    int64_t peak_memory_bytes = 0;
     Timer timer;
     for (auto _ : state) {
         Result<ReadStats> result =
@@ -1210,6 +1224,8 @@ void RunReadBenchmark(::benchmark::State& state, const ReadFixture& fixture,
             return;
         }
         stats = result.value();
+        first_batch_ns += stats.first_batch_ns;
+        peak_memory_bytes = std::max(peak_memory_bytes, stats.peak_memory_bytes);
     }
     if (stats.rows < expected.min || stats.rows > expected.max) {
         FailBenchmark(state, Status::Invalid("read " + std::to_string(stats.rows) +
@@ -1239,6 +1255,10 @@ void RunReadBenchmark(::benchmark::State& state, const ReadFixture& fixture,
     state.counters["row_groups_after_filter"] =
         ::benchmark::Counter(static_cast<double>(stats.row_groups_after_filter));
     state.counters["batches"] = ::benchmark::Counter(static_cast<double>(stats.batches));
+    state.counters["first_batch_ns"] =
+        ::benchmark::Counter(first_batch_ns / static_cast<double>(state.iterations()));
+    state.counters["peak_memory_bytes"] =
+        ::benchmark::Counter(static_cast<double>(peak_memory_bytes));
 }
 
 // Sparse lookup into a large row group of 1 KiB values. Page size controls how much
@@ -1342,6 +1362,19 @@ void BM_ParquetRead_Filtered(::benchmark::State& state) {
     RunReadBenchmark(state, FlatFixture(), FlatSchema(), predicate,
                      /*selection_bitmap=*/std::nullopt, options, kReadBatchSize,
                      RowExpectation{threshold, row_group_bound});
+}
+
+void BM_ParquetRead_FilteredBatchSize(::benchmark::State& state) {
+    const int64_t threshold = kRowGroupLength / 2;
+    const bool enable_page_index = state.range(1) != 0;
+    std::shared_ptr<Predicate> predicate =
+        PredicateBuilder::LessThan(0, "id", FieldType::BIGINT, Literal(threshold));
+    RunReadBenchmark(
+        state, PlainFlatFixture(), FlatSchema(), predicate, std::nullopt,
+        {{paimon::parquet::PARQUET_READ_ENABLE_PAGE_INDEX_FILTER,
+          enable_page_index ? "true" : "false"}},
+        static_cast<int32_t>(state.range(0)),
+        RowExpectation{threshold, enable_page_index ? kRowGroupLength - 1 : kRowGroupLength});
 }
 
 // arg: distance between selected rows. The strides straddle the coalesce hole limit (32 rows by
@@ -1601,6 +1634,16 @@ BENCHMARK(BM_ParquetRead_Filtered)
     ->Args({10, 0})
     ->Args({50, 1})
     ->Args({50, 0})
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime();
+BENCHMARK(BM_ParquetRead_FilteredBatchSize)
+    ->ArgNames({"batch_rows", "page_index"})
+    ->Args({64, 1})
+    ->Args({64, 0})
+    ->Args({1024, 1})
+    ->Args({1024, 0})
+    ->Args({4096, 1})
+    ->Args({4096, 0})
     ->Unit(benchmark::kMillisecond)
     ->UseRealTime();
 BENCHMARK(BM_ParquetRead_SkipHeavy)

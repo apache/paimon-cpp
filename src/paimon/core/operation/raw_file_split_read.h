@@ -67,6 +67,9 @@ class RawFileSplitRead : public AbstractSplitRead {
                      const std::shared_ptr<MemoryPool>& memory_pool,
                      const std::shared_ptr<Executor>& executor);
 
+    /// Prepares a bounded window of files. Open/build failures beyond the initial window are
+    /// reported by NextBatch/NextBatchWithBitmap when that file is reached. Close cancels queued
+    /// builds and drains running work. The returned reader owns its deferred creation state.
     /// Also accepts an `IndexedSplit` over a single-file data split, in which case its row
     /// ranges narrow the read to the given file-local physical positions.
     Result<std::unique_ptr<BatchReader>> CreateReader(const std::shared_ptr<Split>& split) override;
@@ -92,8 +95,10 @@ class RawFileSplitRead : public AbstractSplitRead {
         const std::shared_ptr<arrow::Schema>& read_schema,
         const std::shared_ptr<Predicate>& predicate);
 
-    /// Uses file-specific predicates for pushdown and the supplied residual predicate for
-    /// optional filtering after concatenation.
+    /// Uses complete file-specific predicates for pushdown or precise evaluation before root
+    /// search. Ordinary reads use the supplied residual predicate for optional filtering after
+    /// concatenation. Providers and DV factories must own their captures; they may run concurrently
+    /// and after CreateReader returns.
     Result<std::unique_ptr<BatchReader>> CreateReaderWithPredicateProvider(
         const BinaryRow& partition, int32_t bucket,
         const std::vector<std::shared_ptr<DataFileMeta>>& files, DeletionVector::Factory dv_factory,
@@ -106,6 +111,8 @@ class RawFileSplitRead : public AbstractSplitRead {
  protected:
     Result<std::unique_ptr<FileBatchReader>> CreatePreciseFileIndexReader(
         const BinaryRow& partition, const std::shared_ptr<DataFileMeta>& file,
+        const std::shared_ptr<arrow::Schema>& read_schema,
+        const std::shared_ptr<Predicate>& predicate,
         const FieldMappingBuilder* field_mapping_builder, DeletionVector::Factory dv_factory,
         const std::optional<std::vector<Range>>& row_ranges,
         const std::shared_ptr<DataFilePathFactory>& path_factory,

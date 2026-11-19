@@ -32,6 +32,7 @@
 #include "paimon/data/decimal.h"
 #include "paimon/defs.h"
 #include "paimon/predicate/compound_predicate.h"
+#include "paimon/predicate/function.h"
 #include "paimon/predicate/leaf_predicate.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate.h"
@@ -57,6 +58,14 @@ class PredicateValidator {
             // check field type (predicate vs. literals)
             auto field_type = leaf_predicate->GetFieldType();
             const auto& literals = leaf_predicate->Literals();
+            const Function& function = leaf_predicate->GetFunction();
+            if ((function.GetType() == Function::Type::IN ||
+                 function.GetType() == Function::Type::NOT_IN) &&
+                literals.empty()) {
+                return Status::Invalid(
+                    fmt::format("literals cannot be empty in {} predicate, field name {}",
+                                function.ToString(), field_name));
+            }
             for (const auto& literal : literals) {
                 if (literal.IsNull()) {
                     return Status::Invalid(fmt::format(

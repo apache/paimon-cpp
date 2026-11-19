@@ -184,6 +184,15 @@ Result<std::shared_ptr<RangeBitmapFileIndexReader>> RangeBitmapFileIndexTest::Cr
     return CreateReaderFromArray(arrow_type, struct_array->field(0), options, serialized_bytes_out);
 }
 
+TEST_F(RangeBitmapFileIndexTest, TestEmptyLiterals) {
+    PAIMON_UNIQUE_PTR<Bytes> bytes;
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RangeBitmapFileIndexReader> reader,
+                         CreateReaderFromJson(arrow::int32(), "[[1], [null]]", {}, &bytes));
+    ASSERT_TRUE(reader);
+    ASSERT_NOK_WITH_MSG(reader->VisitIn({}), "literals cannot be empty in In predicate");
+    ASSERT_NOK_WITH_MSG(reader->VisitNotIn({}), "literals cannot be empty in NotIn predicate");
+}
+
 // Test with all NULL values
 TEST_F(RangeBitmapFileIndexTest, TestAllNullValues) {
     constexpr int32_t num_rows = 10;

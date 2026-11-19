@@ -517,6 +517,8 @@ void FileReaderWrapper::DispatchPreBuffer(std::vector<::arrow::io::ReadRange> ra
 Status FileReaderWrapper::PrepareForReading(const std::vector<TargetRowGroup>& target_row_groups,
                                             const std::vector<int32_t>& column_indices) {
     try {
+        current_page_filtered_reader_.reset();
+        filtered_global_offset_ = 0;
         target_row_groups_ = target_row_groups;
         target_column_indices_ = column_indices;
 

@@ -23,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <queue>
+#include <string>
 #include <vector>
 
 #include "paimon/common/executor/future.h"
@@ -88,6 +89,8 @@ class BucketedAppendCompactManager : public CompactFutureManager {
     void RequestCancelCompaction() override;
 
     Status TriggerCompaction(bool full_compaction) override;
+
+    Status CompactFiles(const std::vector<std::string>& file_names);
 
     bool ShouldWaitForLatestCompaction() const override {
         return false;
@@ -166,7 +169,7 @@ class BucketedAppendCompactManager : public CompactFutureManager {
         bool materialize_dv_on_commit_;
     };
 
-    /// A `CompactTask` impl for append-only table auto-compaction.
+    /// A `CompactTask` impl for selected append-only files.
     ///
     /// This task accepts an already-picked candidate to perform one-time rewrite. And for the
     /// rest of input files, it is the duty of `AppendOnlyWriter` to invoke the next time
@@ -202,6 +205,7 @@ class BucketedAppendCompactManager : public CompactFutureManager {
     std::optional<std::vector<std::shared_ptr<DataFileMeta>>> PickCompactBefore();
     Status TriggerFullCompaction();
     void TriggerCompactionWithBestEffort();
+    void SubmitCompaction(const std::vector<std::shared_ptr<DataFileMeta>>& files);
 
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<BucketedDvMaintainer> dv_maintainer_;
@@ -217,6 +221,7 @@ class BucketedAppendCompactManager : public CompactFutureManager {
     // If true, compaction leaves DV file generation to commit using the latest snapshot;
     // otherwise, compaction generates its DV files before commit.
     bool materialize_dv_on_commit_;
+    bool custom_compaction_ = false;
 };
 
 }  // namespace paimon

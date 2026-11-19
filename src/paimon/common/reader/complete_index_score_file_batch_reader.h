@@ -56,16 +56,7 @@ class CompleteIndexScoreFileBatchReader : public FileBatchReader {
     std::shared_ptr<Metrics> GetReaderMetrics() const override;
 
  private:
-    Result<int32_t> GetScoreFieldIndex(const arrow::StructType* struct_type,
-                                       const std::string& field_name);
-
-    Result<std::shared_ptr<arrow::Array>> PrepareScoreArray(const std::string& field_name,
-                                                            const std::vector<float>& scores,
-                                                            int64_t row_count,
-                                                            const RoaringBitmap32& bitmap) const;
-
     size_t score_cursor_ = 0;
-    std::map<std::string, int32_t> index_score_field_indices_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::unique_ptr<FileBatchReader> reader_;
     std::map<std::string, std::vector<float>> scores_;

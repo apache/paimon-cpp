@@ -20,10 +20,8 @@
 #pragma once
 
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <optional>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -56,10 +54,10 @@ class PageFilteredRowGroupReader {
     /// @param pre_buffered If true, assumes PreBuffer was already called externally
     ///        and only waits via WhenBuffered (no redundant PreBuffer).
     /// @param page_ranges If non-empty, wait via WhenBufferedRanges instead of WhenBuffered
-    /// @param max_chunksize Per-batch row cap for the returned reader.
+    /// @param max_chunksize Positive per-batch row cap for the returned reader.
     /// @param row_group_page_index_reader Reusable page-index reader for the target row group
     /// @param pool Memory pool
-    /// @param arrow_file_reader The Arrow FileReader for ColumnReader tree creation
+    /// @param arrow_file_reader Arrow FileReader, which must outlive the returned reader
     /// @return A RecordBatchReader streaming the filtered rows.
     static Result<std::unique_ptr<arrow::RecordBatchReader>> ReadFilteredRowGroup(
         const TargetRowGroup& target_row_group, const std::vector<int32_t>& column_indices,
@@ -78,6 +76,8 @@ class PageFilteredRowGroupReader {
         ::parquet::ParquetFileReader* parquet_reader);
 
  private:
+    class FilteredRecordBatchReader;
+
     struct DataPageReadPlan {
         int64_t first_data_page_offset;
         std::vector<::parquet::DataPageReadPlanEntry> data_pages;
@@ -105,31 +105,9 @@ class PageFilteredRowGroupReader {
         const ::parquet::ColumnChunkMetaData& column_chunk, int64_t row_group_row_count);
 
     /// Compute compressed RowRanges after the direct read plan skips non-matching pages.
-    static std::pair<RowRanges, int64_t> ComputeCompressedRowRanges(
+    static RowRanges ComputeCompressedRowRanges(
         const RowRanges& original_ranges,
         const std::shared_ptr<::parquet::OffsetIndex>& offset_index, int64_t row_group_row_count);
-
-    /// Reset the given leaf and replay the skip/read pattern derived from `ranges`
-    /// directly against the ColumnReader (ResetLeaf + SkipRecords/ReadRecords).
-    /// `total` is the leaf's compressed-space size, which bounds the levels
-    /// SkipRecords walks; `reserve_values` / `reserve_value_bytes` describe what the
-    /// pattern will actually append, so a variable-width leaf can size its Arrow
-    /// builder once instead of doubling it per decoded batch.
-    static Status ExecuteSkipReadPattern(int col_idx, const RowRanges& ranges, int64_t total,
-                                         int64_t reserve_values, int64_t reserve_value_bytes,
-                                         ::parquet::arrow::ColumnReader* column_reader);
-
-    /// Read a field (flat or nested) using ColumnReader tree.
-    /// Sets a direct page read plan on all leaves via factory, then drives each leaf
-    /// independently via ResetLeaf/SkipRecords/ReadRecords using its own
-    /// compressed_ranges.
-    /// `column_indices` holds `int` rather than `int32_t` because the set is
-    /// handed straight to Arrow's `FileReader::GetColumn` (to avoid reconstruction and deep copy)
-    static Result<std::shared_ptr<arrow::ChunkedArray>> ReadFilteredField(
-        const std::shared_ptr<::parquet::RowGroupPageIndexReader>& rg_page_index_reader,
-        int32_t row_group_index, int32_t field_index,
-        std::shared_ptr<std::unordered_set<int>> column_indices, const RowRanges& row_ranges,
-        int64_t row_group_row_count, ::parquet::arrow::FileReader* arrow_file_reader);
 };
 
 }  // namespace paimon::parquet

@@ -103,8 +103,8 @@ struct PAIMON_EXPORT FullTextSearch {
     int32_t limit;
     /// The row ids to search within, aligned with Java `includeRowIds`. The row id domain is
     /// determined by the reader: global row ids for GlobalIndexReader and physical file-local row
-    /// ids for FileIndexReader. Only these rows are ranked, so an empty set matches no rows. If not
-    /// set, all rows are searched.
+    /// ids for FileIndexReader, and real-time offsets for RealtimeIndexReader. Only these rows are
+    /// ranked, so an empty set matches no rows. If not set, all rows are searched.
     std::optional<RoaringBitmap64> include_row_ids;
 };
 }  // namespace paimon

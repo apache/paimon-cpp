@@ -58,6 +58,12 @@ TEST(EmptyFileIndexReaderTest, TestSimple) {
     ASSERT_TRUE(reader.VisitNotIn({lit0}).value()->IsRemain().value());
 }
 
+TEST(EmptyFileIndexReaderTest, TestEmptyLiterals) {
+    EmptyFileIndexReader reader(/*search_types=*/{});
+    ASSERT_NOK_WITH_MSG(reader.VisitIn({}), "literals cannot be empty in In predicate");
+    ASSERT_NOK_WITH_MSG(reader.VisitNotIn({}), "literals cannot be empty in NotIn predicate");
+}
+
 TEST(EmptyFileIndexReaderTest, TestVectorSearchReturnsNoMatches) {
     EmptyFileIndexReader reader(/*search_types=*/{});
     auto search = std::make_shared<VectorSearch>(

@@ -93,6 +93,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(128 * 1024 * 1024L, core_options.GetSourceSplitTargetSize());
     ASSERT_EQ(4 * 1024 * 1024L, core_options.GetSourceSplitOpenFileCost());
     ASSERT_EQ(1024, core_options.GetReadBatchSize());
+    ASSERT_EQ(4, core_options.GetReadPreparationWindow());
     ASSERT_EQ(1024, core_options.GetWriteBatchSize());
     ASSERT_EQ(256 * 1024 * 1024, core_options.GetWriteBufferSize());
     ASSERT_TRUE(core_options.GetWriteBufferSpillable());
@@ -123,7 +124,7 @@ TEST(CoreOptionsTest, TestDefaultValue) {
     ASSERT_EQ(SortEngine::LOSER_TREE, core_options.GetSortEngine());
     ASSERT_FALSE(core_options.IgnoreDelete());
     ASSERT_FALSE(core_options.WriteOnly());
-    ASSERT_FALSE(core_options.BucketAppendOrdered());
+    ASSERT_TRUE(core_options.BucketAppendOrdered());
     ASSERT_EQ(CoreOptions::SequenceNumberInitMode::SCAN,
               core_options.WriteSequenceNumberInitMode());
     ASSERT_EQ(5, core_options.GetCompactionMinFileNum());
@@ -237,6 +238,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::SOURCE_SPLIT_TARGET_SIZE, "24MB"},
         {Options::SOURCE_SPLIT_OPEN_FILE_COST, "32MB"},
         {Options::READ_BATCH_SIZE, "2048"},
+        {Options::READ_PREPARATION_WINDOW, "8"},
         {Options::WRITE_BUFFER_SIZE, "16MB"},
         {Options::WRITE_BATCH_SIZE, "1234"},
         {Options::WRITE_BUFFER_SPILLABLE, "false"},
@@ -320,7 +322,7 @@ TEST(CoreOptionsTest, TestFromMap) {
         {Options::GLOBAL_INDEX_EXTERNAL_PATH, "FILE:///tmp/global_index/"},
         {Options::SCAN_TAG_NAME, "test-tag"},
         {Options::WRITE_ONLY, "true"},
-        {Options::BUCKET_APPEND_ORDERED, "true"},
+        {Options::BUCKET_APPEND_ORDERED, "false"},
         {Options::WRITE_SEQUENCE_NUMBER_INIT_MODE, "snapshot"},
         {Options::COMPACTION_MIN_FILE_NUM, "10"},
         {Options::COMPACTION_FORCE_REWRITE_ALL_FILES, "true"},
@@ -392,6 +394,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(24 * 1024 * 1024L, core_options.GetSourceSplitTargetSize());
     ASSERT_EQ(32 * 1024 * 1024L, core_options.GetSourceSplitOpenFileCost());
     ASSERT_EQ(2048, core_options.GetReadBatchSize());
+    ASSERT_EQ(8, core_options.GetReadPreparationWindow());
     ASSERT_EQ(1234, core_options.GetWriteBatchSize());
     ASSERT_EQ(16 * 1024 * 1024, core_options.GetWriteBufferSize());
     ASSERT_FALSE(core_options.GetWriteBufferSpillable());
@@ -501,7 +504,7 @@ TEST(CoreOptionsTest, TestFromMap) {
     ASSERT_EQ(375809637, core_options.GetCompactionFileSize(/*has_primary_key=*/true));
     ASSERT_EQ(375809637, core_options.GetCompactionFileSize(/*has_primary_key=*/false));
     ASSERT_TRUE(core_options.WriteOnly());
-    ASSERT_TRUE(core_options.BucketAppendOrdered());
+    ASSERT_FALSE(core_options.BucketAppendOrdered());
     ASSERT_EQ(CoreOptions::SequenceNumberInitMode::SNAPSHOT,
               core_options.WriteSequenceNumberInitMode());
     ASSERT_EQ(10, core_options.GetCompactionMinFileNum());
@@ -594,6 +597,26 @@ TEST(CoreOptionsTest, TestInvalidCase) {
                          CoreOptions::FromMap({{"fields.f0.count-limit", "-1"}}));
     ASSERT_NOK_WITH_MSG(negative_limit.FieldNestedUpdateAggCountLimit("f0"),
                         "must not be negative");
+}
+
+TEST(CoreOptionsTest, TestReadPreparationWindow) {
+    for (int32_t window : {1, std::numeric_limits<int32_t>::max()}) {
+        SCOPED_TRACE(window);
+        ASSERT_OK_AND_ASSIGN(
+            CoreOptions options,
+            CoreOptions::FromMap({{Options::READ_PREPARATION_WINDOW, std::to_string(window)}}));
+        ASSERT_EQ(window, options.GetReadPreparationWindow());
+    }
+    for (const std::string value : {"0", "-1", "-2147483648"}) {
+        SCOPED_TRACE(value);
+        ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::READ_PREPARATION_WINDOW, value}}),
+                            "read.preparation-window must be positive");
+    }
+    for (const std::string value : {"invalid", "1.5", "2147483648"}) {
+        SCOPED_TRACE(value);
+        ASSERT_NOK_WITH_MSG(CoreOptions::FromMap({{Options::READ_PREPARATION_WINDOW, value}}),
+                            "Invalid Config [read.preparation-window:");
+    }
 }
 
 TEST(CoreOptionsTest, TestRejectBranchLeavingTableRoot) {
@@ -1210,6 +1233,7 @@ TEST(CoreOptionsTest, TestCopyAssignmentOperator) {
         {Options::PARTITION_DEFAULT_NAME, "foo"},
         {Options::MANIFEST_MERGE_MIN_COUNT, "2"},
         {Options::READ_BATCH_SIZE, "2048"},
+        {Options::READ_PREPARATION_WINDOW, "8"},
         {Options::WRITE_BATCH_SIZE, "1234"},
         {Options::WRITE_BUFFER_SIZE, "16MB"},
         {Options::WRITE_BUFFER_SPILLABLE, "false"},
@@ -1255,6 +1279,7 @@ TEST(CoreOptionsTest, TestCopyAssignmentOperator) {
     ASSERT_EQ("foo", target.GetPartitionDefaultName());
     ASSERT_EQ(2, target.GetManifestMergeMinCount());
     ASSERT_EQ(2048, target.GetReadBatchSize());
+    ASSERT_EQ(8, target.GetReadPreparationWindow());
     ASSERT_EQ(1234, target.GetWriteBatchSize());
     ASSERT_EQ(16 * 1024 * 1024L, target.GetWriteBufferSize());
     ASSERT_FALSE(target.GetWriteBufferSpillable());

@@ -107,6 +107,24 @@ class BitmapIndexTest : public ::testing::Test {
     std::shared_ptr<MemoryPool> pool_;
 };
 
+TEST_F(BitmapIndexTest, TestEmptyLiterals) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
+                         (CreateArray<arrow::Int32Builder, int32_t>(arrow::int32(), {1, 2})));
+    for (int32_t version : {BitmapFileIndex::VERSION_1, BitmapFileIndex::VERSION_2}) {
+        ASSERT_OK_AND_ASSIGN(PAIMON_UNIQUE_PTR<Bytes> bytes,
+                             WriteIndex(arrow::int32(), version, array));
+        auto input_stream = std::make_shared<ByteArrayInputStream>(bytes->data(), bytes->size());
+        BitmapFileIndex file_index({});
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<FileIndexReader> reader,
+            file_index.CreateReader(CreateArrowSchema(arrow::int32()).get(),
+                                    /*start=*/0, /*length=*/bytes->size(), input_stream, pool_));
+        ASSERT_TRUE(reader);
+        ASSERT_NOK_WITH_MSG(reader->VisitIn({}), "literals cannot be empty in In predicate");
+        ASSERT_NOK_WITH_MSG(reader->VisitNotIn({}), "literals cannot be empty in NotIn predicate");
+    }
+}
+
 TEST_F(BitmapIndexTest, TestStringType) {
     // data: a, null, b, null, a
     auto type = arrow::utf8();

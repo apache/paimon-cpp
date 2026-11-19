@@ -152,6 +152,8 @@ class AbstractFileStoreWrite : public FileStoreWrite {
                                             const RealtimeOffsetMap& committed_offsets,
                                             const RealtimeDataFileMap& committed_data_files);
 
+    Result<std::shared_ptr<BatchWriter>> GetWriter(const BinaryRow& partition, int32_t bucket);
+
     Result<std::shared_ptr<RestoreFiles>> ScanExistingFileMetas(const BinaryRow& partition,
                                                                 int32_t bucket) const;
     int32_t GetDefaultBucketNum() const;
@@ -184,7 +186,6 @@ class AbstractFileStoreWrite : public FileStoreWrite {
     void InvalidateRealtimeContext();
     Status PoisonRealtimeWrite(const Status& cause);
 
-    Result<std::shared_ptr<BatchWriter>> GetWriter(const BinaryRow& partition, int32_t bucket);
     Result<std::vector<RealtimeCommitProgress>> PrepareRealtimeCommit();
 
  private:

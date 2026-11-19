@@ -22,6 +22,7 @@
 
 #include "arrow/c/bridge.h"
 #include "paimon/common/file_index/empty/empty_file_index_reader.h"
+#include "paimon/common/file_index/file_index_format_utils.h"
 #include "paimon/common/io/byte_array_output_stream.h"
 #include "paimon/common/io/data_output_stream.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
@@ -308,6 +309,37 @@ Result<std::shared_ptr<Bytes>> MockSearchFileIndex::MakeQueryIndex(
     FileIndexFormat::ColumnIndexes indexes;
     PAIMON_ASSIGN_OR_RAISE(indexes[field_name][index_type], MakeQueryPayload(queries, pool));
     return Serialize(indexes, pool);
+}
+
+Result<FileIndexFormat::ColumnIndexes> MockSearchFileIndex::ReadIndexes(
+    const std::shared_ptr<InputStream>& input, const std::shared_ptr<MemoryPool>& pool) {
+    FileIndexFormat::ColumnIndexes indexes;
+    if (!input) {
+        return indexes;
+    }
+    DataInputStream in(input);
+    PAIMON_RETURN_NOT_OK(in.Seek(0));
+    PAIMON_ASSIGN_OR_RAISE(FileIndexFormatUtils::FileIndexEntries entries,
+                           FileIndexFormatUtils::ReadIndexEntries(input, pool));
+    PAIMON_ASSIGN_OR_RAISE(int64_t length, in.Length());
+    for (const auto& [column, types] : entries) {
+        for (const auto& [type, bounds] : types) {
+            const auto& [offset, size] = bounds;
+            if (offset == FileIndexFormat::EMPTY_INDEX_FLAG) {
+                indexes[column][type] = nullptr;
+                continue;
+            }
+            if (offset < 0 || offset > length || size < 0 || size > length - offset) {
+                return Status::Invalid(
+                    "Invalid file index payload bounds while merging test indexes");
+            }
+            auto bytes = std::make_shared<Bytes>(static_cast<size_t>(size), pool.get());
+            PAIMON_RETURN_NOT_OK(in.Seek(offset));
+            PAIMON_RETURN_NOT_OK(in.ReadBytes(bytes.get()));
+            indexes[column][type] = std::move(bytes);
+        }
+    }
+    return indexes;
 }
 
 Result<std::shared_ptr<Bytes>> MockSearchFileIndex::Serialize(
