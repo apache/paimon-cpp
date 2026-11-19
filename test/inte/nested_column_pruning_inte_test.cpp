@@ -33,12 +33,10 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/string_utils.h"
-#include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
 #include "paimon/file_store_write.h"
-#include "paimon/fs/file_system_factory.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/read_context.h"
@@ -419,10 +417,7 @@ TEST_P(NestedColumnPruningInteTest, QueryStructSubFieldsWithNonExistentField) {
                         "does not support schema evolution inside struct");
 }
 
-// Test: Nested schema divergence (simulated evolution mismatch) must fail fast
-// instead of silently skipping nested fields.
-TEST_P(NestedColumnPruningInteTest, QueryStructSubFieldsWithTypeMismatchShouldFail) {
-    // File schema (old): f1.a is INT32.
+TEST_P(NestedColumnPruningInteTest, NestedTypeMismatchFailsWhenReadingSplit) {
     auto struct_type = arrow::struct_({
         arrow::field("a", arrow::int32()),
         arrow::field("b", arrow::utf8()),
@@ -450,148 +445,42 @@ TEST_P(NestedColumnPruningInteTest, QueryStructSubFieldsWithTypeMismatchShouldFa
     ASSERT_OK_AND_ASSIGN(auto batch,
                          TestHelper::MakeRecordBatch(arrow::struct_(table_fields), data,
                                                      /*partition_map=*/{}, /*bucket=*/0, {}));
-    int64_t commit_identifier = 0;
-    ASSERT_OK_AND_ASSIGN(auto commit_msgs,
-                         helper->WriteAndCommit(std::move(batch), commit_identifier++,
-                                                /*expected_commit_messages=*/std::nullopt));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
 
-    // Persist schema-2 on disk so table latest schema diverges from old data files.
-    std::string file_system_identifier = "local";
-    auto fs_iter = options.find(Options::FILE_SYSTEM);
-    if (fs_iter != options.end()) {
-        file_system_identifier = StringUtils::ToLowerCase(fs_iter->second);
-    }
-    ASSERT_OK_AND_ASSIGN(auto file_system,
-                         FileSystemFactory::Get(file_system_identifier, table_path_, options));
-    std::shared_ptr<FileSystem> schema_fs(std::move(file_system));
-
-    SchemaManager schema_manager(schema_fs, table_path_);
-    ASSERT_OK_AND_ASSIGN(auto latest_schema_opt, schema_manager.Latest());
-    ASSERT_TRUE(latest_schema_opt.has_value());
-    auto latest_schema = latest_schema_opt.value();
-
-    auto schema_v2_arrow = arrow::schema({
+    auto evolved_schema = arrow::schema({
         arrow::field("f0", arrow::int32()),
         arrow::field("f1", arrow::struct_({
                                arrow::field("a", arrow::utf8()),
                                arrow::field("b", arrow::utf8()),
                            })),
     });
-    ASSERT_OK_AND_ASSIGN(
-        auto schema_v2,
-        TableSchema::Create(/*schema_id=*/latest_schema->Id() + 1, schema_v2_arrow,
-                            latest_schema->PartitionKeys(), latest_schema->PrimaryKeys(),
-                            latest_schema->Options()));
-    ASSERT_OK_AND_ASSIGN(auto schema_v2_json, schema_v2->ToJsonString());
-    auto schema_v2_path = PathUtil::JoinPath(schema_manager.SchemaDirectory(),
-                                             "schema-" + std::to_string(schema_v2->Id()));
-    ASSERT_OK(schema_fs->AtomicStore(schema_v2_path, schema_v2_json));
+    ASSERT_OK_AND_ASSIGN(auto evolved_table,
+                         TableSchema::Create(1, evolved_schema, {}, {}, options));
+    ASSERT_OK(TestHelper::WriteNextSchema(dir_->GetFileSystem(), table_path_,
+                                          evolved_table->Fields(), evolved_table->HighestFieldId(),
+                                          options));
 
     ASSERT_OK_AND_ASSIGN(auto data_splits,
                          helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
     ASSERT_FALSE(data_splits.empty());
 
-    ReadContextBuilder read_context_builder(table_path_);
-    read_context_builder.SetOptions(options);
-    ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
-
-    ASSERT_NOK_WITH_MSG(table_read->CreateReader(data_splits),
-                        "PruneDataType nested field type mismatch for 'a': read string vs "
-                        "data int32");
-}
-
-// Test: With SetReadSchema using the new schema, context build should pass,
-// and mismatch against old file type should be rejected in reader creation.
-TEST_P(NestedColumnPruningInteTest,
-       QueryStructSubFieldsWithTypeMismatchAndSetReadSchemaFailAtContext) {
-    // File schema (old): f1.a is INT32.
-    auto struct_type = arrow::struct_({
-        arrow::field("a", arrow::int32()),
-        arrow::field("b", arrow::utf8()),
-    });
-    arrow::FieldVector table_fields = {
-        arrow::field("f0", arrow::int32()),
-        arrow::field("f1", struct_type),
-    };
-    auto table_schema = arrow::schema(table_fields);
-
-    std::map<std::string, std::string> options = {
-        {Options::FILE_FORMAT, StringUtils::ToUpperCase(file_format_)},
-        {Options::TARGET_FILE_SIZE, "1024"},
-        {Options::BUCKET, "-1"},
-    };
-
-    ASSERT_OK_AND_ASSIGN(
-        auto helper, TestHelper::Create(test_dir_, table_schema, /*partition_keys=*/{},
-                                        /*primary_keys=*/{}, options, /*is_streaming_mode=*/false));
-
-    std::string data = R"([
-        [1, [11, "x"]],
-        [2, [22, "y"]]
-    ])";
-    ASSERT_OK_AND_ASSIGN(auto batch,
-                         TestHelper::MakeRecordBatch(arrow::struct_(table_fields), data,
-                                                     /*partition_map=*/{}, /*bucket=*/0, {}));
-    int64_t commit_identifier = 0;
-    ASSERT_OK_AND_ASSIGN(auto commit_msgs,
-                         helper->WriteAndCommit(std::move(batch), commit_identifier++,
-                                                /*expected_commit_messages=*/std::nullopt));
-
-    // Persist schema-2 on disk so table latest schema diverges from old data files.
-    std::string file_system_identifier = "local";
-    auto fs_iter = options.find(Options::FILE_SYSTEM);
-    if (fs_iter != options.end()) {
-        file_system_identifier = StringUtils::ToLowerCase(fs_iter->second);
+    for (bool set_read_schema : {false, true}) {
+        SCOPED_TRACE(set_read_schema);
+        ReadContextBuilder builder(table_path_);
+        builder.SetOptions(options);
+        if (set_read_schema) {
+            auto c_schema = std::make_unique<ArrowSchema>();
+            ASSERT_TRUE(arrow::ExportSchema(*evolved_schema, c_schema.get()).ok());
+            builder.SetReadSchema(std::move(c_schema));
+        }
+        ASSERT_OK_AND_ASSIGN(auto read_context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                             table_read->CreateReader(data_splits));
+        ASSERT_NOK_WITH_MSG(reader->NextBatch(),
+                            "PruneDataType nested field type mismatch for 'a': read string vs "
+                            "data int32");
     }
-    ASSERT_OK_AND_ASSIGN(auto file_system,
-                         FileSystemFactory::Get(file_system_identifier, table_path_, options));
-    std::shared_ptr<FileSystem> schema_fs(std::move(file_system));
-
-    SchemaManager schema_manager(schema_fs, table_path_);
-    ASSERT_OK_AND_ASSIGN(auto latest_schema_opt, schema_manager.Latest());
-    ASSERT_TRUE(latest_schema_opt.has_value());
-    auto latest_schema = latest_schema_opt.value();
-
-    auto schema_v2_arrow = arrow::schema({
-        arrow::field("f0", arrow::int32()),
-        arrow::field("f1", arrow::struct_({
-                               arrow::field("a", arrow::utf8()),
-                               arrow::field("b", arrow::utf8()),
-                           })),
-    });
-    ASSERT_OK_AND_ASSIGN(
-        auto schema_v2,
-        TableSchema::Create(/*schema_id=*/latest_schema->Id() + 1, schema_v2_arrow,
-                            latest_schema->PartitionKeys(), latest_schema->PrimaryKeys(),
-                            latest_schema->Options()));
-    ASSERT_OK_AND_ASSIGN(auto schema_v2_json, schema_v2->ToJsonString());
-    auto schema_v2_path = PathUtil::JoinPath(schema_manager.SchemaDirectory(),
-                                             "schema-" + std::to_string(schema_v2->Id()));
-    ASSERT_OK(schema_fs->AtomicStore(schema_v2_path, schema_v2_json));
-
-    // User-provided read schema uses latest nested type (a:string).
-    auto projected_schema = arrow::schema({
-        arrow::field("f0", arrow::int32()),
-        arrow::field("f1", arrow::struct_({
-                               arrow::field("a", arrow::utf8()),
-                               arrow::field("b", arrow::utf8()),
-                           })),
-    });
-    auto c_schema = std::make_unique<ArrowSchema>();
-    ASSERT_TRUE(arrow::ExportSchema(*projected_schema, c_schema.get()).ok());
-
-    ReadContextBuilder read_context_builder(table_path_);
-    read_context_builder.SetOptions(options).SetReadSchema(std::move(c_schema));
-    ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
-    ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
-    ASSERT_OK_AND_ASSIGN(auto data_splits,
-                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
-    ASSERT_FALSE(data_splits.empty());
-
-    ASSERT_NOK_WITH_MSG(table_read->CreateReader(data_splits),
-                        "PruneDataType nested field type mismatch for 'a': read string vs "
-                        "data int32");
 }
 
 // Test: Read only top-level fields, skip struct entirely.
@@ -1468,8 +1357,9 @@ TEST_P(NestedColumnPruningInteTest, PruneListStructSubFields) {
     read_context_builder.SetOptions(options).SetReadSchema(std::move(c_schema));
     ASSERT_OK_AND_ASSIGN(auto read_context, read_context_builder.Finish());
     ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
-    auto create_reader_result = table_read->CreateReader(data_splits);
-    ASSERT_NOK_WITH_MSG(create_reader_result, "partial projection inside list");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                         table_read->CreateReader(data_splits));
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "partial projection inside list");
 }
 
 std::vector<std::string> GetTestValuesForNestedColumnPruningInteTest() {

@@ -21,6 +21,9 @@
 
 #include "arrow/c/bridge.h"
 #include "paimon/common/utils/arrow/status_utils.h"
+#include "paimon/common/utils/options_utils.h"
+#include "paimon/format/vortex/vortex_defs.h"
+#include "paimon/format/vortex/vortex_predicate_converter.h"
 #include "paimon/format/vortex/vortex_reader_builder.h"
 #include "paimon/format/vortex/vortex_stats_extractor.h"
 #include "paimon/format/vortex/vortex_writer_builder.h"
@@ -29,7 +32,19 @@ namespace paimon::vortex {
 
 Result<std::unique_ptr<ReaderBuilder>> VortexFileFormat::CreateReaderBuilder(
     int32_t batch_size) const {
-    return std::make_unique<VortexReaderBuilder>(batch_size);
+    VortexPredicateOptions predicate_options;
+    PAIMON_ASSIGN_OR_RAISE(
+        predicate_options.max_in_values,
+        OptionsUtils::GetValueFromMap<uint32_t>(options_, kVortexReadInPushdownMaxValues,
+                                                kDefaultVortexReadInPushdownMaxValues));
+    VortexIoCoalesceOptions coalesce_options;
+    PAIMON_ASSIGN_OR_RAISE(coalesce_options.max_gap, OptionsUtils::GetValueFromMap<uint64_t>(
+                                                         options_, kVortexReadIoCoalesceMaxGap,
+                                                         kDefaultVortexReadIoCoalesceMaxGap));
+    PAIMON_ASSIGN_OR_RAISE(coalesce_options.max_size, OptionsUtils::GetValueFromMap<uint64_t>(
+                                                          options_, kVortexReadIoCoalesceMaxSize,
+                                                          kDefaultVortexReadIoCoalesceMaxSize));
+    return std::make_unique<VortexReaderBuilder>(batch_size, predicate_options, coalesce_options);
 }
 
 Result<std::unique_ptr<WriterBuilder>> VortexFileFormat::CreateWriterBuilder(

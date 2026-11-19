@@ -401,6 +401,8 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// data to compute exact matching rows. Only scalar predicates may be evaluated without an
     /// index. Score output must use named projections such as _<field>_INDEX_SCORE;
     /// projecting _INDEX_SCORE by name, field ID or read schema is not supported in this mode.
+    /// Real-time append and deduplicate reads use pinned offsets and exact scalar indexes,
+    /// scanning predicates that have no exact index. Real-time primary-key merge is not supported.
     /// The default is false.
     /// @param enabled Whether to compute exact result row positions during file-index evaluation.
     /// @return Reference to this builder for method chaining.

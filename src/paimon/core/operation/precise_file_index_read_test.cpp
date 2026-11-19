@@ -32,6 +32,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/file_index/bitmap/bitmap_file_index.h"
+#include "paimon/common/index/index_reader_utils.h"
 #include "paimon/common/predicate/leaf_predicate_impl.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/core/deletionvectors/bitmap64_deletion_vector.h"
@@ -184,7 +185,8 @@ class PreciseFileIndexReadTest : public ::testing::Test {
         const BinaryRow partition = BinaryRowGenerator::GenerateRow({10, 0}, pool_.get());
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<PreciseFileIndexRead> precise_read,
-            PreciseFileIndexRead::Create(*split_read, partition, file, field_mapping_builder.get(),
+            PreciseFileIndexRead::Create(*split_read, partition, file, context->GetReadSchema(),
+                                         context->GetPredicate(), field_mapping_builder.get(),
                                          path_factory, {}));
         if (!deletion_vector) {
             deletion_vector = std::make_shared<BitmapDeletionVector>(deleted_rows);
@@ -229,6 +231,40 @@ class PreciseFileIndexReadTest : public ::testing::Test {
     std::shared_ptr<MockSearchFileIndex::Statistics> statistics_ =
         std::make_shared<MockSearchFileIndex::Statistics>();
 };
+
+TEST_F(PreciseFileIndexReadTest, FullTextMatchPushesDownCandidates) {
+    using MatchResult = IndexReaderUtils::FullTextResult<RoaringBitmap32, ScoredFileIndexResult>;
+    auto reader = std::make_shared<MockSearchFileIndexReader>(
+        "f0", SearchIndexType::FULL_TEXT,
+        MockSearchFileIndex::ScoredRows{{2, 0.9f}, {0, 0.8f}, {1, 0.7f}}, statistics_);
+    auto match = std::make_shared<FullTextMatch>("f0", "all", RoaringBitmap64::From({0, 1}));
+    auto candidates = RoaringBitmap32::From({0, 2});
+    for (bool needs_scores : {false, true}) {
+        ASSERT_OK_AND_ASSIGN(MatchResult result, IndexReaderUtils::VisitFullTextMatch(
+                                                     reader, match, candidates, needs_scores));
+        // Inspect the adapter result before the evaluator's final intersection.
+        ASSERT_EQ(result.rows, RoaringBitmap32::From({0}));
+        if (needs_scores) {
+            ASSERT_NE(result.scores, nullptr);
+            ASSERT_EQ(result.scores->GetScores(), (std::vector<float>{0.8f}));
+        } else {
+            ASSERT_EQ(result.scores, nullptr);
+        }
+        ASSERT_EQ(*match->include_row_ids, RoaringBitmap64::From({0, 1}));
+    }
+    auto unrestricted = std::make_shared<FullTextMatch>("f0", "all", std::nullopt);
+    ASSERT_OK_AND_ASSIGN(MatchResult result, IndexReaderUtils::VisitFullTextMatch(
+                                                 reader, unrestricted, candidates, true));
+    ASSERT_EQ(result.rows, candidates);
+    ASSERT_NE(result.scores, nullptr);
+    ASSERT_EQ(result.scores->GetScores(), (std::vector<float>{0.8f, 0.9f}));
+    ASSERT_FALSE(unrestricted->include_row_ids.has_value());
+    ASSERT_OK_AND_ASSIGN(MatchResult empty, IndexReaderUtils::VisitFullTextMatch(
+                                                reader, match, RoaringBitmap32(), true));
+    ASSERT_TRUE(empty.rows.IsEmpty());
+    ASSERT_NE(empty.scores, nullptr);
+    ASSERT_TRUE(empty.scores->GetScores().empty());
+}
 
 TEST_F(PreciseFileIndexReadTest, TestMixedPredicateNestedAndOrWithPartitionConstants) {
     const std::string first_query = R"({"match":{"query":"first"}})";
@@ -685,6 +721,81 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateFullTextAndVectorScoresAfterF
              arrow::field("f3", arrow::float64()),
              arrow::field("_f0_INDEX_SCORE", arrow::float32())},
             case_id == 0 ? R"([[0.25,"Emily",13.1,0.5]])" : R"([[0.5,"Tony",14.1,0.75]])");
+    }
+}
+
+TEST_F(PreciseFileIndexReadTest, TestPredicateProviderFiltersExtraFieldsBeforeRootSearch) {
+    const std::string query = R"({"match":{"query":"ranked"}})";
+    for (bool vector_search : {false, true}) {
+        SCOPED_TRACE(vector_search);
+        const std::string score_field = vector_search ? "_f3_INDEX_SCORE" : "_f0_INDEX_SCORE";
+        ReadContextBuilder builder(SearchTablePath());
+        builder.EnablePreciseFileIndexEvaluate(true)
+            .SetReadFieldNames({"f0", score_field})
+            .SetPredicate(PredicateBuilder::Equal(0, "f0", FieldType::STRING,
+                                                  Literal(FieldType::STRING, "Bob", 3)));
+        if (vector_search) {
+            builder.SetVectorSearch(std::make_shared<VectorSearch>(
+                "f3", 1, std::vector<float>{1.0f}, nullptr, nullptr,
+                VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{}));
+        } else {
+            builder.SetFullTextSearch(std::make_shared<FullTextSearch>("f0", query, 1));
+        }
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> read_context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<RawFileSplitRead> split_read,
+                             CreateSplitRead(read_context));
+        const auto& context = split_read->context_;
+        ASSERT_EQ(-1, context->GetReadSchema()->GetFieldIndex("f3"));
+        arrow::FieldVector fields = context->GetReadSchema()->fields();
+        fields.push_back(DataField::ConvertDataFieldToArrowField(
+            DataField(3, arrow::field("f3", arrow::float64()))));
+        const auto read_schema = arrow::schema(fields, context->GetReadSchema()->metadata());
+        const MockSearchFileIndex::ScoredRows matches{{0, 0.9f}, {1, 0.8f}, {2, 0.7f}};
+        std::shared_ptr<Bytes> index;
+        if (vector_search) {
+            ASSERT_OK_AND_ASSIGN(
+                index, MockSearchFileIndex::MakeIndex("f3", MockSearchFileIndex::VECTOR_IDENTIFIER,
+                                                      matches, pool_));
+        } else {
+            ASSERT_OK_AND_ASSIGN(index, MockSearchFileIndex::MakeQueryIndex(
+                                            "f0", MockSearchFileIndex::FULL_TEXT_IDENTIFIER,
+                                            {{query, {matches, std::nullopt}}}, pool_));
+        }
+        auto first = PrepareDataFile();
+        first->embedded_index = index;
+        auto second = std::make_shared<DataFileMeta>(*first);
+        auto unfiltered = std::make_shared<DataFileMeta>(*first);
+        AbstractSplitRead::PredicateProvider provider =
+            [first, second](
+                const std::shared_ptr<DataFileMeta>& file) -> Result<std::shared_ptr<Predicate>> {
+            if (file == first) {
+                return PredicateBuilder::NotIn(2, "f3", FieldType::DOUBLE, {Literal(12.1)});
+            }
+            if (file == second) {
+                return PredicateBuilder::NotIn(2, "f3", FieldType::DOUBLE,
+                                               {Literal(12.1), Literal(13.1)});
+            }
+            return std::shared_ptr<Predicate>();
+        };
+        std::shared_ptr<DeletionVector> dv =
+            std::make_shared<BitmapDeletionVector>(RoaringBitmap32::From({0}));
+        DeletionVector::Factory dv_factory =
+            [dv](const std::string&) -> Result<std::shared_ptr<DeletionVector>> { return dv; };
+        auto paths = std::make_shared<DataFilePathFactory>();
+        ASSERT_OK(paths->Init(SearchTablePath() + "/f1=10/f2=0/bucket-0", "orc", "data-", nullptr));
+        const BinaryRow partition = BinaryRowGenerator::GenerateRow({10, 0}, pool_.get());
+        ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<FileBatchReader>> readers,
+                             split_read->CreateRawFileReadersWithPredicateProvider(
+                                 partition, {first, second, unfiltered}, read_schema, provider,
+                                 dv_factory, std::nullopt, paths, {}));
+        ASSERT_EQ(3, readers.size());
+        const std::vector<std::string> expected{R"([["Emily",0.8,13.1]])", R"([["Tony",0.7,14.1]])",
+                                                R"([["Emily",0.8,13.1]])"};
+        for (size_t i = 0; i < readers.size(); ++i) {
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
+                                 ReadResultCollector::CollectResult(std::move(readers[i])));
+            CheckSearchResult(result, fields, expected[i]);
+        }
     }
 }
 

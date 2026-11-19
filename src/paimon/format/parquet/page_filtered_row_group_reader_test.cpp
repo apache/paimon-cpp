@@ -30,6 +30,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -39,6 +40,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/io/api.h"
 #include "arrow/ipc/json_simple.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
@@ -84,19 +86,120 @@ class SyntheticOffsetIndex : public ::parquet::OffsetIndex {
 
 class SyntheticPageIndexReader : public ::parquet::RowGroupPageIndexReader {
  public:
-    explicit SyntheticPageIndexReader(std::shared_ptr<::parquet::OffsetIndex> index)
-        : index_(std::move(index)) {}
+    explicit SyntheticPageIndexReader(std::vector<std::shared_ptr<::parquet::OffsetIndex>> indexes)
+        : indexes_(std::move(indexes)) {}
 
     std::shared_ptr<::parquet::ColumnIndex> GetColumnIndex(int32_t) override {
         return nullptr;
     }
 
-    std::shared_ptr<::parquet::OffsetIndex> GetOffsetIndex(int32_t) override {
-        return index_;
+    std::shared_ptr<::parquet::OffsetIndex> GetOffsetIndex(int32_t column_index) override {
+        return indexes_.at(column_index);
     }
 
  private:
-    std::shared_ptr<::parquet::OffsetIndex> index_;
+    std::vector<std::shared_ptr<::parquet::OffsetIndex>> indexes_;
+};
+
+class MockArrowFileReader : public ::parquet::arrow::FileReader {
+ public:
+    MOCK_METHOD(arrow::Status, GetColumn,
+                (int32_t, std::unique_ptr<::parquet::arrow::ColumnReader>*), (override));
+    MOCK_METHOD(arrow::Status, GetColumn,
+                (int32_t, const std::shared_ptr<std::unordered_set<int32_t>>&,
+                 ::parquet::arrow::FileColumnIteratorFactory,
+                 std::unique_ptr<::parquet::arrow::ColumnReader>*),
+                (override));
+    MOCK_METHOD(arrow::Status, GetSchema, (std::shared_ptr<arrow::Schema>*), (override));
+    MOCK_METHOD(arrow::Status, ReadColumn, (int32_t, std::shared_ptr<arrow::ChunkedArray>*),
+                (override));
+    MOCK_METHOD(arrow::Status, GetRecordBatchReader, (std::unique_ptr<arrow::RecordBatchReader>*),
+                (override));
+    MOCK_METHOD(arrow::Status, GetRecordBatchReader,
+                (const std::vector<int32_t>&, std::unique_ptr<arrow::RecordBatchReader>*),
+                (override));
+    MOCK_METHOD(arrow::Status, GetRecordBatchReader,
+                (const std::vector<int32_t>&, const std::vector<int32_t>&,
+                 std::unique_ptr<arrow::RecordBatchReader>*),
+                (override));
+    MOCK_METHOD(arrow::Result<std::function<arrow::Future<std::shared_ptr<arrow::RecordBatch>>()>>,
+                GetRecordBatchGenerator,
+                (std::shared_ptr<::parquet::arrow::FileReader>, const std::vector<int32_t>,
+                 const std::vector<int32_t>, arrow::internal::Executor*, int64_t),
+                (override));
+    MOCK_METHOD(arrow::Status, ReadTable, (std::shared_ptr<arrow::Table>*), (override));
+    MOCK_METHOD(arrow::Status, ReadTable,
+                (const std::vector<int32_t>&, std::shared_ptr<arrow::Table>*), (override));
+    MOCK_METHOD(arrow::Status, ReadRowGroup,
+                (int32_t, const std::vector<int32_t>&, std::shared_ptr<arrow::Table>*), (override));
+    MOCK_METHOD(arrow::Status, ReadRowGroup, (int32_t, std::shared_ptr<arrow::Table>*), (override));
+    MOCK_METHOD(arrow::Status, ReadRowGroups,
+                (const std::vector<int32_t>&, const std::vector<int32_t>&,
+                 std::shared_ptr<arrow::Table>*),
+                (override));
+    MOCK_METHOD(arrow::Status, ReadRowGroups,
+                (const std::vector<int32_t>&, std::shared_ptr<arrow::Table>*), (override));
+    MOCK_METHOD(arrow::Status, ScanContents, (std::vector<int32_t>, int32_t, int64_t*), (override));
+    MOCK_METHOD(std::shared_ptr<::parquet::arrow::RowGroupReader>, RowGroup, (int32_t), (override));
+    MOCK_METHOD(int32_t, num_row_groups, (), (const, override));
+    MOCK_METHOD(::parquet::ParquetFileReader*, parquet_reader, (), (const, override));
+    MOCK_METHOD(void, set_use_threads, (bool), (override));
+    MOCK_METHOD(void, set_batch_size, (int64_t), (override));
+    MOCK_METHOD(const ::parquet::ArrowReaderProperties&, properties, (), (const, override));
+    MOCK_METHOD(const ::parquet::arrow::SchemaManifest&, manifest, (), (const, override));
+};
+
+// Keep real page filtering and decoding, but force small output chunks instead of requiring
+// enough binary data to exceed Arrow's array size limit.
+class RechunkingColumnReader : public ::parquet::arrow::ColumnReader {
+ public:
+    RechunkingColumnReader(std::unique_ptr<::parquet::arrow::ColumnReader> reader,
+                           int64_t chunk_size, std::vector<int64_t>* decoded_windows)
+        : reader_(std::move(reader)), chunk_size_(chunk_size), decoded_windows_(decoded_windows) {}
+
+    arrow::Status NextBatch(int64_t batch_size,
+                            std::shared_ptr<arrow::ChunkedArray>* out) override {
+        return reader_->NextBatch(batch_size, out);
+    }
+
+    std::vector<int32_t> LeafColumnIndices() const override {
+        return reader_->LeafColumnIndices();
+    }
+
+    arrow::Status ResetLeaf(int32_t column_index, int64_t records, int64_t values,
+                            int64_t value_bytes) override {
+        return reader_->ResetLeaf(column_index, records, values, value_bytes);
+    }
+
+    int64_t SkipRecords(int32_t column_index, int64_t rows) override {
+        return reader_->SkipRecords(column_index, rows);
+    }
+
+    int64_t ReadRecords(int32_t column_index, int64_t rows) override {
+        return reader_->ReadRecords(column_index, rows);
+    }
+
+    arrow::Status BuildArray(int64_t rows, std::shared_ptr<arrow::ChunkedArray>* out) override {
+        ARROW_RETURN_NOT_OK(reader_->BuildArray(rows, out));
+        if (rows == 0) {
+            return arrow::Status::OK();
+        }
+        decoded_windows_->push_back((*out)->length());
+        arrow::ArrayVector chunks;
+        for (const auto& chunk : (*out)->chunks()) {
+            for (int64_t offset = 0; offset < chunk->length(); offset += chunk_size_) {
+                chunks.push_back(
+                    chunk->Slice(offset, std::min(chunk_size_, chunk->length() - offset)));
+            }
+        }
+        *out = std::make_shared<arrow::ChunkedArray>(std::move(chunks), (*out)->type());
+        return arrow::Status::OK();
+    }
+
+ private:
+    std::unique_ptr<::parquet::arrow::ColumnReader> reader_;
+    int64_t chunk_size_;
+    std::vector<int64_t>* decoded_windows_;
 };
 }  // namespace
 
@@ -852,80 +955,152 @@ TEST_F(PageFilteredRowGroupReaderTest, ComputePageRangesMultiplePages) {
     ASSERT_LT(ranges[0].offset, ranges[1].offset);
 }
 
-/// Test: variable-length columns are streamed across multiple offset-normalized
-/// RecordBatches when batch_size is smaller than the matched row count, instead of
-/// being concatenated into a single RecordBatch via CombineChunks.
-///
-/// This verifies the alignment with Arrow's standard TableBatchReader path:
-/// multi-chunk binary/string columns split along chunk + batch_size boundaries. It
-/// asserts correctness and the multi-batch shape.
-TEST_F(PageFilteredRowGroupReaderTest, StringColumnMultiBatchStreaming) {
-    std::string file_name = dir_->Str() + "/string_multi_batch.parquet";
+TEST_F(PageFilteredRowGroupReaderTest, MultiColumnMultiBatchStreaming) {
+    std::string file_name = dir_->Str() + "/multi_column_multi_batch.parquet";
 
     arrow::StringBuilder str_builder;
     ASSERT_TRUE(str_builder.Reserve(60).ok());
-    // 6 pages of 10 rows each: prefix "p0_".."p5_" so each page has a distinct min/max.
     for (int32_t i = 0; i < 60; ++i) {
         std::string val =
             "p" + std::to_string(i / 10) + "_" + (i < 10 ? "0" : "") + std::to_string(i);
         ASSERT_TRUE(str_builder.Append(val).ok());
     }
     auto str_array = str_builder.Finish().ValueOrDie();
-    auto field = arrow::field("val", arrow::utf8());
-    auto struct_arr = arrow::StructArray::Make({str_array}, {field}).ValueOrDie();
+    arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                 arrow::field("val", arrow::utf8())};
+    auto data = arrow::StructArray::Make({MakeSequentialIntData(60)->field(0), str_array}, fields)
+                    .ValueOrDie();
 
-    WriteTestFile(file_name, struct_arr, /*write_batch_size=*/10, /*max_row_group_length=*/60);
+    WriteTestFile(file_name, data, /*write_batch_size=*/10, /*max_row_group_length=*/60);
 
-    // Predicate matches pages 2..5 (40 rows: "p2_20".."p5_59"). batch_size=7 forces
-    // the wrapper to surface multiple batches per page-filtered RG.
-    auto read_schema = arrow::schema({field});
+    auto read_schema = arrow::schema(fields);
     auto predicate = PredicateBuilder::GreaterOrEqual(
-        /*field_index=*/0, /*field_name=*/"val", FieldType::STRING,
+        /*field_index=*/1, /*field_name=*/"val", FieldType::STRING,
         Literal(FieldType::STRING, "p2", 2));
 
     std::shared_ptr<arrow::ChunkedArray> result;
     ReadWithPredicateImpl(file_name, read_schema, predicate, &result, /*batch_size=*/7);
     ASSERT_TRUE(result);
     ASSERT_EQ(40, result->length());
+    ASSERT_EQ(6, result->num_chunks());
 
-    // Multi-batch shape: with 40 matched rows and batch_size=7 we expect at least
-    // ceil(40/7)=6 chunks. Anything > 1 already proves we did not collapse to a single
-    // post-CombineChunks RecordBatch.
-    ASSERT_GT(result->num_chunks(), 1);
-
-    // Content correctness: rows arrive in the original page order, "p2_20" through "p5_59".
-    int64_t seen = 0;
-    for (int i = 0; i < result->num_chunks(); ++i) {
-        auto struct_chunk = std::dynamic_pointer_cast<arrow::StructArray>(result->chunk(i));
-        ASSERT_TRUE(struct_chunk);
-        auto str_chunk = std::dynamic_pointer_cast<arrow::StringArray>(struct_chunk->field(0));
-        ASSERT_TRUE(str_chunk);
-        for (int64_t j = 0; j < str_chunk->length(); ++j) {
-            int32_t row = 20 + static_cast<int32_t>(seen);
-            std::string expected =
-                "p" + std::to_string(row / 10) + "_" + (row < 10 ? "0" : "") + std::to_string(row);
-            ASSERT_EQ(expected, str_chunk->GetString(j));
-            ++seen;
-        }
+    int64_t rows_read = 0;
+    for (const auto& chunk : result->chunks()) {
+        ASSERT_TRUE(chunk->ValidateFull().ok());
+        ASSERT_EQ(std::min<int64_t>(7, 40 - rows_read), chunk->length());
+        ASSERT_TRUE(data->Slice(20 + rows_read, chunk->length())->Equals(chunk));
+        rows_read += chunk->length();
     }
-    ASSERT_EQ(40, seen);
+    ASSERT_EQ(40, rows_read);
 }
 
-TEST_F(PageFilteredRowGroupReaderTest, NormalizesSlicedBatchOffsets) {
-    std::string file_name = dir_->Str() + "/normalized_sliced_offsets.parquet";
-    std::shared_ptr<arrow::StructArray> data = MakeSequentialIntData(60);
-    WriteTestFile(file_name, data, /*write_batch_size=*/10, /*max_row_group_length=*/60);
+TEST_F(PageFilteredRowGroupReaderTest, StreamingAlignsMisalignedChunksAcrossDecodingWindows) {
+    constexpr int32_t kRows = 26;
+    constexpr int64_t kBatchSize = 7;
+    arrow::StringBuilder short_strings;
+    arrow::StringBuilder long_strings;
+    for (int32_t row = 0; row < kRows; ++row) {
+        ASSERT_TRUE(
+            (row % 5 == 0 ? short_strings.AppendNull() : short_strings.Append(std::to_string(row)))
+                .ok());
+        ASSERT_TRUE((row % 5 == 1 ? long_strings.AppendNull()
+                                  : long_strings.Append(std::string(row + 1, 'x')))
+                        .ok());
+    }
+    auto data =
+        arrow::StructArray::Make(
+            {short_strings.Finish().ValueOrDie(), long_strings.Finish().ValueOrDie()},
+            {arrow::field("short_text", arrow::utf8()), arrow::field("long_text", arrow::utf8())})
+            .ValueOrDie();
+    const std::string file_name = dir_->Str() + "/streaming_misaligned_chunks.parquet";
+    WriteTestFile(file_name, data, 2, kRows);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_name));
+    ASSERT_OK_AND_ASSIGN(int64_t length, input->Length());
+    auto stream = std::make_shared<ArrowInputStreamAdapter>(input, length, arrow_pool_);
+    std::unique_ptr<::parquet::arrow::FileReader> file_reader;
+    ASSERT_TRUE(::parquet::arrow::OpenFile(stream, arrow_pool_.get(), &file_reader).ok());
+    auto indexes = file_reader->parquet_reader()->GetPageIndexReader()->RowGroup(0);
+    const RowRanges ranges(
+        {RowRanges::Range(2, 5), RowRanges::Range(10, 15), RowRanges::Range(19, 23)});
+    TargetRowGroup target(0, true, ranges);
+    const auto page_ranges = PageFilteredRowGroupReader::ComputePageRanges(
+        target, {0, 1}, indexes, file_reader->parquet_reader());
 
-    std::shared_ptr<arrow::Schema> read_schema =
-        arrow::schema({arrow::field("val", arrow::int32())});
-    std::shared_ptr<Predicate> predicate = PredicateBuilder::GreaterOrEqual(
-        /*field_index=*/0, /*field_name=*/"val", FieldType::INT, Literal(20));
+    std::vector<std::vector<int64_t>> decoded_windows(2);
+    auto chunked_reader = std::make_unique<::testing::StrictMock<MockArrowFileReader>>();
+    EXPECT_CALL(*chunked_reader, manifest())
+        .WillRepeatedly(::testing::ReturnRef(file_reader->manifest()));
+    EXPECT_CALL(*chunked_reader, parquet_reader())
+        .WillRepeatedly(::testing::Return(file_reader->parquet_reader()));
+    EXPECT_CALL(*chunked_reader, GetColumn(::testing::AnyOf(0, 1), ::testing::Ne(nullptr),
+                                           ::testing::Ne(nullptr), ::testing::Ne(nullptr)))
+        .Times(2)
+        .WillRepeatedly([&](int32_t field_index,
+                            const std::shared_ptr<std::unordered_set<int32_t>>& columns,
+                            ::parquet::arrow::FileColumnIteratorFactory factory,
+                            std::unique_ptr<::parquet::arrow::ColumnReader>* out) {
+            ARROW_RETURN_NOT_OK(file_reader->GetColumn(field_index, columns, factory, out));
+            *out = std::make_unique<RechunkingColumnReader>(std::move(*out), field_index + 2,
+                                                            &decoded_windows[field_index]);
+            return arrow::Status::OK();
+        });
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<arrow::RecordBatchReader> batches,
+                         PageFilteredRowGroupReader::ReadFilteredRowGroup(
+                             target, {0, 1}, arrow::io::CacheOptions::Defaults(), false,
+                             page_ranges, kBatchSize, indexes, arrow_pool_, chunked_reader.get()));
+    ASSERT_TRUE(batches->schema()->Equals(*arrow::schema(data->type()->fields())));
+    ASSERT_TRUE(decoded_windows[0].empty());
+    ASSERT_TRUE(decoded_windows[1].empty());
 
-    std::shared_ptr<arrow::ChunkedArray> result;
-    ReadWithPredicateImpl(file_name, read_schema, predicate, &result, /*batch_size=*/7);
-    ASSERT_TRUE(result);
-    ASSERT_EQ(40, result->length());
-    ASSERT_GT(result->num_chunks(), 1);
+    // Each seven-row window has chunks [2, 2, 2, 1] and [3, 3, 1]. Their combined
+    // boundaries must yield five batches before decoding the next window. The final
+    // one-row window returns through the single-chunk path after draining the second.
+    const std::vector<std::vector<int64_t>> expected_batch_sizes = {
+        {2, 1, 1, 2, 1}, {2, 1, 1, 2, 1}, {1}};
+    std::vector<std::shared_ptr<arrow::RecordBatch>> retained_batches;
+    std::vector<int64_t> expected_decoded_windows;
+    for (size_t window = 0; window < expected_batch_sizes.size(); ++window) {
+        SCOPED_TRACE(window);
+        expected_decoded_windows.push_back(window < 2 ? kBatchSize : 1);
+        for (int64_t batch_size : expected_batch_sizes[window]) {
+            std::shared_ptr<arrow::RecordBatch> batch;
+            ASSERT_TRUE(batches->ReadNext(&batch).ok());
+            ASSERT_NE(nullptr, batch);
+            ASSERT_TRUE(batch->ValidateFull().ok());
+            ASSERT_TRUE(batch->schema()->Equals(*batches->schema()));
+            ASSERT_EQ(batch_size, batch->num_rows());
+            for (int32_t column = 0; column < batch->num_columns(); ++column) {
+                ASSERT_EQ(0, batch->column(column)->offset());
+                ASSERT_EQ(expected_decoded_windows, decoded_windows[column]);
+            }
+            retained_batches.push_back(std::move(batch));
+        }
+    }
+    for (int32_t attempt = 0; attempt < 2; ++attempt) {
+        std::shared_ptr<arrow::RecordBatch> eof = retained_batches.front();
+        ASSERT_TRUE(batches->ReadNext(&eof).ok());
+        ASSERT_EQ(nullptr, eof);
+    }
+    ASSERT_TRUE(batches->Close().ok());
+    batches.reset();
+    chunked_reader.reset();
+    file_reader.reset();
+
+    const std::vector<int64_t> expected_rows = {2,  3,  4,  5,  10, 11, 12, 13,
+                                                14, 15, 19, 20, 21, 22, 23};
+    size_t selected_row = 0;
+    for (const auto& batch : retained_batches) {
+        ASSERT_TRUE(batch->ValidateFull().ok());
+        for (int64_t row = 0; row < batch->num_rows(); ++row) {
+            ASSERT_LT(selected_row, expected_rows.size());
+            for (int32_t column = 0; column < batch->num_columns(); ++column) {
+                ASSERT_TRUE(batch->column(column)->Slice(row, 1)->Equals(
+                    data->field(column)->Slice(expected_rows[selected_row], 1)));
+            }
+            ++selected_row;
+        }
+    }
+    ASSERT_EQ(expected_rows.size(), selected_row);
 }
 
 /// Test: end-to-end page-filtered read produces correct results when using page-level PreBuffer.
@@ -1421,10 +1596,11 @@ TEST_F(PageFilteredRowGroupReaderTest, DirectOffsetIndexJumpDoesNotReadUnselecte
     std::shared_ptr<arrow::ChunkedArray> result;
     std::vector<arrow::io::ReadRange> read_at_ranges;
     ReadWithPredicateAndBitmapImpl(file_name, read_schema, /*predicate=*/nullptr, bitmap, &result,
-                                   options, /*batch_size=*/1024, &read_at_ranges);
+                                   options, 1, &read_at_ranges);
 
     ASSERT_TRUE(result);
     ASSERT_EQ(2, result->length());
+    ASSERT_EQ(2, result->num_chunks());
     auto flat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto struct_arr = std::dynamic_pointer_cast<arrow::StructArray>(flat);
     ASSERT_TRUE(struct_arr);
@@ -1634,10 +1810,11 @@ TEST_F(PageFilteredRowGroupReaderTest, DirectOffsetIndexJumpSupportsDictionaryFa
     std::shared_ptr<arrow::ChunkedArray> result;
     std::vector<arrow::io::ReadRange> read_at_ranges;
     ReadWithPredicateAndBitmapImpl(file_name, read_schema, /*predicate=*/nullptr, bitmap, &result,
-                                   options, /*batch_size=*/1024, &read_at_ranges);
+                                   options, 1, &read_at_ranges);
 
     ASSERT_TRUE(result);
     ASSERT_EQ(2, result->length());
+    ASSERT_EQ(2, result->num_chunks());
     auto flat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto struct_arr = std::dynamic_pointer_cast<arrow::StructArray>(flat);
     ASSERT_TRUE(struct_arr);
@@ -1656,7 +1833,14 @@ TEST_F(PageFilteredRowGroupReaderTest, DirectOffsetIndexJumpSupportsDictionaryFa
 /// Empty row selection may read OffsetIndex metadata, but must not read dictionary/data pages.
 TEST_F(PageFilteredRowGroupReaderTest, DictionaryEmptySelectionDoesNotReadPages) {
     std::string file_name = dir_->Str() + "/dictionary_empty_bitmap.parquet";
-    auto data = MakeSequentialIntData(100);
+    arrow::StringBuilder strings;
+    for (int32_t row = 0; row < 100; ++row) {
+        ASSERT_TRUE(strings.Append(std::to_string(row % 3)).ok());
+    }
+    std::shared_ptr<arrow::Array> values;
+    ASSERT_TRUE(strings.Finish(&values).ok());
+    auto data =
+        arrow::StructArray::Make({values}, {arrow::field("val", arrow::utf8())}).ValueOrDie();
     WriteTestFile(file_name, data, /*write_batch_size=*/10, /*max_row_group_length=*/100,
                   /*enable_dictionary=*/true);
 
@@ -1667,6 +1851,9 @@ TEST_F(PageFilteredRowGroupReaderTest, DictionaryEmptySelectionDoesNotReadPages)
 
     ::parquet::arrow::FileReaderBuilder builder;
     ASSERT_TRUE(builder.Open(in_stream).ok());
+    ::parquet::ArrowReaderProperties properties;
+    properties.set_read_dictionary(0, true);
+    builder.properties(properties);
     builder.memory_pool(arrow_pool_.get());
     auto arrow_file_reader_result = builder.Build();
     ASSERT_TRUE(arrow_file_reader_result.ok()) << arrow_file_reader_result.status().ToString();
@@ -1701,9 +1888,14 @@ TEST_F(PageFilteredRowGroupReaderTest, DictionaryEmptySelectionDoesNotReadPages)
             /*pre_buffered=*/false, /*page_ranges=*/{}, /*max_chunksize=*/1024,
             /*row_group_page_index_reader=*/row_group_page_index, arrow_pool_,
             arrow_file_reader.get()));
+    ASSERT_TRUE(result_reader->schema()->Equals(
+        *arrow::schema({arrow::field("val", arrow::dictionary(arrow::int32(), arrow::utf8()))})));
     std::shared_ptr<arrow::RecordBatch> batch;
     ASSERT_TRUE(result_reader->ReadNext(&batch).ok());
     ASSERT_FALSE(batch);
+    ASSERT_TRUE(result_reader->ReadNext(&batch).ok());
+    ASSERT_FALSE(batch);
+    ASSERT_TRUE(result_reader->Close().ok());
     for (const auto& read_range : tracking_input->GetReadAtRanges()) {
         const int64_t read_end = read_range.offset + read_range.length;
         ASSERT_TRUE(read_end <= column_chunk_offset || read_range.offset >= column_chunk_end)
@@ -1739,8 +1931,7 @@ TEST_F(PageFilteredRowGroupReaderTest, DirectOffsetIndexJumpDataPageV2AdjacentPa
     ASSERT_EQ(10, page_locations.size());
 
     RoaringBitmap32 bitmap;
-    bitmap.Add(45);  // Page 4.
-    bitmap.Add(55);  // Adjacent page 5.
+    bitmap.AddRange(43, 57);
 
     std::map<std::string, std::string> options;
     options[PARQUET_READ_ROW_RANGES_COALESCE_HOLE_SIZE_LIMIT] = "0";
@@ -1750,17 +1941,19 @@ TEST_F(PageFilteredRowGroupReaderTest, DirectOffsetIndexJumpDataPageV2AdjacentPa
     std::shared_ptr<arrow::ChunkedArray> result;
     std::vector<arrow::io::ReadRange> read_at_ranges;
     ReadWithPredicateAndBitmapImpl(file_name, read_schema, /*predicate=*/nullptr, bitmap, &result,
-                                   options, /*batch_size=*/1024, &read_at_ranges);
+                                   options, 3, &read_at_ranges);
 
     ASSERT_TRUE(result);
-    ASSERT_EQ(2, result->length());
+    ASSERT_EQ(14, result->length());
+    ASSERT_EQ(5, result->num_chunks());
     auto flat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto struct_arr = std::dynamic_pointer_cast<arrow::StructArray>(flat);
     ASSERT_TRUE(struct_arr);
     auto values = std::dynamic_pointer_cast<arrow::Int32Array>(struct_arr->field(0));
     ASSERT_TRUE(values);
-    ASSERT_EQ(45, values->Value(0));
-    ASSERT_EQ(55, values->Value(1));
+    for (int64_t row = 0; row < values->length(); ++row) {
+        ASSERT_EQ(43 + row, values->Value(row));
+    }
     AssertSelectedPagesRead(page_locations, /*selected_pages=*/{4, 5}, read_at_ranges);
     AssertUnselectedPageHeadersNotRead(page_locations, /*selected_pages=*/{4, 5}, read_at_ranges);
 }
@@ -1789,10 +1982,11 @@ TEST_F(PageFilteredRowGroupReaderTest, MissingOffsetIndexFallsBackToSequentialRe
 
     auto read_schema = arrow::schema({arrow::field("val", arrow::int32())});
     std::shared_ptr<arrow::ChunkedArray> result;
-    ReadWithPredicateAndBitmapImpl(file_name, read_schema, /*predicate=*/nullptr, bitmap, &result);
+    ReadWithPredicateAndBitmapImpl(file_name, read_schema, nullptr, bitmap, &result, {}, 1);
 
     ASSERT_TRUE(result);
     ASSERT_EQ(2, result->length());
+    ASSERT_EQ(2, result->num_chunks());
     auto flat = arrow::Concatenate(result->chunks()).ValueOrDie();
     auto struct_arr = std::dynamic_pointer_cast<arrow::StructArray>(flat);
     ASSERT_TRUE(struct_arr);
@@ -1804,13 +1998,19 @@ TEST_F(PageFilteredRowGroupReaderTest, MissingOffsetIndexFallsBackToSequentialRe
 
 TEST_F(PageFilteredRowGroupReaderTest, InvalidOffsetIndexFallsBackWithoutChangingSelectedRows) {
     std::string file_name = dir_->Str() + "/invalid_offset_index.parquet";
-    auto data = MakeSequentialIntData(100);
+    auto nested = MakeNestedStructData(100);
+    auto data =
+        arrow::StructArray::Make({nested}, {arrow::field("info", nested->type())}).ValueOrDie();
     WriteTestFile(file_name, data, /*write_batch_size=*/10, /*max_row_group_length=*/100);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> in, fs_->Open(file_name));
     ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
     auto stream = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool_);
     std::unique_ptr<::parquet::arrow::FileReader> reader;
     ASSERT_TRUE(::parquet::arrow::OpenFile(stream, arrow_pool_.get(), &reader).ok());
+    auto valid_index =
+        reader->parquet_reader()->GetPageIndexReader()->RowGroup(0)->GetOffsetIndex(1);
+    ASSERT_NE(nullptr, valid_index);
+    ASSERT_EQ(10, valid_index->page_locations().size());
     auto column = reader->parquet_reader()->metadata()->RowGroup(0)->ColumnChunk(0);
     int64_t offset = column->data_page_offset();
     int64_t size = column->total_compressed_size();
@@ -1826,8 +2026,7 @@ TEST_F(PageFilteredRowGroupReaderTest, InvalidOffsetIndexFallsBackWithoutChangin
     rows.Add(RowRanges::Range(15, 19));
     rows.Add(RowRanges::Range(85, 89));
     TargetRowGroup target(0, true, rows);
-    // A missing index and each malformed layout must select the same rows using the
-    // sequential fallback, including through the streaming reader's schema API.
+    const std::vector<int32_t> expected_rows = {15, 16, 17, 18, 19, 85, 86, 87, 88, 89};
     for (size_t i = 0; i <= invalid_pages.size(); ++i) {
         SCOPED_TRACE(i);
         std::shared_ptr<::parquet::OffsetIndex> index;
@@ -1836,33 +2035,38 @@ TEST_F(PageFilteredRowGroupReaderTest, InvalidOffsetIndexFallsBackWithoutChangin
             ASSERT_FALSE(
                 PageFilteredRowGroupReader::MakeDataPageReadPlan(rows, index, *column, 100));
         }
-        auto page_index = std::make_shared<SyntheticPageIndexReader>(index);
+        auto page_index = std::make_shared<SyntheticPageIndexReader>(
+            std::vector<std::shared_ptr<::parquet::OffsetIndex>>{index, valid_index});
         std::vector<arrow::io::ReadRange> ranges = PageFilteredRowGroupReader::ComputePageRanges(
-            target, {0}, page_index, reader->parquet_reader());
-        ASSERT_EQ(1, ranges.size());
+            target, {0, 1}, page_index, reader->parquet_reader());
+        ASSERT_EQ(3, ranges.size());
         ASSERT_EQ(offset, ranges[0].offset);
         ASSERT_EQ(size, ranges[0].length);
+        AssertSelectedPagesRead(valid_index->page_locations(), {1, 8}, ranges);
+        AssertUnselectedPageHeadersNotRead(valid_index->page_locations(), {1, 8}, ranges);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<arrow::RecordBatchReader> batches,
                              PageFilteredRowGroupReader::ReadFilteredRowGroup(
-                                 target, {0}, arrow::io::CacheOptions::Defaults(), false, ranges,
+                                 target, {0, 1}, arrow::io::CacheOptions::Defaults(), false, ranges,
                                  /*max_chunksize=*/3, page_index, arrow_pool_, reader.get()));
-        ASSERT_TRUE(
-            batches->schema()->Equals(*arrow::schema({arrow::field("val", arrow::int32())})));
-        std::vector<int32_t> selected;
+        ASSERT_TRUE(batches->schema()->Equals(*arrow::schema(data->type()->fields())));
+        size_t selected_count = 0;
         while (true) {
             std::shared_ptr<arrow::RecordBatch> batch;
             ASSERT_TRUE(batches->ReadNext(&batch).ok());
             if (!batch) {
                 break;
             }
+            ASSERT_TRUE(batch->ValidateFull().ok());
+            ASSERT_GT(batch->num_rows(), 0);
             ASSERT_LE(batch->num_rows(), 3);
-            auto values = std::dynamic_pointer_cast<arrow::Int32Array>(batch->column(0));
-            ASSERT_NE(nullptr, values);
-            for (int64_t row = 0; row < values->length(); ++row) {
-                selected.push_back(values->Value(row));
+            for (int64_t row = 0; row < batch->num_rows(); ++row) {
+                ASSERT_LT(selected_count, expected_rows.size());
+                ASSERT_TRUE(batch->column(0)->Slice(row, 1)->Equals(
+                    data->field(0)->Slice(expected_rows[selected_count], 1)));
+                ++selected_count;
             }
         }
-        ASSERT_EQ((std::vector<int32_t>{15, 16, 17, 18, 19, 85, 86, 87, 88, 89}), selected);
+        ASSERT_EQ(expected_rows.size(), selected_count);
     }
 }
 
@@ -2371,25 +2575,24 @@ TEST_F(PageFilteredRowGroupReaderTest, NestedStructSubColumnProjection) {
     auto predicate = PredicateBuilder::GreaterOrEqual(
         /*field_index=*/0, /*field_name=*/"id", FieldType::INT, Literal(70));
 
-    std::shared_ptr<arrow::ChunkedArray> result;
-    ReadWithPredicateImpl(file_name, read_schema, predicate, &result);
-
-    ASSERT_TRUE(result);
-    ASSERT_EQ(30, result->length());
-
-    // Result is struct<info: struct<x: int32>>
-    auto result_struct = std::dynamic_pointer_cast<arrow::StructArray>(result->chunk(0));
-    ASSERT_TRUE(result_struct);
-    ASSERT_EQ(1, result_struct->num_fields());
-
-    auto info_result = std::dynamic_pointer_cast<arrow::StructArray>(result_struct->field(0));
-    ASSERT_TRUE(info_result);
-    ASSERT_EQ(1, info_result->num_fields());
-
-    auto x_arr = std::dynamic_pointer_cast<arrow::Int32Array>(info_result->field(0));
-    ASSERT_TRUE(x_arr);
-    for (int32_t i = 0; i < 30; ++i) {
-        ASSERT_EQ((70 + i) * 100, x_arr->Value(i)) << "Mismatch at index " << i;
+    for (int32_t batch_size : {7, 1024}) {
+        SCOPED_TRACE(batch_size);
+        std::shared_ptr<arrow::ChunkedArray> result;
+        ReadWithPredicateImpl(file_name, read_schema, predicate, &result, batch_size);
+        ASSERT_TRUE(result);
+        ASSERT_EQ(30, result->length());
+        ASSERT_TRUE(result->type()->Equals(arrow::struct_(read_schema->fields())));
+        if (batch_size < result->length()) {
+            ASSERT_GT(result->num_chunks(), 1);
+        }
+        auto combined = arrow::Concatenate(result->chunks());
+        ASSERT_TRUE(combined.ok()) << combined.status().ToString();
+        const auto& result_struct = checked_cast<const arrow::StructArray&>(*combined.ValueOrDie());
+        const auto& info_result = checked_cast<const arrow::StructArray&>(*result_struct.field(0));
+        const auto& values = checked_cast<const arrow::Int32Array&>(*info_result.field(0));
+        for (int32_t i = 0; i < 30; ++i) {
+            ASSERT_EQ((70 + i) * 100, values.Value(i)) << "Mismatch at index " << i;
+        }
     }
 }
 
@@ -2637,63 +2840,332 @@ static std::shared_ptr<arrow::StructArray> MakeMisalignedNestedDataWithNulls(int
         .ValueOrDie();
 }
 
-/// Test: nested columns containing NULLs, with MISALIGNED leaf pages, split across
-/// MULTIPLE row groups. This combines the three stress dimensions: null-driven
-/// definition levels, byte-based misaligned pages, and row-group boundaries that the
-/// selection bitmap crosses. Every returned row is deep-compared (nulls included)
-/// against the original data identified by its non-null key.
-/// Bitmap: [0,15), [77, 87) (to avoid bitmap hole filling)
-/// Expected: 25 rows -> keys 0..14 and 77..86
 TEST_F(PageFilteredRowGroupReaderTest, NestedColumnsWithNullsMisalignedPagesMultiRowGroup) {
-    std::string file_name = dir_->Str() + "/nested_nulls_misaligned_multi_rg.parquet";
-    constexpr int32_t kNumRows = 100;
-    auto data = MakeMisalignedNestedDataWithNulls(kNumRows);
-
-    // write_batch_size=1 + byte-based data page size -> misaligned leaf pages.
-    // max_row_group_length=40 -> 3 row groups (40, 40, 20).
-    WriteTestFile(file_name, data, /*write_batch_size=*/1, /*max_row_group_length=*/40,
-                  /*enable_dictionary=*/false, /*data_page_size=*/40);
-
-    auto read_schema =
-        arrow::schema({arrow::field("key", arrow::int64()),
-                       arrow::field("s", arrow::struct_({arrow::field("x", arrow::int32()),
-                                                         arrow::field("y", arrow::int64())})),
-                       arrow::field("tags", arrow::list(arrow::field("item", arrow::int32()))),
-                       arrow::field("props", arrow::map(arrow::utf8(), arrow::int32()))});
-
-    // bitmap: [0,15), [77, 87) -> spans all three row groups.
-    RoaringBitmap32 bitmap;
-    bitmap.AddRange(0, 15);
-    bitmap.AddRange(77, 87);
-
-    std::shared_ptr<arrow::ChunkedArray> result;
-    ReadWithPredicateAndBitmapImpl(file_name, read_schema, nullptr, bitmap, &result);
-    ASSERT_TRUE(result);
-
-    std::vector<int64_t> keys;
-
-    auto concated = arrow::Concatenate(result->chunks()).ValueOrDie();
-    auto top = std::dynamic_pointer_cast<arrow::StructArray>(concated);
-    ASSERT_TRUE(top);
-    auto key_arr = std::dynamic_pointer_cast<arrow::Int64Array>(top->field(0));
-    ASSERT_TRUE(key_arr);
-    for (int64_t i = 0; i < key_arr->length(); ++i) {
-        ASSERT_FALSE(key_arr->IsNull(i)) << "key column must stay non-null";
-        int64_t k = key_arr->Value(i);
-        // Deep compare including nulls across struct/list/map leaves.
-        ASSERT_TRUE(data->Slice(k, 1)->Equals(*top->Slice(i, 1)))
-            << "row content mismatch at key " << k;
-        keys.push_back(k);
+    constexpr int32_t kRows = 100;
+    constexpr int32_t kBatchSize = 7;
+    auto data = MakeMisalignedNestedDataWithNulls(kRows);
+    const std::vector<RowRanges> selections = {
+        RowRanges({RowRanges::Range(0, 14), RowRanges::Range(77, 86)}),
+        RowRanges({RowRanges::Range(2, 15), RowRanges::Range(43, 68), RowRanges::Range(83, 96)}),
+        RowRanges({RowRanges::Range(2, 15), RowRanges::Range(40, 79), RowRanges::Range(83, 96)})};
+    for (bool enable_page_index : {true, false}) {
+        SCOPED_TRACE(enable_page_index);
+        const std::string file_name =
+            dir_->Str() +
+            (enable_page_index ? "/nested_indexed.parquet" : "/nested_no_index.parquet");
+        WriteTestFile(file_name, data, 1, 40, false, 40, enable_page_index);
+        for (size_t selection_index = 0; selection_index < selections.size(); ++selection_index) {
+            SCOPED_TRACE(selection_index);
+            RoaringBitmap32 selection;
+            for (const auto& range : selections[selection_index].GetRanges()) {
+                selection.AddRange(range.from, range.to + 1);
+            }
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_name));
+            ASSERT_OK_AND_ASSIGN(int64_t length, input->Length());
+            auto stream = std::make_shared<ArrowInputStreamAdapter>(input, length, arrow_pool_);
+            ASSERT_OK_AND_ASSIGN(
+                std::unique_ptr<ParquetFileBatchReader> reader,
+                ParquetFileBatchReader::Create(
+                    std::move(stream), {{PARQUET_READ_ROW_RANGES_COALESCE_HOLE_SIZE_LIMIT, "0"}},
+                    kBatchSize, nullptr, nullptr, arrow_pool_, std::nullopt));
+            ArrowSchema schema;
+            ASSERT_TRUE(arrow::ExportSchema(*arrow::schema(data->type()->fields()), &schema).ok());
+            ASSERT_OK(reader->SetReadSchema(&schema, nullptr, selection));
+            std::vector<uint32_t> actual_rows;
+            arrow::ArrayVector retained_batches;
+            while (true) {
+                ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch batch, reader->NextBatch());
+                if (BatchReader::IsEofBatch(batch)) {
+                    break;
+                }
+                ASSERT_OK(paimon::test::ReadResultCollector::CheckBatchOffset(batch));
+                auto result = arrow::ImportArray(batch.first.get(), batch.second.get());
+                ASSERT_TRUE(result.ok()) << result.status().ToString();
+                std::shared_ptr<arrow::Array> array = std::move(result).ValueOrDie();
+                ASSERT_TRUE(array->ValidateFull().ok());
+                ASSERT_GT(array->length(), 0);
+                ASSERT_LE(array->length(), kBatchSize);
+                for (int64_t row = 0; row < array->length(); ++row) {
+                    ASSERT_OK_AND_ASSIGN(uint64_t file_row, reader->GetPreviousBatchFileRowId(row));
+                    ASSERT_TRUE(selection.Contains(file_row));
+                    actual_rows.push_back(static_cast<uint32_t>(file_row));
+                }
+                retained_batches.push_back(std::move(array));
+            }
+            std::vector<uint32_t> expected_rows;
+            for (auto it = selection.Begin(); it != selection.End(); ++it) {
+                expected_rows.push_back(*it);
+            }
+            ASSERT_EQ(expected_rows, actual_rows);
+            ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch eof, reader->NextBatch());
+            ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+            reader->Close();
+            reader.reset();
+            size_t selected_row = 0;
+            for (const auto& array : retained_batches) {
+                ASSERT_TRUE(array->ValidateFull().ok());
+                for (int64_t row = 0; row < array->length(); ++row) {
+                    const uint32_t file_row = expected_rows[selected_row++];
+                    ASSERT_TRUE(data->Slice(file_row, 1)->Equals(array->Slice(row, 1)))
+                        << "row content mismatch at file row " << file_row;
+                }
+            }
+        }
     }
+}
 
-    std::vector<int64_t> expected;
-    for (int64_t i = 0; i < 15; ++i) {
-        expected.push_back(i);
+TEST_F(PageFilteredRowGroupReaderTest, StreamingPreservesDictionaryValuesAcrossSelections) {
+    constexpr int32_t kRows = 60;
+    constexpr int64_t kBatchSize = 7;
+    arrow::StringBuilder strings;
+    for (int32_t row = 0; row < kRows; ++row) {
+        if (row % 5 == 0) {
+            ASSERT_TRUE(strings.AppendNull().ok());
+        } else {
+            ASSERT_TRUE(strings.Append(std::to_string(row % 4)).ok());
+        }
     }
-    for (int64_t i = 77; i < 87; ++i) {
-        expected.push_back(i);
+    std::shared_ptr<arrow::Array> values;
+    ASSERT_TRUE(strings.Finish(&values).ok());
+    auto data = arrow::StructArray::Make(
+                    {MakeSequentialIntData(kRows)->field(0), values},
+                    {arrow::field("id", arrow::int32()), arrow::field("text", arrow::utf8())})
+                    .ValueOrDie();
+    const std::string file_name = dir_->Str() + "/streaming_dictionary.parquet";
+    WriteTestFile(file_name, data, 10, kRows, true);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_name));
+    ASSERT_OK_AND_ASSIGN(int64_t length, input->Length());
+    auto stream = std::make_shared<ArrowInputStreamAdapter>(input, length, arrow_pool_);
+    ::parquet::ArrowReaderProperties properties;
+    properties.set_read_dictionary(1, true);
+    ::parquet::arrow::FileReaderBuilder builder;
+    ASSERT_TRUE(builder.Open(stream).ok());
+    std::unique_ptr<::parquet::arrow::FileReader> file_reader;
+    ASSERT_TRUE(
+        builder.memory_pool(arrow_pool_.get())->properties(properties)->Build(&file_reader).ok());
+    auto indexes = file_reader->parquet_reader()->GetPageIndexReader()->RowGroup(0);
+    RowRanges ranges({RowRanges::Range(2, 16), RowRanges::Range(32, 46), RowRanges::Range(52, 58)});
+    TargetRowGroup target(0, true, ranges);
+    const auto page_ranges = PageFilteredRowGroupReader::ComputePageRanges(
+        target, {0, 1}, indexes, file_reader->parquet_reader());
+    for (int64_t batch_size : {-1, 0}) {
+        auto result = PageFilteredRowGroupReader::ReadFilteredRowGroup(
+            target, {0, 1}, arrow::io::CacheOptions::Defaults(), false, page_ranges, batch_size,
+            indexes, arrow_pool_, file_reader.get());
+        ASSERT_FALSE(result.ok());
+        ASSERT_TRUE(result.status().IsInvalid());
     }
-    ASSERT_EQ(keys, expected);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<arrow::RecordBatchReader> batches,
+                         PageFilteredRowGroupReader::ReadFilteredRowGroup(
+                             target, {0, 1}, arrow::io::CacheOptions::Defaults(), false,
+                             page_ranges, kBatchSize, indexes, arrow_pool_, file_reader.get()));
+    ASSERT_EQ(arrow::Type::DICTIONARY, batches->schema()->field(1)->type()->id());
+    std::vector<std::shared_ptr<arrow::RecordBatch>> retained_batches;
+    std::vector<int32_t> actual_rows;
+    while (true) {
+        std::shared_ptr<arrow::RecordBatch> batch;
+        ASSERT_TRUE(batches->ReadNext(&batch).ok());
+        if (!batch) {
+            break;
+        }
+        ASSERT_TRUE(batch->ValidateFull().ok());
+        ASSERT_GT(batch->num_rows(), 0);
+        ASSERT_LE(batch->num_rows(), kBatchSize);
+        ASSERT_TRUE(batch->schema()->Equals(*batches->schema()));
+        ASSERT_EQ(arrow::Type::DICTIONARY, batch->column(1)->type_id());
+        const auto& ids = checked_cast<const arrow::Int32Array&>(*batch->column(0));
+        for (int64_t row = 0; row < batch->num_rows(); ++row) {
+            actual_rows.push_back(ids.Value(row));
+        }
+        retained_batches.push_back(std::move(batch));
+    }
+    std::vector<int32_t> expected_rows;
+    for (const auto& range : ranges.GetRanges()) {
+        for (int64_t row = range.from; row <= range.to; ++row) {
+            expected_rows.push_back(static_cast<int32_t>(row));
+        }
+    }
+    ASSERT_EQ(expected_rows, actual_rows);
+    ASSERT_GT(retained_batches.size(), 1);
+    ASSERT_TRUE(batches->Close().ok());
+    batches.reset();
+    file_reader.reset();
+    for (const auto& batch : retained_batches) {
+        const auto& ids = checked_cast<const arrow::Int32Array&>(*batch->column(0));
+        const auto& encoded = checked_cast<const arrow::DictionaryArray&>(*batch->column(1));
+        const auto& dictionary = checked_cast<const arrow::StringArray&>(*encoded.dictionary());
+        for (int64_t row = 0; row < batch->num_rows(); ++row) {
+            const int32_t file_row = ids.Value(row);
+            ASSERT_EQ(file_row % 5 == 0, encoded.IsNull(row));
+            if (!encoded.IsNull(row)) {
+                ASSERT_EQ(std::to_string(file_row % 4),
+                          dictionary.GetString(encoded.GetValueIndex(row)));
+            }
+        }
+    }
+}
+
+TEST_F(PageFilteredRowGroupReaderTest, StreamingBoundsDecodedMemoryAndPreservesReturnedBatches) {
+    constexpr int32_t kRows = 16384;
+    constexpr int64_t kBatchSize = 64;
+    const std::string value(1024, 'x');
+    arrow::StringBuilder strings;
+    for (int32_t row = 0; row < kRows; ++row) {
+        ASSERT_TRUE(strings.Append(value).ok());
+    }
+    std::shared_ptr<arrow::Array> values;
+    ASSERT_TRUE(strings.Finish(&values).ok());
+    auto data = arrow::StructArray::Make(
+                    {MakeSequentialIntData(kRows)->field(0), values},
+                    {arrow::field("id", arrow::int32()), arrow::field("text", arrow::utf8())})
+                    .ValueOrDie();
+    const std::string file_name = dir_->Str() + "/streaming_memory.parquet";
+    WriteTestFile(file_name, data, 256, kRows, true);
+
+    const RowRanges ranges(RowRanges::Range(3, kRows - 5));
+    for (int64_t expected_rows : {int64_t{0}, 4 * kBatchSize, ranges.RowCount()}) {
+        SCOPED_TRACE(expected_rows);
+        auto read_pool = GetArrowPool(pool_);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_name));
+        ASSERT_OK_AND_ASSIGN(int64_t length, input->Length());
+        auto stream = std::make_shared<ArrowInputStreamAdapter>(input, length, read_pool);
+        std::unique_ptr<::parquet::arrow::FileReader> file_reader;
+        ASSERT_TRUE(::parquet::arrow::OpenFile(stream, read_pool.get(), &file_reader).ok());
+        auto indexes = file_reader->parquet_reader()->GetPageIndexReader()->RowGroup(0);
+        TargetRowGroup target(0, true, ranges);
+        const auto page_ranges = PageFilteredRowGroupReader::ComputePageRanges(
+            target, {0, 1}, indexes, file_reader->parquet_reader());
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<arrow::RecordBatchReader> batches,
+                             PageFilteredRowGroupReader::ReadFilteredRowGroup(
+                                 target, {0, 1}, arrow::io::CacheOptions::Defaults(), false,
+                                 page_ranges, kBatchSize, indexes, read_pool, file_reader.get()));
+        ASSERT_TRUE(batches->schema()->Equals(*arrow::schema(data->type()->fields())));
+
+        std::shared_ptr<arrow::RecordBatch> first;
+        int64_t rows_read = 0;
+        while (rows_read < expected_rows) {
+            std::shared_ptr<arrow::RecordBatch> batch;
+            ASSERT_TRUE(batches->ReadNext(&batch).ok());
+            ASSERT_NE(nullptr, batch);
+            ASSERT_TRUE(batch->ValidateFull().ok());
+            ASSERT_EQ(std::min(kBatchSize, expected_rows - rows_read), batch->num_rows());
+            const auto& ids = checked_cast<const arrow::Int32Array&>(*batch->column(0));
+            const auto& text = checked_cast<const arrow::StringArray&>(*batch->column(1));
+            for (int64_t row = 0; row < batch->num_rows(); ++row) {
+                ASSERT_EQ(3 + rows_read + row, ids.Value(row));
+                ASSERT_EQ(value, text.GetString(row));
+            }
+            if (!first) {
+                first = batch;
+                ASSERT_LT(read_pool->max_memory(), 4 * 1024 * 1024);
+            }
+            rows_read += batch->num_rows();
+        }
+        ASSERT_LT(read_pool->max_memory(), 4 * 1024 * 1024);
+        if (expected_rows == ranges.RowCount()) {
+            std::shared_ptr<arrow::RecordBatch> eof = first;
+            ASSERT_TRUE(batches->ReadNext(&eof).ok());
+            ASSERT_EQ(nullptr, eof);
+            const int64_t bytes_at_eof = read_pool->bytes_allocated();
+            ASSERT_TRUE(batches->ReadNext(&eof).ok());
+            ASSERT_EQ(nullptr, eof);
+            ASSERT_TRUE(batches->Close().ok());
+            ASSERT_EQ(bytes_at_eof, read_pool->bytes_allocated());
+        }
+        ASSERT_TRUE(batches->Close().ok());
+        const int64_t bytes_after_close = read_pool->bytes_allocated();
+        ASSERT_TRUE(batches->Close().ok());
+        std::shared_ptr<arrow::RecordBatch> after_close = first;
+        ASSERT_TRUE(batches->ReadNext(&after_close).ok());
+        ASSERT_EQ(nullptr, after_close);
+        batches.reset();
+        ASSERT_EQ(bytes_after_close, read_pool->bytes_allocated());
+        file_reader.reset();
+        indexes.reset();
+
+        if (first) {
+            const auto& ids = checked_cast<const arrow::Int32Array&>(*first->column(0));
+            const auto& text = checked_cast<const arrow::StringArray&>(*first->column(1));
+            for (int64_t row = 0; row < kBatchSize; ++row) {
+                ASSERT_EQ(3 + row, ids.Value(row));
+                ASSERT_EQ(value, text.GetString(row));
+            }
+        }
+        first.reset();
+        ASSERT_EQ(0, read_pool->bytes_allocated());
+    }
+}
+
+TEST_F(PageFilteredRowGroupReaderTest, StreamingDefersLaterPageDecodeErrors) {
+    const std::string file_name = dir_->Str() + "/streaming_corrupt_tail.parquet";
+    auto data = MakeTwoColumnData(100);
+    WriteTestFile(file_name, data, 10, 100);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs_->Open(file_name));
+    ASSERT_OK_AND_ASSIGN(int64_t length, input->Length());
+    auto stream = std::make_shared<ArrowInputStreamAdapter>(input, length, arrow_pool_);
+    std::unique_ptr<::parquet::arrow::FileReader> original;
+    ASSERT_TRUE(::parquet::arrow::OpenFile(stream, arrow_pool_.get(), &original).ok());
+    auto index = original->parquet_reader()->GetPageIndexReader()->RowGroup(0)->GetOffsetIndex(1);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(10, index->page_locations().size());
+    const auto last_page = index->page_locations().back();
+    ASSERT_EQ(90, last_page.first_row_index);
+    ASSERT_GE(last_page.offset, 0);
+    ASSERT_LE(last_page.offset + last_page.compressed_page_size, length);
+    std::string contents(length, '\0');
+    ASSERT_OK_AND_ASSIGN(int64_t read, input->Read(contents.data(), length, 0));
+    ASSERT_EQ(length, read);
+    std::fill(contents.begin() + last_page.offset,
+              contents.begin() + last_page.offset + last_page.compressed_page_size,
+              static_cast<char>(0xff));
+    auto buffer = std::make_shared<arrow::Buffer>(reinterpret_cast<const uint8_t*>(contents.data()),
+                                                  contents.size());
+    auto corrupted = std::make_shared<arrow::io::BufferReader>(buffer);
+    std::unique_ptr<::parquet::arrow::FileReader> file_reader;
+    ASSERT_TRUE(::parquet::arrow::OpenFile(corrupted, arrow_pool_.get(), &file_reader).ok());
+    auto indexes = file_reader->parquet_reader()->GetPageIndexReader()->RowGroup(0);
+    TargetRowGroup target(0, true, RowRanges::CreateSingle(100));
+    const auto ranges = PageFilteredRowGroupReader::ComputePageRanges(
+        target, {0, 1}, indexes, file_reader->parquet_reader());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<arrow::RecordBatchReader> batches,
+                         PageFilteredRowGroupReader::ReadFilteredRowGroup(
+                             target, {0, 1}, arrow::io::CacheOptions::Defaults(), false, ranges, 5,
+                             indexes, arrow_pool_, file_reader.get()));
+    int64_t rows = 0;
+    arrow::Status status;
+    std::shared_ptr<arrow::RecordBatch> first;
+    for (int32_t i = 0; i < 20; ++i) {
+        std::shared_ptr<arrow::RecordBatch> batch = first;
+        status = batches->ReadNext(&batch);
+        if (!status.ok()) {
+            ASSERT_EQ(nullptr, batch);
+            break;
+        }
+        ASSERT_NE(nullptr, batch);
+        ASSERT_TRUE(batch->ValidateFull().ok());
+        ASSERT_EQ(5, batch->num_rows());
+        ASSERT_EQ(2, batch->num_columns());
+        for (int32_t column = 0; column < batch->num_columns(); ++column) {
+            ASSERT_TRUE(batch->column(column)->Equals(data->field(column)->Slice(rows, 5)));
+        }
+        if (!first) {
+            first = batch;
+        }
+        rows += batch->num_rows();
+    }
+    ASSERT_EQ(90, rows);
+    ASSERT_FALSE(status.ok());
+    std::shared_ptr<arrow::RecordBatch> batch = first;
+    ASSERT_EQ(status, batches->ReadNext(&batch));
+    ASSERT_EQ(nullptr, batch);
+    ASSERT_TRUE(batches->Close().ok());
+    batches.reset();
+    file_reader.reset();
+    ASSERT_NE(nullptr, first);
+    ASSERT_TRUE(first->ValidateFull().ok());
+    for (int32_t column = 0; column < first->num_columns(); ++column) {
+        ASSERT_TRUE(first->column(column)->Equals(data->field(column)->Slice(0, 5)));
+    }
 }
 
 }  // namespace paimon::parquet::test

@@ -165,6 +165,14 @@ visible in both directions. Read cases additionally report ``rows_read``,
 ``batches``, and ``row_groups`` / ``row_groups_after_filter`` from the reader's
 own metrics.
 
+Read cases also report ``first_batch_ns``, the mean time from opening the file
+through returning the first batch, including metadata, schema setup and
+pre-buffering. ``peak_memory_bytes`` is the maximum tracked Arrow allocation
+across iterations, including pre-buffered data and decoder state. It excludes
+fixture generation and allocations outside the reader's Arrow pool, so it is
+not a process-wide memory measurement. Returned batches are released as they
+are consumed.
+
 Compare filtered cases on ``ns_per_input_row`` and ``bytes_per_input_row``, not
 ``ns_per_row`` and ``bytes_per_row``. The latter pair divides by the rows a case
 actually materialized, so pruning shrinks numerator and denominator together and
@@ -208,6 +216,44 @@ Read batch size sweep, repeated for a stable comparison::
        --benchmark_repetitions=5 \
        --benchmark_report_aggregates_only=true
 
+Page-filtered decoding with 64, 1024 and 4096 rows per batch, paired with
+page-index filtering disabled. The predicate partially selects the first row
+group; compare ``first_batch_ns`` and ``peak_memory_bytes`` across batch sizes,
+and check ``read_bytes`` to distinguish decoding changes from page pruning::
+
+   paimon-parquet-format-benchmark \
+       --benchmark_filter=BM_ParquetRead_FilteredBatchSize \
+       --benchmark_repetitions=5 \
+       --benchmark_report_aggregates_only=true
+
 Null density on both sides, to see what definition levels cost::
 
    paimon-parquet-format-benchmark --benchmark_filter='Parquet(Write|Read)_Nulls'
+
+Sequential small-file reads
+===========================
+
+``paimon-sequential-reader-benchmark`` compares eager construction (``lazy:0``)
+with the bounded raw-reader window (``lazy:1``). It requires ORC and
+``PAIMON_BUILD_BENCHMARKS=ON``. Each case copies the small checked-in ORC fixture
+to 128 or 1024 distinct temporary files, outside the measured interval.
+``first_only:1`` closes after the first batch; ``first_only:0`` consumes every
+file. Both paths use the same row-kind wrapper and disable batch prefetch to
+isolate reader construction.
+
+The measured interval includes reader construction, consumption and close.
+Counters report first-batch latency, first-batch and total file opens, initial
+footer/setup read calls, peak retained streams, peak Paimon pool allocation,
+and bytes read. Pool allocation excludes memory allocated outside Paimon's
+pool and is not process RSS. ``items_per_second`` reports returned rows per
+second. An optional 1000-microsecond delay per open simulates remote setup
+latency; it does not model remote bandwidth or cache behavior.
+
+Run a repeated comparison and save the counters::
+
+   cmake --build build --target paimon-sequential-reader-benchmark
+   ./build/debug/paimon-sequential-reader-benchmark \
+       --benchmark_filter='BM_SequentialReaders/files:1024/' \
+       --benchmark_repetitions=5 \
+       --benchmark_out=sequential-readers.json \
+       --benchmark_out_format=json

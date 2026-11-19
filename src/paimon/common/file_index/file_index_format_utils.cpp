@@ -18,12 +18,32 @@
 
 #include "paimon/common/file_index/file_index_format_utils.h"
 
+#include "fmt/format.h"
+#include "paimon/common/file_index/file_index_format_v1.h"
+#include "paimon/common/file_index/file_index_format_v2.h"
 #include "paimon/common/io/offset_input_stream.h"
 #include "paimon/file_index/file_index_format.h"
 #include "paimon/io/buffered_input_stream.h"
 #include "paimon/io/data_input_stream.h"
 
 namespace paimon {
+Result<FileIndexFormatUtils::FileIndexEntries> FileIndexFormatUtils::ReadIndexEntries(
+    const std::shared_ptr<InputStream>& input, const std::shared_ptr<MemoryPool>& pool) {
+    DataInputStream in(input);
+    PAIMON_ASSIGN_OR_RAISE(int64_t magic, in.ReadValue<int64_t>());
+    if (magic != FileIndexFormat::MAGIC) {
+        return Status::Invalid("This file is not file index file.");
+    }
+    PAIMON_ASSIGN_OR_RAISE(int32_t version, in.ReadValue<int32_t>());
+    if (version != FileIndexFormat::V_1 && version != FileIndexFormat::V_2) {
+        return Status::Invalid(fmt::format("Unsupported file index version {}", version));
+    }
+    PAIMON_ASSIGN_OR_RAISE(int64_t file_length, input->Length());
+    return version == FileIndexFormat::V_1
+               ? FileIndexFormatV1::ReadIndexEntries(input, pool, file_length)
+               : FileIndexFormatV2::ReadIndexEntries(input, pool, file_length);
+}
+
 Result<std::shared_ptr<InputStream>> FileIndexFormatUtils::CreateMetadataInputStream(
     const std::shared_ptr<InputStream>& input, int64_t start, int64_t length, int64_t file_length,
     const std::shared_ptr<MemoryPool>& pool) {

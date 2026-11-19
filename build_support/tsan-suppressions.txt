@@ -35,6 +35,7 @@ race:vortex_error
 race:vortex_file
 race:vortex_layout
 race:vortex_mask
+race:vortex_session
 # The Arrow C-bridge hands buffer ownership to/from the Rust side (arrow_buffer Allocation and
 # bytes::Bytes), and Vortex formats its error messages on its runtime threads; those
 # synchronizations also live in the un-instrumented Rust staticlib, so suppress those Rust frames.

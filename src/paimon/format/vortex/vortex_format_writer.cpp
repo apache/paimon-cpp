@@ -44,6 +44,42 @@ namespace {
 
 constexpr double COMPRESSION_RATIO = 0.25;
 
+// Match Java's UTC LTZ storage without changing the epoch values or timestamp units.
+std::shared_ptr<arrow::DataType> NormalizeTimestampTimezones(
+    const std::shared_ptr<arrow::DataType>& type) {
+    if (type->id() == arrow::Type::TIMESTAMP) {
+        const auto& timestamp = checked_cast<const arrow::TimestampType&>(*type);
+        return timestamp.timezone().empty() || timestamp.timezone() == "UTC"
+                   ? type
+                   : arrow::timestamp(timestamp.unit(), "UTC");
+    }
+    if (type->id() != arrow::Type::STRUCT && type->id() != arrow::Type::LIST &&
+        type->id() != arrow::Type::FIXED_SIZE_LIST) {
+        return type;
+    }
+    arrow::FieldVector fields = type->fields();
+    bool changed = false;
+    for (auto& field : fields) {
+        std::shared_ptr<arrow::DataType> normalized = NormalizeTimestampTimezones(field->type());
+        if (normalized != field->type()) {
+            field = field->WithType(normalized);
+            changed = true;
+        }
+    }
+    if (!changed) {
+        return type;
+    }
+    switch (type->id()) {
+        case arrow::Type::STRUCT:
+            return arrow::struct_(fields);
+        case arrow::Type::LIST:
+            return arrow::list(fields[0]);
+        default:
+            return arrow::fixed_size_list(
+                fields[0], checked_cast<const arrow::FixedSizeListType&>(*type).list_size());
+    }
+}
+
 Status ValidateVisibleVectorElements(const std::shared_ptr<arrow::Array>& array,
                                      arrow::MemoryPool* pool) {
     if (!VectorUtils::ContainsVectorType(array->type())) {
@@ -129,15 +165,20 @@ Result<std::unique_ptr<VortexFormatWriter>> VortexFormatWriter::Create(
         return Status::Invalid("Vortex writer requires non-null output, schema and arrow pool");
     }
     PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateVortexArrowSchema(schema));
-    VxSessionPtr session(vx_session_new(), vx_session_free);
+    arrow::FieldVector fields = schema->fields();
+    for (auto& field : fields) {
+        field = field->WithType(NormalizeTimestampTimezones(field->type()));
+    }
+    const auto write_schema = arrow::schema(std::move(fields), schema->metadata());
+    VxSessionPtr session(vx_session_new());
     if (session == nullptr) {
         return Status::IOError("failed to create Vortex session");
     }
     ::ArrowSchema ffi_schema = {};
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema, &ffi_schema));
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*write_schema, &ffi_schema));
     vx_error* error = nullptr;
     // vx_dtype_from_arrow_schema consumes ffi_schema on both success and failure.
-    VxDtypePtr dtype(vx_dtype_from_arrow_schema(&ffi_schema, &error), vx_dtype_free);
+    VxDtypePtr dtype(vx_dtype_from_arrow_schema(&ffi_schema, &error));
     if (dtype == nullptr) {
         return VortexFfiError("convert Arrow schema to Vortex dtype", error);
     }
@@ -150,7 +191,7 @@ Result<std::unique_ptr<VortexFormatWriter>> VortexFormatWriter::Create(
                                    output_context->GetCallbackStatus());
     }
     return std::unique_ptr<VortexFormatWriter>(new VortexFormatWriter(
-        output, schema, std::move(session), std::move(output_context), sink, arrow_pool));
+        output, write_schema, std::move(session), std::move(output_context), sink, arrow_pool));
 }
 
 VortexFormatWriter::~VortexFormatWriter() {
@@ -193,8 +234,7 @@ Status VortexFormatWriter::AddBatch(::ArrowArray* batch) {
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema_, &ffi_schema));
     vx_error* error = nullptr;
     // vx_array_from_arrow consumes both `vortex_batch` and `ffi_schema` on success and on failure.
-    VxArrayPtr array(vx_array_from_arrow(&rebased_batch, &ffi_schema, /*nullable=*/false, &error),
-                     vx_array_free);
+    VxArrayPtr array(vx_array_from_arrow(&rebased_batch, &ffi_schema, /*nullable=*/false, &error));
     if (array == nullptr) {
         return VortexFfiError("convert Arrow batch to Vortex array", error);
     }

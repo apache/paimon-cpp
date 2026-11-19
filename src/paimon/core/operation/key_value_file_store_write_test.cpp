@@ -273,7 +273,11 @@ class KeyValueFileStoreWriteTest : public ::testing::Test {
         RealtimeQueryContext query_context{
             c_schema.get(),
             /*predicate=*/nullptr,
-            views[0].read_view->GetOffsetRange().value_or(OffsetRange(0, 0))};
+            views[0].read_view->GetOffsetRange().value_or(OffsetRange(0, 0)),
+            1024,
+            /*selection=*/nullptr,
+            /*offset_deletions=*/nullptr,
+            /*enable_index_pruning=*/true};
         PAIMON_ASSIGN_OR_RAISE(
             std::vector<std::unique_ptr<BatchReader>> readers,
             views[0].store->CreateQueryReaders(views[0].read_view, query_context));

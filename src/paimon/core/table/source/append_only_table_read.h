@@ -39,6 +39,7 @@ class MemoryPool;
 class RealtimeSplit;
 class RoaringBitmap64;
 class RealtimeFileSchema;
+struct RealtimePartitionBucketView;
 
 class AppendOnlyTableRead : public TableRead {
  public:
@@ -58,7 +59,11 @@ class AppendOnlyTableRead : public TableRead {
 
  private:
     Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
-        const std::shared_ptr<RealtimeSplit>& realtime_split, bool release_ticket);
+        const std::shared_ptr<RealtimeSplit>& realtime_split);
+
+    Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
+        const std::shared_ptr<RealtimeSplit>& realtime_split,
+        const RealtimePartitionBucketView& memory);
 
     Result<std::unique_ptr<BatchReader>> CreateDiskReader(const std::shared_ptr<Split>& split);
 
@@ -67,7 +72,10 @@ class AppendOnlyTableRead : public TableRead {
         const std::shared_ptr<const RoaringBitmap64>& offset_deletions);
 
     std::vector<std::unique_ptr<SplitRead>> split_reads_;
+    std::shared_ptr<FileStorePathFactory> path_factory_;
     std::shared_ptr<InternalReadContext> context_;
+    std::shared_ptr<MemoryPool> memory_pool_;
+    std::shared_ptr<Executor> executor_;
     std::shared_ptr<RealtimeFileSchema> realtime_file_schema_;
 };
 

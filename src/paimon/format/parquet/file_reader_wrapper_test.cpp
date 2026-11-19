@@ -35,6 +35,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/io/caching.h"
 #include "arrow/memory_pool.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
@@ -517,19 +518,13 @@ TEST_F(FileReaderWrapperTest, PageFilteredZeroBatchSizeDoesNotHang) {
     ASSERT_GE(batch_count, 1);
 }
 
-/// SeekToRow back to a previously-consumed page-filtered row group must rebuild the
-/// per-RG streaming reader from row_group_row_ranges_ and re-yield the same rows.
-/// The page-filter path holds no per-RG cache that consumption could destroy; the
-/// reader is constructed on demand each time, mirroring Arrow's stateless
-/// GetRecordBatchReader for the fully-matched path.
 TEST_F(FileReaderWrapperTest, SeekBackToConsumedPageFilteredRowGroup) {
     std::string file_path = PathUtil::JoinPath(dir_->Str(), "seek_back.parquet");
-    // 2000 rows produces 2 row groups (max_row_group_length=1000) with page index enabled.
     PrepareParquetFile(file_path, /*row_count=*/2000, /*enable_page_index=*/true);
-    ASSERT_OK_AND_ASSIGN(auto reader_wrapper, PrepareReaderWrapper(file_path));
+    constexpr int64_t kBatchSize = 7;
+    ASSERT_OK_AND_ASSIGN(auto reader_wrapper, PrepareReaderWrapper(file_path, kBatchSize));
     ASSERT_EQ(2, reader_wrapper->GetNumberOfRowGroups());
 
-    // Both RGs page-filtered. RowRanges are RG-local: RG0 keeps 40 rows, RG1 keeps 50.
     std::map<int32_t, RowRanges> row_ranges_map;
     row_ranges_map[0] = RowRanges(RowRanges::Range(10, 49));
     row_ranges_map[1] = RowRanges(RowRanges::Range(100, 149));
@@ -542,13 +537,15 @@ TEST_F(FileReaderWrapperTest, SeekBackToConsumedPageFilteredRowGroup) {
                         /*ranges=*/row_ranges_map[1])},
         all_columns));
 
-    auto count_all_rows = [&](int64_t* out_total) {
+    auto count_all_rows = [&](int64_t* out_total) -> Status {
         int64_t total = 0;
         while (true) {
-            auto next = reader_wrapper->Next();
-            if (!next.ok()) return next.status();
-            auto batch = std::move(next).value();
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::RecordBatch> batch,
+                                   reader_wrapper->Next());
             if (!batch) break;
+            EXPECT_TRUE(batch->ValidateFull().ok());
+            EXPECT_GT(batch->num_rows(), 0);
+            EXPECT_LE(batch->num_rows(), kBatchSize);
             total += batch->num_rows();
         }
         *out_total = total;
@@ -557,24 +554,34 @@ TEST_F(FileReaderWrapperTest, SeekBackToConsumedPageFilteredRowGroup) {
 
     int64_t first_total = 0;
     ASSERT_OK(count_all_rows(&first_total));
-    ASSERT_EQ(90, first_total);  // 40 + 50
+    ASSERT_EQ(90, first_total);
 
-    // Seek back to row 0 (start of RG0). The on-demand reader construction means RG0
-    // is read again from scratch, producing the same 90 rows total.
     ASSERT_OK(reader_wrapper->SeekToRow(0));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> first_batch, reader_wrapper->Next());
+    ASSERT_NE(nullptr, first_batch);
+    ASSERT_EQ(kBatchSize, first_batch->num_rows());
+    ASSERT_EQ("str_10",
+              checked_cast<const arrow::StringArray&>(*first_batch->column(0)).GetString(0));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> second_batch, reader_wrapper->Next());
+    ASSERT_NE(nullptr, second_batch);
+    ASSERT_EQ("str_17",
+              checked_cast<const arrow::StringArray&>(*second_batch->column(0)).GetString(0));
 
+    ASSERT_OK(reader_wrapper->SeekToRow(1000));
+    int64_t remaining_total = 0;
+    ASSERT_OK(count_all_rows(&remaining_total));
+    ASSERT_EQ(50, remaining_total);
+
+    ASSERT_OK(reader_wrapper->SeekToRow(0));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> restarted, reader_wrapper->Next());
+    ASSERT_NE(nullptr, restarted);
+    ASSERT_TRUE(first_batch->Equals(*restarted));
+    ASSERT_OK(reader_wrapper->SeekToRow(0));
     int64_t second_total = 0;
     ASSERT_OK(count_all_rows(&second_total));
     ASSERT_EQ(90, second_total);
 }
 
-/// When the page-level predicate matches more rows than the wrapper's batch_size,
-/// the page-filtered streaming path must split the filtered rows across multiple
-/// Next() calls. Pages are written 3 rows wide (write_batch_size=3 with
-/// data_pagesize=1) so that filtered rows span multiple page-sized chunks; the
-/// emitted batches must (a) sum to the RowRanges row count and (b) never exceed
-/// the configured batch_size — TableBatchReader additionally caps each batch at
-/// the underlying chunk boundary, which is fine as long as the cap holds.
 TEST_F(FileReaderWrapperTest, PageFilteredRespectsBatchSize) {
     constexpr int32_t kRowCount = 60;
     constexpr int32_t kPageRowCount = 3;
@@ -584,29 +591,33 @@ TEST_F(FileReaderWrapperTest, PageFilteredRespectsBatchSize) {
     PrepareParquetFile(file_path, kRowCount, /*enable_page_index=*/true,
                        /*write_batch_size=*/kPageRowCount);
 
-    // Keep rows [0, 29] — the first 10 pages of the row group.
-    RowRanges rr({RowRanges::Range(0, kExpectedTotal - 1)});
+    RowRanges row_ranges(RowRanges::Range(0, kExpectedTotal - 1));
 
     for (int64_t batch_size : {int64_t{1}, int64_t{2}, int64_t{3}, int64_t{5}, int64_t{10}}) {
         SCOPED_TRACE("batch_size=" + std::to_string(batch_size));
-        ASSERT_OK_AND_ASSIGN(auto reader_wrapper, PrepareReaderWrapper(file_path, batch_size));
-        ASSERT_OK(reader_wrapper->PrepareForReading(
-            {TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/true, /*ranges=*/rr)},
-            {0, 1, 2}));
+        for (const auto& columns : {std::vector<int32_t>{0, 1, 2}, std::vector<int32_t>{}}) {
+            SCOPED_TRACE(columns.size());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileReaderWrapper> reader_wrapper,
+                                 PrepareReaderWrapper(file_path, batch_size));
+            ASSERT_OK(
+                reader_wrapper->PrepareForReading({TargetRowGroup(0, true, row_ranges)}, columns));
 
-        int64_t total = 0;
-        int64_t batch_count = 0;
-        while (true) {
-            ASSERT_OK_AND_ASSIGN(auto batch, reader_wrapper->Next());
-            if (!batch) break;
-            ASSERT_GT(batch->num_rows(), 0);
-            ASSERT_LE(batch->num_rows(), batch_size);
-            total += batch->num_rows();
-            ++batch_count;
+            int64_t total = 0;
+            while (true) {
+                ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> batch,
+                                     reader_wrapper->Next());
+                if (!batch) break;
+                ASSERT_TRUE(batch->ValidateFull().ok());
+                ASSERT_EQ(columns.size(), batch->num_columns());
+                ASSERT_GT(batch->num_rows(), 0);
+                ASSERT_EQ(std::min(batch_size, kExpectedTotal - total), batch->num_rows());
+                ASSERT_OK_AND_ASSIGN(uint64_t first_row,
+                                     reader_wrapper->GetPreviousBatchFirstRowNumber());
+                ASSERT_EQ(total, first_row);
+                total += batch->num_rows();
+            }
+            ASSERT_EQ(kExpectedTotal, total);
         }
-        ASSERT_EQ(kExpectedTotal, total);
-        const int64_t min_batches = (kExpectedTotal + batch_size - 1) / batch_size;
-        ASSERT_GE(batch_count, min_batches);
     }
 }
 
@@ -721,49 +732,63 @@ TEST_F(FileReaderWrapperTest, ApplyReadRanges) {
 
 TEST_F(FileReaderWrapperTest, ApplyReadRangesWiderSecondCall) {
     std::string file_path = PathUtil::JoinPath(dir_->Str(), "test.parquet");
-    PrepareParquetFile(file_path, /*row_count=*/5500);
-    ASSERT_OK_AND_ASSIGN(auto reader_wrapper, PrepareReaderWrapper(file_path));
+    PrepareParquetFile(file_path, 5500, true);
+    constexpr int64_t kBatchSize = 7;
 
-    // Prepare with row groups: {0, 1, 2, 4, 5}
-    std::vector<TargetRowGroup> initial_targets = {
-        TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/false,
-                       /*ranges=*/RowRanges()),
-        TargetRowGroup(/*rg_index=*/1, /*is_partially_matched=*/false,
-                       /*ranges=*/RowRanges()),
-        TargetRowGroup(/*rg_index=*/2, /*is_partially_matched=*/false,
-                       /*ranges=*/RowRanges()),
-        TargetRowGroup(/*rg_index=*/4, /*is_partially_matched=*/false,
-                       /*ranges=*/RowRanges()),
-        TargetRowGroup(/*rg_index=*/5, /*is_partially_matched=*/false,
-                       /*ranges=*/RowRanges())};
-    std::vector<int32_t> all_columns = {0, 1, 2};
-    ASSERT_OK(reader_wrapper->PrepareForReadingLazy(initial_targets, all_columns));
+    for (bool partially_matched : {false, true}) {
+        SCOPED_TRACE(partially_matched);
+        ASSERT_OK_AND_ASSIGN(auto reader_wrapper, PrepareReaderWrapper(file_path, kBatchSize));
+        std::vector<TargetRowGroup> initial_targets;
+        for (int32_t row_group : {0, 1, 2, 4, 5}) {
+            initial_targets.emplace_back(row_group, partially_matched,
+                                         RowRanges(RowRanges::Range(10, 29)));
+        }
+        ASSERT_OK(reader_wrapper->PrepareForReadingLazy(initial_targets, {0, 1, 2}));
+        ASSERT_OK(reader_wrapper->ApplyReadRanges({{0, 1000}}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> first, reader_wrapper->Next());
+        ASSERT_NE(nullptr, first);
+        ASSERT_GT(first->num_rows(), 0);
+        if (partially_matched) {
+            ASSERT_EQ(kBatchSize, first->num_rows());
+        }
 
-    // First ApplyReadRanges: narrow to RG 0 only.
-    ASSERT_OK(reader_wrapper->ApplyReadRanges({{0, 1000}}));
-
-    // Second ApplyReadRanges: widen to RG 0, 1, 2. Previously excluded RG 1, 2 should restore.
-    ASSERT_OK(reader_wrapper->ApplyReadRanges({{0, 1000}, {1000, 2000}, {2000, 3000}}));
-
-    // Verify: reading should produce rows from RG 0 + 1 + 2 = 3000 rows.
-    int64_t total_rows = 0;
-    while (true) {
-        ASSERT_OK_AND_ASSIGN(auto batch, reader_wrapper->Next());
-        if (!batch) break;
-        total_rows += batch->num_rows();
+        ASSERT_OK(reader_wrapper->ApplyReadRanges({{0, 1000}, {1000, 2000}, {2000, 3000}}));
+        int64_t total_rows = 0;
+        const int64_t rows_per_group = partially_matched ? 20 : 1000;
+        while (true) {
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> batch, reader_wrapper->Next());
+            if (!batch) {
+                break;
+            }
+            ASSERT_TRUE(batch->ValidateFull().ok());
+            ASSERT_GT(batch->num_rows(), 0);
+            if (partially_matched) {
+                ASSERT_LE(batch->num_rows(), kBatchSize);
+            }
+            const auto& strings = checked_cast<const arrow::StringArray&>(*batch->column(0));
+            for (int64_t row = 0; row < batch->num_rows(); ++row) {
+                const int64_t selected_row = total_rows + row;
+                const int64_t file_row = selected_row / rows_per_group * 1000 +
+                                         selected_row % rows_per_group +
+                                         (partially_matched ? 10 : 0);
+                ASSERT_EQ(fmt::format("str_{}", file_row), strings.GetString(row));
+            }
+            total_rows += batch->num_rows();
+        }
+        ASSERT_EQ(3 * rows_per_group, total_rows);
     }
-    ASSERT_EQ(3000, total_rows);
 }
 
 TEST_F(FileReaderWrapperTest, PrepareForReading) {
     std::string file_path = PathUtil::JoinPath(dir_->Str(), "test.parquet");
-    PrepareParquetFile(file_path, /*row_count=*/5500);
-    ASSERT_OK_AND_ASSIGN(auto reader_wrapper, PrepareReaderWrapper(file_path));
+    PrepareParquetFile(file_path, 5500, true);
+    constexpr int64_t kBatchSize = 7;
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileReaderWrapper> reader_wrapper,
+                         PrepareReaderWrapper(file_path, kBatchSize));
     ASSERT_OK(reader_wrapper->PrepareForReading(
         /*target_row_groups=*/{TargetRowGroup(/*rg_index=*/1, /*is_partially_matched=*/false,
                                               /*ranges=*/RowRanges())},
         /*column_indices=*/{0}));
-    // seek before actual read range
     ASSERT_OK(reader_wrapper->SeekToRow(0));
     ASSERT_EQ(1000, reader_wrapper->GetNextRowToRead());
     ASSERT_EQ(std::numeric_limits<uint64_t>::max(),
@@ -781,7 +806,6 @@ TEST_F(FileReaderWrapperTest, PrepareForReading) {
     ASSERT_OK_AND_ASSIGN(record_batch, reader_wrapper->Next());
     ASSERT_FALSE(record_batch);
 
-    // empty column indices
     ASSERT_OK(reader_wrapper->PrepareForReading(
         /*target_row_groups=*/{TargetRowGroup(/*rg_index=*/0, /*is_partially_matched=*/false,
                                               /*ranges=*/RowRanges()),
@@ -795,13 +819,51 @@ TEST_F(FileReaderWrapperTest, PrepareForReading) {
     ASSERT_EQ(512, record_batch->num_rows());
     ASSERT_EQ(0, record_batch->num_columns());
 
-    // empty row group indices
     ASSERT_OK(reader_wrapper->PrepareForReading(
         /*target_row_groups=*/{},
         /*column_indices=*/{0}));
     ASSERT_EQ(5500, reader_wrapper->GetNextRowToRead());
     ASSERT_EQ(std::numeric_limits<uint64_t>::max(),
               reader_wrapper->GetPreviousBatchFirstRowNumber().value());
+
+    for (bool lazy : {false, true}) {
+        SCOPED_TRACE(lazy);
+        ASSERT_OK(reader_wrapper->PrepareForReading(
+            {TargetRowGroup(1, true, RowRanges(RowRanges::Range(10, 29)))}, {0, 1}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> retained, reader_wrapper->Next());
+        ASSERT_NE(nullptr, retained);
+        ASSERT_EQ(kBatchSize, retained->num_rows());
+        ASSERT_EQ(2, retained->num_columns());
+
+        const std::vector<TargetRowGroup> targets = {
+            TargetRowGroup(2, true, RowRanges(RowRanges::Range(50, 61)))};
+        ASSERT_OK(lazy ? reader_wrapper->PrepareForReadingLazy(targets, {2})
+                       : reader_wrapper->PrepareForReading(targets, {2}));
+        int64_t total = 0;
+        while (true) {
+            ASSERT_OK_AND_ASSIGN(record_batch, reader_wrapper->Next());
+            if (!record_batch) break;
+            ASSERT_TRUE(record_batch->ValidateFull().ok());
+            ASSERT_GT(record_batch->num_rows(), 0);
+            ASSERT_EQ(std::min(kBatchSize, 12 - total), record_batch->num_rows());
+            ASSERT_EQ(1, record_batch->num_columns());
+            ASSERT_EQ("col3", record_batch->schema()->field(0)->name());
+            ASSERT_OK_AND_ASSIGN(uint64_t first_row,
+                                 reader_wrapper->GetPreviousBatchFirstRowNumber());
+            ASSERT_EQ(2050 + total, first_row);
+            const auto& values = checked_cast<const arrow::BooleanArray&>(*record_batch->column(0));
+            for (int64_t row = 0; row < record_batch->num_rows(); ++row) {
+                ASSERT_EQ(static_cast<bool>((2050 + total + row) % 2), values.Value(row));
+            }
+            total += record_batch->num_rows();
+        }
+        ASSERT_EQ(12, total);
+        ASSERT_TRUE(retained->ValidateFull().ok());
+        const auto& strings = checked_cast<const arrow::StringArray&>(*retained->column(0));
+        for (int64_t row = 0; row < retained->num_rows(); ++row) {
+            ASSERT_EQ(fmt::format("str_{}", 1010 + row), strings.GetString(row));
+        }
+    }
 }
 
 namespace {
