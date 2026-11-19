@@ -29,6 +29,7 @@
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/predicate/predicate_filter.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -218,6 +219,7 @@ Status MosaicFileBatchReader::SetReadSchema(
     (void)selection_bitmap;
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,
                                       arrow::ImportSchema(read_schema));
+    PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*schema, "mosaic"));
     std::vector<std::string> names;
     std::vector<const char*> name_pointers;
     names.reserve(schema->num_fields());

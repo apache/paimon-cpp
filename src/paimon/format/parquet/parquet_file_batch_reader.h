@@ -199,12 +199,9 @@ class ParquetFileBatchReader : public PrefetchFileBatchReader {
         }
     }
 
-    /// Recursively collect leaf column indices for the sub-fields in read_type
-    /// that match file_type by paimon field ID. Unmatched sub-fields in file_type
-    /// have their leaf indices skipped. Partial projection inside LIST, MAP, or
-    /// FIXED_SIZE_LIST is not supported and will return Invalid.
-    static Status CollectLeafIndices(const std::shared_ptr<arrow::DataType>& read_type,
-                                     const std::shared_ptr<arrow::DataType>& file_type,
+    /// Advance the file's leaf index past this field and collect the projected leaves.
+    static Status CollectLeafIndices(const std::shared_ptr<arrow::Field>& read_field,
+                                     const std::shared_ptr<arrow::Field>& file_field,
                                      int32_t* leaf_index, std::vector<int32_t>* indices);
 
     /// Skip over all leaf column indices of the given file_type without collecting.
@@ -212,7 +209,7 @@ class ParquetFileBatchReader : public PrefetchFileBatchReader {
                                 int32_t* leaf_index);
 
     /// Compute leaf column indices by recursively matching read_schema against
-    /// file_schema using paimon field IDs. STRUCT supports sub-field projection
+    /// file_schema using field names. STRUCT supports sub-field projection
     /// (unmatched sub-fields are skipped). LIST, MAP, and FIXED_SIZE_LIST require
     /// matching nested shapes.
     static Result<std::vector<int32_t>> ComputeNestedColumnIndices(

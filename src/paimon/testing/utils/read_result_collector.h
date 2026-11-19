@@ -99,7 +99,7 @@ class ReadResultCollector {
     // them. Tests use this overload to verify that returned batches own every
     // allocator resource needed by their release callbacks.
     static Result<std::shared_ptr<arrow::ChunkedArray>> CollectResult(
-        std::unique_ptr<BatchReader> batch_reader) {
+        std::unique_ptr<BatchReader> batch_reader, bool preserve_schema = false) {
         std::vector<BatchReader::ReadBatch> batches;
         // ReadBatch owns the C structs, but deleting those structs does not invoke their release
         // callbacks. Explicitly release any buffered batches when a later read or import fails.
@@ -127,7 +127,7 @@ class ReadResultCollector {
                                    ImportReadBatch(std::move(batch)));
             arrays.push_back(std::move(array));
         }
-        return BuildChunkedArray(arrays);
+        return BuildChunkedArray(arrays, preserve_schema);
     }
 
     static Result<std::shared_ptr<arrow::ChunkedArray>> CollectResultOneBatch(
@@ -245,9 +245,14 @@ class ReadResultCollector {
     }
 
     static Result<std::shared_ptr<arrow::ChunkedArray>> BuildChunkedArray(
-        const arrow::ArrayVector& arrays) {
+        const arrow::ArrayVector& arrays, bool preserve_schema = false) {
         if (arrays.empty()) {
             return std::shared_ptr<arrow::ChunkedArray>();
+        }
+        if (preserve_schema) {
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::ChunkedArray> chunked_array,
+                                              arrow::ChunkedArray::Make(arrays));
+            return chunked_array;
         }
         // Accumulate all batches and convert dictionary arrays together to expose overlapping
         // dictionaries from multiple stripes.

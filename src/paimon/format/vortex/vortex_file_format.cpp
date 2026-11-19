@@ -20,6 +20,7 @@
 #include "paimon/format/vortex/vortex_file_format.h"
 
 #include "arrow/c/bridge.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/format/vortex/vortex_defs.h"
@@ -55,6 +56,7 @@ Result<std::unique_ptr<WriterBuilder>> VortexFileFormat::CreateWriterBuilder(
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> typed_schema,
                                       arrow::ImportSchema(schema));
+    PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*typed_schema, "vortex"));
     return std::make_unique<VortexWriterBuilder>(typed_schema, options_);
 }
 
@@ -65,6 +67,7 @@ Result<std::unique_ptr<FormatStatsExtractor>> VortexFileFormat::CreateStatsExtra
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> typed_schema,
                                       arrow::ImportSchema(schema));
+    PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*typed_schema, "vortex"));
     return std::make_unique<VortexStatsExtractor>(typed_schema);
 }
 

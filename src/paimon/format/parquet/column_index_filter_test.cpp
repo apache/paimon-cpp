@@ -25,6 +25,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "arrow/api.h"
@@ -377,6 +378,46 @@ class TestRowGroupPageIndexReader : public ::parquet::RowGroupPageIndexReader {
     std::shared_ptr<TestColumnIndex> column_index_;
     std::shared_ptr<::parquet::OffsetIndex> offset_index_;
 };
+
+TEST_F(ColumnIndexFilterTest, GeospatialColumnsIgnoreBinaryPageBounds) {
+    using ::parquet::LogicalType;
+    using ::parquet::Repetition;
+    auto index = std::make_shared<TestColumnIndex>();
+    index->null_pages_[0] = true;
+    index->null_counts_[0] = 10;
+    index->null_counts_[1] = 1;
+    index->non_null_pages_.erase(index->non_null_pages_.begin());
+    auto page_reader = std::make_shared<TestRowGroupPageIndexReader>(
+        index, page_index_reader_->RowGroup(0)->GetOffsetIndex(0));
+    auto comparison =
+        PredicateBuilder::Equal(0, "val", FieldType::BINARY, Literal(FieldType::BINARY, "z", 1));
+    const std::pair<FieldType, std::shared_ptr<const LogicalType>> types[] = {
+        {FieldType::BINARY, LogicalType::None()},
+        {FieldType::GEOMETRY, LogicalType::Geometry()},
+        {FieldType::GEOGRAPHY, LogicalType::Geography()}};
+    for (const auto& [type, logical] : types) {
+        auto leaf = ::parquet::schema::PrimitiveNode::Make("val", Repetition::OPTIONAL, logical,
+                                                           ::parquet::Type::BYTE_ARRAY);
+        ::parquet::SchemaDescriptor schema;
+        schema.Init(::parquet::schema::GroupNode::Make("root", Repetition::REQUIRED, {leaf}));
+        ASSERT_OK_AND_ASSIGN(auto matches, ColumnIndexFilter::CalculateRowRanges(
+                                               comparison, page_reader, column_name_to_index_,
+                                               &schema, row_group_row_count_));
+        ASSERT_EQ(matches.RowCount(), type == FieldType::BINARY ? 0 : row_group_row_count_);
+        ASSERT_OK_AND_ASSIGN(matches, ColumnIndexFilter::CalculateRowRanges(
+                                          PredicateBuilder::IsNull(0, "val", type), page_reader,
+                                          column_name_to_index_, &schema, row_group_row_count_));
+        ASSERT_EQ(matches.GetRanges().size(), 1u);
+        ASSERT_EQ(matches.GetRanges()[0].from, 0);
+        ASSERT_EQ(matches.GetRanges()[0].to, 19);
+        ASSERT_OK_AND_ASSIGN(matches, ColumnIndexFilter::CalculateRowRanges(
+                                          PredicateBuilder::IsNotNull(0, "val", type), page_reader,
+                                          column_name_to_index_, &schema, row_group_row_count_));
+        ASSERT_EQ(matches.GetRanges().size(), 1u);
+        ASSERT_EQ(matches.GetRanges()[0].from, 10);
+        ASSERT_EQ(matches.GetRanges()[0].to, row_group_row_count_ - 1);
+    }
+}
 
 TEST_F(ColumnIndexFilterTest, InWithNullKeepsPagesWithPossibleNulls) {
     auto index = std::make_shared<TestColumnIndex>();

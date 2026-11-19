@@ -33,7 +33,9 @@
 #include "paimon/common/predicate/leaf_predicate_impl.h"
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/types/data_type.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/core/casting/cast_executor.h"
+#include "paimon/core/casting/cast_executor_factory.h"
 #include "paimon/data/decimal.h"
 #include "paimon/defs.h"
 #include "paimon/predicate/full_text_match.h"
@@ -776,6 +778,46 @@ TEST_F(FieldMappingTest, TestTimeCast) {
                          FieldMappingBuilder::CreateDataCastExecutors(fields, string_fields));
     ASSERT_EQ(to_time.size(), 1);
     ASSERT_TRUE(to_time[0]);
+}
+
+TEST_F(FieldMappingTest, GeospatialCastRestrictions) {
+    ASSERT_OK_AND_ASSIGN(auto geom, GeospatialType::GeometryField("geo"));
+    ASSERT_OK_AND_ASSIGN(auto geog, GeospatialType::GeographyField("geo"));
+    ASSERT_OK_AND_ASSIGN(auto crs, GeospatialType::GeometryField("geo", "EPSG:3857"));
+    ASSERT_OK_AND_ASSIGN(auto same, GeospatialType::GeometryField("geo", "ogc:crs84"));
+    ASSERT_OK(
+        FieldMappingBuilder::CreateDataCastExecutors({DataField(0, same)}, {DataField(0, geom)}));
+    for (const auto& other :
+         {geog, crs, arrow::field("geo", arrow::binary()), arrow::field("geo", arrow::utf8())}) {
+        ASSERT_NOK_WITH_MSG(FieldMappingBuilder::CreateDataCastExecutors({DataField(0, other)},
+                                                                         {DataField(0, geom)}),
+                            "Incompatible geospatial type change");
+        std::vector<DataField> source = {DataField(0, arrow::field("arr", arrow::list(other)))};
+        std::vector<DataField> target = {DataField(0, arrow::field("arr", arrow::list(geom)))};
+        ASSERT_NOK(FieldMappingBuilder::CreateDataCastExecutors(source, target));
+        ASSERT_OK_AND_ASSIGN(auto builder,
+                             FieldMappingBuilder::Create(
+                                 DataField::ConvertDataFieldsToArrowSchema(target), {}, nullptr));
+        ASSERT_NOK_WITH_MSG(builder->CreateFieldMapping(source), "Incompatible geospatial type");
+    }
+    ASSERT_OK_AND_ASSIGN(auto cast, CastExecutorFactory::GetCastExecutorFactory()->GetCastExecutor(
+                                        DataField(0, geom), FieldType::STRING));
+    ASSERT_FALSE(cast);
+}
+
+TEST_F(FieldMappingTest, GeospatialNullPredicateSurvivesRename) {
+    ASSERT_OK_AND_ASSIGN(auto field, GeospatialType::GeographyField("location"));
+    auto predicate = PredicateBuilder::IsNull(0, "location", FieldType::GEOGRAPHY);
+    ASSERT_OK_AND_ASSIGN(auto reconstructed,
+                         FieldMappingBuilder::ReconstructPredicateWithDataFields(
+                             predicate, {{"location", DataField(7, field)}},
+                             {{7, {3, DataField(7, field->WithName("previous_location"))}}}));
+    ASSERT_TRUE(reconstructed);
+    auto leaf = std::dynamic_pointer_cast<LeafPredicate>(reconstructed.value());
+    ASSERT_TRUE(leaf);
+    ASSERT_EQ(leaf->FieldName(), "previous_location");
+    ASSERT_EQ(leaf->FieldIndex(), 3);
+    ASSERT_EQ(leaf->GetFieldType(), FieldType::GEOGRAPHY);
 }
 
 }  // namespace paimon::test

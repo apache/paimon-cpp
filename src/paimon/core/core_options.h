@@ -234,6 +234,8 @@ class PAIMON_EXPORT CoreOptions {
     int32_t FileIndexFormatVersion() const;
 
     std::map<std::string, std::string> GetFieldsSequenceGroups() const;
+    static std::map<std::string, std::string> ParseFieldsSequenceGroups(
+        const std::map<std::string, std::string>& options);
     bool PartialUpdateRemoveRecordOnDelete() const;
     bool AggregationRemoveRecordOnDelete() const;
     bool TableReadSequenceNumberEnabled() const;

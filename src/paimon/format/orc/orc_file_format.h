@@ -24,6 +24,7 @@
 
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/orc/orc_reader_builder.h"
@@ -49,6 +50,7 @@ class OrcFileFormat : public FileFormat {
                                                                int32_t batch_size) const override {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> typed_schema,
                                           arrow::ImportSchema(schema));
+        PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*typed_schema, "orc"));
         return std::make_unique<OrcWriterBuilder>(typed_schema, batch_size, options_);
     }
 
@@ -56,6 +58,7 @@ class OrcFileFormat : public FileFormat {
         ::ArrowSchema* schema) const override {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> typed_schema,
                                           arrow::ImportSchema(schema));
+        PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*typed_schema, "orc"));
         return std::make_unique<OrcStatsExtractor>(typed_schema);
     }
 

@@ -27,6 +27,7 @@
 #include "arrow/type_fwd.h"
 #include "fmt/format.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/defs.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
@@ -53,6 +54,10 @@ class FieldTypeUtils {
     /// Converts an arrow field to a `FieldType`, disambiguating metadata-marked extension types
     /// (a VARIANT field is physically a STRUCT with the variant metadata marker).
     static Result<FieldType> ConvertToFieldType(const std::shared_ptr<arrow::Field>& field) {
+        if (GeospatialType::IsGeospatial(*field)) {
+            PAIMON_ASSIGN_OR_RAISE(GeospatialType type, GeospatialType::FromField(*field));
+            return type.Type();
+        }
         if (VariantTypeUtils::IsVariantField(field)) {
             return FieldType::VARIANT;
         }
@@ -105,6 +110,10 @@ class FieldTypeUtils {
 
     static std::string FieldTypeToString(const FieldType& type) {
         switch (type) {
+            case FieldType::GEOMETRY:
+                return "GEOMETRY";
+            case FieldType::GEOGRAPHY:
+                return "GEOGRAPHY";
             case FieldType::BOOLEAN:
                 return "BOOLEAN";
             case FieldType::TINYINT:

@@ -35,6 +35,7 @@
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/table/special_fields.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -56,8 +57,8 @@
 namespace paimon {
 namespace {
 
-bool SupportsMinMax(const std::shared_ptr<arrow::DataType>& type) {
-    switch (type->id()) {
+bool SupportsMinMax(const arrow::Field& field) {
+    switch (field.type()->id()) {
         case arrow::Type::BOOL:
         case arrow::Type::INT8:
         case arrow::Type::INT16:
@@ -66,12 +67,13 @@ bool SupportsMinMax(const std::shared_ptr<arrow::DataType>& type) {
         case arrow::Type::FLOAT:
         case arrow::Type::DOUBLE:
         case arrow::Type::STRING:
-        case arrow::Type::BINARY:
         case arrow::Type::DATE32:
         case arrow::Type::TIME32:
         case arrow::Type::TIMESTAMP:
         case arrow::Type::DECIMAL128:
             return true;
+        case arrow::Type::BINARY:
+            return !GeospatialType::IsGeospatial(field);
         default:
             return false;
     }
@@ -912,9 +914,10 @@ Result<std::optional<ArrowRealtimeStore::BatchStatistics>> ArrowRealtimeStore::C
     aggregate_options.min_count = 1;
     arrow::compute::ExecContext exec_context(arrow_pool_.get());
 
-    for (const std::shared_ptr<arrow::Array>& field : data->fields()) {
+    for (int32_t i = 0; i < data->num_fields(); ++i) {
+        const auto& field = data->field(i);
         null_count_builder.UnsafeAppend(field->null_count());
-        if (!SupportsMinMax(field->type())) {
+        if (!SupportsMinMax(*write_schema_->field(i))) {
             PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
                 std::shared_ptr<arrow::Array> min_value,
                 arrow::MakeArrayOfNull(field->type(), /*length=*/1, arrow_pool_.get()));

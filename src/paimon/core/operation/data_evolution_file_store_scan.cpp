@@ -25,6 +25,7 @@
 
 #include "paimon/common/reader/data_evolution_array.h"
 #include "paimon/common/reader/data_evolution_row.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/range_helper.h"
 #include "paimon/core/utils/data_evolution_utils.h"
@@ -183,6 +184,8 @@ DataEvolutionFileStoreScan::EvolutionStats(
                     if (file_meta->first_row_id == group_start &&
                         file_meta->row_count == group_row_count &&
                         table_field.Type()->Equals(write_field.Type()) &&
+                        GeospatialType::Equals(*table_field.ArrowField(),
+                                               *write_field.ArrowField()) &&
                         stats_iter != stats_field_map.end()) {
                         row_offsets[table_field_idx] = entry_idx;
                         field_offsets[table_field_idx] = stats_iter->second;

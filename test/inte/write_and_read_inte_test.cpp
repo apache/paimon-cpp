@@ -39,6 +39,7 @@
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
 #include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/types/data_type.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/path_util.h"
@@ -374,6 +375,72 @@ TEST_P(WriteAndReadInteTest, TestAppendSimple) {
     ASSERT_OK_AND_ASSIGN(bool success,
                          helper->ReadAndCheckResult(data_type, data_splits, expected_data));
     ASSERT_TRUE(success);
+}
+
+TEST_P(WriteAndReadInteTest, GeospatialProjectionAndNullPredicates) {
+    auto [file_format, file_system] = GetParam();
+    if (file_format != "parquet") {
+        GTEST_SKIP();
+    }
+    ASSERT_OK_AND_ASSIGN(auto geom, GeospatialType::GeometryField("shape", "EPSG:3857"));
+    ASSERT_OK_AND_ASSIGN(auto geog,
+                         GeospatialType::GeographyField("position", "EPSG:4326", "karney"));
+    auto nested = arrow::field("nested", arrow::struct_({geog}));
+    auto fields = arrow::FieldVector{arrow::field("id", arrow::int32()), geom, nested};
+    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format},
+                                                  {Options::FILE_SYSTEM, file_system},
+                                                  {Options::BUCKET, "-1"}};
+    if (file_system == "jindo") {
+        options = AddOptionsForJindo(options);
+    }
+    ASSERT_OK_AND_ASSIGN(
+        auto helper, TestHelper::Create(test_dir_, arrow::schema(fields), {}, {}, options, false));
+    const std::string rows = R"([
+        [0, "\u0001\u0007\u0000\u0000\u0000\u0000\u0000\u0000\u0000",
+            ["\u0001\u0007\u0000\u0000\u0000\u0000\u0000\u0000\u0000"]],
+        [1, null, [null]]
+    ])";
+    ASSERT_OK_AND_ASSIGN(auto batch,
+                         TestHelper::MakeRecordBatch(arrow::struct_(fields), rows, {}, 0, {}));
+    ASSERT_OK(helper->WriteAndCommit(std::move(batch), 0, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(auto splits,
+                         helper->NewScan(StartupMode::LatestFull(), std::nullopt, false));
+    const auto path = PathUtil::JoinPath(test_dir_, "foo.db/bar");
+    for (bool is_null : {false, true}) {
+        auto predicate = is_null ? PredicateBuilder::IsNull(1, "shape", FieldType::GEOMETRY)
+                                 : PredicateBuilder::IsNotNull(1, "shape", FieldType::GEOMETRY);
+        ReadContextBuilder builder(path);
+        builder.SetOptions(options)
+            .SetReadFieldNames({"nested", "shape", "id"})
+            .SetPredicate(predicate)
+            .EnablePredicateFilter(true);
+        ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(context)));
+        ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(splits));
+        ASSERT_OK_AND_ASSIGN(auto result,
+                             ReadResultCollector::CollectResult(std::move(reader), true));
+        ASSERT_EQ(result->length(), 1);
+        ASSERT_EQ(result->num_chunks(), 1);
+        auto row = checked_pointer_cast<arrow::StructArray>(result->chunk(0));
+        ASSERT_EQ(row->num_fields(), 4);
+        ASSERT_TRUE(GeospatialType::Equals(*row->type()->field(1), *nested));
+        ASSERT_TRUE(GeospatialType::Equals(*row->type()->field(2), *geom));
+        ASSERT_EQ(checked_pointer_cast<arrow::Int32Array>(row->field(3))->Value(0),
+                  is_null ? 1 : 0);
+        auto position = checked_pointer_cast<arrow::StructArray>(row->field(1))->field(0);
+        for (const auto& value : {row->field(2), position}) {
+            ASSERT_EQ(value->IsNull(0), is_null);
+            if (!is_null) {
+                ASSERT_EQ(checked_pointer_cast<arrow::BinaryArray>(value)->GetView(0),
+                          std::string("\x01\x07\0\0\0\0\0\0\0", 9));
+            }
+        }
+    }
+    options[Options::FILE_FORMAT_PER_LEVEL] = "0:parquet,1:orc";
+    ReadContextBuilder builder(path);
+    builder.SetOptions(options);
+    ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(context)), "GEOMETRY/GEOGRAPHY");
 }
 
 TEST_P(WriteAndReadInteTest, TestAppendReadWithNestedPredicateAcrossBatches) {

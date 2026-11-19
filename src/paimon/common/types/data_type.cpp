@@ -27,6 +27,7 @@
 #include "paimon/common/data/blob_utils.h"
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/array_type.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/types/map_type.h"
 #include "paimon/common/types/row_type.h"
 #include "paimon/common/types/vector_type.h"
@@ -130,6 +131,13 @@ std::string DataType::DataTypeToString(const std::shared_ptr<arrow::DataType>& t
         case arrow::Type::type::STRING:
             return "STRING";
         case arrow::Type::type::BINARY:
+            if (GeospatialType::IsGeospatial(metadata_)) {
+                auto geo = GeospatialType::FromField(*arrow::field("", type, nullable_, metadata_));
+                if (!geo.ok()) {
+                    throw std::invalid_argument(geo.status().ToString());
+                }
+                return geo.value().ToString();
+            }
             return "BYTES";
         case arrow::Type::type::DATE32:
             return "DATE";

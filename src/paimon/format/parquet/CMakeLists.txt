@@ -65,6 +65,7 @@ if(PAIMON_BUILD_TESTS)
                     predicate_pushdown_test.cpp
                     column_index_filter_test.cpp
                     variant_parquet_test.cpp
+                    geospatial_parquet_test.cpp
                     STATIC_LINK_LIBS
                     paimon_shared
                     test_utils_static

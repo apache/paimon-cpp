@@ -1796,9 +1796,13 @@ bool CoreOptions::CompactionForceUpLevel0() const {
 }
 
 std::map<std::string, std::string> CoreOptions::GetFieldsSequenceGroups() const {
-    auto raw_options = impl_->raw_options;
+    return ParseFieldsSequenceGroups(impl_->raw_options);
+}
+
+std::map<std::string, std::string> CoreOptions::ParseFieldsSequenceGroups(
+    const std::map<std::string, std::string>& options) {
     std::map<std::string, std::string> sequence_groups;
-    for (const auto& [key, value] : raw_options) {
+    for (const auto& [key, value] : options) {
         if (StringUtils::StartsWith(key, Options::FIELDS_PREFIX, /*start_pos=*/0) &&
             StringUtils::EndsWith(key, Options::SEQUENCE_GROUP)) {
             std::string seq_fields_str =

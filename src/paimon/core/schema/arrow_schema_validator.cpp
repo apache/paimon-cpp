@@ -29,6 +29,7 @@
 #include "paimon/common/data/variant/variant_type_utils.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/types/data_type.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/types/vector_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/decimal_utils.h"
@@ -199,6 +200,9 @@ Status ArrowSchemaValidator::ValidateField(const std::shared_ptr<arrow::Field>& 
 
 Status ArrowSchemaValidator::ValidateField(const std::shared_ptr<arrow::Field>& field,
                                            bool allow_blob) {
+    if (GeospatialType::IsGeospatial(*field)) {
+        PAIMON_RETURN_NOT_OK(GeospatialType::FromField(*field));
+    }
     const auto kind = field->type()->id();
     switch (kind) {
         case arrow::Type::type::BOOL:

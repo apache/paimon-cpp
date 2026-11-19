@@ -32,6 +32,7 @@
 #include "fmt/format.h"
 #include "orc/OrcFile.hh"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/options_utils.h"
@@ -178,6 +179,7 @@ Status OrcFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,
                                       arrow::ImportSchema(read_schema));
+    PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*arrow_schema, "orc"));
     if (ArrowSchemaValidator::ContainTimestampWithTimezone(
             *arrow::struct_(arrow_schema->fields()))) {
         PAIMON_ASSIGN_OR_RAISE(bool ltz_legacy, OptionsUtils::GetValueFromMap<bool>(

@@ -55,6 +55,10 @@ enum class FieldType {
     /// TIME(p) without time zone, stored as milliseconds of the day in an int32 (Arrow
     /// `time32[ms]`) whatever p is, matching Paimon Java.
     TIME = 19,
+    /// Planar OGC WKB in Arrow Binary with geoarrow.wkb field metadata.
+    GEOMETRY = 20,
+    /// Geodetic OGC WKB, including CRS and edge interpolation metadata.
+    GEOGRAPHY = 21,
     UNKNOWN = 128,
 };
 

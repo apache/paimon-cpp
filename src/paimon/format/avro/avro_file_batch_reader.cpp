@@ -26,6 +26,7 @@
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -258,6 +259,7 @@ Status AvroFileBatchReader::SetReadSchema(::ArrowSchema* read_schema,
     // TODO(menglingda.mld): support predicate
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_read_schema,
                                       arrow::ImportSchema(read_schema));
+    PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*arrow_read_schema, "avro"));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> file_schema,
                            ArrowUtils::DataTypeToSchema(file_data_type_));
     PAIMON_ASSIGN_OR_RAISE(

@@ -55,7 +55,7 @@ Result<FieldType> SystemTableSchema::GetFieldType(const std::string& field_name)
     if (!field) {
         return Status::NotExist("field ", field_name, " not exist in system table schema");
     }
-    return FieldTypeUtils::ConvertToFieldType(field->type()->id());
+    return FieldTypeUtils::ConvertToFieldType(field);
 }
 
 std::optional<std::string> SystemTableSchema::Comment() const {

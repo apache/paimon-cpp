@@ -97,6 +97,14 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
      - Binary
      - ``BYTES`` is a synonym for ``VARBINARY(2147483647)``.
 
+   * - ``GEOMETRY`` / ``GEOMETRY(crs)``
+     - Binary with ``geoarrow.wkb`` field metadata
+     - Planar WKB geometry. See `Geospatial types`_ for parameters and restrictions.
+
+   * - ``GEOGRAPHY`` / ``GEOGRAPHY(crs)`` / ``GEOGRAPHY(crs, algorithm)``
+     - Binary with ``geoarrow.wkb`` field metadata
+     - Geodetic WKB geometry. See `Geospatial types`_ for parameters and restrictions.
+
    * - ``DECIMAL``
 
        ``DECIMAL(p)``
@@ -476,3 +484,51 @@ and `Arrow DataTypes <https://arrow.apache.org/docs/format/Columnar.html#data-ty
        types or listed in ``blob-descriptor-field`` or ``blob-view-field``.
        Paimon C++ does not support compacting these tables yet. See :doc:`write`
        for writing BLOB columns.
+
+Geospatial types
+----------------
+
+``GEOMETRY`` and ``GEOGRAPHY`` store OGC Well-Known Binary (WKB) in Arrow
+``Binary`` arrays and preserve the original bytes. Both types support NULL and
+can appear inside ROW, ARRAY, and MAP. An empty geometry retains its WKB encoding
+as a non-null value. The table schema preserves declared MAP key nullability,
+although Arrow and Parquet require every stored key to have a value.
+
+The schema syntax is ``GEOMETRY(crs)`` or ``GEOGRAPHY(crs, algorithm)``.
+Omitting the parameters uses CRS ``OGC:CRS84`` and geography algorithm
+``spherical``. ``GEOGRAPHY(crs)`` also uses ``spherical``. The other supported
+algorithms are ``vincenty``, ``thomas``, ``andoyer``, and ``karney``.
+CRS strings must be nonempty and compare case-insensitively, matching Java.
+Quote CRS parameters containing whitespace or delimiters with single quotes.
+Escape a single quote by doubling it, for example
+``GEOMETRY('custom, ''quoted'' CRS')``.
+
+Arrow fields use ``ARROW:extension:name=geoarrow.wkb`` and JSON in
+``ARROW:extension:metadata``. A geometry field uses, for example,
+``{"crs":"EPSG:3857"}``, and a geography field uses
+``{"edges":"karney","crs":"EPSG:4326"}``. When constructing nested schemas,
+attach the metadata to each geospatial leaf. ``Schema::GetFieldType`` returns
+``FieldType::GEOMETRY`` or ``FieldType::GEOGRAPHY`` for these fields.
+
+Set ``file.format`` to ``parquet`` (the default) and use Parquet for any
+``file.format.per.level`` or ``changelog-file.format`` overrides. The bundled
+Arrow 17 backport maps these fields to native Parquet ``GEOMETRY`` and
+``GEOGRAPHY`` annotations on ``BYTE_ARRAY`` columns.
+
+Columns containing geospatial values, including nested values, cannot be primary,
+partition, or bucket keys, sequence or sequence-group ordering fields, or
+clustering/sort columns. Casts and schema evolution require the same logical type,
+CRS, and geography algorithm.
+``BYTES``, ``GEOMETRY``, and ``GEOGRAPHY`` are distinct logical types.
+
+Paimon and Parquet retain null counts. If a row group omits a geospatial
+column's null count, the file-level count is unknown. File, row-group, and page
+pruning ignore WKB min/max bounds. Use ``IS NULL`` or ``IS NOT NULL`` to filter
+on nullability.
+
+The bidirectional interoperability test uses Paimon Java's Parquet reader and
+writer. It requires Java 11 or later, Maven, and a Paimon Java bundle with
+geospatial support. Set ``PAIMON_JAVA_VERSION`` to the available bundle version
+(default ``2.2-SNAPSHOT``). Run ``test/inte/geospatial/run.sh`` after building
+``paimon-parquet-format-test``. It creates temporary files in both languages and
+checks nested annotations, all five edge algorithms, WKB, nulls, and statistics.

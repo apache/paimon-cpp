@@ -172,6 +172,7 @@ set(PAIMON_COMMON_SRCS
     common/types/data_field.cpp
     common/types/data_type.cpp
     common/types/data_type_json_parser.cpp
+    common/types/geospatial_type.cpp
     common/types/row_kind.cpp
     common/types/row_type.cpp
     common/utils/file_type.cpp
@@ -560,6 +561,7 @@ add_paimon_lib(paimon
                ${PAIMON_CORE_SRCS}
                DEPENDENCIES
                arrow
+               re2::re2
                tbb
                glog
                fmt
@@ -572,6 +574,7 @@ add_paimon_lib(paimon
                DataSketches
                STATIC_LINK_LIBS
                arrow
+               re2::re2
                tbb
                glog
                fmt
@@ -747,6 +750,7 @@ if(PAIMON_BUILD_TESTS)
                     common/types/data_type_json_parser_test.cpp
                     common/types/row_kind_test.cpp
                     common/types/data_type_test.cpp
+                    common/types/geospatial_type_test.cpp
                     common/utils/file_type_test.cpp
                     common/utils/hadoop_compression_test.cpp
                     common/utils/row_range_index_test.cpp

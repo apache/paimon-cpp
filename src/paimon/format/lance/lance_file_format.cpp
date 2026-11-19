@@ -20,6 +20,7 @@
 #include "paimon/format/lance/lance_file_format.h"
 
 #include "arrow/c/bridge.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/format/lance/lance_reader_builder.h"
 #include "paimon/format/lance/lance_stats_extractor.h"
@@ -40,6 +41,7 @@ Result<std::unique_ptr<WriterBuilder>> LanceFileFormat::CreateWriterBuilder(
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> typed_schema,
                                       arrow::ImportSchema(schema));
+    PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*typed_schema, "lance"));
     return std::make_unique<LanceWriterBuilder>(typed_schema, options_);
 }
 
@@ -50,6 +52,7 @@ Result<std::unique_ptr<FormatStatsExtractor>> LanceFileFormat::CreateStatsExtrac
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> typed_schema,
                                       arrow::ImportSchema(schema));
+    PAIMON_RETURN_NOT_OK(GeospatialType::ValidateFileFormat(*typed_schema, "lance"));
     return std::make_unique<LanceStatsExtractor>(typed_schema, options_);
 }
 

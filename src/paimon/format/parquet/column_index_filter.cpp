@@ -85,6 +85,17 @@ Result<RowRanges> ColumnIndexFilter::VisitLeafPredicate(
     auto function_type = function.GetType();
 
     int32_t column_index = it->second;
+    FieldType field_type = leaf_predicate->GetFieldType();
+    const auto* column = schema && column_index >= 0 && column_index < schema->num_columns()
+                             ? schema->Column(column_index)
+                             : nullptr;
+    bool geospatial = field_type == FieldType::GEOMETRY || field_type == FieldType::GEOGRAPHY ||
+                      (column && (column->logical_type()->is_geometry() ||
+                                  column->logical_type()->is_geography()));
+    if (geospatial && function_type != Function::Type::IS_NULL &&
+        function_type != Function::Type::IS_NOT_NULL) {
+        return RowRanges::CreateSingle(row_group_row_count);
+    }
     auto column_index_ptr = rg_page_index_reader->GetColumnIndex(column_index);
     auto offset_index_ptr = rg_page_index_reader->GetOffsetIndex(column_index);
 
@@ -94,14 +105,13 @@ Result<RowRanges> ColumnIndexFilter::VisitLeafPredicate(
     }
 
     const auto& literals = leaf_predicate->Literals();
-    FieldType field_type = leaf_predicate->GetFieldType();
     // The physical type decides how the encoded page statistics are laid out. It cannot
     // be inferred from the length of the encoded bounds: a DECIMAL stored as a 4-byte
     // FIXED_LEN_BYTE_ARRAY (precision 7-9) is indistinguishable from an INT32 one by
     // length alone, yet is big-endian rather than little-endian.
     ::parquet::Type::type physical_type = ::parquet::Type::UNDEFINED;
-    if (schema && column_index < schema->num_columns()) {
-        physical_type = schema->Column(column_index)->physical_type();
+    if (column) {
+        physical_type = column->physical_type();
     }
 
     if (function_type != Function::Type::IS_NULL && function_type != Function::Type::IS_NOT_NULL &&

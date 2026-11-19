@@ -37,6 +37,7 @@
 #include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -137,6 +138,8 @@ Result<std::shared_ptr<arrow::Field>> InternalReadContext::AlignReadFieldWithTab
         PAIMON_RETURN_NOT_OK(
             NestedProjectionUtils::ValidateMapSharedShreddingAccessField(read_field).status());
         auto read_struct = checked_pointer_cast<arrow::StructType>(read_field->type());
+        PAIMON_RETURN_NOT_OK(
+            GeospatialType::ValidateEvolution(*table_map->item_field(), *read_struct->field(0)));
         const auto& selected_value_type = read_struct->field(0)->type();
         if (!selected_value_type->Equals(table_map->item_type())) {
             return Status::Invalid(fmt::format(
@@ -202,12 +205,14 @@ Result<std::shared_ptr<arrow::Field>> InternalReadContext::AlignReadFieldWithTab
         PAIMON_ASSIGN_OR_RAISE(
             std::shared_ptr<arrow::Field> rebased_item_field,
             AlignReadFieldWithTableFieldIds(read_map->item_field(), table_map->item_field()));
-        auto rebased_type = arrow::map(rebased_key_field->type(), rebased_item_field);
+        auto rebased_type = std::make_shared<arrow::MapType>(rebased_key_field, rebased_item_field,
+                                                             read_map->keys_sorted());
         auto aligned_field = table_field->WithType(rebased_type);
         return DataField::MergeFieldMetadataByWhitelist(aligned_field, read_field,
                                                         kReadMetadataWhitelist);
     }
 
+    PAIMON_RETURN_NOT_OK(GeospatialType::ValidateEvolution(*table_field, *read_field));
     if (!read_field->type()->Equals(table_field->type())) {
         return Status::Invalid(fmt::format(
             "Read schema field '{}' type {} does not match table field type {}", read_field->name(),

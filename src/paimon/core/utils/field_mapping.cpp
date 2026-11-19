@@ -27,6 +27,7 @@
 #include "paimon/common/predicate/compound_predicate_impl.h"
 #include "paimon/common/predicate/full_text_match_predicate.h"
 #include "paimon/common/predicate/leaf_predicate_impl.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/object_utils.h"
@@ -133,6 +134,10 @@ Result<ExistFieldInfo> FieldMappingBuilder::CreateExistFieldInfo(
                                            read_field.ArrowField(), data_field.Type()));
                 pruned_type = std::move(map_access_data_type);
             } else {
+                // Pruning can substitute the projected LIST/MAP type, so compare the original
+                // fields before their child metadata is replaced.
+                PAIMON_RETURN_NOT_OK(GeospatialType::ValidateEvolution(*data_field.ArrowField(),
+                                                                       *read_field.ArrowField()));
                 PAIMON_ASSIGN_OR_RAISE(pruned_type, NestedProjectionUtils::PruneDataType(
                                                         read_field.Type(), data_field.Type()));
             }
@@ -194,6 +199,8 @@ Result<std::vector<std::shared_ptr<CastExecutor>>> FieldMappingBuilder::CreateDa
     std::vector<std::shared_ptr<CastExecutor>> cast_executors;
     cast_executors.reserve(read_fields.size());
     for (size_t i = 0; i < read_fields.size(); i++) {
+        PAIMON_RETURN_NOT_OK(GeospatialType::ValidateEvolution(*data_fields[i].ArrowField(),
+                                                               *read_fields[i].ArrowField()));
         if (!read_fields[i].Type()->Equals(data_fields[i].Type())) {
             auto read_type_id = read_fields[i].Type()->id();
             if (read_type_id == arrow::Type::STRUCT || read_type_id == arrow::Type::LIST ||
@@ -204,9 +211,9 @@ Result<std::vector<std::shared_ptr<CastExecutor>>> FieldMappingBuilder::CreateDa
                 continue;
             }
             PAIMON_ASSIGN_OR_RAISE(FieldType read_type,
-                                   FieldTypeUtils::ConvertToFieldType(read_fields[i].Type()->id()));
+                                   FieldTypeUtils::ConvertToFieldType(read_fields[i].ArrowField()));
             PAIMON_ASSIGN_OR_RAISE(FieldType data_type,
-                                   FieldTypeUtils::ConvertToFieldType(data_fields[i].Type()->id()));
+                                   FieldTypeUtils::ConvertToFieldType(data_fields[i].ArrowField()));
             auto executor_factory = CastExecutorFactory::GetCastExecutorFactory();
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<CastExecutor> cast_executor,
                                    executor_factory->GetCastExecutor(/*src_field=*/data_fields[i],
@@ -306,12 +313,15 @@ Result<std::optional<std::shared_ptr<Predicate>>> FieldMappingBuilder::Reconstru
         return std::optional<std::shared_ptr<Predicate>>();
     }
     std::vector<Literal> new_literals;
-    PAIMON_ASSIGN_OR_RAISE(FieldType read_type, FieldTypeUtils::ConvertToFieldType(
-                                                    read_field_iter->second.Type()->id()));
-    PAIMON_ASSIGN_OR_RAISE(FieldType data_type, FieldTypeUtils::ConvertToFieldType(
-                                                    data_field_iter->second.second.Type()->id()));
-    if (read_type != data_type ||
-        (!read_field_iter->second.Type()->Equals(data_field_iter->second.second.Type()))) {
+    const auto& read_field = read_field_iter->second;
+    const auto& [data_field_idx, data_field] = data_field_iter->second;
+    PAIMON_RETURN_NOT_OK(
+        GeospatialType::ValidateEvolution(*data_field.ArrowField(), *read_field.ArrowField()));
+    PAIMON_ASSIGN_OR_RAISE(FieldType read_type,
+                           FieldTypeUtils::ConvertToFieldType(read_field.ArrowField()));
+    PAIMON_ASSIGN_OR_RAISE(FieldType data_type,
+                           FieldTypeUtils::ConvertToFieldType(data_field.ArrowField()));
+    if (read_type != data_type || !read_field.Type()->Equals(data_field.Type())) {
         // read type and data type are different, only push down integer predicates
         if (FieldTypeUtils::IsIntegerNumeric(read_type) &&
             FieldTypeUtils::IsIntegerNumeric(data_type) &&
@@ -320,17 +330,16 @@ Result<std::optional<std::shared_ptr<Predicate>>> FieldMappingBuilder::Reconstru
             auto cast_executor =
                 executor_factory->GetCastExecutor(/*src=*/read_type, /*target=*/data_type);
             if (!cast_executor) {
-                return Status::Invalid(fmt::format(
-                    "ReconstructLeafPredicate failed: cannot find cast "
-                    "executor for field {} from type {} to {}",
-                    read_field_iter->second.Name(), FieldTypeUtils::FieldTypeToString(read_type),
-                    FieldTypeUtils::FieldTypeToString(data_type)));
+                return Status::Invalid(
+                    fmt::format("ReconstructLeafPredicate failed: cannot find cast "
+                                "executor for field {} from type {} to {}",
+                                read_field.Name(), FieldTypeUtils::FieldTypeToString(read_type),
+                                FieldTypeUtils::FieldTypeToString(data_type)));
             }
             new_literals.reserve(leaf_predicate->Literals().size());
             for (const auto& literal : leaf_predicate->Literals()) {
-                PAIMON_ASSIGN_OR_RAISE(
-                    Literal casted,
-                    cast_executor->Cast(literal, data_field_iter->second.second.Type()));
+                PAIMON_ASSIGN_OR_RAISE(Literal casted,
+                                       cast_executor->Cast(literal, data_field.Type()));
                 // ignore if any literal is overflowed.
                 if (CastingUtils::IsIntegerLiteralCastedOverflow(literal, casted)) {
                     return std::optional<std::shared_ptr<Predicate>>();
@@ -344,7 +353,6 @@ Result<std::optional<std::shared_ptr<Predicate>>> FieldMappingBuilder::Reconstru
         new_literals = leaf_predicate->Literals();
     }
 
-    const auto& [data_field_idx, data_field] = data_field_iter->second;
     return std::optional<std::shared_ptr<Predicate>>(std::make_shared<LeafPredicateImpl>(
         leaf_predicate->GetLeafFunction(), /*data_field_idx=*/data_field_idx,
         /*data_field_name=*/data_field.Name(), /*data_field_type=*/data_type, new_literals));

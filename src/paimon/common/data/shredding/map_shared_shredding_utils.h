@@ -86,13 +86,12 @@ class MapSharedShreddingUtils {
         const std::map<std::string, int32_t>& field_to_num_columns);
 
     /// Builds the physical Arrow type for one shredding MAP column with physical_col_ids.
-    /// @param value_type The value type of the original MAP.
+    /// @param value_field The value field of the original MAP.
     /// @param physical_col_ids The set of physical column ids to include.
-    /// @param value_nullable Whether the MAP's value field is nullable.
     /// @param include_overflow Whether to include __overflow column.
     static std::shared_ptr<arrow::DataType> BuildSpecificPhysicalStructType(
-        const std::shared_ptr<arrow::DataType>& value_type,
-        const std::set<int32_t>& physical_col_ids, bool value_nullable, bool include_overflow);
+        const std::shared_ptr<arrow::Field>& value_field, const std::set<int32_t>& physical_col_ids,
+        bool include_overflow);
 
     // ---- Metadata serialization ----
 
@@ -140,21 +139,18 @@ class MapSharedShreddingUtils {
         const MapSharedShreddingFieldMeta& meta, const std::string& name);
 
     /// Builds the physical Arrow type for one shredding MAP column.
-    /// @param value_type The value type of the original MAP.
+    /// @param value_field The value field of the original MAP.
     /// @param num_columns Number of physical columns K.
-    /// @param value_nullable Whether the MAP's value field is nullable.
     static std::shared_ptr<arrow::DataType> BuildPhysicalStructType(
-        const std::shared_ptr<arrow::DataType>& value_type, int32_t num_columns,
-        bool value_nullable);
+        const std::shared_ptr<arrow::Field>& value_field, int32_t num_columns);
 
     /// Builds the physical Arrow type for one shredding MAP column with sorted_cols.
-    /// @param value_type The value type of the original MAP.
+    /// @param value_field The value field of the original MAP.
     /// @param sorted_cols The vector of physical column ids to include.
-    /// @param value_nullable Whether the MAP's value field is nullable.
     /// @param include_overflow Whether to include __overflow column.
     static std::shared_ptr<arrow::DataType> InnerBuildSpecificPhysicalStructType(
-        const std::shared_ptr<arrow::DataType>& value_type, const std::vector<int32_t>& sorted_cols,
-        bool value_nullable, bool include_overflow);
+        const std::shared_ptr<arrow::Field>& value_field, const std::vector<int32_t>& sorted_cols,
+        bool include_overflow);
 };
 
 }  // namespace paimon

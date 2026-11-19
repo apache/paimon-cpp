@@ -96,8 +96,15 @@ struct SpecialFields {
 
     /// Match Java's Parquet array-element IDs. Depth starts at 1 and resets at each ROW.
     static constexpr int32_t GetArrayElementFieldId(int32_t array_field_id, int32_t depth) {
-        return STRUCTURED_TYPE_FIELD_ID_BASE + array_field_id * STRUCTURED_TYPE_FIELD_DEPTH_LIMIT +
-               depth;
+        return static_cast<int32_t>(
+            STRUCTURED_TYPE_FIELD_ID_BASE +
+            static_cast<uint32_t>(array_field_id) * STRUCTURED_TYPE_FIELD_DEPTH_LIMIT + depth);
+    }
+
+    static constexpr int32_t GetMapKeyFieldId(int32_t map_field_id, int32_t depth) {
+        return static_cast<int32_t>(
+            STRUCTURED_TYPE_FIELD_ID_BASE -
+            static_cast<uint32_t>(map_field_id) * STRUCTURED_TYPE_FIELD_DEPTH_LIMIT - depth);
     }
 
     // `_REALTIME_OFFSET` is persisted as a regular TableSchema field in realtime deduplicate

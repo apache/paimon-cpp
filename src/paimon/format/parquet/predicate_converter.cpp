@@ -187,6 +187,11 @@ Result<arrow::compute::Expression> PredicateConverter::ConvertLeaf(
     const auto& literals = leaf_predicate->Literals();
     const auto& function = leaf_predicate->GetFunction();
     auto function_type = function.GetType();
+    if ((leaf_predicate->GetFieldType() == FieldType::GEOMETRY ||
+         leaf_predicate->GetFieldType() == FieldType::GEOGRAPHY) &&
+        function_type != Function::Type::IS_NULL && function_type != Function::Type::IS_NOT_NULL) {
+        return AlwaysTrue();
+    }
     if (FloatingPointPredicateUtils::IsType(leaf_predicate->GetFieldType()) &&
         FloatingPointPredicateUtils::IsComparison(function_type)) {
         return ConvertFloatingPointLeaf(leaf_predicate);

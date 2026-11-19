@@ -677,7 +677,6 @@ TEST_P(OrcAdapterTest, TestTime) {
 }
 
 TEST_F(OrcAdapterTest, TestBridgeForMapType) {
-    // map type will lose meta of key and value field after c <-> c++ bridge
     auto key_field = DataField::ConvertDataFieldToArrowField(
         DataField(100, arrow::field("key", arrow::int32())));
     auto value_field = DataField::ConvertDataFieldToArrowField(
@@ -692,8 +691,7 @@ TEST_F(OrcAdapterTest, TestBridgeForMapType) {
     // from c to c++
     auto new_arrow_schema = arrow::ImportSchema(c_schema.get()).ValueOrDie();
     ASSERT_TRUE(new_arrow_schema->Equals(arrow_schema, /*check_metadata=*/false));
-    // check meta failed
-    ASSERT_FALSE(new_arrow_schema->Equals(arrow_schema, /*check_metadata=*/true));
+    ASSERT_TRUE(new_arrow_schema->Equals(arrow_schema, true));
 }
 
 TEST_F(OrcAdapterTest, TestDataBufferSetData) {

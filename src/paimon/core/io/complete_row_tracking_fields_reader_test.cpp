@@ -29,6 +29,8 @@
 #include "arrow/array/array_nested.h"
 #include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
+#include "paimon/common/types/data_field.h"
+#include "paimon/common/types/geospatial_type.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
@@ -60,8 +62,9 @@ class CompleteRowTrackingFieldsBatchReaderTest : public testing::Test {
                 /*selection_bitmap=*/std::nullopt));
             ASSERT_OK_AND_ASSIGN(auto result_with_special_fields,
                                  paimon::test::ReadResultCollector::CollectResult(
-                                     std::move(complete_row_tracking_fields_reader)));
+                                     std::move(complete_row_tracking_fields_reader), true));
             auto expected_chunk_array = std::make_shared<arrow::ChunkedArray>(expected_array);
+            ASSERT_TRUE(result_with_special_fields->type()->Equals(*expected_array->type(), true));
             ASSERT_TRUE(result_with_special_fields->Equals(expected_chunk_array));
         }
     }
@@ -348,6 +351,29 @@ TEST_F(CompleteRowTrackingFieldsBatchReaderTest, TestNestedType) {
     ])")
             .ValueOrDie());
     CheckResult(src_array, /*first_row_id=*/100, /*snapshot_id=*/8, read_schema, target_array);
+}
+
+TEST_F(CompleteRowTrackingFieldsBatchReaderTest, GeospatialMetadataSurvivesRowTracking) {
+    ASSERT_OK_AND_ASSIGN(auto geometry, GeospatialType::GeometryField("shape", "EPSG:3857"));
+    geometry = DataField::ConvertDataFieldToArrowField(DataField(0, geometry));
+    ASSERT_OK_AND_ASSIGN(auto geography,
+                         GeospatialType::GeographyField("location", "EPSG:4326", "karney"));
+    auto nested = arrow::field("nested", arrow::struct_({geography}), false);
+    auto file_type = arrow::struct_({geometry, nested});
+    auto read_schema = arrow::schema({nested, arrow::field("_ROW_ID", arrow::int64()), geometry,
+                                      arrow::field("_SEQUENCE_NUMBER", arrow::int64())});
+    auto source = arrow::ipc::internal::json::ArrayFromJSON(file_type, R"([
+        ["\u0001\u0007\u0000\u0000\u0000\u0000\u0000\u0000\u0000", [null]],
+        [null, ["\u0001\u0007\u0000\u0000\u0000\u0000\u0000\u0000\u0000"]]
+    ])");
+    ASSERT_TRUE(source.ok());
+    auto expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(read_schema->fields()), R"([
+        [[null], 100, "\u0001\u0007\u0000\u0000\u0000\u0000\u0000\u0000\u0000", 4],
+        [["\u0001\u0007\u0000\u0000\u0000\u0000\u0000\u0000\u0000"], 101, null, 4]
+    ])");
+    ASSERT_TRUE(expected.ok());
+    CheckResult(*source, 100, 4, read_schema, *expected);
 }
 
 TEST_F(CompleteRowTrackingFieldsBatchReaderTest, TestInvalidWithReadNonExistField) {
