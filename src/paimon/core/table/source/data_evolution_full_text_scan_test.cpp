@@ -75,17 +75,19 @@ std::ostream& operator<<(std::ostream& os, const Selection& selection) {
     return os << "]}";
 }
 
-std::vector<Selection> Choose(const std::vector<std::shared_ptr<IndexFileMeta>>& files) {
+void CheckSelections(const std::vector<std::shared_ptr<IndexFileMeta>>& files,
+                     const std::vector<Selection>& expected) {
+    ASSERT_OK_AND_ASSIGN(auto chosen,
+                         DataEvolutionFullTextScan::ChooseIndexRanges(files, kTextFieldId));
     std::vector<Selection> selections;
-    for (const auto& selection :
-         DataEvolutionFullTextScan::ChooseIndexRanges(files, kTextFieldId)) {
+    for (const auto& selection : chosen) {
         std::vector<std::string> file_names;
         for (const auto& file : selection.files) {
             file_names.push_back(file->FileName());
         }
         selections.push_back(Selection{selection.file_range, file_names, selection.search_ranges});
     }
-    return selections;
+    ASSERT_EQ(selections, expected);
 }
 }  // namespace
 
@@ -120,8 +122,8 @@ TEST(DataEvolutionFullTextScanTest, TestDisjointShards) {
         {Range(100, 199), {"shard-1"}, {Range(100, 199)}},
         {Range(300, 399), {"shard-3"}, {Range(300, 399)}},
         {Range(400, max_row_id), {"shard-4"}, {Range(400, max_row_id)}}};
-    ASSERT_EQ(Choose(files), expected);
-    ASSERT_TRUE(Choose({}).empty());
+    CheckSelections(files, expected);
+    CheckSelections({}, {});
 }
 
 TEST(DataEvolutionFullTextScanTest, TestOverlappingShardsOfOneIndex) {
@@ -131,7 +133,7 @@ TEST(DataEvolutionFullTextScanTest, TestOverlappingShardsOfOneIndex) {
         NewIndexFile("1-3", "full-text", Range(1, 3), kTextFieldId)};
     std::vector<Selection> expected = {{Range(0, 2), {"0-2"}, {Range(0, 2)}},
                                        {Range(1, 3), {"1-3"}, {Range(3, 3)}}};
-    ASSERT_EQ(Choose(files), expected);
+    CheckSelections(files, expected);
 }
 
 TEST(DataEvolutionFullTextScanTest, TestDedicatedIndexBeforeExtraField) {
@@ -141,31 +143,27 @@ TEST(DataEvolutionFullTextScanTest, TestDedicatedIndexBeforeExtraField) {
         NewIndexFile("dedicated", "test-full-text", Range(50, 149), kTextFieldId)};
     std::vector<Selection> expected = {{Range(0, 99), {"multi"}, {Range(0, 49)}},
                                        {Range(50, 149), {"dedicated"}, {Range(50, 149)}}};
-    ASSERT_EQ(Choose(files), expected);
-
-    ASSERT_EQ(Choose({files[0]}),
-              std::vector<Selection>({{Range(0, 99), {"multi"}, {Range(0, 99)}}}));
+    CheckSelections(files, expected);
+    CheckSelections({files[0]}, {{Range(0, 99), {"multi"}, {Range(0, 99)}}});
 }
 
 TEST(DataEvolutionFullTextScanTest, TestIdentityOrderBreaksTies) {
     std::vector<std::shared_ptr<IndexFileMeta>> same_range = {
         NewIndexFile("lucene", "lucene-fts", Range(0, 9), kTextFieldId),
         NewIndexFile("full-text", "full-text", Range(0, 9), kTextFieldId)};
-    ASSERT_EQ(Choose(same_range),
-              std::vector<Selection>({{Range(0, 9), {"full-text"}, {Range(0, 9)}}}));
+    CheckSelections(same_range, {{Range(0, 9), {"full-text"}, {Range(0, 9)}}});
 
     std::vector<std::shared_ptr<IndexFileMeta>> lucene_inside = {
         NewIndexFile("full-text", "full-text", Range(0, 99), kTextFieldId),
         NewIndexFile("lucene", "lucene-fts", Range(50, 59), kTextFieldId)};
-    ASSERT_EQ(Choose(lucene_inside),
-              std::vector<Selection>({{Range(0, 99), {"full-text"}, {Range(0, 99)}}}));
+    CheckSelections(lucene_inside, {{Range(0, 99), {"full-text"}, {Range(0, 99)}}});
 
     std::vector<std::shared_ptr<IndexFileMeta>> full_text_inside = {
         NewIndexFile("lucene", "lucene-fts", Range(0, 99), kTextFieldId),
         NewIndexFile("full-text", "full-text", Range(40, 59), kTextFieldId)};
     std::vector<Selection> expected = {{Range(0, 99), {"lucene"}, {Range(0, 39), Range(60, 99)}},
                                        {Range(40, 59), {"full-text"}, {Range(40, 59)}}};
-    ASSERT_EQ(Choose(full_text_inside), expected);
+    CheckSelections(full_text_inside, expected);
 }
 
 TEST(DataEvolutionFullTextScanTest, TestScalarPreFilterFiles) {
@@ -191,21 +189,7 @@ TEST(DataEvolutionFullTextScanTest, TestScalarPreFilterFiles) {
     ASSERT_FALSE(is_pre_filter_file(1, std::vector<int32_t>({2}), /*supports_full_text=*/true));
 }
 
-TEST(DataEvolutionFullTextScanTest, TestIntersectingFiles) {
-    auto first = NewIndexFile("first.index", "btree", Range(0, 9), /*index_field_id=*/2);
-    auto second = NewIndexFile("second.index", "btree", Range(10, 19), /*index_field_id=*/2);
-    auto third = NewIndexFile("third.index", "btree", Range(20, 29), /*index_field_id=*/2);
-    std::vector<std::shared_ptr<IndexFileMeta>> files = {first, second, third};
-    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<IndexFileMeta>> intersecting,
-                         DataEvolutionFullTextScan::IntersectingFiles(files, Range(9, 10)));
-    ASSERT_EQ(intersecting, std::vector<std::shared_ptr<IndexFileMeta>>({first, second}));
-    ASSERT_OK_AND_ASSIGN(intersecting,
-                         DataEvolutionFullTextScan::IntersectingFiles(files, Range(25, 40)));
-    ASSERT_EQ(intersecting, std::vector<std::shared_ptr<IndexFileMeta>>({third}));
-    ASSERT_OK_AND_ASSIGN(intersecting,
-                         DataEvolutionFullTextScan::IntersectingFiles(files, Range(30, 40)));
-    ASSERT_TRUE(intersecting.empty());
-
+TEST(DataEvolutionFullTextScanTest, TestRejectsInvalidIndexRanges) {
     std::vector<std::pair<int64_t, int64_t>> invalid_ranges = {
         {-1, 9}, {9, 0}, {0, std::numeric_limits<int64_t>::max()}};
     for (const auto& [start, end] : invalid_ranges) {
@@ -214,11 +198,9 @@ TEST(DataEvolutionFullTextScanTest, TestIntersectingFiles) {
         auto invalid = std::make_shared<IndexFileMeta>(
             "btree", "invalid.index", /*file_size=*/128, /*row_count=*/10,
             /*dv_ranges=*/std::nullopt, /*external_path=*/std::nullopt, meta);
-        std::vector<std::shared_ptr<IndexFileMeta>> with_invalid = {first, invalid};
-        ASSERT_NOK_WITH_MSG(DataEvolutionFullTextScan::IntersectingFiles(with_invalid, Range(0, 9)),
-                            fmt::format("scalar index file invalid.index covers an invalid row "
-                                        "range [{}, {}]",
-                                        start, end));
+        const std::string error = fmt::format(
+            "index file invalid.index covers an invalid row range [{}, {}]", start, end);
+        ASSERT_NOK_WITH_MSG(DataEvolutionFullTextScan::ChooseIndexRanges({invalid}, 2), error);
     }
 }
 

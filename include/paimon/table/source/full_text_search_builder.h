@@ -50,13 +50,14 @@ class Executor;
 ///
 /// `ExecuteLocal()` plans and searches in this process. To run them in different processes, plan
 /// with `NewFullTextScan()`, serialize the splits with `FullTextSearchSplit::Serialize()`, and
-/// search them with the `NewFullTextRead()` of a builder for the same table, column, query and
-/// filter.
+/// search them with `NewFullTextRead()` on each worker using the same table, column, query,
+/// limit, partition and row filters, and search options.
+/// Full-text search returns `NotImplemented` on tables that require catalog query authorization.
 ///
 /// The row ids of the result refer to the snapshot the search was planned from, which
-/// `FullTextScan::Plan::SnapshotId()` returns. If the table may change in between, pin the data
-/// scan to it with `scan.mode` = `from-snapshot` and `scan.snapshot-id`, or with the same
-/// `scan.tag-name` for a search of a tag, as the tag may outlive the snapshot.
+/// `FullTextScan::Plan::SnapshotId()` returns. Pin the data scan with `scan.mode` = `from-snapshot`
+/// and `scan.snapshot-id`. If a tag retains an expired snapshot, use `scan.tag-name` and check
+/// that the data plan's snapshot ID still matches the search plan's.
 class PAIMON_EXPORT FullTextSearchBuilder {
  public:
     /// @param table_path The root path of the table.
@@ -111,17 +112,16 @@ class PAIMON_EXPORT FullTextSearchBuilder {
     FullTextSearchBuilder& WithFileSystem(const std::shared_ptr<FileSystem>& file_system);
 
     /// Creates a scan that plans the search on the current settings. The query must be set, and
-    /// its column must exist in the latest schema of the table.
+    /// its column must exist in the selected snapshot's schema for time travel, or in the latest
+    /// table schema for a current search.
     /// @return The scan, or an error if the settings are invalid or the table cannot be loaded;
-    ///         `NotImplemented` for a primary-key full-text index (`pk-full-text.index.columns`), a
-    ///         search mode other than `fast` (`full-text-index.search-mode`, or else
-    ///         `global-index.search-mode`), a row filter whose scalar search mode is not `fast`
-    ///         (`scalar-index.search-mode`, or else `global-index.search-mode`), or a filter with a
-    ///         full-text match.
+    ///         `NotImplemented` for a primary-key full-text index (`pk-full-text.index.columns`) or
+    ///         a filter with a full-text match.
     Result<std::unique_ptr<FullTextScan>> NewFullTextScan() const;
 
-    /// Creates a read that searches the splits of a scan on the current settings. In addition to
-    /// the requirements of `NewFullTextScan()`, the limit must be positive.
+    /// Creates a worker for the configured query and positive limit. The worker validates the
+    /// row filter against the planning schema when it receives the splits in
+    /// `FullTextRead::Read()`.
     /// @return The read, or an error if the settings are invalid or the table cannot be loaded.
     Result<std::unique_ptr<FullTextRead>> NewFullTextRead() const;
 

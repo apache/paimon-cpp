@@ -28,16 +28,17 @@ namespace paimon::lucene {
 class LuceneGlobalIndexWriter : public GlobalIndexWriter {
  public:
     struct LuceneWriteContext {
-        LuceneWriteContext(const std::string& _tmp_index_path,
-                           const Lucene::FSDirectoryPtr& _lucene_dir,
-                           const Lucene::IndexWriterPtr& _index_writer,
-                           const Lucene::DocumentPtr& _doc, const Lucene::FieldPtr& _field);
+        LuceneWriteContext(const std::string& output_path, const std::string& tmp_index_path,
+                           const Lucene::DirectoryPtr& lucene_dir,
+                           const Lucene::IndexWriterPtr& index_writer,
+                           const Lucene::DocumentPtr& doc, const Lucene::FieldPtr& field);
 
         LuceneWriteContext(LuceneWriteContext&&) = default;
         LuceneWriteContext& operator=(LuceneWriteContext&&) = default;
 
+        std::string output_path;
         std::string tmp_index_path;
-        Lucene::FSDirectoryPtr lucene_dir;
+        Lucene::DirectoryPtr lucene_dir;
         Lucene::IndexWriterPtr index_writer;
         Lucene::DocumentPtr doc;
         Lucene::FieldPtr field;
@@ -62,7 +63,7 @@ class LuceneGlobalIndexWriter : public GlobalIndexWriter {
                             const std::map<std::string, std::string>& options,
                             const std::shared_ptr<MemoryPool>& pool);
 
-    Result<std::string> FlushIndexToFinal();
+    Status FlushIndexToFinal();
 
  private:
     std::shared_ptr<MemoryPool> pool_;

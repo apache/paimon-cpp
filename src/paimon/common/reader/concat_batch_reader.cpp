@@ -35,6 +35,19 @@
 namespace paimon {
 class MemoryPool;
 
+template <typename Func>
+static auto CatchPreparationErrors(Func&& func) -> decltype(func()) {
+    try {
+        return func();
+    } catch (const std::bad_alloc&) {
+        return Status::OutOfMemory("out of memory preparing file reader");
+    } catch (const std::exception& e) {
+        return Status::UnknownError("file reader preparation failed: ", e.what());
+    } catch (...) {
+        return Status::UnknownError("file reader preparation failed with an unknown exception");
+    }
+}
+
 ConcatBatchReader::ConcatBatchReader(std::vector<std::unique_ptr<BatchReader>>&& readers,
                                      const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : arrow_pool_(arrow_pool), finished_reader_metrics_(std::make_shared<MetricsImpl>()) {
@@ -94,7 +107,7 @@ void ConcatBatchReader::FillWindow() {
                     if (retained->cancelled.load()) {
                         return std::unique_ptr<BatchReader>();
                     }
-                    return retained->factory(index);
+                    return CatchPreparationErrors([&]() { return retained->factory(index); });
                 });
     }
 }
@@ -104,22 +117,11 @@ Status ConcatBatchReader::ResolveReader(ReaderState* state, bool wait) {
         (!wait && state->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)) {
         return state->failure;
     }
-    try {
-        auto result = state->future.get();
-        if (!result.ok()) {
-            state->failure = result.status();
-        } else {
-            state->reader = std::move(result).value();
-            state->file_reader = dynamic_cast<FileBatchReader*>(state->reader.get());
-        }
-    } catch (const std::bad_alloc&) {
-        state->failure = Status::OutOfMemory("out of memory preparing file reader");
-    } catch (const std::exception& e) {
-        state->failure = Status::UnknownError("file reader preparation failed: ", e.what());
-    } catch (...) {
-        state->failure =
-            Status::UnknownError("file reader preparation failed with an unknown exception");
-    }
+    state->failure = CatchPreparationErrors([state]() -> Status {
+        PAIMON_ASSIGN_OR_RAISE(state->reader, state->future.get());
+        state->file_reader = dynamic_cast<FileBatchReader*>(state->reader.get());
+        return Status::OK();
+    });
     return state->failure;
 }
 

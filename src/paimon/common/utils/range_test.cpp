@@ -19,6 +19,8 @@
 
 #include "paimon/utils/range.h"
 
+#include <limits>
+
 #include "gtest/gtest.h"
 
 namespace paimon::test {
@@ -97,6 +99,9 @@ TEST(RangeTest, TestCompare) {
 }
 
 TEST(RangeTest, TestSortAndMergeOverlap) {
+    const int64_t last = std::numeric_limits<int64_t>::max();
+    ASSERT_EQ(Range::SortAndMergeOverlap({Range(last - 2, last), Range(last, last)}, true),
+              std::vector<Range>({Range(last - 2, last)}));
     {
         // test simple
         std::vector<Range> ranges = {Range(0, 10), Range(5, 15)};
@@ -258,6 +263,9 @@ TEST(RangeTest, TestAnd) {
 }
 
 TEST(RangeTest, TestExclude) {
+    const int64_t last = std::numeric_limits<int64_t>::max();
+    ASSERT_EQ(Range(last - 3, last).Exclude({Range(last - 2, last)}),
+              std::vector<Range>({Range(last - 3, last - 3)}));
     {
         // test basic
         // [0, 10000] exclude [1000,2000],[3000,4000],[5000,6000]

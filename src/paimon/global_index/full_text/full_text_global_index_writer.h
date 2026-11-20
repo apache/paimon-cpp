@@ -54,7 +54,7 @@ class FullTextGlobalIndexWriter : public GlobalIndexWriter {
  private:
     FullTextGlobalIndexWriter(const std::string& field_name,
                               const std::shared_ptr<arrow::DataType>& arrow_type,
-                              FtindexWriterPtr writer,
+                              FtindexWriterPtr writer, std::string file_path,
                               const std::shared_ptr<GlobalIndexFileWriter>& file_writer,
                               const std::map<std::string, std::string>& options,
                               const std::shared_ptr<MemoryPool>& pool);
@@ -65,6 +65,7 @@ class FullTextGlobalIndexWriter : public GlobalIndexWriter {
     std::string field_name_;
     std::shared_ptr<arrow::DataType> arrow_type_;
     FtindexWriterPtr writer_;
+    std::string file_path_;
     std::shared_ptr<GlobalIndexFileWriter> file_writer_;
     std::map<std::string, std::string> options_;
     /// Number of rows received, including null values.

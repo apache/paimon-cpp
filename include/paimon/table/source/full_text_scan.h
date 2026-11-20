@@ -60,28 +60,24 @@ class PAIMON_EXPORT FullTextScan {
 
     virtual ~FullTextScan() = default;
 
-    /// Plans the search on the snapshot that the options select, as Java
-    /// `TimeTravelUtil#tryTravelOrLatest` does: snapshot `scan.snapshot-id`, the snapshot of tag
-    /// `scan.tag-name`, the latest snapshot at or before `scan.timestamp` or
-    /// `scan.timestamp-millis`, or else the latest snapshot. As in Java, at most one of these
-    /// options may be set, and it must agree with an explicit `scan.mode`: `from-snapshot` needs
-    /// `scan.snapshot-id` or `scan.tag-name`, `from-snapshot-full` needs `scan.snapshot-id`,
-    /// `from-timestamp` needs `scan.timestamp` or `scan.timestamp-millis`, and `latest-full` and
-    /// `latest` take none of them.
+    /// Plans the search on the latest snapshot or the one selected by `scan.snapshot-id`,
+    /// `scan.tag-name`, `scan.timestamp` or `scan.timestamp-millis`. A timestamp selects the
+    /// latest snapshot at or before that time. Set at most one selector, consistent with
+    /// `scan.mode`. Each plan resolves its tag or timestamp anew.
     ///
-    /// Each index shard of the searched column becomes one split. The scan considers only the
-    /// index files that are in the partitions of the partition filter, that index the column as
-    /// their indexed field or as one of their extra fields, and whose indexer supports full-text
-    /// search (`GlobalIndexer::SupportsFullTextSearch()`). The plan fails if Paimon C++ is built
-    /// without the backend of a `full-text` or `lucene-fts` index it finds. When the row ranges of
-    /// index shards overlap, each row is ranked by one shard only: an index whose indexed field is
-    /// the column comes before one that carries it as an extra field, and further ties are broken
-    /// by index type and fields, then by the start and end of the shard. With a row filter, each
-    /// split also carries the files of single-field scalar indexes that intersect its shard and
-    /// index a field of the filter.
-    /// @return The plan, or an error if more than one time-travel option is set, the option does
-    ///         not agree with `scan.mode`, the selected snapshot or tag does not exist, or reading
-    ///         the index manifests fails; `NotImplemented` for an index whose backend is not built.
+    /// Each full-text shard assigned rows in the selected partitions becomes one split. For
+    /// overlapping shards, the planner prefers an index on the searched column over one that
+    /// carries it as an extra field. Ties are broken by index type, field IDs and shard range.
+    /// A stored split carries single-field scalar indexes for its row filter only where those
+    /// indexes intersect its assigned search ranges.
+    ///
+    /// When a selected partition has a full-text index for the column, `full` and `detail` assign
+    /// gaps in single-field index coverage to a `RawFullTextSearchSplit`. `full` checks all row
+    /// ids below the snapshot's next row id. `detail` checks data files in the selected partitions.
+    /// Raw and stored splits rank disjoint rows and can be read independently.
+    /// @return The plan, or an error for conflicting scan options, a missing snapshot or tag, or
+    ///         unreadable manifests. A missing `full-text` or `lucene-fts` backend returns
+    ///         `NotImplemented`.
     virtual Result<std::shared_ptr<Plan>> CreatePlan() = 0;
 };
 

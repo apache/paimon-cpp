@@ -40,28 +40,22 @@ class PAIMON_EXPORT FullTextRead {
         return Read(plan.Splits());
     }
 
-    /// Searches `splits` and returns the `limit` highest-scoring rows among the candidates that
-    /// they return. The result holds global row ids and iterates them in ascending order; pass it
-    /// to `ScanContextBuilder::SetGlobalIndexResult()` to read the rows, whose scores the read
-    /// returns in the `_INDEX_SCORE` field.
+    /// Returns the top `limit` hits across `splits`, in ascending global row id order. Pass the
+    /// result to `ScanContextBuilder::SetGlobalIndexResult()` to read the rows with `_INDEX_SCORE`.
     ///
-    /// The splits are searched in parallel, and each one returns at most `limit` candidates, chosen
-    /// by its index. Ties among the candidates are broken by ascending row id, but which of the
-    /// rows tied at the `limit`-th score of a split become candidates is up to its index. A split
-    /// ranks only its search row ranges, and with deletion vectors enabled only the rows that are
-    /// live in the snapshot the splits were planned from; BM25 statistics still come from its whole
-    /// index shard.
+    /// Row filters apply before ranking. Each stored shard scores against its whole corpus.
+    /// The temporary index scores against all live, non-null text in the raw ranges.
+    /// Each backend resolves ties at its cutoff. The merge breaks ties by ascending row id.
     ///
-    /// With a row filter (`FullTextSearchBuilder::WithFilter()`), a split ranks only the rows that
-    /// satisfy it, as resolved before ranking by the scalar indexes that the splits carry. Rows
-    /// that no scalar index can evaluate are not ranked. Candidates that the indexes cannot decide
-    /// exactly, as for `Contains`, `EndsWith` and `Like`, are excluded too, so the result may hold
-    /// fewer than `limit` rows, unless `global-index.filter.refine-from-data` verifies them against
-    /// the data of the planned snapshot on this thread.
-    /// @param splits Splits planned by a `FullTextScan` of the same column and filter, all from one
-    ///               snapshot.
-    /// @return The rows found, or an error if a split is invalid, its index files do not index the
-    ///         column of the latest schema (for example, after the column was replaced), or an
+    /// Planned splits can be read independently. When raw and stored splits overlap, stored
+    /// shards exclude the raw ranges before selecting their top hits.
+    ///
+    /// On stored shards, `full` and `detail` scalar modes read filter columns wherever scalar
+    /// indexes lack coverage or cannot answer the predicate.
+    /// Inexact candidates rank only after verification with `global-index.filter.refine-from-data`.
+    /// Workers bind row-filter fields to the planning schema when the splits carry its ID.
+    /// @param splits Splits planned for the same snapshot, schema, column and filters.
+    /// @return The rows found, or an error if a split is invalid, its column was replaced, or an
     ///         index or data file cannot be read.
     virtual Result<std::shared_ptr<ScoredGlobalIndexResult>> Read(
         const std::vector<std::shared_ptr<FullTextSearchSplit>>& splits) = 0;

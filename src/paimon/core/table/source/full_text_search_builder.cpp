@@ -33,11 +33,17 @@
 #include "paimon/core/index/pk/primary_key_index_definitions.h"
 #include "paimon/core/operation/file_store_scan.h"
 #include "paimon/core/schema/schema_manager.h"
+#include "paimon/core/schema/schema_validation.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/snapshot.h"
 #include "paimon/core/table/source/data_evolution_full_text_read.h"
 #include "paimon/core/table/source/data_evolution_full_text_scan.h"
+#include "paimon/core/table/source/filtered_row_id_reader.h"
+#include "paimon/core/tag/tag.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/file_store_path_factory.h"
+#include "paimon/core/utils/snapshot_manager.h"
+#include "paimon/core/utils/tag_manager.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/format/file_format.h"
@@ -52,19 +58,30 @@ namespace paimon {
 
 class FullTextSearchBuilder::Impl {
  public:
-    /// What a scan and a read of the search are created from.
-    struct ResolvedSearch {
+    class TimeTravelScan;
+
+    struct LoadedTable {
         std::string root_path;
-        std::shared_ptr<TableSchema> table_schema;
+        std::string branch;
+        std::shared_ptr<TableSchema> schema;
         CoreOptions options;
+
+        Result<std::optional<Snapshot>> TimeTravelSnapshot(bool for_worker) const;
+    };
+
+    struct ResolvedSearch {
+        LoadedTable table;
+        std::optional<Snapshot> time_travel_snapshot;
         std::shared_ptr<FileStorePathFactory> path_factory;
         std::shared_ptr<PredicateFilter> partition_filter;
         std::shared_ptr<Predicate> filter;
         DataField text_field;
     };
 
-    /// Loads the table and checks the settings shared by scans and reads.
-    Result<ResolvedSearch> Resolve() const;
+    Result<LoadedTable> LoadTable() const;
+    Result<ResolvedSearch> Bind(LoadedTable table, std::optional<Snapshot> snapshot,
+                                bool validate_data_filter) const;
+    Result<ResolvedSearch> ResolveForPlan() const;
 
     Status CheckLimit() const;
 
@@ -84,6 +101,51 @@ class FullTextSearchBuilder::Impl {
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<FileSystem> file_system_;
 };
+
+class FullTextSearchBuilder::Impl::TimeTravelScan : public FullTextScan {
+ public:
+    explicit TimeTravelScan(const Impl& builder) : builder_(builder) {}
+
+    Result<std::shared_ptr<Plan>> CreatePlan() override {
+        PAIMON_ASSIGN_OR_RAISE(ResolvedSearch search, builder_.ResolveForPlan());
+        return builder_.CreateScan(search)->CreatePlan();
+    }
+
+ private:
+    Impl builder_;
+};
+
+Result<std::optional<Snapshot>> FullTextSearchBuilder::Impl::LoadedTable::TimeTravelSnapshot(
+    bool for_worker) const {
+    PAIMON_RETURN_NOT_OK(SchemaValidation::ValidateStartupMode(options));
+    if (std::optional<std::string> tag_name = options.GetScanTagName()) {
+        TagManager tags(options.GetFileSystem(), root_path, branch);
+        PAIMON_ASSIGN_OR_RAISE(Tag tag, tags.GetOrThrow(*tag_name));
+        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, tag.TrimToSnapshot());
+        return std::optional<Snapshot>(std::move(snapshot));
+    }
+    SnapshotManager snapshots(options.GetFileSystem(), root_path, branch);
+    if (std::optional<int64_t> id = options.GetScanSnapshotId()) {
+        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, for_worker ? FilteredRowIdReader::LoadSnapshot(
+                                                                   options, root_path, *id)
+                                                             : snapshots.LoadSnapshot(*id));
+        return std::optional<Snapshot>(std::move(snapshot));
+    }
+    if (std::optional<int64_t> timestamp = options.GetScanTimestampMillis()) {
+        PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot,
+                               snapshots.EarlierOrEqualTimeMillis(*timestamp));
+        if (!snapshot && !for_worker) {
+            return Status::Invalid(fmt::format(
+                "There is currently no snapshot earlier than or equal to timestamp [{}]",
+                *timestamp));
+        }
+        return snapshot;
+    }
+    if (options.ToMap().count(Options::SCAN_TIMESTAMP) > 0) {
+        return Status::Invalid(fmt::format("invalid {}", Options::SCAN_TIMESTAMP));
+    }
+    return std::optional<Snapshot>();
+}
 
 namespace {
 /// Rejects a column with a primary-key full-text index, which Java searches with
@@ -151,10 +213,10 @@ struct SearchFilters {
     std::shared_ptr<Predicate> data_filter;
 };
 
-/// Validates `filters` and splits their conjunction.
 Result<SearchFilters> ResolveFilters(const std::vector<std::shared_ptr<Predicate>>& filters,
                                      const arrow::Schema& schema,
-                                     const std::vector<std::string>& partition_keys) {
+                                     const std::vector<std::string>& partition_keys,
+                                     bool validate_data_filter) {
     if (filters.empty()) {
         return SearchFilters();
     }
@@ -162,9 +224,6 @@ Result<SearchFilters> ResolveFilters(const std::vector<std::shared_ptr<Predicate
     if (PredicateUtils::ContainsFullTextMatch(filter)) {
         return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
     }
-    PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
-        schema, filter, /*validate_field_idx=*/false));
-
     std::map<std::string, int32_t> partition_key_to_idx =
         ObjectUtils::CreateIdentifierToIndexMap(partition_keys);
     std::vector<std::shared_ptr<Predicate>> partition_conjuncts;
@@ -192,11 +251,16 @@ Result<SearchFilters> ResolveFilters(const std::vector<std::shared_ptr<Predicate
     if (!data_conjuncts.empty()) {
         PAIMON_ASSIGN_OR_RAISE(search_filters.data_filter, PredicateBuilder::And(data_conjuncts));
     }
+    const auto& to_validate = validate_data_filter ? filter : search_filters.partition_predicate;
+    if (to_validate) {
+        PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
+            schema, to_validate, /*validate_field_idx=*/false));
+    }
     return search_filters;
 }
 }  // namespace
 
-Result<FullTextSearchBuilder::Impl::ResolvedSearch> FullTextSearchBuilder::Impl::Resolve() const {
+Result<FullTextSearchBuilder::Impl::LoadedTable> FullTextSearchBuilder::Impl::LoadTable() const {
     if (!field_name_) {
         return Status::Invalid("Query must be set via SetQuery()");
     }
@@ -217,18 +281,26 @@ Result<FullTextSearchBuilder::Impl::ResolvedSearch> FullTextSearchBuilder::Impl:
             fmt::format("schema file not found in path {}, branch {}", root_path, branch));
     }
     std::shared_ptr<TableSchema> table_schema = latest_schema.value();
+    PAIMON_RETURN_NOT_OK(
+        SchemaValidation::RejectQueryAuth(*table_schema, options_, "Full-text search"));
     std::map<std::string, std::string> merged_options = table_schema->Options();
     for (const auto& [key, value] : options_) {
         merged_options[key] = value;
     }
     PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(merged_options, file_system_));
-    if (options.GetFullTextIndexSearchMode() != GlobalIndexSearchMode::FAST) {
-        return Status::NotImplemented(fmt::format(
-            "full-text search only supports the fast {} (or {}), which searches only the rows "
-            "that an index covers; full and detail are not supported yet",
-            Options::FULL_TEXT_INDEX_SEARCH_MODE, Options::GLOBAL_INDEX_SEARCH_MODE));
-    }
+    return LoadedTable{std::move(root_path), std::move(branch), std::move(table_schema),
+                       std::move(options)};
+}
 
+Result<FullTextSearchBuilder::Impl::ResolvedSearch> FullTextSearchBuilder::Impl::Bind(
+    LoadedTable table, std::optional<Snapshot> snapshot, bool validate_data_filter) const {
+    auto& [root_path, branch, table_schema, options] = table;
+    if (snapshot && snapshot->SchemaId() != table_schema->Id()) {
+        SchemaManager schema_manager(options.GetFileSystem(), root_path, branch);
+        PAIMON_ASSIGN_OR_RAISE(table_schema, schema_manager.ReadSchema(snapshot->SchemaId()));
+        PAIMON_RETURN_NOT_OK(
+            DataEvolutionFullTextRead::BindSchemaOptions(*table_schema, options_, &options));
+    }
     Result<DataField> text_field = table_schema->GetField(field_name_.value());
     if (!text_field.ok()) {
         return Status::Invalid(
@@ -239,15 +311,8 @@ Result<FullTextSearchBuilder::Impl::ResolvedSearch> FullTextSearchBuilder::Impl:
 
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     PAIMON_ASSIGN_OR_RAISE(SearchFilters search_filters,
-                           ResolveFilters(filters_, *arrow_schema, table_schema->PartitionKeys()));
-    if (search_filters.data_filter &&
-        options.GetScalarIndexSearchMode() != GlobalIndexSearchMode::FAST) {
-        return Status::NotImplemented(fmt::format(
-            "a full-text search with a row filter only supports the fast {} (or {}), which "
-            "evaluates only the rows that a scalar index covers; full and detail are not "
-            "supported yet",
-            Options::SCALAR_INDEX_SEARCH_MODE, Options::GLOBAL_INDEX_SEARCH_MODE));
-    }
+                           ResolveFilters(filters_, *arrow_schema, table_schema->PartitionKeys(),
+                                          validate_data_filter));
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::string> external_paths, options.CreateExternalPaths());
     PAIMON_ASSIGN_OR_RAISE(std::vector<int32_t> external_path_weights,
                            options.GetExternalPathWeights());
@@ -279,13 +344,17 @@ Result<FullTextSearchBuilder::Impl::ResolvedSearch> FullTextSearchBuilder::Impl:
             return Status::Invalid("invalid partition predicate, cannot cast to predicate filter");
         }
     }
-    return ResolvedSearch{root_path,
-                          table_schema,
-                          std::move(options),
-                          path_factory,
-                          partition_filter,
-                          search_filters.data_filter,
-                          std::move(text_field).value()};
+    return ResolvedSearch{
+        std::move(table), std::move(snapshot),        path_factory,
+        partition_filter, search_filters.data_filter, std::move(text_field).value()};
+}
+
+Result<FullTextSearchBuilder::Impl::ResolvedSearch> FullTextSearchBuilder::Impl::ResolveForPlan()
+    const {
+    PAIMON_ASSIGN_OR_RAISE(LoadedTable table, LoadTable());
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot,
+                           table.TimeTravelSnapshot(/*for_worker=*/false));
+    return Bind(std::move(table), std::move(snapshot), /*validate_data_filter=*/true);
 }
 
 Status FullTextSearchBuilder::Impl::CheckLimit() const {
@@ -298,17 +367,19 @@ Status FullTextSearchBuilder::Impl::CheckLimit() const {
 std::unique_ptr<FullTextScan> FullTextSearchBuilder::Impl::CreateScan(
     const ResolvedSearch& search) const {
     return std::make_unique<DataEvolutionFullTextScan>(
-        search.root_path, search.table_schema, search.options, search.path_factory,
-        search.partition_filter, search.filter, search.text_field, memory_pool_);
+        search.table.root_path, search.table.schema, search.time_travel_snapshot,
+        search.table.options, search.path_factory, search.partition_filter, search.filter,
+        search.text_field, executor_, memory_pool_);
 }
 
 Result<std::unique_ptr<FullTextRead>> FullTextSearchBuilder::Impl::CreateRead(
     const ResolvedSearch& search) const {
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<DataEvolutionFullTextRead> read,
-                           DataEvolutionFullTextRead::Create(
-                               search.root_path, search.table_schema, search.options,
-                               search.path_factory, search.partition_filter, search.filter,
-                               search.text_field, query_, limit_.value(), executor_, memory_pool_));
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<DataEvolutionFullTextRead> read,
+        DataEvolutionFullTextRead::Create(search.table.root_path, search.table.schema,
+                                          search.table.options, options_, search.path_factory,
+                                          search.partition_filter, search.filter, search.text_field,
+                                          query_, limit_.value(), executor_, memory_pool_));
     return std::unique_ptr<FullTextRead>(std::move(read));
 }
 
@@ -376,20 +447,39 @@ FullTextSearchBuilder& FullTextSearchBuilder::WithFileSystem(
 }
 
 Result<std::unique_ptr<FullTextScan>> FullTextSearchBuilder::NewFullTextScan() const {
-    PAIMON_ASSIGN_OR_RAISE(Impl::ResolvedSearch search, impl_->Resolve());
-    return impl_->CreateScan(search);
+    PAIMON_ASSIGN_OR_RAISE(Impl::LoadedTable table, impl_->LoadTable());
+    Result<std::optional<Snapshot>> snapshot = table.TimeTravelSnapshot(/*for_worker=*/false);
+    if (snapshot.ok()) {
+        // Report schema and filter errors at construction even for selectors resolved again later.
+        PAIMON_ASSIGN_OR_RAISE(Impl::ResolvedSearch search,
+                               impl_->Bind(std::move(table), std::move(snapshot).value(),
+                                           /*validate_data_filter=*/true));
+        if (!search.table.options.GetScanTagName() &&
+            !search.table.options.GetScanTimestampMillis()) {
+            return impl_->CreateScan(search);
+        }
+    }
+    return std::make_unique<Impl::TimeTravelScan>(*impl_);
 }
 
 Result<std::unique_ptr<FullTextRead>> FullTextSearchBuilder::NewFullTextRead() const {
     PAIMON_RETURN_NOT_OK(impl_->CheckLimit());
-    PAIMON_ASSIGN_OR_RAISE(Impl::ResolvedSearch search, impl_->Resolve());
+    PAIMON_ASSIGN_OR_RAISE(Impl::LoadedTable table, impl_->LoadTable());
+    Result<std::optional<Snapshot>> snapshot = table.TimeTravelSnapshot(/*for_worker=*/true);
+    // A stored split can outlive its snapshot if the search needs no table data.
+    if (!snapshot.ok() && !snapshot.status().IsNotExist()) {
+        return snapshot.status();
+    }
+    PAIMON_ASSIGN_OR_RAISE(Impl::ResolvedSearch search,
+                           impl_->Bind(std::move(table), std::move(snapshot).value_or(std::nullopt),
+                                       /*validate_data_filter=*/false));
     return impl_->CreateRead(search);
 }
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> FullTextSearchBuilder::ExecuteLocal() const {
     PAIMON_RETURN_NOT_OK(impl_->CheckLimit());
     // The scan and the read share one load of the table, so they see the same schema.
-    PAIMON_ASSIGN_OR_RAISE(Impl::ResolvedSearch search, impl_->Resolve());
+    PAIMON_ASSIGN_OR_RAISE(Impl::ResolvedSearch search, impl_->ResolveForPlan());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FullTextRead> read, impl_->CreateRead(search));
     std::unique_ptr<FullTextScan> scan = impl_->CreateScan(search);
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FullTextScan::Plan> plan, scan->CreatePlan());
