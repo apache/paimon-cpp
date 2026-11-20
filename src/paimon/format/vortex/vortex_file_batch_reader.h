@@ -37,6 +37,7 @@ namespace arrow {
 class Array;
 class DataType;
 class MemoryPool;
+class RecordBatchReader;
 class Schema;
 }  // namespace arrow
 
@@ -136,15 +137,13 @@ class VortexFileBatchReader : public FileBatchReader {
     Result<std::shared_ptr<arrow::Array>> ReadNextArray();
     /// Create the single-use scan with the current projection, selection and predicate.
     Status CreateScan();
-    /// Open the next partition and fill `current_stream_` with bounded Arrow batches.
+    /// Open the next partition as a reader of bounded Arrow batches.
     /// Returns false when there are no more partitions.
     Result<bool> OpenNextPartitionStream();
-    Status ImportCurrentStreamSchema();
     /// Reshape a scanned batch to `read_schema_`, selecting columns by name and recursing into
     /// nested fields. Returns `array` unchanged when SetReadSchema has not been called.
     Result<std::shared_ptr<arrow::Array>> AlignToReadSchema(
         const std::shared_ptr<arrow::Array>& array) const;
-    void ReleaseStream();
     void CloseInternal();
 
     // Teardown order matters, so these are declared to be destroyed in a safe reverse order and
@@ -163,10 +162,7 @@ class VortexFileBatchReader : public FileBatchReader {
     std::shared_ptr<arrow::Schema> read_schema_;
     uint64_t total_rows_ = 0;
 
-    ::ArrowArrayStream current_stream_{};
-    // Actual scan output schema, including projection and any hidden physical row index.
-    std::shared_ptr<arrow::Schema> current_stream_schema_;
-    bool stream_active_ = false;
+    std::shared_ptr<arrow::RecordBatchReader> current_reader_;
     std::shared_ptr<arrow::Array> current_batch_;
     int64_t current_batch_offset_ = 0;
 

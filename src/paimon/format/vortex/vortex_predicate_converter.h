@@ -43,7 +43,8 @@ class VortexPredicateConverter {
 
     /// @param predicate The predicate to convert, with literal types already checked by the
     /// caller (for example, through PredicateValidator).
-    /// @param file_schema Stored column types, including timestamp units and zones.
+    /// @param file_schema The Arrow schema exported from the Vortex file, including timestamp
+    /// units and zones. Vortex field names are valid UTF-8.
     /// @param options Maximum input list length for IN and NOT IN pushdown.
     /// @return An owned expression, nullptr if no condition can be pushed, or an error if
     /// the predicate is malformed, its field types do not match the file, or native expression

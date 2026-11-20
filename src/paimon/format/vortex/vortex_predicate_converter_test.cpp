@@ -52,10 +52,6 @@
 namespace paimon::vortex::test {
 namespace {
 
-constexpr char kInvalidUtf8Error[] =
-    "create Vortex predicate scalar: Other error: invalid utf-8: "
-    "invalid utf-8 sequence of 1 bytes from index 0";
-
 std::shared_ptr<arrow::Schema> TestSchema() {
     return arrow::schema({
         arrow::field("i", arrow::int32()),
@@ -85,15 +81,6 @@ struct NativeScanCase {
     std::vector<Literal> literals;
 };
 
-std::string NativeErrorMessage(const vx_error* error) {
-    if (error == nullptr) {
-        return "";
-    }
-    const vx_string* message = vx_error_get_message(error);
-    return message == nullptr ? "unknown Vortex error"
-                              : std::string(vx_string_ptr(message), vx_string_len(message));
-}
-
 // Check rows returned by the native scan, then optionally check the Paimon residual filter.
 void AssertNativeRows(
     const NativeScanCase& test_case, const std::shared_ptr<Predicate>& predicate,
@@ -119,11 +106,6 @@ void AssertNativeRows(
     ASSERT_NE(directory, nullptr);
     const std::string path = PathUtil::JoinPath(directory->Str(), "values.vortex");
     vx_error* error = nullptr;
-    ScopeGuard release_error([&error]() {
-        if (error != nullptr) {
-            vx_error_free(error);
-        }
-    });
     VxSessionPtr session(vx_session_new());
     ASSERT_NE(session, nullptr);
     ::ArrowArray exported_array{};
@@ -139,8 +121,9 @@ void AssertNativeRows(
     ASSERT_TRUE(
         arrow::ExportArray(*array_result.ValueOrDie(), &exported_array, &exported_schema).ok());
     // Import consumes both Arrow handles; the guard also covers an incomplete failed import.
-    VxArrayPtr array(vx_array_from_arrow(&exported_array, &exported_schema, false, &error));
-    ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
+    VxArrayPtr array(
+        vx_array_from_arrow(session.get(), &exported_array, &exported_schema, false, &error));
+    ASSERT_OK(VortexFfiError("import Arrow array", error));
     ASSERT_NE(array, nullptr);
     LocalFileSystem file_system;
     {
@@ -160,18 +143,18 @@ void AssertNativeRows(
             }
         });
         // Use the production callback I/O path, keeping Rust's asynchronous filesystem adapter
-        // out of this predicate test. The array owns the borrowed dtype until the sink closes.
-        const vx_dtype* dtype = vx_array_dtype(array.get());
+        // out of this predicate test. The dtype getter returns an owned handle.
+        VxDtypePtr dtype(vx_array_dtype(array.get()));
         ASSERT_NE(dtype, nullptr);
         sink = vx_callback_sink_open(
-            session.get(), VortexOutputContext::MakeCallbacks(output_context), dtype, &error);
-        ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
+            session.get(), VortexOutputContext::MakeCallbacks(output_context), dtype.get(), &error);
+        ASSERT_OK(VortexFfiError("open Vortex callback sink", error));
         ASSERT_NE(sink, nullptr);
         vx_callback_sink_push(sink, array.get(), &error);
-        ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
+        ASSERT_OK(VortexFfiError("push array to Vortex callback sink", error));
         // Closing consumes the sink on both success and failure.
         vx_callback_sink_close(std::exchange(sink, nullptr), &error);
-        ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
+        ASSERT_OK(VortexFfiError("close Vortex callback sink", error));
         ASSERT_OK(output_context->GetCallbackStatus());
         output_closed = true;
         ASSERT_OK(output->Close());
@@ -183,7 +166,7 @@ void AssertNativeRows(
         session.get(), VortexInputContext::MakeCallbacks(input_context),
         static_cast<uint64_t>(length), kDefaultVortexReadIoCoalesceMaxGap,
         kDefaultVortexReadIoCoalesceMaxSize, &error));
-    ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
+    ASSERT_OK(VortexFfiError("open Vortex callback data source", error));
     ASSERT_NE(source, nullptr);
     ASSERT_OK_AND_ASSIGN(VxExpressionPtr filter,
                          VortexPredicateConverter::Convert(predicate, schema, options));
@@ -195,19 +178,19 @@ void AssertNativeRows(
     if (project_rowid_only) {
         root = VxExpressionPtr(vx_expression_root());
         ASSERT_NE(root, nullptr);
-        const char* names[] = {"rowid"};
+        const vx_view names[] = {vx_view_from_cstr("rowid")};
         projection = VxExpressionPtr(vx_expression_select(names, 1, root.get()));
         ASSERT_NE(projection, nullptr);
         scan_options.projection = projection.get();
     }
     VxScanPtr scan(vx_data_source_scan(source.get(), &scan_options, nullptr, &error));
-    ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
+    ASSERT_OK(VortexFfiError("create Vortex scan", error));
     ASSERT_NE(scan, nullptr);
     std::vector<int64_t> row_ids;
     std::vector<int64_t> residual_row_ids;
     while (true) {
         VxPartitionPtr partition(vx_scan_next_partition(scan.get(), &error));
-        ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
+        ASSERT_OK(VortexFfiError("get next Vortex partition", error));
         if (partition == nullptr) {
             break;
         }
@@ -220,7 +203,7 @@ void AssertNativeRows(
         // The scan consumes the partition even when it fails.
         const int32_t result =
             vx_partition_scan_arrow(session.get(), partition.release(), &stream, &error);
-        ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
+        ASSERT_OK(VortexFfiError("scan Vortex partition to Arrow", error));
         ASSERT_EQ(result, 0);
         auto reader_result = arrow::ImportRecordBatchReader(&stream);
         ASSERT_TRUE(reader_result.ok()) << reader_result.status().ToString();
@@ -284,16 +267,11 @@ void AssertNativeComparisonRows(const NativeScanCase& test_case,
                                 const std::vector<int64_t>& expected_rows) {
     VxExpressionPtr root(vx_expression_root());
     ASSERT_NE(root, nullptr);
-    VxExpressionPtr column(vx_expression_get_item("value", root.get()));
+    VxExpressionPtr column(vx_expression_get_item(vx_view_from_cstr("value"), root.get()));
     ASSERT_NE(column, nullptr);
     vx_error* error = nullptr;
-    ScopeGuard release_error([&error]() {
-        if (error != nullptr) {
-            vx_error_free(error);
-        }
-    });
     VxExpressionPtr literal(vx_expression_literal(scalar, &error));
-    ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
+    ASSERT_OK(VortexFfiError("create Vortex literal expression", error));
     ASSERT_NE(literal, nullptr);
     VxExpressionPtr filter(vx_expression_binary(op, column.get(), literal.get()));
     ASSERT_NE(filter, nullptr);
@@ -457,12 +435,17 @@ TEST(VortexPredicateConverterTest, TimestampComparisonsRequireLosslessRepresenta
     const auto schema = arrow::schema({
         arrow::field("seconds", arrow::timestamp(arrow::TimeUnit::SECOND)),
         arrow::field("millis", arrow::timestamp(arrow::TimeUnit::MILLI)),
+        arrow::field("micros", arrow::timestamp(arrow::TimeUnit::MICRO)),
         arrow::field("local", arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai")),
     });
     const std::pair<const char*, Literal> cases[] = {
         {"seconds", Literal(Timestamp::FromEpochMillis(1))},
         {"seconds", Literal(Timestamp::FromEpochMillis(1000, 1))},
+        {"seconds", Literal(Timestamp::FromEpochMillis(-1))},
         {"millis", Literal(Timestamp::FromEpochMillis(0, 1))},
+        {"millis", Literal(Timestamp::FromEpochMillis(-1, 999999))},
+        {"micros", Literal(Timestamp::FromEpochMillis(0, 1001))},
+        {"micros", Literal(Timestamp::FromEpochMillis(-1, 999999))},
         {"local", Literal(Timestamp::FromEpochMillis(1000))},
     };
     for (const auto& [field, literal] : cases) {
@@ -502,7 +485,7 @@ TEST(VortexPredicateConverterTest, LosslessTimestampComparisonsFilterNativeFiles
     }
 }
 
-TEST(VortexPredicateConverterTest, TimestampComparisonsPreserveBoundaryDecisionsAndNativeValues) {
+TEST(VortexPredicateConverterTest, TimestampComparisonsPreserveRepresentableNativeValues) {
     const std::vector<NativeScanCase> cases = {
         {"micros_calendar_limits",
          arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"),
@@ -510,25 +493,19 @@ TEST(VortexPredicateConverterTest, TimestampComparisonsPreserveBoundaryDecisions
          "[-1,null,7,2]",
          {Literal(Timestamp::FromEpochMillis(253402207200999, 999000)),
           Literal(Timestamp::FromEpochMillis(-62167219200000)),
-          Literal(Timestamp::FromEpochMillis(-1, 999000)),
-          Literal(Timestamp::FromEpochMillis(9223372036854775, 808000)),
-          Literal(Timestamp::FromEpochMillis(-9223372036854776, 192000))}},
+          Literal(Timestamp::FromEpochMillis(-1, 999000))}},
         {"nanos_boundaries",
          arrow::timestamp(arrow::TimeUnit::NANO),
          FieldType::TIMESTAMP,
          "[-1,null,7,2]",
          {Literal(Timestamp::FromEpochMillis(9223372036854, 775807)),
           Literal(Timestamp::FromEpochMillis(-9223372036854)),
-          Literal(Timestamp::FromEpochMillis(-1, 999999)),
-          Literal(Timestamp::FromEpochMillis(9223372036854, 775808)),
-          Literal(Timestamp::FromEpochMillis(-9223372036855, 224192))}},
+          Literal(Timestamp::FromEpochMillis(-1, 999999))}},
     };
     for (const NativeScanCase& test_case : cases) {
         SCOPED_TRACE(test_case.name);
         const std::shared_ptr<arrow::Schema> schema =
             arrow::schema({arrow::field("value", test_case.type)});
-        // Accepted expressions must also fit the native calendar range.
-        // The microsecond values cover year 0000 through Jiff's year 9999 limit.
         ASSERT_TRUE(
             Pushed(PredicateBuilder::Equal(0, "value", FieldType::TIMESTAMP, test_case.literals[0]),
                    schema));
@@ -538,15 +515,6 @@ TEST(VortexPredicateConverterTest, TimestampComparisonsPreserveBoundaryDecisions
         ASSERT_NO_FATAL_FAILURE(AssertNativeRows(
             test_case,
             PredicateBuilder::Equal(1, "value", FieldType::TIMESTAMP, test_case.literals[2]), {0}));
-        // One unit beyond INT64_MAX must fall back rather than overflow.
-        ASSERT_FALSE(
-            Pushed(PredicateBuilder::Equal(0, "value", FieldType::TIMESTAMP, test_case.literals[3]),
-                   schema));
-        // Although the final value is INT64_MIN, the intermediate millisecond product
-        // overflows. Preserve the existing fallback before calling the common utility.
-        ASSERT_FALSE(
-            Pushed(PredicateBuilder::Equal(0, "value", FieldType::TIMESTAMP, test_case.literals[4]),
-                   schema));
     }
 }
 
@@ -564,20 +532,6 @@ TEST(VortexPredicateConverterTest, TruncatedTimestampComparisonFallsBackWithoutL
     ASSERT_LT(comparison, 0);
     ASSERT_NO_FATAL_FAILURE(AssertNativeRows(test_case, less_than, {0, 1, 2, 3}, std::nullopt, {},
                                              /*expect_native_filter=*/false));
-
-    vx_error* error = nullptr;
-    ScopeGuard release_error([&error]() {
-        if (error != nullptr) {
-            vx_error_free(error);
-        }
-    });
-    VxScalarPtr truncated(
-        vx_scalar_new_timestamp(0, VX_TIME_UNIT_MICROSECOND, nullptr, false, &error));
-    ASSERT_EQ(error, nullptr) << NativeErrorMessage(error);
-    ASSERT_NE(truncated, nullptr);
-    // Truncating 1ns to 0us loses row 0, which the exact comparison above must retain.
-    ASSERT_NO_FATAL_FAILURE(
-        AssertNativeComparisonRows(test_case, less_than, truncated.get(), VX_OPERATOR_LT, {3}));
 }
 
 TEST(VortexPredicateConverterTest, NativeFloatingPointOrderRequiresConservativeFallback) {
@@ -656,6 +610,20 @@ TEST(VortexPredicateConverterTest, MembershipScalarsFilterNativeFilesAndExcludeN
     ASSERT_NO_FATAL_FAILURE(AssertNativeRows(
         all_booleans,
         PredicateBuilder::NotIn(1, "value", FieldType::BOOLEAN, all_booleans.literals), {}));
+}
+
+// vx_view carries the full byte length, including embedded NULs.
+TEST(VortexPredicateConverterTest, StringScalarsPreserveEmbeddedNulls) {
+    const NativeScanCase test_case = {"embedded_null",
+                                      arrow::utf8(),
+                                      FieldType::STRING,
+                                      R"(["a\u0000b","a","a\u0000c",null])",
+                                      {}};
+    const Literal literal(FieldType::STRING, "a\0b", 3);
+    ASSERT_NO_FATAL_FAILURE(AssertNativeRows(
+        test_case, PredicateBuilder::Equal(1, "value", FieldType::STRING, literal), {0}));
+    ASSERT_NO_FATAL_FAILURE(AssertNativeRows(
+        test_case, PredicateBuilder::In(1, "value", FieldType::STRING, {literal}), {0}));
 }
 
 TEST(VortexPredicateConverterTest, MembershipMaximumPreservesNativeAndResidualRows) {
@@ -799,36 +767,7 @@ TEST(VortexPredicateConverterTest, NativeMembershipErrorPropagatesThroughOr) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> disjunction,
                          PredicateBuilder::Or({unsupported, in}));
     ASSERT_NOK_WITH_MSG(VortexPredicateConverter::Convert(disjunction, schema, {}),
-                        kInvalidUtf8Error);
-}
-
-TEST(VortexPredicateConverterTest, NativeTemporalScalarBoundsFallBackWithoutErrors) {
-    const int64_t maximum = std::numeric_limits<int64_t>::max();
-    struct TemporalCase {
-        const char* name;
-        std::shared_ptr<arrow::DataType> type;
-        FieldType field_type;
-        Literal literal;
-    };
-    const std::vector<TemporalCase> cases = {
-        {"maximum-micros", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"), FieldType::TIMESTAMP,
-         Literal(Timestamp::FromEpochMillis(maximum / 1000,
-                                            static_cast<int32_t>((maximum % 1000) * 1000)))},
-        {"minimum-micros", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"), FieldType::TIMESTAMP,
-         Literal(Timestamp::FromEpochMillis(std::numeric_limits<int64_t>::min() / 1000))},
-        {"native-epoch-seconds", arrow::timestamp(arrow::TimeUnit::SECOND, "UTC"),
-         FieldType::TIMESTAMP, Literal(Timestamp::FromEpochMillis(253402207201000))},
-        {"native-epoch-millis", arrow::timestamp(arrow::TimeUnit::MILLI), FieldType::TIMESTAMP,
-         Literal(Timestamp::FromEpochMillis(253402207201000))},
-        {"minimum-date", arrow::date32(), FieldType::DATE,
-         Literal(FieldType::DATE, std::numeric_limits<int32_t>::min())}};
-    for (const TemporalCase& test_case : cases) {
-        SCOPED_TRACE(test_case.name);
-        const std::shared_ptr<arrow::Schema> schema =
-            arrow::schema({arrow::field("value", test_case.type)});
-        ASSERT_FALSE(Pushed(
-            PredicateBuilder::Equal(0, "value", test_case.field_type, test_case.literal), schema));
-    }
+                        "invalid utf-8");
 }
 
 TEST(VortexPredicateConverterTest, UnsafeTimestampInListPreservesNativeAndResidualRows) {

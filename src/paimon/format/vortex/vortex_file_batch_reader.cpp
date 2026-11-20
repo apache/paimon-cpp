@@ -27,7 +27,6 @@
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
-#include "arrow/c/helpers.h"
 #include "fmt/format.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/predicate/predicate_filter.h"
@@ -260,29 +259,17 @@ Result<std::unique_ptr<VortexFileBatchReader>> VortexFileBatchReader::Create(
     auto input_context = std::make_shared<VortexInputContext>(input);
 
     VxSessionPtr session(vx_paimon_read_session_new());
-    if (session == nullptr) {
-        return Status::IOError("failed to create Vortex session");
-    }
     vx_error* error = nullptr;
     VxDataSourcePtr data_source(vx_data_source_new_callback_with_coalesce(
         session.get(), VortexInputContext::MakeCallbacks(input_context), length,
         coalesce_options.max_gap, coalesce_options.max_size, &error));
-    if (data_source == nullptr) {
-        return VortexCallbackError("open Vortex callback data source", error,
-                                   input_context->GetCallbackStatus());
-    }
+    PAIMON_RETURN_NOT_OK(VortexCallbackError("open Vortex callback data source", error,
+                                             input_context->GetCallbackStatus()));
 
     // The data source dtype is available without consuming a scan.
-    // NOTE(vortex 0.75): vx_data_source_dtype returns a BORROWED pointer (no refcount bump), so it
-    // must NOT be freed here: freeing decrements the DType Arc and segfaults later in the scan.
-    // Upstream >=0.77 returns an owned clone that MUST be freed with vx_dtype_free.
-    const vx_dtype* dtype = vx_data_source_dtype(data_source.get());
-    if (dtype == nullptr) {
-        return Status::IOError("failed to read Vortex data source dtype");
-    }
+    VxDtypePtr dtype(vx_data_source_dtype(data_source.get()));
     ::ArrowSchema ffi_schema = {};
-    error = nullptr;
-    if (vx_dtype_to_arrow_schema(dtype, &ffi_schema, &error) != 0) {
+    if (vx_dtype_to_arrow_schema(session.get(), dtype.get(), &ffi_schema, &error) != 0) {
         return VortexFfiError("convert Vortex dtype to Arrow schema", error);
     }
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> file_schema,
@@ -315,18 +302,16 @@ Status VortexFileBatchReader::CreateScan() {
     // The scan clones the projection, so these expressions need only outlive scan creation.
     VxExpressionPtr root;
     VxExpressionPtr projection;
-    std::vector<const char*> name_ptrs;
+    std::vector<vx_view> name_views;
     if (read_schema_ != nullptr) {
-        name_ptrs.reserve(read_schema_->num_fields());
+        name_views.reserve(read_schema_->num_fields());
         // The schema owns these names; Vortex copies them when creating the projection.
         for (const std::shared_ptr<arrow::Field>& field : read_schema_->fields()) {
-            name_ptrs.push_back(field->name().c_str());
+            name_views.push_back(vx_view{field->name().data(), field->name().size()});
         }
         root = VxExpressionPtr(vx_expression_root());
-        // The FFI requires non-null names even for an explicit zero-column projection.
-        const char* empty_name = nullptr;
-        const char* const* names = name_ptrs.empty() ? &empty_name : name_ptrs.data();
-        projection = VxExpressionPtr(vx_expression_select(names, name_ptrs.size(), root.get()));
+        projection =
+            VxExpressionPtr(vx_expression_select(name_views.data(), name_views.size(), root.get()));
         options.projection = projection.get();
     }
     selection_.ApplyToScan(&options);
@@ -346,10 +331,7 @@ Status VortexFileBatchReader::CreateScan() {
         row_position_.EnableFilterRowIds();
     }
     VxScanPtr scan(vx_data_source_scan(data_source_.get(), &options, /*estimate=*/nullptr, &error));
-    if (scan == nullptr) {
-        return VortexCallbackError("create Vortex scan", error,
-                                   input_context_->GetCallbackStatus());
-    }
+    PAIMON_RETURN_NOT_OK(VortexFfiError("create Vortex scan", error));
     scan_ = std::move(scan);
     return Status::OK();
 }
@@ -363,81 +345,51 @@ Result<bool> VortexFileBatchReader::OpenNextPartitionStream() {
     }
     vx_error* error = nullptr;
     VxPartitionPtr partition(vx_scan_next_partition(scan_.get(), &error));
-    if (error != nullptr) {
-        return VortexCallbackError("advance Vortex scan partition", error,
-                                   input_context_->GetCallbackStatus());
-    }
+    PAIMON_RETURN_NOT_OK(VortexCallbackError("advance Vortex scan partition", error,
+                                             input_context_->GetCallbackStatus()));
     if (partition == nullptr) {
         return false;  // Scan exhausted.
     }
     // Arrow stream export consumes the partition (even on error), so release ownership here.
     ::ArrowArrayStream stream{};
-    error = nullptr;
     if (vx_partition_scan_arrow_with_batch_size(session_.get(), partition.release(),
                                                 static_cast<size_t>(batch_size_), &stream,
                                                 &error) != 0) {
-        return VortexCallbackError("scan Vortex partition to Arrow", error,
-                                   input_context_->GetCallbackStatus());
+        return VortexFfiError("scan Vortex partition to Arrow", error);
     }
-    current_stream_ = stream;
-    stream_active_ = true;
-    PAIMON_RETURN_NOT_OK(ImportCurrentStreamSchema());
+    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(current_reader_, arrow::ImportRecordBatchReader(&stream));
     return true;
-}
-
-Status VortexFileBatchReader::ImportCurrentStreamSchema() {
-    // Import batches with the scan's actual output schema (projected columns, standard types).
-    ::ArrowSchema ffi_schema = {};
-    if (current_stream_.get_schema(&current_stream_, &ffi_schema) != 0) {
-        const char* message = current_stream_.get_last_error(&current_stream_);
-        std::string message_copy = message == nullptr ? "unknown" : message;
-        Status callback_status = input_context_->GetCallbackStatus();
-        ReleaseStream();
-        if (!callback_status.ok()) {
-            return callback_status.WithMessage("read Vortex stream schema", ": ",
-                                               callback_status.message());
-        }
-        return Status::IOError("Vortex Arrow stream get_schema failed: ", message_copy);
-    }
-    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(current_stream_schema_, arrow::ImportSchema(&ffi_schema));
-    return Status::OK();
 }
 
 Result<std::shared_ptr<arrow::Array>> VortexFileBatchReader::ReadNextArray() {
     while (true) {
-        if (!stream_active_) {
+        if (current_reader_ == nullptr) {
             PAIMON_ASSIGN_OR_RAISE(bool opened, OpenNextPartitionStream());
             if (!opened) {
                 return std::shared_ptr<arrow::Array>();  // End of scan.
             }
         }
-        ::ArrowArray ffi_array = {};
-        const int32_t rc = current_stream_.get_next(&current_stream_, &ffi_array);
-        if (rc != 0) {
-            // get_last_error returns a pointer owned by the stream; the Arrow C stream contract
-            // invalidates it once the stream is released, so copy it before ReleaseStream().
-            const char* message = current_stream_.get_last_error(&current_stream_);
-            std::string message_copy = message == nullptr ? "unknown" : message;
-            // A read failure surfaces here as an opaque stream error, so prefer the status the IO
-            // callback stashed.
+        std::shared_ptr<arrow::RecordBatch> batch;
+        const arrow::Status status = current_reader_->ReadNext(&batch);
+        if (!status.ok()) {
+            // Prefer the original filesystem error over the Arrow stream's error wrapper.
             Status callback_status = input_context_->GetCallbackStatus();
-            ReleaseStream();
+            current_reader_.reset();
             if (!callback_status.ok()) {
                 return callback_status.WithMessage("read Vortex batch", ": ",
                                                    callback_status.message());
             }
-            return Status::IOError("Vortex Arrow stream error: ", message_copy);
+            return Status::IOError("Vortex Arrow stream error: ", status.message());
         }
-        if (ffi_array.release == nullptr) {
-            ReleaseStream();  // Partition exhausted; try the next one.
+        if (batch == nullptr) {
+            current_reader_.reset();  // Partition exhausted; try the next one.
             continue;
         }
-        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
-            std::shared_ptr<arrow::Array> array,
-            arrow::ImportArray(&ffi_array, arrow::struct_(current_stream_schema_->fields())));
-        if (array->length() == 0) {
+        if (batch->num_rows() == 0) {
             continue;  // Skip empty batches.
         }
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> array,
+                                          batch->ToStructArray());
         return array;
     }
 }
@@ -516,7 +468,7 @@ Status VortexFileBatchReader::SetReadSchema(
     read_schema_ = std::move(imported_read_schema);
     predicate_filter_ = std::dynamic_pointer_cast<PredicateFilter>(predicate);
     selection_ = std::move(selection);
-    ReleaseStream();
+    current_reader_.reset();
     current_batch_.reset();
     current_batch_offset_ = 0;
     scan_.reset();
@@ -540,22 +492,13 @@ void VortexFileBatchReader::Close() {
     CloseInternal();
 }
 
-void VortexFileBatchReader::ReleaseStream() {
-    if (stream_active_) {
-        ArrowArrayStreamRelease(&current_stream_);
-        current_stream_ = ::ArrowArrayStream{};
-        current_stream_schema_.reset();
-        stream_active_ = false;
-    }
-}
-
 void VortexFileBatchReader::CloseInternal() {
     if (closed_) {
         return;
     }
     // Release in dependency order: the Arrow stream needs the session alive, and the scan borrows
     // the data source, which reads through the input context.
-    ReleaseStream();
+    current_reader_.reset();
     current_batch_.reset();
     scan_.reset();
     selection_ = SelectionState{};

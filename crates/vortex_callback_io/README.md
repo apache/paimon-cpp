@@ -17,67 +17,32 @@
   ~ under the License.
 -->
 
-# vortex_callback_io
+# Vortex callback I/O
 
-Callback-based I/O for the Vortex C API, so Vortex reads and writes through paimon's
-`InputStream` / `OutputStream` instead of materializing whole files in memory or staging them in
-local temporary files.
+[callback_io.rs](callback_io.rs) lets Vortex read from Paimon's `InputStream` and write to its
+`OutputStream` through C callbacks. The `vortex_ep` CMake target copies the module into the
+upstream `vortex-ffi` crate so it can construct Vortex handles using crate-private APIs.
 
-## This is not a standalone crate
+## Callback contract
 
-There is deliberately no `Cargo.toml` here. `callback_io.rs` is compiled **as a module of the
-upstream `vortex-ffi` crate**, because the handles it must construct (`vx_data_source` and friends)
-are created through `box_wrapper`-generated constructors that are `pub(crate)`; an external crate
-cannot build them. Being inside `vortex-ffi` also means all symbols land in the single
-`libvortex_ffi.a` that paimon already links.
+- Vortex may issue concurrent positional reads on the same input context.
+- Writes to a single sink are sequential and can run on a Vortex runtime thread. Closing the sink
+  finishes the Vortex file and flushes the output. The caller owns and closes the Paimon stream.
+- The callback context must remain valid until Vortex calls `release_fn`. When supplied, this
+  callback runs once, including when opening the source or sink fails.
 
-The write side still defines its own handle (`vx_callback_sink`) instead of reusing `vx_array_sink`,
-whose fields are private to `crate::sink` and therefore unreachable even from a sibling module.
+The [FFI declarations](../../src/paimon/format/vortex/vortex_ffi.h) and
+[Paimon callbacks](../../src/paimon/format/vortex/vortex_io_callbacks.cpp) define the C++ side of
+this contract.
 
-The build wiring lives in `build_vortex` in
-[`cmake_modules/ThirdpartyToolchain.cmake`](../../cmake_modules/ThirdpartyToolchain.cmake):
+## Running the module tests
 
-1. `callback_io.rs` is copied into `<vortex source>/vortex-ffi/src/` before cargo runs.
-2. [`cmake_modules/vortex.diff`](../../cmake_modules/vortex.diff) adds the single line
-   `mod callback_io;` to `vortex-ffi/src/lib.rs`. That one line is the entire patch, which keeps
-   Vortex version bumps from conflicting.
-
-Keeping the code here rather than inside the diff means it is reviewed, formatted, and
-license-checked like the rest of the repository.
-
-## Working on it
-
-The module is built and tested through cargo in the Vortex source tree. With an existing configured
-build directory (`build-clang` below), the source directory and cargo cache are already set up:
+From the repository root, with Vortex enabled in the `build` directory, build the patched crate
+and run its callback I/O tests. The example uses the default
+[Vortex toolchain](../../docs/source/building.rst).
 
 ```bash
-# Rebuild the static library through the normal CMake path.
-cmake --build build-clang --target vortex_ep
-
-# Run this module's Rust tests directly.
-cd build-clang/vortex_ep-prefix/src/vortex_ep
-FLATC=<path to flatc> \
-  CARGO_TARGET_DIR=<repo>/build-clang/vortex_ep-prefix/src/vortex_ep-build \
-  cargo test --locked --release -p vortex-ffi callback_io
+cmake --build build --target vortex_ep
+cd build/vortex_ep-prefix/src/vortex_ep
+CARGO_TARGET_DIR=../vortex_ep-build cargo +1.95.0 test --locked --release -p vortex-ffi callback_io::tests
 ```
-
-Two constraints apply when editing this file:
-
-- **No new cargo dependencies.** The build runs `cargo rustc --locked`, so touching `Cargo.lock`
-  breaks it. Only what `vortex-ffi` already depends on is available.
-- **Upstream lints apply.** `vortex-ffi` sets `#![deny(missing_docs)]` and the Vortex workspace
-  denies several rustc lints (`unsafe_op_in_unsafe_fn`, `unused_qualifications`,
-  `let_underscore_drop`, ...), so every public item needs documentation and every `unsafe`
-  operation needs its own `unsafe` block.
-
-## Threading contract
-
-`vx_input_callbacks::read_at_fn` must be safe to call concurrently for the same context: Vortex
-issues parallel positional reads, each on a blocking-pool thread. paimon's positional
-`InputStream::Read(buffer, size, offset)` satisfies this (the local implementation uses `pread`),
-which is the same assumption the mosaic format's callbacks already rely on.
-
-`vx_output_callbacks::write_fn` has the opposite contract: writes for one sink are sequential and
-never concurrent, so no locking is required. They do run on a Vortex runtime thread rather than the
-caller's, which is why the paimon-side context guards its error slot and byte counter with a mutex.
-The host keeps ownership of its stream: `shutdown` only flushes, and closing is left to the caller.

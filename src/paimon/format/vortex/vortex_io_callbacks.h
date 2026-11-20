@@ -84,14 +84,14 @@ class VortexInputContext {
     Status callback_status_;
 };
 
-/// Build a `Status` for a failed Vortex call, preferring the error a paimon IO callback stashed on
-/// its context over Vortex's own message, since the callback error is the root cause. Must only be
-/// called once the Vortex call is known to have failed.
+/// Build a `Status` after a Vortex call, preferring the error a paimon IO callback stashed on
+/// its context over Vortex's own message, since the callback error is the root cause.
+/// Can be called unconditionally; returns OK when neither source reports an error.
 ///
-/// @param operation Human-readable name of the Vortex operation that failed, used as a prefix.
+/// @param operation Human-readable name of the Vortex operation, used as an error prefix.
 /// @param error The Vortex error to consume; freed by this call. May be null.
 /// @param callback_status The status stashed by the IO callback; preferred when not OK.
-/// @return A non-OK `Status` describing the failure.
+/// @return OK on success, otherwise a `Status` describing the failure.
 Status VortexCallbackError(const std::string& operation, vx_error* error,
                            const Status& callback_status);
 

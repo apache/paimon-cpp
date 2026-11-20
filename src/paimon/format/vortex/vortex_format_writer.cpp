@@ -160,7 +160,7 @@ VortexFormatWriter::VortexFormatWriter(std::shared_ptr<OutputStream> output,
 
 Result<std::unique_ptr<VortexFormatWriter>> VortexFormatWriter::Create(
     const std::shared_ptr<OutputStream>& output, const std::shared_ptr<arrow::Schema>& schema,
-    const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
+    const std::string& edition, const std::shared_ptr<arrow::MemoryPool>& arrow_pool) {
     if (output == nullptr || schema == nullptr || arrow_pool == nullptr) {
         return Status::Invalid("Vortex writer requires non-null output, schema and arrow pool");
     }
@@ -171,25 +171,21 @@ Result<std::unique_ptr<VortexFormatWriter>> VortexFormatWriter::Create(
     }
     const auto write_schema = arrow::schema(std::move(fields), schema->metadata());
     VxSessionPtr session(vx_session_new());
-    if (session == nullptr) {
-        return Status::IOError("failed to create Vortex session");
+    vx_error* error = nullptr;
+    if (vx_session_enable_edition(session.get(), vx_view{edition.data(), edition.size()}, &error) !=
+        0) {
+        return VortexFfiError("configure Vortex write edition", error);
     }
     ::ArrowSchema ffi_schema = {};
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*write_schema, &ffi_schema));
-    vx_error* error = nullptr;
     // vx_dtype_from_arrow_schema consumes ffi_schema on both success and failure.
-    VxDtypePtr dtype(vx_dtype_from_arrow_schema(&ffi_schema, &error));
-    if (dtype == nullptr) {
-        return VortexFfiError("convert Arrow schema to Vortex dtype", error);
-    }
-    error = nullptr;
+    VxDtypePtr dtype(vx_dtype_from_arrow_schema(session.get(), &ffi_schema, &error));
+    PAIMON_RETURN_NOT_OK(VortexFfiError("convert Arrow schema to Vortex dtype", error));
     auto output_context = std::make_shared<VortexOutputContext>(output);
     vx_callback_sink* sink = vx_callback_sink_open(
         session.get(), VortexOutputContext::MakeCallbacks(output_context), dtype.get(), &error);
-    if (sink == nullptr) {
-        return VortexCallbackError("open Vortex callback sink", error,
-                                   output_context->GetCallbackStatus());
-    }
+    PAIMON_RETURN_NOT_OK(VortexCallbackError("open Vortex callback sink", error,
+                                             output_context->GetCallbackStatus()));
     return std::unique_ptr<VortexFormatWriter>(new VortexFormatWriter(
         output, write_schema, std::move(session), std::move(output_context), sink, arrow_pool));
 }
@@ -234,16 +230,12 @@ Status VortexFormatWriter::AddBatch(::ArrowArray* batch) {
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema_, &ffi_schema));
     vx_error* error = nullptr;
     // vx_array_from_arrow consumes both `vortex_batch` and `ffi_schema` on success and on failure.
-    VxArrayPtr array(vx_array_from_arrow(&rebased_batch, &ffi_schema, /*nullable=*/false, &error));
-    if (array == nullptr) {
-        return VortexFfiError("convert Arrow batch to Vortex array", error);
-    }
-    error = nullptr;
+    VxArrayPtr array(vx_array_from_arrow(session_.get(), &rebased_batch, &ffi_schema,
+                                         /*nullable=*/false, &error));
+    PAIMON_RETURN_NOT_OK(VortexFfiError("convert Arrow batch to Vortex array", error));
     vx_callback_sink_push(sink_, array.get(), &error);
-    if (error != nullptr) {
-        return VortexCallbackError("push batch to Vortex sink", error,
-                                   output_context_->GetCallbackStatus());
-    }
+    PAIMON_RETURN_NOT_OK(VortexCallbackError("push batch to Vortex sink", error,
+                                             output_context_->GetCallbackStatus()));
     ffi_bytes_ += batch_bytes;
     return Status::OK();
 }
@@ -264,13 +256,8 @@ Status VortexFormatWriter::Finish() {
     vx_callback_sink_close(sink_, &error);
     // close consumes the sink even when it reports an error
     sink_ = nullptr;
-    if (error != nullptr) {
-        return VortexCallbackError("close Vortex writer", error,
-                                   output_context_->GetCallbackStatus());
-    }
-    // A write callback that failed leaves the file incomplete even if Vortex itself reported
-    // success, so surface it here as well.
-    PAIMON_RETURN_NOT_OK(output_context_->GetCallbackStatus());
+    PAIMON_RETURN_NOT_OK(
+        VortexCallbackError("close Vortex writer", error, output_context_->GetCallbackStatus()));
     finished_ = true;
     return Status::OK();
 }

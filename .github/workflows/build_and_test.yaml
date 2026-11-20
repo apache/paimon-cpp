@@ -126,7 +126,7 @@ jobs:
       - name: Install build and debugging dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gdb libcurl4-openssl-dev libssl-dev patchutils
+          sudo apt-get install -y gdb libcurl4-openssl-dev libssl-dev libclang-dev patchutils
       - name: Install and verify regression compiler
         if: matrix.gcc_version
         shell: bash
@@ -140,9 +140,6 @@ jobs:
           "${CXX}" --version
           test "$("${CC}" -dumpfullversion)" = "${EXPECTED_GCC_VERSION}"
           test "$("${CXX}" -dumpfullversion)" = "${EXPECTED_GCC_VERSION}"
-      - name: Install flatc and libclang (Vortex)
-        shell: bash
-        run: ci/scripts/setup_flatc.sh
       - name: Build Paimon
         shell: bash
         env:

@@ -148,10 +148,7 @@ Status VortexCallbackError(const std::string& operation, vx_error* error,
     if (!callback_status.ok()) {
         return callback_status.WithMessage(operation, ": ", callback_status.message());
     }
-    if (!ffi_status.ok()) {
-        return ffi_status;
-    }
-    return Status::IOError(operation, ": unknown Vortex error");
+    return ffi_status;
 }
 
 VortexOutputContext::VortexOutputContext(std::shared_ptr<OutputStream> output)

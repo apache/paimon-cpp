@@ -52,7 +52,7 @@ jobs:
           printf '%s\n' 'Acquire::https::CaInfo "/etc/apt/runner-ca-certificates.crt";' \
               'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-ci-downloads
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y gcc-8 g++-8 ninja-build git tar curl libcurl4-openssl-dev libssl-dev tzdata zip unzip pkg-config build-essential python3-dev gdb sudo patchutils
+          DEBIAN_FRONTEND=noninteractive apt-get install -y gcc-8 g++-8 ninja-build git tar curl libcurl4-openssl-dev libssl-dev tzdata zip unzip pkg-config build-essential python3-dev gdb sudo libclang-dev patchutils
           curl -L -O https://github.com/Kitware/CMake/releases/download/v3.28.3/cmake-3.28.3-linux-x86_64.tar.gz
           tar -zxvf cmake-3.28.3-linux-x86_64.tar.gz -C /usr/local --strip-components=1
           rm cmake-3.28.3-linux-x86_64.tar.gz
@@ -77,9 +77,6 @@ jobs:
         uses: ./.github/actions/setup-ccache
         with:
           cache-key-prefix: ccache-gcc8-test
-      - name: Install flatc and libclang (Vortex)
-        shell: bash
-        run: ci/scripts/setup_flatc.sh
       - name: Build Paimon
         shell: bash
         env:

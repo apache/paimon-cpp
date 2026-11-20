@@ -127,24 +127,4 @@ void vx_callback_sink_close(vx_callback_sink* sink, vx_error** error_out);
 
 /// Discard the sink without writing a footer, leaving whatever the host received invalid.
 void vx_callback_sink_abort(vx_callback_sink* sink);
-
-/// TODO: use `vx_scalar_new_extension(dtype, storage, err)` interface when update vortex version.
-/// Timestamp literal unit. Values must match vx_time_unit in callback_io.rs.
-enum vx_time_unit {
-    VX_TIME_UNIT_SECOND = 0,
-    VX_TIME_UNIT_MILLISECOND = 1,
-    VX_TIME_UNIT_MICROSECOND = 2,
-    VX_TIME_UNIT_NANOSECOND = 3,
-};
-
-/// Create a timestamp literal in `unit` since the Unix epoch. `timezone` is an IANA zone name,
-/// or null for wall-clock time. Returns null without an error when a valid value exceeds the
-/// native temporal range; other failures return null and set `err`. Free with vx_scalar_free.
-vx_scalar* vx_scalar_new_timestamp(int64_t value, vx_time_unit unit, const char* timezone,
-                                   bool is_nullable, vx_error** err);
-
-/// Create a date scalar literal: `days` days since the Unix epoch (1970-01-01). Returns null
-/// without an error outside the native civil-date range; other failures return null and set `err`.
-/// Free the result with `vx_scalar_free`.
-vx_scalar* vx_scalar_new_date(int32_t days, bool is_nullable, vx_error** err);
 }

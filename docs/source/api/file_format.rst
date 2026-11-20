@@ -139,6 +139,14 @@ For example, configure a 64 KiB gap and a 4 MiB merging threshold:
     read_context_builder.AddOption("vortex.read.io-coalesce.max-gap", "65536");
     read_context_builder.AddOption("vortex.read.io-coalesce.max-size", "4194304");
 
+Vortex Write Options
+====================
+
+The table option ``vortex.write.edition`` selects the file format edition for new
+files. The default, ``core2025.10.0``, keeps them readable by the Vortex versions
+used in earlier Paimon releases. Upgrade all readers before selecting a newer
+edition such as ``core2026.08.3``.
+
 Vortex Timestamp Storage
 ========================
 

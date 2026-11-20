@@ -434,11 +434,12 @@ License: https://www.apache.org/licenses/LICENSE-2.0
 
 --------------------------------------------------------------------------------
 
-This product includes code from Vortex 0.75.0.
+This product includes code from Vortex.
 
 * Callback I/O sink utilities in crates/vortex_callback_io/callback_io.rs
   (adapted from vortex-ffi/src/sink.rs)
-* Upstream source patch in cmake_modules/vortex.diff
+* Upstream source patches in cmake_modules/vortex.diff and
+  cmake_modules/vortex-0.93.0-enable-edition.diff
 
 Copyright the Vortex contributors
 Home page: https://github.com/vortex-data/vortex
