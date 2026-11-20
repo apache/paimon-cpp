@@ -1588,8 +1588,7 @@ macro(build_vortex)
                                       "${VORTEX_CALLBACK_IO_SRC}"
                                       "<SOURCE_DIR>/vortex-ffi/src/callback_io.rs"
                         COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> ${CMAKE_COMMAND} -E
-                                env "RUSTUP_TOOLCHAIN=stable"
-                                "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}"
+                                env "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}"
                                 "CARGO_TARGET_DIR=<BINARY_DIR>"
                                 "RUSTFLAGS=-Crelocation-model=pic"
                                 ${PAIMON_CARGO_EXECUTABLE} rustc --locked --package

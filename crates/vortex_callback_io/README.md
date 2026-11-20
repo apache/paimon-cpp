@@ -38,11 +38,10 @@ this contract.
 ## Running the module tests
 
 From the repository root, with Vortex enabled in the `build` directory, build the patched crate
-and run its callback I/O tests. The example uses the default
-[Vortex toolchain](../../docs/source/building.rst).
+and run its callback I/O tests with the same Rust toolchain used for the build.
 
 ```bash
 cmake --build build --target vortex_ep
 cd build/vortex_ep-prefix/src/vortex_ep
-CARGO_TARGET_DIR=../vortex_ep-build cargo +1.95.0 test --locked --release -p vortex-ffi callback_io::tests
+CARGO_TARGET_DIR=../vortex_ep-build cargo test --locked --release -p vortex-ffi callback_io::tests
 ```
