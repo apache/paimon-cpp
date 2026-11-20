@@ -4514,6 +4514,120 @@ TEST_P(GlobalIndexTest, TestFilteredRowIdReader) {
     ASSERT_EQ(rows, RoaringBitmap64::From({1, 3}));
 }
 
+TEST_P(GlobalIndexTest, TestBitmapLegacyWriteCommitScanReadMultipleShards) {
+    CreateTable();
+    std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto schema = arrow::schema(fields_);
+    std::vector<std::string> write_cols = schema->field_names();
+
+    // Unsorted values, including duplicates across shards and an all-null final shard.
+    auto src_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields_), R"([
+["Alice", 0, 1, 10.0],
+["Bob", 1, 1, 11.0],
+[null, 2, 0, 12.0],
+["Bob", 3, 0, 13.0],
+["Alice", 4, 1, 14.0],
+["Lucy", 5, 1, 15.0],
+[null, 6, 0, 16.0],
+["Bob", 7, 0, 17.0],
+[null, 8, 1, 18.0],
+[null, 9, 1, 19.0]
+    ])")
+                         .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(auto commit_msgs, WriteArray(table_path, write_cols, src_array));
+    ASSERT_OK(Commit(table_path, commit_msgs));
+
+    const std::vector<Range> shard_ranges = {Range(0, 3), Range(4, 6), Range(7, 7), Range(8, 9)};
+    for (size_t i = 0; i < shard_ranges.size(); ++i) {
+        // Exercise both legacy file formats through the global index factory.
+        std::map<std::string, std::string> options = {{"version", i % 2 == 0 ? "1" : "2"}};
+        ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f0", "bitmap-legacy", options,
+                             shard_ranges[i]));
+    }
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> global_index_scan,
+                         GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
+                                                 /*partitions=*/std::nullopt, /*options=*/{}, fs_,
+                                                 /*executor=*/nullptr, pool_));
+    ASSERT_OK_AND_ASSIGN(auto readers,
+                         global_index_scan->CreateReaders("f0", /*row_range_index=*/std::nullopt));
+    ASSERT_EQ(readers.size(), 1u);
+    const auto& reader = readers[0];
+    ASSERT_FALSE(reader->IsThreadSafe());
+
+    Literal alice(FieldType::STRING, "Alice", 5);
+    Literal bob(FieldType::STRING, "Bob", 3);
+    Literal lucy(FieldType::STRING, "Lucy", 4);
+    Literal missing(FieldType::STRING, "Missing", 7);
+    auto check_result = [](const Result<std::shared_ptr<GlobalIndexResult>>& result,
+                           const std::vector<int64_t>& expected) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexResult> index_result, result);
+        ASSERT_TRUE(index_result);
+        auto bitmap_result = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(index_result);
+        ASSERT_TRUE(bitmap_result);
+        ASSERT_OK_AND_ASSIGN(const RoaringBitmap64* bitmap, bitmap_result->GetBitmap());
+        ASSERT_TRUE(bitmap);
+        ASSERT_EQ(*bitmap, RoaringBitmap64::From(expected));
+    };
+    check_result(reader->VisitEqual(alice), {0, 4});
+    check_result(reader->VisitEqual(bob), {1, 3, 7});
+    check_result(reader->VisitEqual(lucy), {5});
+    check_result(reader->VisitEqual(missing), {});
+    check_result(reader->VisitNotEqual(bob), {0, 4, 5});
+    check_result(reader->VisitNotEqual(missing), {0, 1, 3, 4, 5, 7});
+    check_result(reader->VisitIn({alice, bob, missing}), {0, 1, 3, 4, 7});
+    check_result(reader->VisitNotIn({alice, bob, missing}), {5});
+    check_result(reader->VisitIsNull(), {2, 6, 8, 9});
+    check_result(reader->VisitIsNotNull(), {0, 1, 3, 4, 5, 7});
+
+    // Unsupported predicates retain the normal data-filtering fallback.
+    ASSERT_OK_AND_ASSIGN(auto unsupported, reader->VisitLessThan(bob));
+    ASSERT_FALSE(unsupported);
+
+    // Load each shard independently to verify its persisted results and global row-ID offset.
+    const std::vector<std::vector<int64_t>> shard_bob_rows = {{1, 3}, {}, {7}, {}};
+    const std::vector<std::vector<int64_t>> shard_null_rows = {{2}, {6}, {}, {8, 9}};
+    for (size_t i = 0; i < shard_ranges.size(); ++i) {
+        ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index,
+                             RowRangeIndex::Create({shard_ranges[i]}));
+        ASSERT_OK_AND_ASSIGN(auto shard_readers,
+                             global_index_scan->CreateReaders("f0", row_range_index));
+        ASSERT_EQ(shard_readers.size(), 1u);
+        check_result(shard_readers[0]->VisitEqual(bob), shard_bob_rows[i]);
+        check_result(shard_readers[0]->VisitIsNull(), shard_null_rows[i]);
+    }
+
+    // Select multiple shards while excluding another matching shard and the all-null shard.
+    ASSERT_OK_AND_ASSIGN(RowRangeIndex row_range_index, RowRangeIndex::Create({Range(4, 7)}));
+    ASSERT_OK_AND_ASSIGN(auto range_readers,
+                         global_index_scan->CreateReaders("f0", row_range_index));
+    ASSERT_EQ(range_readers.size(), 1u);
+    check_result(range_readers[0]->VisitEqual(bob), {7});
+    check_result(range_readers[0]->VisitIsNull(), {6});
+
+    ASSERT_OK_AND_ASSIGN(RowRangeIndex outside_range, RowRangeIndex::Create({Range(100, 200)}));
+    ASSERT_OK_AND_ASSIGN(auto outside_readers,
+                         global_index_scan->CreateReaders("f0", outside_range));
+    ASSERT_TRUE(outside_readers.empty());
+
+    // Evaluate the predicate through the global scan, then read the matching table rows.
+    auto predicate = PredicateBuilder::Equal(0, "f0", FieldType::STRING, bob);
+    auto scan_impl = std::dynamic_pointer_cast<GlobalIndexScanImpl>(global_index_scan);
+    ASSERT_TRUE(scan_impl);
+    check_result(scan_impl->Scan(predicate), {1, 3, 7});
+    auto result_fields = fields_;
+    result_fields.insert(result_fields.begin(), SpecialFields::ValueKind().ArrowField());
+    auto expected_array =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(result_fields), R"([
+[0, "Bob", 1, 1, 11.0],
+[0, "Bob", 3, 0, 13.0],
+[0, "Bob", 7, 0, 17.0]
+    ])")
+            .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(auto plan, ScanGlobalIndexAndData(table_path, predicate));
+    ASSERT_OK(ReadData(table_path, write_cols, expected_array, predicate, plan));
+}
+
 TEST_P(GlobalIndexTest, TestBTreeWriteCommitScanReadIndex) {
     // BTreeGlobalIndexWriter requires keys to be written in monotonically increasing order.
     // Therefore the source data must be pre-sorted by the indexed column (f0, string).
