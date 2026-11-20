@@ -374,9 +374,9 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// Configure the root vector TopK request, logically applied after the predicate filter.
     /// The search field need not be projected. SetVectorSearch is mutually exclusive with
     /// SetFullTextSearch and must have a positive limit.
+    /// distance_type must be EUCLIDEAN, INNER_PRODUCT or COSINE and match each queried index.
     /// Scores are required internally for TopK. Project `_<field>_INDEX_SCORE` to include them
     /// in the result.
-    /// TODO(lisizhuo.lsz): Merge TopK across files.
     /// @param vector_search Vector search request, or nullptr to clear it.
     /// @return Reference to this builder for method chaining.
     /// @note Requires EnablePreciseFileIndexEvaluate(true).
@@ -388,7 +388,6 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// SetVectorSearch and must have a positive limit.
     /// Scores are required internally for TopK. Project `_<field>_INDEX_SCORE` to include them
     /// in the result.
-    /// TODO(lisizhuo.lsz): Merge TopK across files.
     /// @param full_text_search Full-text search request, or nullptr to clear it.
     /// @return Reference to this builder for method chaining.
     /// @note Requires EnablePreciseFileIndexEvaluate(true).
@@ -396,11 +395,12 @@ class PAIMON_EXPORT ReadContextBuilder {
 
     /// Compute exact file-local result row positions during file-index evaluation, using the
     /// configured Predicate and optional VectorSearch or FullTextSearch request.
-    /// Requires file-index.read.enabled=true. Reads available file indexes and rechecks scalar
-    /// index candidates against the data. If a scalar predicate's field has no index, reads the
-    /// data to compute exact matching rows. Only scalar predicates may be evaluated without an
-    /// index. Score output must use named projections such as _<field>_INDEX_SCORE;
-    /// projecting _INDEX_SCORE by name, field ID or read schema is not supported in this mode.
+    /// Requires file-index.read.enabled=true. Uses exact scalar index results directly and
+    /// rechecks the original candidate scope when indexes are inexact. If a scalar predicate's
+    /// field has no index, reads the data to compute exact matching rows. Only scalar predicates
+    /// may be evaluated without an index. Score output must use named projections such as
+    /// _<field>_INDEX_SCORE; projecting _INDEX_SCORE by name, field ID or read schema is not
+    /// supported in this mode.
     /// Real-time append and deduplicate reads use pinned offsets and exact scalar indexes,
     /// scanning predicates that have no exact index. Real-time primary-key merge is not supported.
     /// The default is false.

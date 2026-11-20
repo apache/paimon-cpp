@@ -247,6 +247,41 @@ TEST(TableReadTest, TestMixedFilePredicateProducesScoresThroughPublicReadEntry) 
     ASSERT_EQ(names->GetString(0), "Tony");
 }
 
+TEST(TableReadTest, TestRootTopKEmptyInput) {
+    const std::string path = GetDataDir() + "/orc/append_09.db/append_09";
+    auto search = std::make_shared<VectorSearch>("f3", 10, std::vector<float>{1.0f}, nullptr,
+                                                 nullptr, VectorSearch::DistanceType::EUCLIDEAN,
+                                                 std::map<std::string, std::string>{});
+    ReadContextBuilder builder(path);
+    builder.EnablePreciseFileIndexEvaluate(true).SetReadFieldNames({"f1"}).SetVectorSearch(search);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> public_context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                         TableRead::Create(std::move(public_context)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> empty,
+                         read->CreateReader(std::vector<std::shared_ptr<Split>>{}));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch eof, empty->NextBatch());
+    ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+}
+
+TEST(TableReadTest, TestRootTopKRejectsFallbackBranch) {
+    const std::string path = GetDataDir() + "/orc/append_09.db/append_09";
+    for (bool vector_search : {false, true}) {
+        ReadContextBuilder builder(path);
+        builder.EnablePreciseFileIndexEvaluate(true).SetReadFieldNames({"f1"}).AddOption(
+            Options::SCAN_FALLBACK_BRANCH, "fallback");
+        if (vector_search) {
+            builder.SetVectorSearch(std::make_shared<VectorSearch>(
+                "f3", 10, std::vector<float>{1.0f}, nullptr, nullptr,
+                VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{}));
+        } else {
+            builder.SetFullTextSearch(std::make_shared<FullTextSearch>("f0", "query", 10));
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+        ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(context)),
+                            "Global TopK does not support fallback branches");
+    }
+}
+
 TEST(TableReadTest, TestCreateKeyValueTableRead) {
     std::string path = paimon::test::GetDataDir() +
                        "/orc/pk_table_with_dv_cardinality.db/pk_table_with_dv_cardinality/";
@@ -277,9 +312,9 @@ TEST(TableReadTest, TestCreateCountReaderRejectsFileIndexSearch) {
     {
         std::string path = paimon::test::GetDataDir() +
                            "/orc/pk_table_with_dv_cardinality.db/pk_table_with_dv_cardinality/";
-        auto search = std::make_shared<VectorSearch>("f3", /*limit=*/1, std::vector<float>{1.0f},
-                                                     nullptr, nullptr, std::nullopt,
-                                                     std::map<std::string, std::string>{});
+        auto search = std::make_shared<VectorSearch>(
+            "f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr, nullptr,
+            VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
         ReadContextBuilder context_builder(path);
         context_builder.EnablePreciseFileIndexEvaluate(true)
             .SetReadFieldNames({"f0"})
@@ -344,9 +379,9 @@ TEST(TableReadTest, TestPreciseScalarEvaluationRejectsUnsupportedTableModes) {
 TEST(TableReadTest, TestPrimaryKeyFileIndexSearchDoesNotFallBackToMergeReader) {
     std::string path = paimon::test::GetDataDir() +
                        "/orc/pk_table_with_dv_cardinality.db/pk_table_with_dv_cardinality/";
-    auto search =
-        std::make_shared<VectorSearch>("f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr,
-                                       nullptr, std::nullopt, std::map<std::string, std::string>{});
+    auto search = std::make_shared<VectorSearch>(
+        "f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr, nullptr,
+        VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
     ReadContextBuilder context_builder(path);
     context_builder.EnablePreciseFileIndexEvaluate(true).SetReadFieldNames({"f0"}).SetVectorSearch(
         search);
@@ -357,7 +392,10 @@ TEST(TableReadTest, TestPrimaryKeyFileIndexSearchDoesNotFallBackToMergeReader) {
     DataSplitImpl::Builder builder(partition, /*bucket=*/0, /*bucket_path=*/"", /*data_files=*/{});
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> non_raw,
                          builder.WithSnapshot(1).IsStreaming(false).RawConvertible(false).Build());
-    ASSERT_NOK_WITH_MSG(reader->CreateReader(non_raw), "merge file reads");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> non_raw_reader,
+                         reader->CreateReader(non_raw));
+    ASSERT_NOK_WITH_MSG(non_raw_reader->NextBatch(), "merge file reads");
+    non_raw_reader->Close();
 
     DataSplitImpl::Builder raw_builder(partition, /*bucket=*/0, /*bucket_path=*/"",
                                        /*data_files=*/{});
@@ -368,7 +406,7 @@ TEST(TableReadTest, TestPrimaryKeyFileIndexSearchDoesNotFallBackToMergeReader) {
     std::vector<std::shared_ptr<Split>> splits = {raw, non_raw};
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> lazy_reader, reader->CreateReader(splits));
     ASSERT_NOK_WITH_MSG(lazy_reader->NextBatch(), "merge file reads");
-    ASSERT_NOK_WITH_MSG(lazy_reader->NextBatchWithBitmap(), "merge file reads");
+    lazy_reader->Close();
 
     auto* key_value_read = dynamic_cast<KeyValueTableRead*>(reader.get());
     ASSERT_NE(key_value_read, nullptr);

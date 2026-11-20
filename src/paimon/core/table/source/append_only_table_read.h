@@ -59,9 +59,6 @@ class AppendOnlyTableRead : public TableRead {
 
  private:
     Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
-        const std::shared_ptr<RealtimeSplit>& realtime_split);
-
-    Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
         const std::shared_ptr<RealtimeSplit>& realtime_split,
         const RealtimePartitionBucketView& memory);
 

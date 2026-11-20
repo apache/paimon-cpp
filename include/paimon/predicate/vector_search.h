@@ -91,7 +91,8 @@ struct PAIMON_EXPORT VectorSearch {
     /// The distance metric to use for this query, if explicitly specified.
     /// If set, this value must match the distance type used by the index (e.g., EUCLIDEAN, COSINE).
     /// A mismatch will result in an error during query execution.
-    /// If not set (std::nullopt), the query will use the distance type configured in the index.
+    /// Root searches configured through ReadContextBuilder require an explicit supported type.
+    /// Direct index queries may omit it (std::nullopt) to use the index's configured type.
     std::optional<DistanceType> distance_type;
     /// A key-value map of query-specific runtime options.
     /// Such as the size of candidate list in approximate search or parallelism for this query.

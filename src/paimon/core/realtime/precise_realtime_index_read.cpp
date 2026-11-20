@@ -180,11 +180,28 @@ class RealtimeSourceRead {
             return std::unique_ptr<BatchReader>();
         }
 
+        std::optional<std::string> root_search_field_name;
+        if (context_->GetVectorSearch()) {
+            root_search_field_name = context_->GetVectorSearch()->field_name;
+        } else if (context_->GetFullTextSearch()) {
+            root_search_field_name = context_->GetFullTextSearch()->field_name;
+        }
+        auto output_schema = context_->GetReadSchema();
+        if (root_search_field_name) {
+            std::string score_name =
+                SpecialFields::IndexScoreFieldName(root_search_field_name.value());
+            if (output_schema->GetAllFieldIndices(score_name).empty()) {
+                PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                    output_schema,
+                    output_schema->AddField(output_schema->num_fields(),
+                                            arrow::field(score_name, arrow::float32())));
+            }
+        }
         using AlignedScores = std::map<std::string, std::vector<float>>;
         PAIMON_ASSIGN_OR_RAISE(
             AlignedScores aligned_scores,
             Evaluator::CreateOutputScores(evaluated, context_->GetIndexScoreBindings(),
-                                          context_->GetReadSchema()));
+                                          output_schema, root_search_field_name));
         OutputScores scores;
         for (const auto& [field, aligned] : aligned_scores) {
             auto& output = scores[field];
@@ -206,8 +223,7 @@ class RealtimeSourceRead {
                                ReadLogical(arrow::schema(fields), /*predicate=*/nullptr,
                                            std::make_shared<RoaringBitmap64>(evaluated.rows)));
         return std::unique_ptr<BatchReader>(std::make_unique<RealtimeScoreBatchReader>(
-            std::move(reader), context_->GetReadSchema(), std::move(scores),
-            context_->GetArrowMemoryPool()));
+            std::move(reader), output_schema, std::move(scores), context_->GetArrowMemoryPool()));
     }
 
     Result<std::vector<std::shared_ptr<RealtimeIndexReader>>> GetReaders(
@@ -279,7 +295,12 @@ class RealtimeSourceRead {
     Status ApplyRootSearch(Evaluation* evaluated) {
         const auto& vector = context_->GetVectorSearch();
         const auto& text = context_->GetFullTextSearch();
-        const std::string field = vector ? vector->field_name : text ? text->field_name : "";
+        std::optional<std::string> field;
+        if (vector) {
+            field = vector->field_name;
+        } else if (text) {
+            field = text->field_name;
+        }
         return Evaluator::ApplyRootSearch<RealtimeIndexReader>(vector, text, field, this,
                                                                evaluated);
     }

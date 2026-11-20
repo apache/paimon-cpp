@@ -82,7 +82,7 @@ Result<std::shared_ptr<FileIndexResult>> MockSearchFileIndexReader::MakeResult(
     const std::map<int32_t, float>& selected, bool needs_scores) const {
     if (needs_scores) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredFileIndexResult> result,
-                               MakeScoredResult(selected));
+                               MakeScoredResult(selected, /*is_exact=*/true));
         return result;
     }
     RoaringBitmap32 positions;
@@ -90,18 +90,19 @@ Result<std::shared_ptr<FileIndexResult>> MockSearchFileIndexReader::MakeResult(
         positions.Add(row_id);
     }
     return std::make_shared<BitmapIndexResult>(
-        [bitmap = std::move(positions)]() -> Result<RoaringBitmap32> { return bitmap; });
+        [bitmap = std::move(positions)]() -> Result<RoaringBitmap32> { return bitmap; },
+        /*is_exact=*/true);
 }
 
 Result<std::shared_ptr<ScoredFileIndexResult>> MockSearchFileIndexReader::MakeScoredResult(
-    const std::map<int32_t, float>& selected) const {
+    const std::map<int32_t, float>& selected, bool is_exact) const {
     RoaringBitmap32 positions;
     std::vector<float> scores;
     for (const auto& [row_id, score] : selected) {
         positions.Add(row_id);
         scores.push_back(score);
     }
-    return ScoredFileIndexResult::Create(std::move(positions), std::move(scores));
+    return ScoredFileIndexResult::Create(std::move(positions), std::move(scores), is_exact);
 }
 
 Result<std::shared_ptr<FileIndexResult>> MockSearchFileIndexReader::VisitFullTextMatch(
@@ -113,7 +114,8 @@ Result<std::shared_ptr<FileIndexResult>> MockSearchFileIndexReader::VisitFullTex
         return Status::Invalid("Mock full-text match field does not match the indexed field");
     }
     if (statistics_) {
-        statistics_->executions.push_back({field_name_, match->query, needs_scores});
+        statistics_->executions.push_back(
+            {field_name_, match->query, needs_scores, match->include_row_ids});
     }
     std::map<int32_t, float> selected;
     for (const auto& [row_id, score] : GetRows(match->query)) {
@@ -132,6 +134,9 @@ Result<std::shared_ptr<ScoredFileIndexResult>> MockSearchFileIndexReader::VisitV
     if (search->field_name != field_name_) {
         return Status::Invalid("Mock vector search field does not match the indexed field");
     }
+    if (distance_type_ && search->distance_type && *distance_type_ != *search->distance_type) {
+        return Status::Invalid("distance type for index and search not match");
+    }
     if (statistics_) {
         statistics_->executions.push_back({field_name_, "", true});
     }
@@ -144,7 +149,7 @@ Result<std::shared_ptr<ScoredFileIndexResult>> MockSearchFileIndexReader::VisitV
             selected.emplace(row_id, score);
         }
     }
-    return MakeScoredResult(selected);
+    return MakeScoredResult(selected, /*is_exact=*/false);
 }
 
 Result<std::shared_ptr<ScoredFileIndexResult>> MockSearchFileIndexReader::VisitFullTextSearch(
@@ -156,7 +161,8 @@ Result<std::shared_ptr<ScoredFileIndexResult>> MockSearchFileIndexReader::VisitF
         return Status::Invalid("Mock full-text search field does not match the indexed field");
     }
     if (statistics_) {
-        statistics_->executions.push_back({field_name_, search->query, true});
+        statistics_->executions.push_back(
+            {field_name_, search->query, true, search->include_row_ids});
     }
     std::map<int32_t, float> selected;
     for (const auto& [row_id, score] : GetRows(search->query)) {
@@ -167,7 +173,7 @@ Result<std::shared_ptr<ScoredFileIndexResult>> MockSearchFileIndexReader::VisitF
             selected.emplace(row_id, score);
         }
     }
-    return MakeScoredResult(selected);
+    return MakeScoredResult(selected, /*is_exact=*/false);
 }
 
 MockSearchFileIndexer::MockSearchFileIndexer(
@@ -192,6 +198,15 @@ Result<std::shared_ptr<FileIndexReader>> MockSearchFileIndexer::CreateReader(
                            OffsetInputStream::Create(input, length, start));
     DataInputStream data_input(payload);
     PAIMON_ASSIGN_OR_RAISE(int32_t count, data_input.ReadValue<int32_t>());
+    const bool has_configured_metric = count == -2;
+    std::optional<VectorSearch::DistanceType> distance_type;
+    if (has_configured_metric) {
+        PAIMON_ASSIGN_OR_RAISE(int32_t metric, data_input.ReadValue<int32_t>());
+        if (metric != 0) {
+            distance_type = static_cast<VectorSearch::DistanceType>(metric);
+        }
+        PAIMON_ASSIGN_OR_RAISE(count, data_input.ReadValue<int32_t>());
+    }
     if (count == -1) {
         PAIMON_ASSIGN_OR_RAISE(int32_t query_count, data_input.ReadValue<int32_t>());
         MockSearchFileIndex::QueryMatches queries;
@@ -219,8 +234,12 @@ Result<std::shared_ptr<FileIndexReader>> MockSearchFileIndexer::CreateReader(
         PAIMON_ASSIGN_OR_RAISE(float score, data_input.ReadValue<float>());
         rows.emplace_back(row_id, score);
     }
-    return std::make_shared<MockSearchFileIndexReader>(schema->field(0)->name(), index_type_,
-                                                       std::move(rows), statistics_);
+    auto reader = std::make_shared<MockSearchFileIndexReader>(schema->field(0)->name(), index_type_,
+                                                              std::move(rows), statistics_);
+    if (has_configured_metric) {
+        reader->SetVectorSearchDistanceType(distance_type);
+    }
+    return reader;
 }
 
 Result<std::shared_ptr<FileIndexWriter>> MockSearchFileIndexer::CreateWriter(
@@ -370,6 +389,25 @@ Result<std::shared_ptr<Bytes>> MockSearchFileIndex::MakeIndex(
     const std::shared_ptr<MemoryPool>& pool) {
     FileIndexFormat::ColumnIndexes indexes;
     PAIMON_ASSIGN_OR_RAISE(indexes[field_name][index_type], MakePayload(rows, pool));
+    return Serialize(indexes, pool);
+}
+
+Result<std::shared_ptr<Bytes>> MockSearchFileIndex::MakeVectorIndex(
+    const std::string& field_name, const ScoredRows& rows,
+    const std::optional<VectorSearch::DistanceType>& distance_type,
+    const std::shared_ptr<MemoryPool>& pool) {
+    auto output = MakeOutput(pool);
+    DataOutputStream data_output(output);
+    PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(-2));
+    PAIMON_RETURN_NOT_OK(
+        data_output.WriteValue<int32_t>(distance_type ? static_cast<int32_t>(*distance_type) : 0));
+    PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(static_cast<int32_t>(rows.size())));
+    for (const auto& [row_id, score] : rows) {
+        PAIMON_RETURN_NOT_OK(data_output.WriteValue<int32_t>(row_id));
+        PAIMON_RETURN_NOT_OK(data_output.WriteValue<float>(score));
+    }
+    FileIndexFormat::ColumnIndexes indexes;
+    PAIMON_ASSIGN_OR_RAISE(indexes[field_name][VECTOR_IDENTIFIER], output->Finish(pool.get()));
     return Serialize(indexes, pool);
 }
 

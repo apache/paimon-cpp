@@ -104,7 +104,8 @@ class BitSliceIndexBitmapFileIndexReader
       public std::enable_shared_from_this<BitSliceIndexBitmapFileIndexReader> {
  public:
     BitSliceIndexBitmapFileIndexReader(
-        int32_t row_number, const BitSliceIndexBitmapFileIndex::ValueMapperType& value_mapper,
+        int32_t row_number, FieldType data_type,
+        const BitSliceIndexBitmapFileIndex::ValueMapperType& value_mapper,
         const std::shared_ptr<BitSliceIndexRoaringBitmap>& positive,
         const std::shared_ptr<BitSliceIndexRoaringBitmap>& negative);
 
@@ -125,6 +126,7 @@ class BitSliceIndexBitmapFileIndexReader
 
  private:
     int32_t row_number_;
+    FieldType data_type_;
     BitSliceIndexBitmapFileIndex::ValueMapperType value_mapper_;
     std::shared_ptr<BitSliceIndexRoaringBitmap> positive_;
     std::shared_ptr<BitSliceIndexRoaringBitmap> negative_;

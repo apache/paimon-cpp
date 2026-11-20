@@ -109,6 +109,10 @@ class BitmapFileIndexReader : public FileIndexReader,
 
     // TODO(xinyu.lxy): may overwrite VisitGreaterThan... like VisitIsNotNull
 
+    Result<std::shared_ptr<FileIndexResult>> Evaluate(
+        const std::shared_ptr<LeafPredicate>& predicate,
+        const RoaringBitmap32* candidates) override;
+
     Result<std::shared_ptr<FileIndexResult>> VisitEqual(const Literal& literal) override;
     Result<std::shared_ptr<FileIndexResult>> VisitNotEqual(const Literal& literal) override;
 

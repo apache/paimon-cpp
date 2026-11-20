@@ -369,6 +369,14 @@ Result<std::unique_ptr<ReadContext>> ReadContextBuilder::Finish() {
         if (search->field_name.empty() || search->query.empty()) {
             return Status::Invalid("VectorSearch field name and query must not be empty");
         }
+        if (!search->distance_type ||
+            (*search->distance_type != VectorSearch::DistanceType::EUCLIDEAN &&
+             *search->distance_type != VectorSearch::DistanceType::INNER_PRODUCT &&
+             *search->distance_type != VectorSearch::DistanceType::COSINE)) {
+            return Status::Invalid(
+                "VectorSearch requires DistanceType EUCLIDEAN, INNER_PRODUCT or COSINE for "
+                "global TopK");
+        }
     }
     if (impl_->full_text_search_) {
         const auto& search = impl_->full_text_search_;

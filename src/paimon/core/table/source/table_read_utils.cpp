@@ -99,7 +99,7 @@ Result<RealtimePartitionBucketView> TableReadUtils::ResolveRealtimeReadView(
 }
 
 Result<std::unique_ptr<BatchReader>> TableReadUtils::CreateLazyReader(
-    const std::vector<std::shared_ptr<Split>>& splits, const std::shared_ptr<TableRead>& read,
+    const std::vector<std::shared_ptr<Split>>& splits, const DiskReaderFactory& open_disk,
     const RealtimeReaderFactory& open_realtime, const InternalReadContext& context) {
     std::vector<LazyConcatBatchReader::Source> sources;
     sources.reserve(splits.size());
@@ -118,7 +118,7 @@ Result<std::unique_ptr<BatchReader>> TableReadUtils::CreateLazyReader(
                     view = std::move(view)]() { return open_realtime(realtime_split, view); };
         } else {
             PAIMON_RETURN_NOT_OK(ValidateDiskSplit(split, /*allow_indexed=*/true));
-            open = [read, split]() { return read->CreateReader(split); };
+            open = [open_disk, split]() { return open_disk(split); };
         }
         sources.push_back({fmt::format("split {}", i), std::move(open)});
     }
