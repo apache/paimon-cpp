@@ -21,12 +21,16 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/data/binary_string.h"
+#include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_kind.h"
+#include "paimon/core/manifest/manifest_entry.h"
+#include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/testing/utils/testharness.h"
 
@@ -65,7 +69,7 @@ class MockFileEntry : public FileEntry {
         return external_path_;
     }
     Identifier CreateIdentifier() const override {
-        return Identifier(partition_, bucket_, level_, file_name_, external_path_);
+        return Identifier(partition_, bucket_, level_, file_name_, {}, nullptr, external_path_);
     }
     const BinaryRow& MinKey() const override {
         assert(false);
@@ -188,6 +192,73 @@ TEST_F(FileEntryTest, TestMergeEntriesDeleteAndAdd) {
     entries.emplace_back(FileKind::Add(), GetPartition("0"), /*bucket=*/0, /*level=*/0, "file1");
     std::vector<MockFileEntry> merged_entries;
     ASSERT_NOK(FileEntry::MergeEntries(entries, &merged_entries));
+}
+
+TEST_F(FileEntryTest, TestIndexMetadataIdentifiers) {
+    auto pool = GetDefaultPool();
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> file,
+                         DataFileMeta::ForAppend("file1", 1024, 10, SimpleStats::EmptyStats(), 1, 1,
+                                                 0, FileSource::Append(), std::nullopt,
+                                                 std::nullopt, std::nullopt, std::nullopt));
+    const BinaryRow partition = GetPartition("0");
+    auto identifier = [&](const std::shared_ptr<DataFileMeta>& meta) {
+        return ManifestEntry(FileKind::Add(), partition, 0, 1, meta).CreateIdentifier();
+    };
+    file->extra_files = {"shared.aux", "old.index"};
+    file->embedded_index = std::make_shared<Bytes>(std::string("\0\xff", 2), pool.get());
+    auto equal_file = file->CopyWithExtraFiles(file->extra_files);
+    equal_file->embedded_index = std::make_shared<Bytes>(std::string("\0\xff", 2), pool.get());
+    ASSERT_NE(file->embedded_index, equal_file->embedded_index);
+    ASSERT_EQ(identifier(file), identifier(equal_file));
+    ASSERT_EQ(identifier(file).HashCode(), identifier(equal_file).HashCode());
+
+    std::unordered_set<FileEntry::Identifier> identifiers = {identifier(file)};
+    ASSERT_FALSE(identifiers.insert(identifier(equal_file)).second);
+    ASSERT_TRUE(
+        identifiers.insert(identifier(file->CopyWithExtraFiles({"shared.aux", "new.index"})))
+            .second);
+    ASSERT_TRUE(
+        identifiers.insert(identifier(file->CopyWithExtraFiles({"old.index", "shared.aux"})))
+            .second);
+    ASSERT_TRUE(identifiers.insert(identifier(file->CopyWithExtraFiles({std::nullopt}))).second);
+    ASSERT_TRUE(identifiers.insert(identifier(file->CopyWithExtraFiles({""}))).second);
+
+    auto changed_file = file->CopyWithExtraFiles(file->extra_files);
+    changed_file->embedded_index = std::make_shared<Bytes>(std::string("\0\xfe", 2), pool.get());
+    ASSERT_TRUE(identifiers.insert(identifier(changed_file)).second);
+    changed_file->embedded_index = Bytes::EmptyBytes();
+    ASSERT_TRUE(identifiers.insert(identifier(changed_file)).second);
+    changed_file->embedded_index.reset();
+    ASSERT_TRUE(identifiers.insert(identifier(changed_file)).second);
+}
+
+TEST_F(FileEntryTest, TestMergeIndexMetadataRewrite) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> before,
+                         DataFileMeta::ForAppend("file1", 1024, 10, SimpleStats::EmptyStats(), 1, 1,
+                                                 0, FileSource::Append(), std::nullopt,
+                                                 std::nullopt, std::nullopt, std::nullopt));
+    const BinaryRow partition = GetPartition("0");
+    for (bool embedded : {false, true}) {
+        before->extra_files = embedded ? std::vector<std::optional<std::string>>{}
+                                       : std::vector<std::optional<std::string>>{"old.index"};
+        before->embedded_index =
+            embedded ? std::make_shared<Bytes>("old", GetDefaultPool().get()) : nullptr;
+        auto after = before->CopyWithExtraFiles({"new.index"});
+        after->embedded_index.reset();
+        std::vector<ManifestEntry> delta = {{FileKind::Delete(), partition, 0, 1, before},
+                                            {FileKind::Add(), partition, 0, 1, after}};
+        std::vector<ManifestEntry> merged;
+        ASSERT_OK(FileEntry::MergeEntries(delta, &merged));
+        ASSERT_EQ(2u, merged.size());
+
+        std::vector<ManifestEntry> history = {{FileKind::Add(), partition, 0, 1, before}};
+        history.insert(history.end(), delta.begin(), delta.end());
+        merged.clear();
+        ASSERT_OK(FileEntry::MergeEntries(history, &merged));
+        ASSERT_EQ(1u, merged.size());
+        ASSERT_EQ(FileKind::Add(), merged[0].Kind());
+        ASSERT_EQ(*after, *merged[0].File());
+    }
 }
 
 }  // namespace paimon::test

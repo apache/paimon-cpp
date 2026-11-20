@@ -3570,6 +3570,58 @@ TEST_F(FileStoreCommitImplTest, TestAbortDeletesDataAndIndexFiles) {
     }
 }
 
+TEST_F(FileStoreCommitImplTest, AbortPreservesReusedPathsAndDeletesNewCompactionInputs) {
+    CommitContextBuilder builder(table_path_, "commit_user_1");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> context,
+                         builder.AddOption(Options::FILE_SYSTEM, "local").Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreCommit> commit,
+                         FileStoreCommit::Create(std::move(context)));
+    auto* commit_impl = dynamic_cast<FileStoreCommitImpl*>(commit.get());
+    ASSERT_TRUE(commit_impl);
+    const BinaryRow partition = CreateIntRow(10);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFilePathFactory> paths,
+                         commit_impl->path_factory_->CreateDataFilePathFactory(partition, 0));
+    for (bool external : {false, true}) {
+        auto before = CreateAppendDataFileMeta("abort-reused-data", 1);
+        before->extra_files = {"old.index", "shared.aux"};
+        if (external) {
+            before->external_path = PathUtil::JoinPath(table_path_, "external/abort-reused-data");
+        }
+        ASSERT_OK_AND_ASSIGN(auto upgraded, before->Upgrade(before->level + 1));
+        auto after = upgraded->CopyWithExtraFiles({"new.index", "shared.aux"});
+        auto appended = CreateAppendDataFileMeta("abort-new-input", 1);
+        appended->extra_files = {"abort-new-input.index"};
+        auto append_log = CreateAppendDataFileMeta("abort-append-log", 1);
+        auto compact_log = CreateAppendDataFileMeta("abort-compact-log", 1);
+        DataIncrement data_increment({appended}, {}, {append_log});
+        CompactIncrement compact_increment({before, appended}, {after}, {compact_log});
+        auto message =
+            std::make_shared<CommitMessageImpl>(partition, 0, 2, data_increment, compact_increment);
+        const std::vector<std::string> retained = {paths->ToPath(before),
+                                                   paths->ToAlignedPath("old.index", before),
+                                                   paths->ToAlignedPath("shared.aux", before)};
+        const std::vector<std::string> removed = {
+            paths->ToAlignedPath("new.index", after), paths->ToPath(appended),
+            paths->ToAlignedPath("abort-new-input.index", appended), paths->ToPath(append_log),
+            paths->ToPath(compact_log)};
+        for (const auto& group : {retained, removed}) {
+            for (const auto& path : group) {
+                ASSERT_OK(file_system_->Mkdirs(PathUtil::GetParentDirPath(path)));
+                ASSERT_OK(file_system_->WriteFile(path, "", /*overwrite=*/false));
+            }
+        }
+        ASSERT_OK(commit_impl->Abort({message}));
+        for (const auto& path : retained) {
+            ASSERT_OK_AND_ASSIGN(bool exists, file_system_->Exists(path));
+            ASSERT_TRUE(exists) << path;
+        }
+        for (const auto& path : removed) {
+            ASSERT_OK_AND_ASSIGN(bool exists, file_system_->Exists(path));
+            ASSERT_FALSE(exists) << path;
+        }
+    }
+}
+
 TEST_F(FileStoreCommitImplTest, AbortIgnoresMissingFilesAndFailsForNonImplMessage) {
     CommitContextBuilder context_builder(table_path_, "commit_user_1");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<CommitContext> commit_context,

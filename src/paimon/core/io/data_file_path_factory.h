@@ -84,6 +84,7 @@ class DataFilePathFactory : public PathFactory {
     }
 
     std::string ToFileIndexPath(const std::string& file_path) const;
+    static std::string CreateNewFileIndexFilePath(const std::string& file_path);
     std::string ToAlignedPath(const std::string& file_name,
                               const std::shared_ptr<DataFileMeta>& aligned) const;
 

@@ -18,6 +18,40 @@
 File Index
 ==========
 
+Attach indexes to existing data files
+------------------------------------
+
+``FileIndexWrite::PrepareCommit`` supports managed append tables with fixed buckets.
+It merges serialized payloads into one external index file per data file and returns
+commit messages. Inputs use original file field names and physical row positions,
+including DV-deleted rows. Given a serialized bitmap stream ``payload``:
+
+.. code-block:: cpp
+
+   #include "paimon/file_index/file_index_write.h"
+
+   std::vector<paimon::DataFileIndexInput> inputs = {
+       {"data-example.parquet", {{"original_field_name", "bitmap", payload}}}};
+   PAIMON_ASSIGN_OR_RAISE(
+       std::vector<std::shared_ptr<paimon::CommitMessage>> messages,
+       paimon::FileIndexWrite::PrepareCommit(
+           table_path, branch, options, base_snapshot_id, inputs,
+           file_system, pool, executor));
+
+Use the payloads' snapshot as ``base_snapshot_id``; ``std::nullopt`` selects latest
+once. Null file system, pool or executor selects internal defaults. Input streams
+are borrowed synchronously and are not closed.
+
+Existing targets are reused without reading or writing index payloads, and commit
+messages are still prepared. Otherwise, index files are published from UUID temporary
+files using ``Rename``. If the target appears meanwhile, it is reused and the temporary
+file is cleaned up best-effort. Existing contents are not validated.
+Concurrent publication requires atomic rename without overwrite from the file system.
+
+Commit the messages with ``FileStoreCommit`` to the same table and branch.
+Serialize backfill commits with compaction/overwrite per partition/bucket,
+keeping base metadata valid through commit.
+
 Full-text predicates and root TopK
 ----------------------------------
 

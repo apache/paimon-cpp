@@ -29,6 +29,9 @@
 namespace paimon {
 Result<FileIndexFormatUtils::FileIndexEntries> FileIndexFormatUtils::ReadIndexEntries(
     const std::shared_ptr<InputStream>& input, const std::shared_ptr<MemoryPool>& pool) {
+    if (!input || !pool) {
+        return Status::Invalid("File index metadata requires an input stream and memory pool");
+    }
     DataInputStream in(input);
     PAIMON_ASSIGN_OR_RAISE(int64_t magic, in.ReadValue<int64_t>());
     if (magic != FileIndexFormat::MAGIC) {

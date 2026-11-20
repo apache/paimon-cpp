@@ -39,6 +39,15 @@ Interface
    :members:
    :undoc-members:
 
+.. doxygenstruct:: paimon::FileIndexInput
+   :members:
+
+.. doxygenstruct:: paimon::DataFileIndexInput
+   :members:
+
+.. doxygenclass:: paimon::FileIndexWrite
+   :members:
+
 .. doxygenclass:: paimon::FileIndexReader
    :members:
    :undoc-members:

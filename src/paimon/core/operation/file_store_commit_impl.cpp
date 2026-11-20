@@ -217,6 +217,13 @@ Status FileStoreCommitImpl::Abort(
         const DataIncrement& new_files_increment = msg->GetNewFilesIncrement();
         const CompactIncrement& compact_increment = msg->GetCompactIncrement();
 
+        // Preserve paths reused by metadata-only rewrites.
+        std::unordered_set<std::string> retained_paths;
+        for (const auto& file : compact_increment.CompactBefore()) {
+            for (const auto& path : data_file_path_factory->CollectFiles(file)) {
+                retained_paths.insert(path);
+            }
+        }
         std::vector<std::shared_ptr<DataFileMeta>> data_files_to_delete;
         auto append_data_files =
             [&data_files_to_delete](const std::vector<std::shared_ptr<DataFileMeta>>& files) {
@@ -224,12 +231,18 @@ Status FileStoreCommitImpl::Abort(
             };
         append_data_files(new_files_increment.NewFiles());
         append_data_files(new_files_increment.ChangelogFiles());
-        append_data_files(compact_increment.CompactAfter());
         append_data_files(compact_increment.ChangelogFiles());
         for (const auto& file : data_files_to_delete) {
             // Best-effort cleanup: ignore delete failures, aligning with Java deleteQuietly.
             for (const std::string& path : data_file_path_factory->CollectFiles(file)) {
                 [[maybe_unused]] Status status = fs_->Delete(path, /*recursive=*/false);
+            }
+        }
+        for (const auto& file : compact_increment.CompactAfter()) {
+            for (const std::string& path : data_file_path_factory->CollectFiles(file)) {
+                if (retained_paths.count(path) == 0) {
+                    [[maybe_unused]] Status status = fs_->Delete(path, /*recursive=*/false);
+                }
             }
         }
 
