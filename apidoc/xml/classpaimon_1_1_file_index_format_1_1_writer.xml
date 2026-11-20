@@ -1,0 +1,112 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_file_index_format_1_1_writer" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::FileIndexFormat::Writer</compoundname>
+    <includes refid="file__index__format_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h</includes>
+    <sectiondef kind="public-type">
+      <memberdef kind="typedef" id="classpaimon_1_1_file_index_format_1_1_writer_1aa9419b808d431b4b40d28c8d10c77b65" prot="public" static="no">
+        <type>std::function&lt; <ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref> &gt;(<ref refid="classpaimon_1_1_output_stream" kindref="compound">OutputStream</ref> *)&gt;</type>
+        <definition>using paimon::FileIndexFormat::Writer::PayloadWriter =  std::function&lt;Result&lt;bool&gt;(OutputStream*)&gt;</definition>
+        <argsstring></argsstring>
+        <name>PayloadWriter</name>
+        <qualifiedname>paimon::FileIndexFormat::Writer::PayloadWriter</qualifiedname>
+        <briefdescription>
+<para>Writes one payload without closing the stream. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Returns false for an absent index (without writing bytes), or true after writing a non-empty payload. The borrowed stream reports positions relative to the start of this payload, starting at 0. The callback must not retain the stream. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h" line="90" column="5" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h" bodystart="90" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_file_index_format_1_1_writer_1a45bfbe7085ced2aac66a8eedc10af540" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::FileIndexFormat::Writer::~Writer</definition>
+        <argsstring>()=default</argsstring>
+        <name>~Writer</name>
+        <qualifiedname>paimon::FileIndexFormat::Writer::~Writer</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h" line="91" column="13"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_file_index_format_1_1_writer_1a106ea86f615a3d5d874bb3e067b9e8dc" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref></type>
+        <definition>virtual Status paimon::FileIndexFormat::Writer::Close</definition>
+        <argsstring>()=0</argsstring>
+        <name>Close</name>
+        <qualifiedname>paimon::FileIndexFormat::Writer::Close</qualifiedname>
+        <briefdescription>
+<para>Flushes and closes the output stream supplied to <computeroutput><ref refid="classpaimon_1_1_file_index_format_1a1a6e70988e28baa91f8eb771ad9d5545" kindref="member">CreateWriter()</ref></computeroutput>. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h" line="94" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_file_index_format_1_1_writer_1a59015f1bc93b2f455c34412df0e7feee" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref></type>
+        <definition>virtual Status paimon::FileIndexFormat::Writer::WriteIndex</definition>
+        <argsstring>(const std::string &amp;column_name, const std::string &amp;index_type, const PayloadWriter &amp;payload_writer)=0</argsstring>
+        <name>WriteIndex</name>
+        <qualifiedname>paimon::FileIndexFormat::Writer::WriteIndex</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>column_name</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>index_type</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_file_index_format_1_1_writer_1aa9419b808d431b4b40d28c8d10c77b65" kindref="member">PayloadWriter</ref> &amp;</type>
+          <declname>payload_writer</declname>
+        </param>
+        <briefdescription>
+<para>Writes one index. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>V1 buffers payloads; V2 writes them directly to the destination. An empty callback or a false result denotes an empty index (-1, 0). A true result indicates that a non-empty payload was written. Call <ref refid="classpaimon_1_1_file_index_format_1_1_writer_1aae9fbf92b727552439b0f46761f69d85" kindref="member">Finish()</ref> after the last index. Payload failures are terminal. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h" line="100" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_file_index_format_1_1_writer_1aae9fbf92b727552439b0f46761f69d85" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref></type>
+        <definition>virtual Status paimon::FileIndexFormat::Writer::Finish</definition>
+        <argsstring>()=0</argsstring>
+        <name>Finish</name>
+        <qualifiedname>paimon::FileIndexFormat::Writer::Finish</qualifiedname>
+        <briefdescription>
+<para>Completes the container: writes V1&apos;s header and buffered bodies, or V2&apos;s footer and trailer. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h" line="104" column="20"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para><ref refid="classpaimon_1_1_file_index_format_1_1_writer" kindref="compound">Writer</ref> for file index file. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h" line="84" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/file_index/file_index_format.h" bodystart="84" bodyend="105"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_file_index_format_1_1_writer_1a106ea86f615a3d5d874bb3e067b9e8dc" prot="public" virt="pure-virtual"><scope>paimon::FileIndexFormat::Writer</scope><name>Close</name></member>
+      <member refid="classpaimon_1_1_file_index_format_1_1_writer_1aae9fbf92b727552439b0f46761f69d85" prot="public" virt="pure-virtual"><scope>paimon::FileIndexFormat::Writer</scope><name>Finish</name></member>
+      <member refid="classpaimon_1_1_file_index_format_1_1_writer_1aa9419b808d431b4b40d28c8d10c77b65" prot="public" virt="non-virtual"><scope>paimon::FileIndexFormat::Writer</scope><name>PayloadWriter</name></member>
+      <member refid="classpaimon_1_1_file_index_format_1_1_writer_1a59015f1bc93b2f455c34412df0e7feee" prot="public" virt="pure-virtual"><scope>paimon::FileIndexFormat::Writer</scope><name>WriteIndex</name></member>
+      <member refid="classpaimon_1_1_file_index_format_1_1_writer_1a45bfbe7085ced2aac66a8eedc10af540" prot="public" virt="virtual"><scope>paimon::FileIndexFormat::Writer</scope><name>~Writer</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

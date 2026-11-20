@@ -1,0 +1,99 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_raw_full_text_search_split" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::RawFullTextSearchSplit</compoundname>
+    <basecompoundref refid="classpaimon_1_1_full_text_search_split" prot="public" virt="non-virtual">paimon::FullTextSearchSplit</basecompoundref>
+    <includes refid="full__text__search__split_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_raw_full_text_search_split_1ab2bd652f1571a96097a5461699e97538" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>virtual int64_t paimon::RawFullTextSearchSplit::SnapshotId</definition>
+        <argsstring>() const =0</argsstring>
+        <name>SnapshotId</name>
+        <qualifiedname>paimon::RawFullTextSearchSplit::SnapshotId</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para><simplesect kind="return"><para>The planning snapshot ID. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="88" column="21"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_raw_full_text_search_split_1a7f347523aad1a4d8f03c240650b24ed6" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+        <definition>virtual const std::string &amp; paimon::RawFullTextSearchSplit::ColumnName</definition>
+        <argsstring>() const =0</argsstring>
+        <name>ColumnName</name>
+        <qualifiedname>paimon::RawFullTextSearchSplit::ColumnName</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para><simplesect kind="return"><para>The name of the searched table column. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="91" column="31"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_raw_full_text_search_split_1ad27f35a90eeb9435aff3264d00ff4708" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::vector&lt; <ref refid="structpaimon_1_1_range" kindref="compound">Range</ref> &gt; &amp;</type>
+        <definition>virtual const std::vector&lt; Range &gt; &amp; paimon::RawFullTextSearchSplit::RowRanges</definition>
+        <argsstring>() const =0</argsstring>
+        <name>RowRanges</name>
+        <qualifiedname>paimon::RawFullTextSearchSplit::RowRanges</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para><simplesect kind="return"><para>Sorted, disjoint and non-adjacent global row id ranges. Only live rows in the selected partitions can match. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="95" column="31"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Ranges of unindexed rows that a full or detail search reads from the planned snapshot. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="2">
+        <label>paimon::FullTextSearchSplit</label>
+        <link refid="classpaimon_1_1_full_text_search_split"/>
+      </node>
+      <node id="1">
+        <label>paimon::RawFullTextSearchSplit</label>
+        <link refid="classpaimon_1_1_raw_full_text_search_split"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="2">
+        <label>paimon::FullTextSearchSplit</label>
+        <link refid="classpaimon_1_1_full_text_search_split"/>
+      </node>
+      <node id="1">
+        <label>paimon::RawFullTextSearchSplit</label>
+        <link refid="classpaimon_1_1_raw_full_text_search_split"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" line="85" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_search_split.h" bodystart="85" bodyend="96"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_raw_full_text_search_split_1a7f347523aad1a4d8f03c240650b24ed6" prot="public" virt="pure-virtual"><scope>paimon::RawFullTextSearchSplit</scope><name>ColumnName</name></member>
+      <member refid="classpaimon_1_1_full_text_search_split_1abc4f9b6e60e2d8f29886a387c803caa4" prot="public" virt="non-virtual"><scope>paimon::RawFullTextSearchSplit</scope><name>Deserialize</name></member>
+      <member refid="classpaimon_1_1_raw_full_text_search_split_1ad27f35a90eeb9435aff3264d00ff4708" prot="public" virt="pure-virtual"><scope>paimon::RawFullTextSearchSplit</scope><name>RowRanges</name></member>
+      <member refid="classpaimon_1_1_full_text_search_split_1ad0e0afebe837af0b6a01ac4341fbec55" prot="public" virt="non-virtual"><scope>paimon::RawFullTextSearchSplit</scope><name>Serialize</name></member>
+      <member refid="classpaimon_1_1_raw_full_text_search_split_1ab2bd652f1571a96097a5461699e97538" prot="public" virt="pure-virtual"><scope>paimon::RawFullTextSearchSplit</scope><name>SnapshotId</name></member>
+      <member refid="classpaimon_1_1_full_text_search_split_1a664da20e34736ebbb9b3a803c30b4b45" prot="public" virt="virtual"><scope>paimon::RawFullTextSearchSplit</scope><name>~FullTextSearchSplit</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

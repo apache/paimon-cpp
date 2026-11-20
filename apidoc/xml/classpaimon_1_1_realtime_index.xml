@@ -1,0 +1,87 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_realtime_index" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::RealtimeIndex</compoundname>
+    <includes refid="realtime__index_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_1a5c5b4fc242e6dc2627642cde301709ba" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::RealtimeIndex::~RealtimeIndex</definition>
+        <argsstring>()=default</argsstring>
+        <name>~RealtimeIndex</name>
+        <qualifiedname>paimon::RealtimeIndex::~RealtimeIndex</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index.h" line="37" column="13"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_1ae918dea129cf51eb11eea5757655e474" prot="public" static="no" const="no" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_status" kindref="compound">Status</ref></type>
+        <definition>virtual Status paimon::RealtimeIndex::AddBatch</definition>
+        <argsstring>(::ArrowArray *batch)=0</argsstring>
+        <name>AddBatch</name>
+        <qualifiedname>paimon::RealtimeIndex::AddBatch</qualifiedname>
+        <param>
+          <type><ref refid="struct_arrow_array" kindref="compound">::ArrowArray</ref> *</type>
+          <declname>batch</declname>
+        </param>
+        <briefdescription>
+<para>Consumes [_REALTIME_OFFSET, field] with increasing offsets. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index.h" line="40" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_1a6fde0184c1e1d42685299d5a321af9a3" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_index_reader" kindref="compound">RealtimeIndexReader</ref> &gt; &gt;</type>
+        <definition>virtual Result&lt; std::shared_ptr&lt; RealtimeIndexReader &gt; &gt; paimon::RealtimeIndex::CreateReader</definition>
+        <argsstring>(const OffsetRange &amp;offset_range) const =0</argsstring>
+        <name>CreateReader</name>
+        <qualifiedname>paimon::RealtimeIndex::CreateReader</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="structpaimon_1_1_offset_range" kindref="compound">OffsetRange</ref> &amp;</type>
+          <declname>offset_range</declname>
+        </param>
+        <briefdescription>
+<para>Creates a reader for [begin, end), sharing postings without copying. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index.h" line="43" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_1a6da5060187e30b270e36ce798f0d9311" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">uint64_t</ref></type>
+        <definition>virtual uint64_t paimon::RealtimeIndex::GetMemoryUsage</definition>
+        <argsstring>() const =0</argsstring>
+        <name>GetMemoryUsage</name>
+        <qualifiedname>paimon::RealtimeIndex::GetMemoryUsage</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index.h" line="46" column="22"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Append-only in-memory index for one field, supporting one writer and concurrent readers. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index.h" line="35" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index.h" bodystart="35" bodyend="47"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_realtime_index_1ae918dea129cf51eb11eea5757655e474" prot="public" virt="pure-virtual"><scope>paimon::RealtimeIndex</scope><name>AddBatch</name></member>
+      <member refid="classpaimon_1_1_realtime_index_1a6fde0184c1e1d42685299d5a321af9a3" prot="public" virt="pure-virtual"><scope>paimon::RealtimeIndex</scope><name>CreateReader</name></member>
+      <member refid="classpaimon_1_1_realtime_index_1a6da5060187e30b270e36ce798f0d9311" prot="public" virt="pure-virtual"><scope>paimon::RealtimeIndex</scope><name>GetMemoryUsage</name></member>
+      <member refid="classpaimon_1_1_realtime_index_1a5c5b4fc242e6dc2627642cde301709ba" prot="public" virt="virtual"><scope>paimon::RealtimeIndex</scope><name>~RealtimeIndex</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>
