@@ -68,6 +68,13 @@ class PAIMON_EXPORT PredicateUtils {
     template <typename T>
     static Result<T> VisitPredicate(const std::shared_ptr<LeafPredicate>& predicate,
                                     const std::shared_ptr<FunctionVisitor<T>>& visitor) {
+        return VisitPredicate(predicate, visitor.get());
+    }
+
+    /// Dispatches through a borrowed visitor without requiring shared ownership.
+    template <typename T>
+    static Result<T> VisitPredicate(const std::shared_ptr<LeafPredicate>& predicate,
+                                    FunctionVisitor<T>* visitor) {
         auto type = predicate->GetFunction().GetType();
         switch (type) {
             case Function::Type::IS_NULL:

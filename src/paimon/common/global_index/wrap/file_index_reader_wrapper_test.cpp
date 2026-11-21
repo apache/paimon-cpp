@@ -68,8 +68,20 @@ TEST(FileIndexReaderWrapperTest, TestToGlobalIndexResult) {
     }
     {
         class FakeFileIndexResult : public FileIndexResult {
+         public:
+            FakeFileIndexResult() : FileIndexResult(false) {}
+
+         private:
             Result<bool> IsRemain() const override {
                 return true;
+            }
+            Result<std::shared_ptr<FileIndexResult>> And(
+                const std::shared_ptr<FileIndexResult>& other) override {
+                return Status::Invalid("FakeFileIndexResult does not support AND");
+            }
+            Result<std::shared_ptr<FileIndexResult>> Or(
+                const std::shared_ptr<FileIndexResult>& other) override {
+                return Status::Invalid("FakeFileIndexResult does not support OR");
             }
             std::string ToString() const override {
                 return "fake file index result";

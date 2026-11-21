@@ -18,8 +18,6 @@
 
 #include "paimon/global_index/lucene/lucene_global_index_writer.h"
 
-#include <filesystem>
-
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "lucene++/FileUtils.h"
@@ -29,6 +27,7 @@
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/rapidjson_util.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/common/utils/uuid.h"
 #include "paimon/global_index/lucene/jieba_analyzer.h"
 #include "paimon/global_index/lucene/lucene_defs.h"
@@ -42,35 +41,39 @@ namespace paimon::lucene {
     } while (0)
 
 LuceneGlobalIndexWriter::LuceneWriteContext::LuceneWriteContext(
-    const std::string& _tmp_index_path, const Lucene::FSDirectoryPtr& _lucene_dir,
-    const Lucene::IndexWriterPtr& _index_writer, const Lucene::DocumentPtr& _doc,
-    const Lucene::FieldPtr& _field)
-    : tmp_index_path(_tmp_index_path),
-      lucene_dir(_lucene_dir),
-      index_writer(_index_writer),
-      doc(_doc),
-      field(_field) {}
+    const std::string& output_path, const std::string& tmp_index_path,
+    const Lucene::DirectoryPtr& lucene_dir, const Lucene::IndexWriterPtr& index_writer,
+    const Lucene::DocumentPtr& doc, const Lucene::FieldPtr& field)
+    : output_path(output_path),
+      tmp_index_path(tmp_index_path),
+      lucene_dir(lucene_dir),
+      index_writer(index_writer),
+      doc(doc),
+      field(field) {}
 
 Result<std::shared_ptr<LuceneGlobalIndexWriter>> LuceneGlobalIndexWriter::Create(
     const std::string& field_name, const std::shared_ptr<arrow::DataType>& arrow_type,
     const std::shared_ptr<GlobalIndexFileWriter>& file_writer,
     const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool) {
     try {
-        std::string uuid;
-        if (!UUID::Generate(&uuid)) {
-            return Status::Invalid("generate uuid for lucene tmp path failed.");
+        PAIMON_ASSIGN_OR_RAISE(std::string output_path, file_writer->NewPath(kIdentifier));
+        std::string tmp_path;
+        Lucene::DirectoryPtr lucene_dir;
+        if (StringUtils::StartsWith(output_path, "memory://")) {
+            lucene_dir = Lucene::newLucene<Lucene::RAMDirectory>();
+        } else {
+            PAIMON_ASSIGN_OR_RAISE(std::string tmp_dir, OptionsUtils::GetValueFromMap<std::string>(
+                                                            options, kLuceneWriteTmpDir));
+            std::string uuid;
+            if (!UUID::Generate(&uuid)) {
+                return Status::Invalid("generate uuid for lucene tmp path failed.");
+            }
+            tmp_path = PathUtil::JoinPath(tmp_dir, "paimon-lucene-" + uuid);
+            // FSDirectory mutates the lock prefix, so each writer needs its own lock factory.
+            lucene_dir = Lucene::FSDirectory::open(LuceneUtils::StringToWstring(tmp_path),
+                                                   Lucene::newLucene<Lucene::NoLockFactory>());
         }
-        // get local tmp path
-        PAIMON_ASSIGN_OR_RAISE(std::string tmp_dir, OptionsUtils::GetValueFromMap<std::string>(
-                                                        options, std::string(kLuceneWriteTmpDir)));
-        std::string tmp_path = PathUtil::JoinPath(tmp_dir, "paimon-lucene-" + uuid);
-
-        // FSDirectory calls Directory::setLockFactory(), which mutates lockPrefix. Use a separate
-        // factory per directory to avoid racing on the NoLockFactory singleton across writers.
-        auto lucene_dir = Lucene::FSDirectory::open(LuceneUtils::StringToWstring(tmp_path),
-                                                    Lucene::newLucene<Lucene::NoLockFactory>());
         // TODO(xinyu.lxy): support other tokenizer
-        // open lucene index writer
         PAIMON_ASSIGN_OR_RAISE(
             bool omit_term_freq_and_positions,
             OptionsUtils::GetValueFromMap(options, kLuceneWriteOmitTermFreqAndPositions, false));
@@ -96,8 +99,9 @@ Result<std::shared_ptr<LuceneGlobalIndexWriter>> LuceneGlobalIndexWriter::Create
         field->setOmitTermFreqAndPositions(omit_term_freq_and_positions);
         doc->add(field);
         return std::shared_ptr<LuceneGlobalIndexWriter>(new LuceneGlobalIndexWriter(
-            field_name, arrow_type, LuceneWriteContext(tmp_path, lucene_dir, writer, doc, field),
-            file_writer, options, pool));
+            field_name, arrow_type,
+            LuceneWriteContext(output_path, tmp_path, lucene_dir, writer, doc, field), file_writer,
+            options, pool));
     } catch (const std::exception& e) {
         return Status::Invalid(
             fmt::format("create lucene global index writer failed, with {} error.", e.what()));
@@ -119,6 +123,9 @@ LuceneGlobalIndexWriter::LuceneGlobalIndexWriter(
       options_(options) {}
 
 LuceneGlobalIndexWriter::~LuceneGlobalIndexWriter() {
+    if (write_context_.tmp_index_path.empty()) {
+        return;
+    }
     try {
         [[maybe_unused]] bool ec = Lucene::FileUtils::removeDirectory(
             LuceneUtils::StringToWstring(write_context_.tmp_index_path));
@@ -167,9 +174,8 @@ Status LuceneGlobalIndexWriter::AddBatch(::ArrowArray* arrow_array,
     return Status::OK();
 }
 
-Result<std::string> LuceneGlobalIndexWriter::FlushIndexToFinal() {
+Status LuceneGlobalIndexWriter::FlushIndexToFinal() {
     try {
-        // flush index to tmp dir
         if (write_context_.index_writer->numDocs() != row_id_) {
             return Status::Invalid(
                 fmt::format("lucene writer row count {} mismatch paimon inner row count {}",
@@ -178,19 +184,15 @@ Result<std::string> LuceneGlobalIndexWriter::FlushIndexToFinal() {
         write_context_.index_writer->optimize();
         write_context_.index_writer->close();
 
-        // list tmp dir
-        auto tmp_file_names = write_context_.lucene_dir->listAll();
-        PAIMON_ASSIGN_OR_RAISE(std::string index_file_path, file_writer_->NewPath(kIdentifier));
-        // prepare output from file_writer
+        auto file_names = write_context_.lucene_dir->listAll();
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OutputStream> out,
-                               file_writer_->NewOutputStream(index_file_path));
+                               file_writer_->NewOutputStream(write_context_.output_path));
         DataOutputStream data_output_stream(out);
         PAIMON_RETURN_NOT_OK(data_output_stream.WriteValue<int32_t>(kVersion));
         PAIMON_RETURN_NOT_OK(
-            data_output_stream.WriteValue<int32_t>(static_cast<int32_t>(tmp_file_names.size())));
-        // read all data from index files and write to target output
+            data_output_stream.WriteValue<int32_t>(static_cast<int32_t>(file_names.size())));
         auto buffer = std::make_shared<Bytes>(kDefaultReadBufferSize, pool_.get());
-        for (const auto& wfile_name : tmp_file_names) {
+        for (const auto& wfile_name : file_names) {
             auto file_name = LuceneUtils::WstringToString(wfile_name);
             PAIMON_RETURN_NOT_OK(
                 data_output_stream.WriteValue<int32_t>(static_cast<int32_t>(file_name.size())));
@@ -220,7 +222,7 @@ Result<std::string> LuceneGlobalIndexWriter::FlushIndexToFinal() {
         PAIMON_RETURN_NOT_OK(out->Flush());
         PAIMON_RETURN_NOT_OK(out->Close());
         write_context_.lucene_dir->close();
-        return index_file_path;
+        return Status::OK();
     } catch (const std::exception& e) {
         return Status::Invalid(
             fmt::format("finish for lucene global index writer failed, with {} error.", e.what()));
@@ -231,8 +233,8 @@ Result<std::string> LuceneGlobalIndexWriter::FlushIndexToFinal() {
 }
 
 Result<std::vector<GlobalIndexIOMeta>> LuceneGlobalIndexWriter::Finish() {
-    PAIMON_ASSIGN_OR_RAISE(std::string index_file_path, FlushIndexToFinal());
-    // prepare global index meta
+    PAIMON_RETURN_NOT_OK(FlushIndexToFinal());
+    const std::string& index_file_path = write_context_.output_path;
     PAIMON_ASSIGN_OR_RAISE(int64_t file_size, file_writer_->GetFileSize(index_file_path));
     std::string options_json;
     PAIMON_RETURN_NOT_OK(RapidJsonUtil::ToJsonString(options_, &options_json));

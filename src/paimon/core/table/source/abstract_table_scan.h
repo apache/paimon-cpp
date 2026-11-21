@@ -43,6 +43,15 @@ class AbstractTableScan : public TableScan {
         return snapshot_reader_->GetMetrics();
     }
 
+    /// Uses the supplied snapshot even after its snapshot file expires.
+    Result<std::shared_ptr<Plan>> PlanSnapshotRanges(const Snapshot& snapshot,
+                                                     const RowRangeIndex& row_ranges) {
+        return snapshot_reader_->WithMode(ScanMode::ALL)
+            ->WithSnapshot(snapshot)
+            ->WithRowRangeIndex(row_ranges)
+            ->Read();
+    }
+
  protected:
     Result<std::shared_ptr<StartingScanner>> CreateStartingScanner(bool is_streaming) const {
         const auto& snapshot_manager = snapshot_reader_->GetSnapshotManager();

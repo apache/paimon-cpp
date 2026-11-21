@@ -48,6 +48,9 @@
 #include "paimon/io/data_input_stream.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/utils/roaring_bitmap32.h"
+
+namespace paimon {
+
 namespace {
 // Safe absolute value for int64_t that avoids undefined behavior when value == INT64_MIN.
 // This mirrors Java's Math.abs() wrapping semantics.
@@ -58,15 +61,7 @@ inline int64_t SafeAbs(int64_t value) {
     return value < 0 ? -value : value;
 }
 
-}  // namespace
-namespace paimon {
-class MemoryPool;
-
-BitSliceIndexBitmapFileIndex::BitSliceIndexBitmapFileIndex(
-    const std::map<std::string, std::string>& options) {}
-
-bool BitSliceIndexBitmapFileIndex::SupportsExactPredicate(Function::Type function,
-                                                          FieldType field_type) const {
+bool IsExactBitSliceIndexBitmapPredicate(Function::Type function, FieldType field_type) {
     switch (field_type) {
         case FieldType::TINYINT:
         case FieldType::SMALLINT:
@@ -96,6 +91,18 @@ bool BitSliceIndexBitmapFileIndex::SupportsExactPredicate(Function::Type functio
         default:
             return false;
     }
+}
+
+}  // namespace
+
+class MemoryPool;
+
+BitSliceIndexBitmapFileIndex::BitSliceIndexBitmapFileIndex(
+    const std::map<std::string, std::string>& options) {}
+
+bool BitSliceIndexBitmapFileIndex::SupportsExactPredicate(Function::Type function,
+                                                          FieldType field_type) const {
+    return IsExactBitSliceIndexBitmapPredicate(function, field_type);
 }
 
 Result<std::shared_ptr<FileIndexWriter>> BitSliceIndexBitmapFileIndex::CreateWriter(
@@ -241,8 +248,10 @@ Result<std::shared_ptr<FileIndexReader>> BitSliceIndexBitmapFileIndex::CreateRea
     }
     PAIMON_ASSIGN_OR_RAISE(BitSliceIndexBitmapFileIndex::ValueMapperType value_mapper,
                            GetValueMapper(arrow_type));
-    return std::make_shared<BitSliceIndexBitmapFileIndexReader>(row_number, value_mapper, positive,
-                                                                negative);
+    PAIMON_ASSIGN_OR_RAISE(FieldType data_type,
+                           FieldTypeUtils::ConvertToFieldType(arrow_type->id()));
+    return std::make_shared<BitSliceIndexBitmapFileIndexReader>(row_number, data_type, value_mapper,
+                                                                positive, negative);
 }
 
 // precondition, literal is not null
@@ -312,10 +321,12 @@ Result<BitSliceIndexBitmapFileIndex::ValueMapperType> BitSliceIndexBitmapFileInd
 }
 
 BitSliceIndexBitmapFileIndexReader::BitSliceIndexBitmapFileIndexReader(
-    int32_t row_number, const BitSliceIndexBitmapFileIndex::ValueMapperType& value_mapper,
+    int32_t row_number, FieldType data_type,
+    const BitSliceIndexBitmapFileIndex::ValueMapperType& value_mapper,
     const std::shared_ptr<BitSliceIndexRoaringBitmap>& positive,
     const std::shared_ptr<BitSliceIndexRoaringBitmap>& negative)
     : row_number_(row_number),
+      data_type_(data_type),
       value_mapper_(value_mapper),
       positive_(positive),
       negative_(negative) {}
@@ -338,7 +349,9 @@ Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::Vis
             return b1;
         }
     };
-    return std::make_shared<BitmapIndexResult>(bitmap_supplier);
+    return std::make_shared<BitmapIndexResult>(
+        bitmap_supplier,
+        IsExactBitSliceIndexBitmapPredicate(Function::Type::GREATER_THAN, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::VisitGreaterOrEqual(
@@ -360,7 +373,9 @@ Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::Vis
             return b1;
         }
     };
-    return std::make_shared<BitmapIndexResult>(bitmap_supplier);
+    return std::make_shared<BitmapIndexResult>(
+        bitmap_supplier,
+        IsExactBitSliceIndexBitmapPredicate(Function::Type::GREATER_OR_EQUAL, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::VisitLessThan(
@@ -380,7 +395,9 @@ Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::Vis
             return b1;
         }
     };
-    return std::make_shared<BitmapIndexResult>(bitmap_supplier);
+    return std::make_shared<BitmapIndexResult>(
+        bitmap_supplier,
+        IsExactBitSliceIndexBitmapPredicate(Function::Type::LESS_THAN, data_type_));
 }
 Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::VisitLessOrEqual(
     const Literal& literal) {
@@ -399,7 +416,9 @@ Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::Vis
             return b1;
         }
     };
-    return std::make_shared<BitmapIndexResult>(bitmap_supplier);
+    return std::make_shared<BitmapIndexResult>(
+        bitmap_supplier,
+        IsExactBitSliceIndexBitmapPredicate(Function::Type::LESS_OR_EQUAL, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::VisitEqual(
@@ -436,7 +455,8 @@ Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::Vis
         }
         return RoaringBitmap32::FastUnion(result_bitmaps);
     };
-    return std::make_shared<BitmapIndexResult>(bitmap_supplier);
+    return std::make_shared<BitmapIndexResult>(
+        bitmap_supplier, IsExactBitSliceIndexBitmapPredicate(Function::Type::IN, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::VisitNotIn(
@@ -468,7 +488,8 @@ Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::Vis
         ebm -= in;
         return ebm;
     };
-    return std::make_shared<BitmapIndexResult>(bitmap_supplier);
+    return std::make_shared<BitmapIndexResult>(
+        bitmap_supplier, IsExactBitSliceIndexBitmapPredicate(Function::Type::NOT_IN, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::VisitIsNull() {
@@ -479,7 +500,8 @@ Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::Vis
         res.Flip(0, reader->row_number_);
         return res;
     };
-    return std::make_shared<BitmapIndexResult>(bitmap_supplier);
+    return std::make_shared<BitmapIndexResult>(
+        bitmap_supplier, IsExactBitSliceIndexBitmapPredicate(Function::Type::IS_NULL, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::VisitIsNotNull() {
@@ -487,7 +509,9 @@ Result<std::shared_ptr<FileIndexResult>> BitSliceIndexBitmapFileIndexReader::Vis
         [reader = shared_from_this()]() -> Result<RoaringBitmap32> {
         return RoaringBitmap32::Or(reader->positive_->IsNotNull(), reader->negative_->IsNotNull());
     };
-    return std::make_shared<BitmapIndexResult>(bitmap_supplier);
+    return std::make_shared<BitmapIndexResult>(
+        bitmap_supplier,
+        IsExactBitSliceIndexBitmapPredicate(Function::Type::IS_NOT_NULL, data_type_));
 }
 
 }  // namespace paimon

@@ -94,7 +94,8 @@ class RangeBitmapFileIndexReader final
     ~RangeBitmapFileIndexReader() override;
 
  private:
-    RangeBitmapFileIndexReader(std::unique_ptr<RangeBitmapTypeAdapter> type_adapter,
+    RangeBitmapFileIndexReader(FieldType data_type,
+                               std::unique_ptr<RangeBitmapTypeAdapter> type_adapter,
                                std::unique_ptr<RangeBitmap> range_bitmap);
 
     Result<std::shared_ptr<FileIndexResult>> VisitEqual(const Literal& literal) override;
@@ -109,6 +110,7 @@ class RangeBitmapFileIndexReader final
     Result<std::shared_ptr<FileIndexResult>> VisitGreaterOrEqual(const Literal& literal) override;
     Result<std::shared_ptr<FileIndexResult>> VisitLessOrEqual(const Literal& literal) override;
 
+    FieldType data_type_;
     std::unique_ptr<RangeBitmapTypeAdapter> type_adapter_;
     std::unique_ptr<RangeBitmap> range_bitmap_;
 };

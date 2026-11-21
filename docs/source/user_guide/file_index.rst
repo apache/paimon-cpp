@@ -26,6 +26,11 @@ filter rows at the file-index-query stage, before reading all columns requested 
 the query from each data file. It evaluates the complete predicate to compute
 exact matching row positions within that file.
 
+``FileIndexResult::IsExact()`` reports whether a result needs scalar rechecking
+within the candidates used for that evaluation. ``Remain`` is not exact, while
+``Skip`` is exact. A bitmap alone does not imply exactness. Combining different
+predicates preserves an exact guarantee only when justified by both results.
+
 For a root full-text or vector TopK request, predicate filtering, row-range
 restrictions and deletion vectors are applied before the TopK limit. Filtering after
 TopK truncation could discard selected rows. The final row positions are then passed

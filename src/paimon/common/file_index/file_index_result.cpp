@@ -18,9 +18,6 @@
 
 #include "paimon/file_index/file_index_result.h"
 
-#include <cassert>
-#include <utility>
-
 namespace paimon {
 std::shared_ptr<FileIndexResult> FileIndexResult::Remain() {
     static std::shared_ptr<FileIndexResult> remain = std::make_shared<class Remain>();
@@ -32,35 +29,16 @@ std::shared_ptr<FileIndexResult> FileIndexResult::Skip() {
     return skip;
 }
 
-Result<std::shared_ptr<FileIndexResult>> FileIndexResult::And(
-    const std::shared_ptr<FileIndexResult>& other) {
-    assert(other);
-    PAIMON_ASSIGN_OR_RAISE(bool other_remain, other->IsRemain());
-    if (other_remain) {
-        return shared_from_this();
-    } else {
-        return FileIndexResult::Skip();
-    }
-}
-
-Result<std::shared_ptr<FileIndexResult>> FileIndexResult::Or(
-    const std::shared_ptr<FileIndexResult>& other) {
-    assert(other);
-    PAIMON_ASSIGN_OR_RAISE(bool other_remain, other->IsRemain());
-    if (other_remain) {
-        return FileIndexResult::Remain();
-    } else {
-        return shared_from_this();
-    }
-}
-
 Result<bool> Remain::IsRemain() const {
     return true;
 }
 
 Result<std::shared_ptr<FileIndexResult>> Remain::And(
     const std::shared_ptr<FileIndexResult>& other) {
-    return other;
+    if (!other->IsExact()) {
+        return other;
+    }
+    return other->And(shared_from_this());
 }
 
 Result<std::shared_ptr<FileIndexResult>> Remain::Or(const std::shared_ptr<FileIndexResult>& other) {

@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -31,7 +32,9 @@
 #include "paimon/core/index/global_index_meta.h"
 #include "paimon/core/index/index_file_meta.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/snapshot.h"
 #include "paimon/core/utils/file_store_path_factory.h"
+#include "paimon/executor.h"
 #include "paimon/global_index/global_indexer.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/predicate.h"
@@ -39,9 +42,8 @@
 #include "paimon/utils/range.h"
 
 namespace paimon {
-/// `FullTextScan` of a data-evolution table, aligned with Java `DataEvolutionFullTextScan`: one
-/// split per index shard of the searched column, planned from the global index files of one
-/// snapshot.
+class RawFullTextSearchSplitImpl;
+
 class DataEvolutionFullTextScan : public FullTextScan {
  public:
     /// The index shard chosen to rank some rows of the searched column.
@@ -58,18 +60,24 @@ class DataEvolutionFullTextScan : public FullTextScan {
 
     /// @param root_path        Root directory of the table.
     /// @param table_schema     Schema of the table.
+    /// @param time_travel_snapshot Explicit snapshot used to bind the schema, or nullopt to plan
+    ///                             the latest snapshot.
     /// @param options          Options of the table, merged with those of the search.
     /// @param path_factory     Path factory of the table.
     /// @param partition_filter Predicate over the partition fields, or null for all partitions.
     /// @param filter           Row filter beyond the partition filter, or null for all rows.
     /// @param text_field       The searched column.
+    /// @param executor         Executor to read manifests on in the `detail` search mode, or null
+    ///                         to create one with `global-index.thread-num` threads if needed.
     /// @param pool             Memory pool for reading index manifests.
     DataEvolutionFullTextScan(const std::string& root_path,
                               const std::shared_ptr<TableSchema>& table_schema,
+                              const std::optional<Snapshot>& time_travel_snapshot,
                               const CoreOptions& options,
                               const std::shared_ptr<FileStorePathFactory>& path_factory,
                               const std::shared_ptr<PredicateFilter>& partition_filter,
                               const std::shared_ptr<Predicate>& filter, const DataField& text_field,
+                              const std::shared_ptr<Executor>& executor,
                               const std::shared_ptr<MemoryPool>& pool);
 
     Result<std::shared_ptr<Plan>> CreatePlan() override;
@@ -88,12 +96,6 @@ class DataEvolutionFullTextScan : public FullTextScan {
                                       const std::set<int32_t>& filter_field_ids,
                                       bool supports_full_text);
 
-    /// Returns the files of `index_files` whose row range intersects `row_range`, or `Invalid` if
-    /// a split cannot carry one of them; see
-    /// `IndexFullTextSearchSplitImpl::CheckScalarIndexFile()`.
-    static Result<std::vector<std::shared_ptr<IndexFileMeta>>> IntersectingFiles(
-        const std::vector<std::shared_ptr<IndexFileMeta>>& index_files, const Range& row_range);
-
     /// Returns the identity of the index that `file` belongs to: its index type, indexed field id
     /// and extra field ids, as `type|index_field_id|[extra_field_ids]`. Files of one identity
     /// differ only by shard, while files of different identities are never read together.
@@ -108,7 +110,7 @@ class DataEvolutionFullTextScan : public FullTextScan {
     /// @param index_files Global index files; those that do not index `field_id` are ignored.
     /// @param field_id    The id of the searched field.
     /// @return The chosen shards, ordered by start, end and identity.
-    static std::vector<IndexRangeSelection> ChooseIndexRanges(
+    static Result<std::vector<IndexRangeSelection>> ChooseIndexRanges(
         const std::vector<std::shared_ptr<IndexFileMeta>>& index_files, int32_t field_id);
 
     /// Returns whether the index files of `index_type` serve a full-text search. A `full-text` or
@@ -123,13 +125,20 @@ class DataEvolutionFullTextScan : public FullTextScan {
                                              const std::string& table_path, int64_t snapshot_id);
 
  private:
+    Result<std::shared_ptr<RawFullTextSearchSplitImpl>> PlanRawSplit(
+        const Snapshot& snapshot,
+        const std::vector<std::shared_ptr<IndexFileMeta>>& full_text_index_files,
+        const std::vector<IndexRangeSelection>& selections) const;
+
     std::string root_path_;
     std::shared_ptr<TableSchema> table_schema_;
+    std::optional<Snapshot> time_travel_snapshot_;
     CoreOptions options_;
     std::shared_ptr<FileStorePathFactory> path_factory_;
     std::shared_ptr<PredicateFilter> partition_filter_;
     std::shared_ptr<Predicate> filter_;
     DataField text_field_;
+    std::shared_ptr<Executor> executor_;
     std::shared_ptr<MemoryPool> pool_;
 };
 

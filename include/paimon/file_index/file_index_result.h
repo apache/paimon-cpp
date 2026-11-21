@@ -43,20 +43,33 @@ class PAIMON_EXPORT FileIndexResult : public std::enable_shared_from_this<FileIn
     /// @return Whether the file is remained.
     virtual Result<bool> IsRemain() const = 0;
 
-    /// Compute the intersection of the current result with the provided result.
-    virtual Result<std::shared_ptr<FileIndexResult>> And(
-        const std::shared_ptr<FileIndexResult>& other);
+    /// Whether these rows exactly match the evaluated predicate within its candidate scope.
+    bool IsExact() const {
+        return is_exact_;
+    }
 
-    /// Compute the union of the current result with the provided result.
+    /// Compute the intersection for two predicates, conservatively propagating precision.
+    virtual Result<std::shared_ptr<FileIndexResult>> And(
+        const std::shared_ptr<FileIndexResult>& other) = 0;
+
+    /// Compute the union for two predicates, conservatively propagating precision.
     virtual Result<std::shared_ptr<FileIndexResult>> Or(
-        const std::shared_ptr<FileIndexResult>& other);
+        const std::shared_ptr<FileIndexResult>& other) = 0;
 
     virtual std::string ToString() const = 0;
+
+ protected:
+    explicit FileIndexResult(bool is_exact) : is_exact_(is_exact) {}
+
+ private:
+    bool is_exact_;
 };
 
 /// Concrete implementation of FileIndexResult that always retains the file.
 class PAIMON_EXPORT Remain : public FileIndexResult {
  public:
+    Remain() : FileIndexResult(false) {}
+
     Result<bool> IsRemain() const override;
     Result<std::shared_ptr<FileIndexResult>> And(
         const std::shared_ptr<FileIndexResult>& other) override;
@@ -68,6 +81,8 @@ class PAIMON_EXPORT Remain : public FileIndexResult {
 /// Concrete implementation of FileIndexResult that always skips the file.
 class PAIMON_EXPORT Skip : public FileIndexResult {
  public:
+    Skip() : FileIndexResult(true) {}
+
     Result<bool> IsRemain() const override;
     Result<std::shared_ptr<FileIndexResult>> And(
         const std::shared_ptr<FileIndexResult>& other) override;

@@ -101,6 +101,30 @@ TEST_F(BitSliceIndexBitmapIndexReaderTest, TestEmptyLiterals) {
     ASSERT_NOK_WITH_MSG(reader->VisitNotIn({}), "literals cannot be empty in NotIn predicate");
 }
 
+TEST_F(BitSliceIndexBitmapIndexReaderTest, TestSupportsExactPredicate) {
+    BitSliceIndexBitmapFileIndex index({});
+    for (Function::Type function :
+         {Function::Type::EQUAL, Function::Type::NOT_EQUAL, Function::Type::IN,
+          Function::Type::NOT_IN, Function::Type::GREATER_THAN, Function::Type::GREATER_OR_EQUAL,
+          Function::Type::LESS_THAN, Function::Type::LESS_OR_EQUAL}) {
+        for (FieldType field_type : {FieldType::TINYINT, FieldType::SMALLINT, FieldType::INT,
+                                     FieldType::BIGINT, FieldType::DATE, FieldType::DECIMAL}) {
+            ASSERT_TRUE(index.SupportsExactPredicate(function, field_type));
+        }
+        ASSERT_FALSE(index.SupportsExactPredicate(function, FieldType::TIMESTAMP));
+    }
+    for (FieldType field_type :
+         {FieldType::TINYINT, FieldType::SMALLINT, FieldType::INT, FieldType::BIGINT,
+          FieldType::DATE, FieldType::DECIMAL, FieldType::TIMESTAMP}) {
+        ASSERT_TRUE(index.SupportsExactPredicate(Function::Type::IS_NULL, field_type));
+        ASSERT_TRUE(index.SupportsExactPredicate(Function::Type::IS_NOT_NULL, field_type));
+        ASSERT_FALSE(index.SupportsExactPredicate(Function::Type::CONTAINS, field_type));
+    }
+    ASSERT_FALSE(index.SupportsExactPredicate(Function::Type::EQUAL, FieldType::STRING));
+    ASSERT_FALSE(index.SupportsExactPredicate(Function::Type::EQUAL, FieldType::DOUBLE));
+    ASSERT_FALSE(index.SupportsExactPredicate(Function::Type::EQUAL, FieldType::ARRAY));
+}
+
 TEST_F(BitSliceIndexBitmapIndexReaderTest, TestMix) {
     // data: 1, 2, null, -2, -2, -1, null, 2, 0, 5, null
     std::vector<char> index_bytes = {
@@ -113,6 +137,16 @@ TEST_F(BitSliceIndexBitmapIndexReaderTest, TestMix) {
         0, 0, 0, 0,  2,  58, 48, 0, 0, 1, 0,  0, 0, 0, 0, 0,  0,  16, 0,  0,  0, 5, 0, 58, 48,
         0, 0, 1, 0,  0,  0,  0,  0, 1, 0, 16, 0, 0, 0, 3, 0,  4,  0};
     const auto check_mix_reader = [this](const std::shared_ptr<FileIndexReader>& reader) {
+        const Literal literal(2);
+        for (const auto& result :
+             {reader->VisitEqual(literal), reader->VisitNotEqual(literal),
+              reader->VisitIn({literal}), reader->VisitNotIn({literal}), reader->VisitIsNull(),
+              reader->VisitIsNotNull(), reader->VisitGreaterThan(literal),
+              reader->VisitGreaterOrEqual(literal), reader->VisitLessThan(literal),
+              reader->VisitLessOrEqual(literal)}) {
+            ASSERT_OK(result);
+            ASSERT_TRUE(result.value()->IsExact());
+        }
         // test equal
         CheckResult(reader->VisitEqual(Literal(2)).value(), {1, 7});
         CheckResult(reader->VisitEqual(Literal(-2)).value(), {3, 4});
@@ -405,7 +439,18 @@ TEST_F(BitSliceIndexBitmapIndexReaderTest, TestTimestampType) {
     // 1745542802000lms, 123001ns
     // -1725lms, 123000ns
     CheckResult(reader->VisitIsNull().value(), {5});
+    ASSERT_TRUE(reader->VisitIsNull().value()->IsExact());
+    const Literal timestamp(Timestamp(1745542802000l, 123000));
+    for (const auto& result :
+         {reader->VisitEqual(timestamp), reader->VisitNotEqual(timestamp),
+          reader->VisitIn({timestamp}), reader->VisitNotIn({timestamp}),
+          reader->VisitGreaterThan(timestamp), reader->VisitGreaterOrEqual(timestamp),
+          reader->VisitLessThan(timestamp), reader->VisitLessOrEqual(timestamp)}) {
+        ASSERT_OK(result);
+        ASSERT_FALSE(result.value()->IsExact());
+    }
     CheckResult(reader->VisitIsNotNull().value(), {0, 1, 2, 3, 4, 6, 7});
+    ASSERT_TRUE(reader->VisitIsNotNull().value()->IsExact());
     // as timestamp is normalized by micro seconds, there is a loss of precision in the nanosecond
     // part
     CheckResult(reader->VisitGreaterThan(Literal(Timestamp(1745542802000l, 123000))).value(), {1});

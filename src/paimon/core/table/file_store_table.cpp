@@ -653,6 +653,10 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
         return std::move(table_read);
     }
 
+    if (internal_context->HasVectorOrFullTextSearch()) {
+        return Status::NotImplemented("Global TopK does not support fallback branches");
+    }
+
     if (query_auth_applied) {
         return Status::NotImplemented(
             "Fallback reads are not supported on a query-auth table: each branch requires its "

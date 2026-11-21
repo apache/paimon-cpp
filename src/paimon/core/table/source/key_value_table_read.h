@@ -64,8 +64,7 @@ class KeyValueTableRead : public TableRead {
                       bool force_keep_delete, const std::shared_ptr<MemoryPool>& memory_pool,
                       const std::shared_ptr<Executor>& executor);
 
-    Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
-        const std::shared_ptr<RealtimeSplit>& realtime_split);
+    Result<std::unique_ptr<BatchReader>> CreateDiskReader(const std::shared_ptr<Split>& split);
 
     Result<std::unique_ptr<BatchReader>> CreateRealtimeReader(
         const std::shared_ptr<RealtimeSplit>& realtime_split,

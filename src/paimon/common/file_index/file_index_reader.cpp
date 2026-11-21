@@ -20,10 +20,42 @@
 
 #include <utility>
 
+#include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/predicate/literal.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/status.h"
 
 namespace paimon {
+Result<std::shared_ptr<FileIndexResult>> FileIndexReader::Evaluate(
+    const std::shared_ptr<LeafPredicate>& predicate, const RoaringBitmap32* candidates) {
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<FileIndexResult> result,
+        PredicateUtils::VisitPredicate<std::shared_ptr<FileIndexResult>>(predicate, this));
+    if (auto bitmap = std::dynamic_pointer_cast<BitmapIndexResult>(result)) {
+        if (!candidates) {
+            return result;
+        }
+        return std::make_shared<BitmapIndexResult>(
+            [bitmap, rows = *candidates]() -> Result<RoaringBitmap32> {
+                PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap32* matches, bitmap->GetBitmap());
+                RoaringBitmap32 filtered(rows);
+                filtered &= *matches;
+                return filtered;
+            },
+            bitmap->IsExact());
+    } else if (std::dynamic_pointer_cast<Remain>(result)) {
+        if (candidates) {
+            return std::make_shared<BitmapIndexResult>(
+                [rows = *candidates]() -> Result<RoaringBitmap32> { return rows; },
+                /*is_exact=*/false);
+        }
+        return result;
+    } else if (std::dynamic_pointer_cast<Skip>(result)) {
+        return result;
+    }
+    return Status::Invalid("Scalar evaluation requires BitmapIndexResult, Skip or Remain");
+}
+
 Result<std::shared_ptr<FileIndexResult>> FileIndexReader::VisitIsNotNull() {
     return FileIndexResult::Remain();
 }

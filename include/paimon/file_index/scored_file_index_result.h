@@ -33,13 +33,20 @@ namespace paimon {
 class PAIMON_EXPORT ScoredFileIndexResult : public FileIndexResult {
  public:
     static Result<std::shared_ptr<ScoredFileIndexResult>> Create(RoaringBitmap32&& row_positions,
-                                                                 std::vector<float>&& scores);
+                                                                 std::vector<float>&& scores,
+                                                                 bool is_exact = false);
 
     bool IsEmpty() const {
         return row_positions_.IsEmpty();
     }
 
     Result<bool> IsRemain() const override;
+
+    Result<std::shared_ptr<FileIndexResult>> And(
+        const std::shared_ptr<FileIndexResult>& other) override;
+
+    Result<std::shared_ptr<FileIndexResult>> Or(
+        const std::shared_ptr<FileIndexResult>& other) override;
 
     const RoaringBitmap32& GetRowPositions() const {
         return row_positions_;
@@ -52,7 +59,8 @@ class PAIMON_EXPORT ScoredFileIndexResult : public FileIndexResult {
     std::string ToString() const override;
 
  private:
-    ScoredFileIndexResult(RoaringBitmap32&& row_positions, std::vector<float>&& scores);
+    ScoredFileIndexResult(RoaringBitmap32&& row_positions, std::vector<float>&& scores,
+                          bool is_exact);
 
     RoaringBitmap32 row_positions_;
     std::vector<float> scores_;

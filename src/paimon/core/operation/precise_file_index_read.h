@@ -82,7 +82,8 @@ class PreciseFileIndexRead {
                          const std::map<std::shared_ptr<LeafPredicate>,
                                         std::shared_ptr<LeafPredicate>>& mapped_leaves,
                          const std::shared_ptr<VectorSearch>& vector_search,
-                         const std::shared_ptr<FullTextSearch>& full_text_search);
+                         const std::shared_ptr<FullTextSearch>& full_text_search,
+                         const std::optional<std::string>& root_search_field_name);
 
     Result<RoaringBitmap32> CreateCandidates(
         const DeletionVector::Factory& dv_factory,
@@ -112,6 +113,7 @@ class PreciseFileIndexRead {
     std::map<std::shared_ptr<LeafPredicate>, std::shared_ptr<LeafPredicate>> mapped_leaves_;
     std::shared_ptr<VectorSearch> vector_search_;
     std::shared_ptr<FullTextSearch> full_text_search_;
+    std::optional<std::string> root_search_field_name_;
 };
 
 }  // namespace paimon

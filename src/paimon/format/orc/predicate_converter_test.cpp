@@ -172,11 +172,11 @@ TEST(PredicateConverterTest, TestSimple) {
                   search_arg->toString());
     }
     {
-        // orc format do not support only one decimal for In Predicate
         auto predicate = PredicateBuilder::In(/*field_index=*/5, /*field_name=*/"f5",
                                               FieldType::DECIMAL, {Literal(Decimal(6, 2, 12345))});
-        ASSERT_NOK_WITH_MSG(PredicateConverter::Convert(*orc_type, predicate),
-                            "At least two literals are required!");
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<::orc::SearchArgument> search_arg,
+                             PredicateConverter::Convert(*orc_type, predicate));
+        ASSERT_EQ("leaf-0 = (column(id=6) = 123.45), expr = leaf-0", search_arg->toString());
     }
     {
         // test idx mismatches in orc type
@@ -194,6 +194,18 @@ TEST(PredicateConverterTest, TestSimple) {
         ASSERT_EQ("leaf-0 = (column(id=6) in [1234.5, 5432.1]), expr = leaf-0",
                   search_arg->toString());
     }
+}
+
+TEST(PredicateConverterTest, TestSingleLiteralInAndNotIn) {
+    std::unique_ptr<::orc::Type> orc_type = ::orc::Type::buildTypeFromString("struct<f0:bigint>");
+    auto in = PredicateBuilder::In(0, "f0", FieldType::BIGINT, {BigIntLiteral(5)});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<::orc::SearchArgument> in_arg,
+                         PredicateConverter::Convert(*orc_type, in));
+    ASSERT_EQ("leaf-0 = (column(id=1) = 5), expr = leaf-0", in_arg->toString());
+    auto not_in = PredicateBuilder::NotIn(0, "f0", FieldType::BIGINT, {BigIntLiteral(5)});
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<::orc::SearchArgument> not_in_arg,
+                         PredicateConverter::Convert(*orc_type, not_in));
+    ASSERT_EQ("leaf-0 = (column(id=1) = 5), expr = (not leaf-0)", not_in_arg->toString());
 }
 
 TEST(PredicateConverterTest, TestCompound) {

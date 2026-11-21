@@ -30,6 +30,7 @@
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/field_type_utils.h"
 #include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/result.h"
@@ -37,11 +38,8 @@
 
 namespace paimon {
 
-RangeBitmapFileIndex::RangeBitmapFileIndex(const std::map<std::string, std::string>& options)
-    : options_(options) {}
-
-bool RangeBitmapFileIndex::SupportsExactPredicate(Function::Type function,
-                                                  FieldType field_type) const {
+namespace {
+bool IsExactRangeBitmapPredicate(Function::Type function, FieldType field_type) {
     switch (field_type) {
         case FieldType::BOOLEAN:
         case FieldType::TINYINT:
@@ -52,9 +50,11 @@ bool RangeBitmapFileIndex::SupportsExactPredicate(Function::Type function,
         case FieldType::DOUBLE:
         case FieldType::STRING:
         case FieldType::DATE:
-        case FieldType::TIMESTAMP:
         case FieldType::DECIMAL:
             break;
+        case FieldType::TIMESTAMP:
+            // Query literals may lose precision when converted to milliseconds or microseconds.
+            return function == Function::Type::IS_NULL || function == Function::Type::IS_NOT_NULL;
         default:
             return false;
     }
@@ -73,6 +73,16 @@ bool RangeBitmapFileIndex::SupportsExactPredicate(Function::Type function,
         default:
             return false;
     }
+}
+
+}  // namespace
+
+RangeBitmapFileIndex::RangeBitmapFileIndex(const std::map<std::string, std::string>& options)
+    : options_(options) {}
+
+bool RangeBitmapFileIndex::SupportsExactPredicate(Function::Type function,
+                                                  FieldType field_type) const {
+    return IsExactRangeBitmapPredicate(function, field_type);
 }
 
 Result<std::shared_ptr<FileIndexReader>> RangeBitmapFileIndex::CreateReader(
@@ -163,15 +173,20 @@ Result<std::shared_ptr<RangeBitmapFileIndexReader>> RangeBitmapFileIndexReader::
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<RangeBitmap> range_bitmap,
         RangeBitmap::Create(bounded_stream, 0, type_adapter->GetStorageType(), pool));
-    return std::shared_ptr<RangeBitmapFileIndexReader>(
-        new RangeBitmapFileIndexReader(std::move(type_adapter), std::move(range_bitmap)));
+    PAIMON_ASSIGN_OR_RAISE(FieldType data_type,
+                           FieldTypeUtils::ConvertToFieldType(arrow_type->id()));
+    return std::shared_ptr<RangeBitmapFileIndexReader>(new RangeBitmapFileIndexReader(
+        data_type, std::move(type_adapter), std::move(range_bitmap)));
 }
 
 RangeBitmapFileIndexReader::~RangeBitmapFileIndexReader() = default;
 
 RangeBitmapFileIndexReader::RangeBitmapFileIndexReader(
-    std::unique_ptr<RangeBitmapTypeAdapter> type_adapter, std::unique_ptr<RangeBitmap> range_bitmap)
-    : type_adapter_(std::move(type_adapter)), range_bitmap_(std::move(range_bitmap)) {}
+    FieldType data_type, std::unique_ptr<RangeBitmapTypeAdapter> type_adapter,
+    std::unique_ptr<RangeBitmap> range_bitmap)
+    : data_type_(data_type),
+      type_adapter_(std::move(type_adapter)),
+      range_bitmap_(std::move(range_bitmap)) {}
 
 Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitEqual(
     const Literal& literal) {
@@ -179,7 +194,8 @@ Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitEqual(
     return std::make_shared<BitmapIndexResult>(
         [self = shared_from_this(), converted_literal]() -> Result<RoaringBitmap32> {
             return self->range_bitmap_->Eq(converted_literal);
-        });
+        },
+        IsExactRangeBitmapPredicate(Function::Type::EQUAL, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitNotEqual(
@@ -188,7 +204,8 @@ Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitNotEqu
     return std::make_shared<BitmapIndexResult>(
         [self = shared_from_this(), converted_literal]() -> Result<RoaringBitmap32> {
             return self->range_bitmap_->Neq(converted_literal);
-        });
+        },
+        IsExactRangeBitmapPredicate(Function::Type::NOT_EQUAL, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitIn(
@@ -199,10 +216,9 @@ Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitIn(
     PAIMON_ASSIGN_OR_RAISE(std::vector<Literal> converted_literals,
                            type_adapter_->ToStorageLiterals(literals));
     return std::make_shared<BitmapIndexResult>(
-        [self = shared_from_this(),
-         converted_literals = std::move(converted_literals)]() -> Result<RoaringBitmap32> {
-            return self->range_bitmap_->In(converted_literals);
-        });
+        [self = shared_from_this(), converted_literals = std::move(converted_literals)]()
+            -> Result<RoaringBitmap32> { return self->range_bitmap_->In(converted_literals); },
+        IsExactRangeBitmapPredicate(Function::Type::IN, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitNotIn(
@@ -213,24 +229,25 @@ Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitNotIn(
     PAIMON_ASSIGN_OR_RAISE(std::vector<Literal> converted_literals,
                            type_adapter_->ToStorageLiterals(literals));
     return std::make_shared<BitmapIndexResult>(
-        [self = shared_from_this(),
-         converted_literals = std::move(converted_literals)]() -> Result<RoaringBitmap32> {
-            return self->range_bitmap_->NotIn(converted_literals);
-        });
+        [self = shared_from_this(), converted_literals = std::move(converted_literals)]()
+            -> Result<RoaringBitmap32> { return self->range_bitmap_->NotIn(converted_literals); },
+        IsExactRangeBitmapPredicate(Function::Type::NOT_IN, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitIsNull() {
     return std::make_shared<BitmapIndexResult>(
         [self = shared_from_this()]() -> Result<RoaringBitmap32> {
             return self->range_bitmap_->IsNull();
-        });
+        },
+        IsExactRangeBitmapPredicate(Function::Type::IS_NULL, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitIsNotNull() {
     return std::make_shared<BitmapIndexResult>(
         [self = shared_from_this()]() -> Result<RoaringBitmap32> {
             return self->range_bitmap_->IsNotNull();
-        });
+        },
+        IsExactRangeBitmapPredicate(Function::Type::IS_NOT_NULL, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitGreaterThan(
@@ -239,7 +256,8 @@ Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitGreate
     return std::make_shared<BitmapIndexResult>(
         [self = shared_from_this(), converted_literal]() -> Result<RoaringBitmap32> {
             return self->range_bitmap_->Gt(converted_literal);
-        });
+        },
+        IsExactRangeBitmapPredicate(Function::Type::GREATER_THAN, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitLessThan(
@@ -248,7 +266,8 @@ Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitLessTh
     return std::make_shared<BitmapIndexResult>(
         [self = shared_from_this(), converted_literal]() -> Result<RoaringBitmap32> {
             return self->range_bitmap_->Lt(converted_literal);
-        });
+        },
+        IsExactRangeBitmapPredicate(Function::Type::LESS_THAN, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitGreaterOrEqual(
@@ -257,7 +276,8 @@ Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitGreate
     return std::make_shared<BitmapIndexResult>(
         [self = shared_from_this(), converted_literal]() -> Result<RoaringBitmap32> {
             return self->range_bitmap_->Gte(converted_literal);
-        });
+        },
+        IsExactRangeBitmapPredicate(Function::Type::GREATER_OR_EQUAL, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitLessOrEqual(
@@ -266,7 +286,8 @@ Result<std::shared_ptr<FileIndexResult>> RangeBitmapFileIndexReader::VisitLessOr
     return std::make_shared<BitmapIndexResult>(
         [self = shared_from_this(), converted_literal]() -> Result<RoaringBitmap32> {
             return self->range_bitmap_->Lte(converted_literal);
-        });
+        },
+        IsExactRangeBitmapPredicate(Function::Type::LESS_OR_EQUAL, data_type_));
 }
 
 }  // namespace paimon

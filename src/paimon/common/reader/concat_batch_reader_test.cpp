@@ -691,7 +691,6 @@ TEST_F(ConcatBatchReaderTest, LazyEarlyCloseAndDestructionDrainExceptionalBuilds
                 ConcatBatchReader::kDefaultPreparationWindow, GetArrowPool(pool_), executor));
         ScopeGuard unblock([&release]() { release.set_value(); });
         lifetime.reset();
-        // Keep the failed build pending until we stop reading, so cleanup consumes its exception.
         for (size_t i = 0; i < ConcatBatchReader::kDefaultPreparationWindow; i++) {
             ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
             ASSERT_FALSE(BatchReader::IsEofBatch(batch));
@@ -717,6 +716,15 @@ TEST_F(ConcatBatchReaderTest, LazyEarlyCloseAndDestructionDrainExceptionalBuilds
         ASSERT_EQ(counts->live.load(), 0);
         ASSERT_TRUE(weak_lifetime.expired());
     }
+}
+
+TEST_F(ConcatBatchReaderTest, LazyCreationReportsAbandonedBuild) {
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Executor> executor, CreateDefaultExecutor(1));
+    executor->ShutdownNow();
+    auto result = ConcatBatchReader::CreateLazy(
+        1, [](size_t) { return std::unique_ptr<BatchReader>(); }, 1, GetArrowPool(pool_), executor);
+    ASSERT_NOK_WITH_MSG(result, "file reader preparation failed");
+    ASSERT_TRUE(result.status().IsUnknownError());
 }
 
 TEST_F(ConcatBatchReaderTest, LazyInitialFailureDrainsPartialWindow) {

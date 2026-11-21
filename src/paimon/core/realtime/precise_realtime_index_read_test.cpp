@@ -45,6 +45,7 @@
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/source/append_only_table_read.h"
 #include "paimon/core/table/source/realtime_split.h"
+#include "paimon/core/table/source/topk_batch_reader.h"
 #include "paimon/factories/factory_creator.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"
@@ -161,7 +162,7 @@ class PreciseRealtimeIndexReadTest : public testing::Test {
 
     std::shared_ptr<VectorSearch> Vector(int32_t limit) const {
         return std::make_shared<VectorSearch>("embedding", limit, std::vector<float>{1.0f}, nullptr,
-                                              nullptr, VectorSearch::DistanceType::COSINE,
+                                              nullptr, VectorSearch::DistanceType::INNER_PRODUCT,
                                               std::map<std::string, std::string>{});
     }
 
@@ -177,6 +178,7 @@ class PreciseRealtimeIndexReadTest : public testing::Test {
             std::unique_ptr<BatchReader> reader,
             PreciseRealtimeIndexRead::CreateReader(
                 context, mode, query_store_ ? query_store_ : store_, view, range));
+        reader = TopKBatchReader::ApplyTopkReaderIfNeeded(std::move(reader), *context);
         return ReadResultCollector::CollectResult(std::move(reader));
     }
 
@@ -471,7 +473,7 @@ TEST_F(PreciseRealtimeIndexReadTest, EmptyScalarCandidatesReturnNoRows) {
     CheckResult(context, result, "[]");
 }
 
-TEST_F(PreciseRealtimeIndexReadTest, EachPinnedSegmentExecutesItsOwnTopK) {
+TEST_F(PreciseRealtimeIndexReadTest, PinnedSegmentsContributeToGlobalTopK) {
     // A configured search hit must not be returned unless the segment indexed that offset.
     state_->ranked.insert(state_->ranked.begin(), {15, 1.0f});
     ASSERT_OK(Write(R"([[10,1,1,"a",[1]],[20,2,1,"b",[2]]])", OffsetRange(10, 21)));
@@ -483,7 +485,7 @@ TEST_F(PreciseRealtimeIndexReadTest, EachPinnedSegmentExecutesItsOwnTopK) {
     ASSERT_OK_AND_ASSIGN(auto view, store_->AcquireReadView());
     ASSERT_OK_AND_ASSIGN(auto result,
                          Read(context, view, OffsetRange(0, 41), RealtimeStoreMode::APPEND_ONLY));
-    CheckResult(context, result, R"([[1,0.9],[3,0.7]])");
+    CheckResult(context, result, R"([[1,0.9]])");
 }
 
 TEST_F(PreciseRealtimeIndexReadTest, RejectsMisalignedScores) {

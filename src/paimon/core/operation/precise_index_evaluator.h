@@ -25,6 +25,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -32,6 +33,7 @@
 #include "fmt/format.h"
 #include "paimon/common/index/index_reader_utils.h"
 #include "paimon/common/predicate/full_text_match_predicate.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/macros.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/full_text_search.h"
@@ -85,8 +87,8 @@ class PreciseIndexEvaluator {
         return prepare_leaf(leaf);
     }
 
-    /// Field mapping and physical scans remain with the storage adapter. Scalar indexes only
-    /// prune candidates; every surviving scalar candidate is checked against the stored value.
+    /// Field mapping and physical scans remain with the storage adapter. Exact file
+    /// indexes avoid scalar scans; inexact file results recheck the original candidates.
     /// @param predicate Original predicate in the query's logical schema, used for exact
     /// scalar filtering and binding scores to the original field name.
     /// @param index_predicate Predicate mapped to the source's physical schema for index
@@ -123,31 +125,51 @@ class PreciseIndexEvaluator {
             }
             return result;
         }
-        if (index_predicate) {
-            PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<Reader>> readers,
-                                   indexes->GetReaders(index_predicate->FieldName()));
-            for (const auto& reader : readers) {
-                // TODO(lisizhuo.lsz): Pass remaining candidates through
-                // IndexReaderUtils::VisitScalar to index readers so they can skip rows excluded
-                // by earlier predicates, row ranges, or deletion vectors.
-                PAIMON_ASSIGN_OR_RAISE(std::optional<Bitmap> indexed,
-                                       IndexReaderUtils::VisitScalar(reader, index_predicate));
-                if (indexed) {
-                    result.rows &= *indexed;
-                    if (result.rows.IsEmpty()) {
-                        break;
+        if constexpr (std::is_same_v<Reader, FileIndexReader>) {
+            if (index_predicate) {
+                PAIMON_ASSIGN_OR_RAISE(
+                    std::shared_ptr<FileIndexResult> indexed,
+                    indexes->EvaluateLeaf(index_predicate, /*needs_scores=*/false, &candidates));
+                if (!indexed) {
+                    return Status::Invalid("Scalar index returned a null result");
+                }
+                if (indexed->IsExact()) {
+                    if (auto bitmap = std::dynamic_pointer_cast<BitmapIndexResult>(indexed)) {
+                        PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap32* rows, bitmap->GetBitmap());
+                        return Evaluation{*rows, {}};
+                    }
+                    if (std::dynamic_pointer_cast<Skip>(indexed)) {
+                        return Evaluation{};
+                    }
+                    return Status::Invalid("Invalid exact scalar index result");
+                }
+            }
+            PAIMON_ASSIGN_OR_RAISE(result.rows, scan_scalar(predicate, candidates));
+            return result;
+        } else {
+            if (index_predicate) {
+                PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<Reader>> readers,
+                                       indexes->GetReaders(index_predicate->FieldName()));
+                for (const auto& reader : readers) {
+                    PAIMON_ASSIGN_OR_RAISE(std::optional<Bitmap> indexed,
+                                           IndexReaderUtils::VisitScalar(reader, index_predicate));
+                    if (indexed) {
+                        result.rows &= *indexed;
+                        if (result.rows.IsEmpty()) {
+                            break;
+                        }
                     }
                 }
             }
+            // TODO(xinyu.lxy): Whether to ScanScalar depends on whether the index returns exact
+            // results.
+            if (!result.rows.IsEmpty()) {
+                // Scalar indexes may contain false positives, even if they return a bitmap.
+                PAIMON_ASSIGN_OR_RAISE(Bitmap exact_rows, scan_scalar(predicate, result.rows));
+                result.rows &= exact_rows;
+            }
+            return result;
         }
-        // TODO(lisizhuo.lsz): Whether to ScanScalar depends on whether the index returns exact
-        // results.
-        if (!result.rows.IsEmpty()) {
-            // Scalar indexes may contain false positives, even if they return a bitmap.
-            PAIMON_ASSIGN_OR_RAISE(Bitmap exact_rows, scan_scalar(predicate, result.rows));
-            result.rows &= exact_rows;
-        }
-        return result;
     }
 
     Result<Evaluation> Evaluate(const std::shared_ptr<Predicate>& predicate,
@@ -280,8 +302,14 @@ class PreciseIndexEvaluator {
     template <typename Reader, typename Indexes>
     static Status ApplyRootSearch(const std::shared_ptr<VectorSearch>& vector_search,
                                   const std::shared_ptr<FullTextSearch>& full_text_search,
-                                  const std::string& score_field, Indexes* indexes,
+                                  const std::optional<std::string>& score_field, Indexes* indexes,
                                   Evaluation* evaluated) {
+        if (!vector_search && !full_text_search) {
+            return Status::OK();
+        }
+        if (!score_field) {
+            return Status::Invalid("Root search field name is missing");
+        }
         std::shared_ptr<ScoredResult> scored;
         if (vector_search) {
             PAIMON_ASSIGN_OR_RAISE(
@@ -297,14 +325,12 @@ class PreciseIndexEvaluator {
                                          IndexReaderCapabilities::SearchType::FULL_TEXT_SEARCH));
             PAIMON_ASSIGN_OR_RAISE(scored, reader->VisitFullTextSearch(FilterFullTextSearch(
                                                full_text_search, evaluated->rows)));
-        } else {
-            return Status::OK();
         }
         if (!scored) {
             return Status::Invalid("Root search returned a null result");
         }
         evaluated->rows &= scored->GetRowPositions();
-        evaluated->scores.emplace(score_field, std::move(scored));
+        evaluated->scores.emplace(score_field.value(), std::move(scored));
         return Status::OK();
     }
 
@@ -331,7 +357,8 @@ class PreciseIndexEvaluator {
     template <typename ScoreBindings>
     static Result<std::map<std::string, std::vector<float>>> CreateOutputScores(
         const Evaluation& evaluated, const ScoreBindings& bindings,
-        const std::shared_ptr<arrow::Schema>& output_schema) {
+        const std::shared_ptr<arrow::Schema>& output_schema,
+        const std::optional<std::string>& root_search_field_name) {
         std::map<std::string, std::vector<float>> scores;
         for (const auto& [position, source] : bindings) {
             auto found = evaluated.scores.find(source.field_name);
@@ -342,6 +369,19 @@ class PreciseIndexEvaluator {
             PAIMON_ASSIGN_OR_RAISE(std::vector<float> aligned,
                                    AlignScores(found->second, evaluated.rows));
             scores.emplace(output_schema->field(position)->name(), std::move(aligned));
+        }
+        if (root_search_field_name) {
+            const std::string score_name =
+                SpecialFields::IndexScoreFieldName(root_search_field_name.value());
+            if (scores.find(score_name) == scores.end()) {
+                auto found = evaluated.scores.find(root_search_field_name.value());
+                if (found == evaluated.scores.end()) {
+                    return Status::Invalid("Root search did not return scores");
+                }
+                PAIMON_ASSIGN_OR_RAISE(std::vector<float> aligned,
+                                       AlignScores(found->second, evaluated.rows));
+                scores.emplace(score_name, std::move(aligned));
+            }
         }
         return scores;
     }

@@ -414,6 +414,26 @@ License: https://www.apache.org/licenses/LICENSE-2.0
 
 --------------------------------------------------------------------------------
 
+This product includes code from Apache Paimon Full Text 0.1.0.
+
+* Upstream source patch in cmake_modules/full_text.diff
+
+Copyright: 2026 The Apache Software Foundation.
+Home page: https://github.com/apache/paimon-full-text
+License: https://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+
+This product includes code from Lucene++ 3.0.9.
+
+* Upstream source patch in cmake_modules/lucene.diff
+
+Copyright (c) 2009-2014 Alan Wright. All rights reserved.
+Home page: https://github.com/luceneplusplus/LucenePlusPlus
+License: https://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+
 This product includes code from Vortex 0.75.0.
 
 * Callback I/O sink utilities in crates/vortex_callback_io/callback_io.rs

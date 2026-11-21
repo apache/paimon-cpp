@@ -34,13 +34,10 @@ namespace paimon {
 /// Adds index scores to a single-file reader while retaining its file-specific operations.
 class CompleteIndexScoreFileBatchReader : public FileBatchReader {
  public:
-    CompleteIndexScoreFileBatchReader(std::unique_ptr<FileBatchReader>&& reader,
-                                      const std::vector<float>& scores,
-                                      const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
-
     /// Scores are keyed by output field name and aligned with the selected rows in file order.
     CompleteIndexScoreFileBatchReader(std::unique_ptr<FileBatchReader>&& reader,
                                       const std::map<std::string, std::vector<float>>& scores,
+                                      const std::optional<std::string>& root_score_field_name,
                                       const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     Result<ReadBatch> NextBatch() override;
@@ -60,5 +57,6 @@ class CompleteIndexScoreFileBatchReader : public FileBatchReader {
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     std::unique_ptr<FileBatchReader> reader_;
     std::map<std::string, std::vector<float>> scores_;
+    std::optional<std::string> root_score_field_name_;
 };
 }  // namespace paimon

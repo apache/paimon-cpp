@@ -443,8 +443,8 @@ TEST(InternalReadContext, TestPreciseEvaluationRejectsUnnamedScoreProjection) {
                 builder.SetPredicate(PredicateBuilder::IsNotNull(0, "f0", FieldType::STRING));
             } else if (search_type == "vector") {
                 builder.SetVectorSearch(std::make_shared<VectorSearch>(
-                    "f3", 1, std::vector<float>{1.0f}, nullptr, nullptr, std::nullopt,
-                    std::map<std::string, std::string>{}));
+                    "f3", 1, std::vector<float>{1.0f}, nullptr, nullptr,
+                    VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{}));
             } else if (search_type == "full-text") {
                 builder.SetFullTextSearch(
                     std::make_shared<FullTextSearch>("f0", R"({"match":{"query":"apple"}})", 1));
@@ -468,9 +468,9 @@ TEST(InternalReadContext, TestPrimaryKeyVectorSearchRequiresDeletionVectors) {
                        "/orc/pk_table_with_dv_cardinality.db/pk_table_with_dv_cardinality";
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schema_manager.ReadSchema(0));
-    std::shared_ptr<VectorSearch> search =
-        std::make_shared<VectorSearch>("f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr,
-                                       nullptr, std::nullopt, std::map<std::string, std::string>{});
+    std::shared_ptr<VectorSearch> search = std::make_shared<VectorSearch>(
+        "f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr, nullptr,
+        VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
     ReadContextBuilder builder(path);
     builder.SetReadFieldNames({"f0", "_f3_INDEX_SCORE"})
         .EnablePreciseFileIndexEvaluate(true)
@@ -562,8 +562,8 @@ TEST(InternalReadContext, TestPerFieldTopKScoreBindings) {
                 vector_search ? "f3" : "f0"};
             if (vector_search) {
                 auto search = std::make_shared<VectorSearch>(
-                    "f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr, nullptr, std::nullopt,
-                    std::map<std::string, std::string>{});
+                    "f3", /*limit=*/1, std::vector<float>{1.0f}, nullptr, nullptr,
+                    VectorSearch::DistanceType::EUCLIDEAN, std::map<std::string, std::string>{});
                 builder.EnablePreciseFileIndexEvaluate(true).SetVectorSearch(search);
             } else {
                 auto search = std::make_shared<FullTextSearch>(

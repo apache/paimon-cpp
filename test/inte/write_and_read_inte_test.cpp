@@ -844,11 +844,9 @@ TEST_P(WriteAndReadInteTest, TestLuminaSearchAfterRenameAcrossSchemaVersions) {
     ASSERT_TRUE(actual->type()->Equals(expected_type));
     auto expected = std::make_shared<arrow::ChunkedArray>(
         arrow::ipc::internal::json::ArrayFromJSON(expected_type, R"([
-        [0, 10, 4.0],
         [0, 12, 0.0],
         [0, 14, 1.0],
-        [0, 20, 1.0],
-        [0, 21, 16.0]
+        [0, 20, 1.0]
     ])")
             .ValueOrDie());
     ASSERT_OK_AND_ASSIGN(actual, ReadResultCollector::SortArray(
@@ -1062,9 +1060,9 @@ TEST_P(WriteAndReadInteTest, TestAppendWithLuminaVectorIndex) {
             {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("id", arrow::int32()),
              arrow::field("_embedding_INDEX_SCORE", arrow::float32())});
         auto expected = arrow::ipc::internal::json::ArrayFromJSON(expected_type,
-                                                                  R"([[0, 10, 4.0],
-                                                                     [0, 12, 0.0],
-                                                                     [0, 14, 1.0]])")
+                                                                  R"([[0, 12, 0.0],
+                                                                     [0, 14, 1.0],
+                                                                     [0, 10, 4.0]])")
                             .ValueOrDie();
         ASSERT_TRUE(actual);
         ASSERT_TRUE(actual->Equals(arrow::ChunkedArray(expected))) << actual->ToString();

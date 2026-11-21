@@ -65,6 +65,7 @@ RUN apt update && \
     lsb-release \
     meson \
     ninja-build \
+    patchutils \
     pkg-config \
     python3 \
     python3-pip \

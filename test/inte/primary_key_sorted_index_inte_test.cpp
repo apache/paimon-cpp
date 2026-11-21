@@ -551,7 +551,9 @@ TEST_P(PrimaryKeySortedIndexInteTest, ScoredSplitFailsBeforeForceKeepDeleteFallb
     auto* key_value_table_read = dynamic_cast<KeyValueTableRead*>(table_read.get());
     ASSERT_TRUE(key_value_table_read != nullptr);
     key_value_table_read->ForceKeepDelete(true);
-    ASSERT_NOK_WITH_MSG(key_value_table_read->CreateReader(scored_split),
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                         key_value_table_read->CreateReader(scored_split));
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(),
                         "Primary-key reads do not support scored indexed splits yet");
 }
 

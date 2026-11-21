@@ -43,10 +43,8 @@
 namespace paimon {
 class MemoryPool;
 
-BitmapFileIndex::BitmapFileIndex(const std::map<std::string, std::string>& options)
-    : options_(options) {}
-
-bool BitmapFileIndex::SupportsExactPredicate(Function::Type function, FieldType field_type) const {
+namespace {
+bool IsExactBitmapPredicate(Function::Type function, FieldType field_type) {
     switch (field_type) {
         case FieldType::BOOLEAN:
         case FieldType::TINYINT:
@@ -75,6 +73,15 @@ bool BitmapFileIndex::SupportsExactPredicate(Function::Type function, FieldType 
         default:
             return false;
     }
+}
+
+}  // namespace
+
+BitmapFileIndex::BitmapFileIndex(const std::map<std::string, std::string>& options)
+    : options_(options) {}
+
+bool BitmapFileIndex::SupportsExactPredicate(Function::Type function, FieldType field_type) const {
+    return IsExactBitmapPredicate(function, field_type);
 }
 
 Result<Literal> BitmapFileIndex::ConvertLiteral(
@@ -271,6 +278,44 @@ BitmapFileIndexReader::BitmapFileIndexReader(const std::shared_ptr<arrow::DataTy
                                              const std::shared_ptr<MemoryPool>& pool)
     : data_type_(data_type), arrow_type_(arrow_type), pool_(pool), input_stream_(input_stream) {}
 
+Result<std::shared_ptr<FileIndexResult>> BitmapFileIndexReader::Evaluate(
+    const std::shared_ptr<LeafPredicate>& predicate, const RoaringBitmap32* candidates) {
+    auto function = predicate->GetFunction().GetType();
+    if (!candidates || (function != Function::Type::IN && function != Function::Type::EQUAL)) {
+        return FileIndexReader::Evaluate(predicate, candidates);
+    }
+    if (predicate->Literals().empty()) {
+        return Status::Invalid("literals cannot be empty in In predicate");
+    }
+    return std::make_shared<BitmapIndexResult>(
+        [literals = predicate->Literals(), eligible = *candidates,
+         reader = shared_from_this()]() -> Result<RoaringBitmap32> {
+            RoaringBitmap32 matched;
+            if (eligible.IsEmpty()) {
+                return matched;
+            }
+            PAIMON_RETURN_NOT_OK(reader->ReadInternalMeta());
+            if (eligible.Cardinality() == reader->bitmap_file_index_meta_->GetRowCount()) {
+                PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 rows,
+                                       reader->GetInListResultBitmap(literals));
+                rows &= eligible;
+                return rows;
+            }
+            for (const auto& literal : literals) {
+                PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 rows,
+                                       reader->GetInListResultBitmap({literal}));
+                rows &= eligible;
+                matched |= rows;
+                // Later postings cannot contribute additional eligible rows.
+                if (matched.Cardinality() == eligible.Cardinality()) {
+                    break;
+                }
+            }
+            return matched;
+        },
+        IsExactBitmapPredicate(function, data_type_));
+}
+
 Result<std::shared_ptr<FileIndexResult>> BitmapFileIndexReader::VisitEqual(const Literal& literal) {
     return VisitIn({literal});
 }
@@ -289,7 +334,8 @@ Result<std::shared_ptr<FileIndexResult>> BitmapFileIndexReader::VisitIn(
         [literals = literals, reader = shared_from_this()]() -> Result<RoaringBitmap32> {
             PAIMON_RETURN_NOT_OK(reader->ReadInternalMeta());
             return reader->GetInListResultBitmap(literals);
-        });
+        },
+        IsExactBitmapPredicate(Function::Type::IN, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> BitmapFileIndexReader::VisitNotIn(
@@ -307,15 +353,29 @@ Result<std::shared_ptr<FileIndexResult>> BitmapFileIndexReader::VisitNotIn(
                                    reader->GetInListResultBitmap({Literal(reader->data_type_)}));
             bitmap -= null;
             return bitmap;
-        });
+        },
+        IsExactBitmapPredicate(Function::Type::NOT_IN, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> BitmapFileIndexReader::VisitIsNull() {
-    return VisitIn({Literal(data_type_)});
+    return std::make_shared<BitmapIndexResult>(
+        [reader = shared_from_this()]() -> Result<RoaringBitmap32> {
+            PAIMON_RETURN_NOT_OK(reader->ReadInternalMeta());
+            return reader->GetInListResultBitmap({Literal(reader->data_type_)});
+        },
+        IsExactBitmapPredicate(Function::Type::IS_NULL, data_type_));
 }
 
 Result<std::shared_ptr<FileIndexResult>> BitmapFileIndexReader::VisitIsNotNull() {
-    return VisitNotIn({Literal(data_type_)});
+    return std::make_shared<BitmapIndexResult>(
+        [reader = shared_from_this()]() -> Result<RoaringBitmap32> {
+            PAIMON_RETURN_NOT_OK(reader->ReadInternalMeta());
+            PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 bitmap,
+                                   reader->GetInListResultBitmap({Literal(reader->data_type_)}));
+            bitmap.Flip(/*min=*/0, /*max=*/reader->bitmap_file_index_meta_->GetRowCount());
+            return bitmap;
+        },
+        IsExactBitmapPredicate(Function::Type::IS_NOT_NULL, data_type_));
 }
 
 Result<RoaringBitmap32> BitmapFileIndexReader::GetInListResultBitmap(

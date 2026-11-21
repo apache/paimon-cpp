@@ -194,7 +194,11 @@ Status PredicateConverter::ConvertLeaf(
             PAIMON_RETURN_NOT_OK(CheckLiteralNotEmpty(literals, function, field_name));
             PAIMON_ASSIGN_OR_RAISE(std::vector<::orc::Literal> orc_literals,
                                    ConvertToOrcLiterals(literals));
-            builder->in(field_index, orc_type, orc_literals);
+            if (orc_literals.size() == 1) {
+                builder->equals(field_index, orc_type, orc_literals[0]);
+            } else {
+                builder->in(field_index, orc_type, orc_literals);
+            }
             break;
         }
         case Function::Type::NOT_IN: {
@@ -202,7 +206,11 @@ Status PredicateConverter::ConvertLeaf(
             PAIMON_ASSIGN_OR_RAISE(std::vector<::orc::Literal> orc_literals,
                                    ConvertToOrcLiterals(literals));
             builder->startNot();
-            builder->in(field_index, orc_type, orc_literals);
+            if (orc_literals.size() == 1) {
+                builder->equals(field_index, orc_type, orc_literals[0]);
+            } else {
+                builder->in(field_index, orc_type, orc_literals);
+            }
             builder->end();
             break;
         }

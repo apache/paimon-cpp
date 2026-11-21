@@ -85,11 +85,13 @@ TEST(EmptyFileIndexReaderTest, TestFullTextMatchAndScores) {
     ASSERT_OK_AND_ASSIGN(auto result, reader.VisitFullTextMatch(match, /*needs_scores=*/true));
     auto scored = std::dynamic_pointer_cast<ScoredFileIndexResult>(result);
     ASSERT_TRUE(scored);
+    ASSERT_TRUE(scored->IsExact());
     ASSERT_TRUE(scored->IsEmpty());
     ASSERT_TRUE(scored->GetScores().empty());
     ASSERT_OK_AND_ASSIGN(result, reader.VisitFullTextMatch(match, /*needs_scores=*/false));
     auto bitmap = std::dynamic_pointer_cast<BitmapIndexResult>(result);
     ASSERT_TRUE(bitmap);
+    ASSERT_TRUE(bitmap->IsExact());
     ASSERT_OK_AND_ASSIGN(const RoaringBitmap32* positions, bitmap->GetBitmap());
     ASSERT_TRUE(positions->IsEmpty());
 }
