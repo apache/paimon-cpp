@@ -77,10 +77,10 @@ TEST(LuminaMemoryPoolTest, TracksAllocationsSeparatelyForSharedPool) {
 class LuminaRealtimeIndexTest : public ::testing::TestWithParam<std::string> {
  protected:
     void SetUp() override {
-        options_ = {{"lumina.index.type", GetParam()},
-                    {"lumina.index.dimension", "2"},
-                    {"lumina.distance.metric", "l2"},
-                    {"lumina.encoding.type", "rawf32"}};
+        options_ = {{"index.type", GetParam()},
+                    {"index.dimension", "2"},
+                    {"distance.metric", "l2"},
+                    {"encoding.type", "rawf32"}};
         ASSERT_OK_AND_ASSIGN(index_, LuminaRealtimeIndex::Create(schema_, options_, pool_));
     }
 
@@ -342,17 +342,17 @@ TEST_P(LuminaRealtimeIndexTest, RejectsInvalidSchemasAndOptions) {
     }
     for (int64_t dimension : {int64_t{0}, int64_t{-1}, int64_t{1} << 33}) {
         auto options = options_;
-        options["lumina.index.dimension"] = std::to_string(dimension);
+        options["index.dimension"] = std::to_string(dimension);
         ASSERT_NOK(LuminaRealtimeIndex::Create(schema_, options, pool_));
     }
     auto options = options_;
-    options["lumina.index.type"] = "diskann";
+    options["index.type"] = "diskann";
     ASSERT_NOK(LuminaRealtimeIndex::Create(schema_, options, pool_));
     options = options_;
-    options["lumina.encoding.type"] = "fp16";
+    options["encoding.type"] = "fp16";
     ASSERT_NOK(LuminaRealtimeIndex::Create(schema_, options, pool_));
     options = options_;
-    options["lumina.extension.build.tag.tag_schema"] = "[]";
+    options["extension.build.tag.tag_schema"] = "[]";
     ASSERT_NOK_WITH_MSG(LuminaRealtimeIndex::Create(schema_, options, pool_),
                         "tags are not supported");
     ASSERT_NOK(index_->AddBatch(nullptr));
@@ -361,12 +361,12 @@ TEST_P(LuminaRealtimeIndexTest, RejectsInvalidSchemasAndOptions) {
 }
 
 TEST_P(LuminaRealtimeIndexTest, ParsesStringStreamerOptions) {
-    options_["lumina." + GetParam() + ".streamer.rows_per_block"] = "64";
-    options_["lumina.index.enable_experimental"] = "false";
+    options_[GetParam() + ".streamer.rows_per_block"] = "64";
+    options_["index.enable_experimental"] = "false";
     if (GetParam() == "flatnsw") {
-        options_["lumina.flatnsw.build.neighbor_count"] = "16";
-        options_["lumina.flatnsw.build.ef_construction"] = "32";
-        options_["lumina.flatnsw.build.slack_pruning_factor"] = "1.25";
+        options_["flatnsw.build.neighbor_count"] = "16";
+        options_["flatnsw.build.ef_construction"] = "32";
+        options_["flatnsw.build.slack_pruning_factor"] = "1.25";
     }
     ASSERT_OK_AND_ASSIGN(index_, LuminaRealtimeIndex::Create(schema_, options_, pool_));
     ASSERT_OK(Add("[[0, [1, 0]]]"));
@@ -376,23 +376,20 @@ TEST_P(LuminaRealtimeIndexTest, ParsesStringStreamerOptions) {
     Check(result, RoaringBitmap64::From({0}), {1});
 
     for (const std::string& key :
-         {std::string("lumina.index.dimension"), std::string("lumina.index.enable_experimental"),
-          "lumina." + GetParam() + ".streamer.capacity",
-          "lumina." + GetParam() + ".streamer.rows_per_block"}) {
+         {std::string("index.dimension"), std::string("index.enable_experimental"),
+          GetParam() + ".streamer.capacity", GetParam() + ".streamer.rows_per_block"}) {
         auto options = options_;
         options[key] = "invalid";
         ASSERT_NOK(LuminaRealtimeIndex::Create(schema_, options, pool_)) << key;
     }
     if (GetParam() == "flatnsw") {
-        options_["lumina.flatnsw.build.slack_pruning_factor"] = "invalid";
+        options_["flatnsw.build.slack_pruning_factor"] = "invalid";
         ASSERT_NOK(LuminaRealtimeIndex::Create(schema_, options_, pool_));
     }
 }
 
-TEST_P(LuminaRealtimeIndexTest, UsesPrefixedOptionsWithoutDefaultingDistanceMetric) {
-    options_["lumina.distance.metric"] = "cosine";
-    options_["distance.metric"] = "l2";
-    options_["index.dimension"] = "invalid";
+TEST_P(LuminaRealtimeIndexTest, UsesNativeOptionsWithoutDefaultingDistanceMetric) {
+    options_["distance.metric"] = "cosine";
     ASSERT_OK_AND_ASSIGN(index_, LuminaRealtimeIndex::Create(schema_, options_, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeIndexReader> reader, Reader(0, 1));
     auto search = Search(/*limit=*/10);
@@ -401,12 +398,12 @@ TEST_P(LuminaRealtimeIndexTest, UsesPrefixedOptionsWithoutDefaultingDistanceMetr
     search->query = {1, 0};
     ASSERT_OK(reader->VisitVectorSearch(search));
 
-    options_.erase("lumina.distance.metric");
+    options_.erase("distance.metric");
     ASSERT_NOK(LuminaRealtimeIndex::Create(schema_, options_, pool_));
 }
 
 TEST_P(LuminaRealtimeIndexTest, InsertionFailureKeepsPinnedRangeAndDisablesWrites) {
-    options_["lumina." + GetParam() + ".streamer.capacity"] = "2";
+    options_[GetParam() + ".streamer.capacity"] = "2";
     ASSERT_OK_AND_ASSIGN(index_, LuminaRealtimeIndex::Create(schema_, options_, pool_));
     ASSERT_OK(Add("[[0, [2, 0]]]"));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeIndexReader> reader, Reader(0, 1));

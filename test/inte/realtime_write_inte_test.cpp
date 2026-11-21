@@ -7138,9 +7138,7 @@ TEST_F(RealtimePreciseIndexInteTest, TestCommittedAndRealtimeDiskDvBeforeVectorT
     ASSERT_OK(writer->Close());
 }
 
-// TODO(lisizhuo.lsz): Re-enable after fixing field nullability mismatches between disk and
-// real-time readers that prevent concatenating TopK candidates.
-TEST_F(RealtimePreciseIndexInteTest, DISABLED_TestPinnedSearchBoundsAndDvSurviveCommitAndRefresh) {
+TEST_F(RealtimePreciseIndexInteTest, TestPinnedSearchBoundsAndDvSurviveCommitAndRefresh) {
     CreateSearchTable(/*deduplicate=*/true);
     ASSERT_FALSE(HasFatalFailure());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
@@ -7204,9 +7202,7 @@ TEST_F(RealtimePreciseIndexInteTest, DISABLED_TestPinnedSearchBoundsAndDvSurvive
     ASSERT_OK(writer->Close());
 }
 
-// TODO(lisizhuo.lsz): Re-enable after fixing field nullability mismatches between disk and
-// real-time readers that prevent concatenating TopK candidates.
-TEST_F(RealtimePreciseIndexInteTest, DISABLED_TestScoreProjectionAcrossBatchSizes) {
+TEST_F(RealtimePreciseIndexInteTest, TestScoreProjectionAcrossBatchSizes) {
     CreateSearchTable(/*deduplicate=*/false);
     ASSERT_FALSE(HasFatalFailure());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
@@ -7366,9 +7362,7 @@ TEST_F(RealtimePreciseIndexInteTest, TestFullyDeletedSourcesDoNotHideRemainingSe
     ASSERT_OK(writer->Close());
 }
 
-// TODO(lisizhuo.lsz): Re-enable after fixing field nullability mismatches between disk and
-// real-time readers that prevent concatenating TopK candidates.
-TEST_F(RealtimePreciseIndexInteTest, DISABLED_TestFullTextOrUnindexedScalarAcrossDiskAndMemory) {
+TEST_F(RealtimePreciseIndexInteTest, TestFullTextOrUnindexedScalarAcrossDiskAndMemory) {
     CreateSearchTable(/*deduplicate=*/false);
     ASSERT_FALSE(HasFatalFailure());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
@@ -7490,19 +7484,19 @@ void RealtimePreciseIndexInteTest::CheckLuminaDeduplicateSearch(const std::strin
     }
     SearchQuery query{
         {"id", "payload", "pt", "_embedding_INDEX_SCORE"}, predicate, vector, nullptr};
-    const std::string expected = R"([[0,5,"keep","keep",16],[0,2,"keep","keep",36]])";
+    // Top1 is selected globally across disk, sealed and building sources.
+    const std::string expected = R"([[0,5,"keep","keep",16]])";
     ASSERT_NO_FATAL_FAILURE(CheckSearch(plan, context, query, expected));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> indexed_plan, CreatePlan(context, indexed));
     SearchQuery indexed_query = query;
     indexed_query.predicate = indexed;
-    ASSERT_NO_FATAL_FAILURE(CheckSearch(indexed_plan, context, indexed_query,
-                                        R"([[0,4,"keep","drop",9],[0,9,"keep","drop",1]])"));
+    ASSERT_NO_FATAL_FAILURE(
+        CheckSearch(indexed_plan, context, indexed_query, R"([[0,9,"keep","drop",1]])"));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> unindexed_plan, CreatePlan(context, unindexed));
     SearchQuery unindexed_query = query;
     unindexed_query.predicate = unindexed;
-    ASSERT_NO_FATAL_FAILURE(CheckSearch(
-        unindexed_plan, context, unindexed_query,
-        R"([[0,3,"drop","keep",4],[0,8,"drop","keep",0.25],[0,12,"drop","keep",0.0625]])"));
+    ASSERT_NO_FATAL_FAILURE(
+        CheckSearch(unindexed_plan, context, unindexed_query, R"([[0,12,"drop","keep",0.0625]])"));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> pinned, CreatePlan(context, predicate));
 
     // The same query must keep its results while memory data is committed to disk.

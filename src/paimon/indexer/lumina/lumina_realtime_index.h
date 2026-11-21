@@ -43,14 +43,16 @@ namespace paimon::lumina {
 class LuminaRealtimeIndexReader;
 class LuminaMemoryPool;
 
-/// Append-only vector index with one writer and concurrent readers. IDs are realtime offsets.
+/// Append-only vector index with one writer and concurrent readers.
+/// Insert IDs and SearchResult.topk[].id are realtime offsets.
 class LuminaRealtimeIndex final : public RealtimeIndex,
                                   public std::enable_shared_from_this<LuminaRealtimeIndex> {
  public:
-    /// Options use the lumina. prefix, removed internally. The vector field is LIST<FLOAT>.
+    /// Options use native Lumina keys such as index.dimension.
     static Result<std::shared_ptr<LuminaRealtimeIndex>> Create(
         const std::shared_ptr<arrow::Schema>& schema,
-        const std::map<std::string, std::string>& options, const std::shared_ptr<MemoryPool>& pool);
+        const std::map<std::string, std::string>& lumina_options,
+        const std::shared_ptr<MemoryPool>& pool);
 
     ~LuminaRealtimeIndex() override;
 

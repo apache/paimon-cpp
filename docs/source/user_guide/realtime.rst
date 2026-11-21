@@ -440,8 +440,9 @@ In-memory and disk indexes are configured independently. Use
 Real-time Vector Search
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Build with ``-DPAIMON_ENABLE_LUMINA=ON`` for ``LIST<FLOAT>`` vector indexes
-using ``bruteforce`` or ``flatnsw`` with ``rawf32`` encoding:
+Build with ``-DPAIMON_ENABLE_LUMINA=ON`` to enable real-time Lumina vector search.
+For Lumina options and limits, see ``docs/api/Streamer.md`` and ``docs/reference``
+in the Lumina release package.
 
 .. code-block:: text
 
@@ -451,17 +452,17 @@ using ``bruteforce`` or ``flatnsw`` with ``rawf32`` encoding:
    realtime.index.lumina.embedding.distance.metric = l2
    realtime.index.lumina.embedding.encoding.type = rawf32
 
-For disk indexes, repeat these settings with the ``file-index.lumina`` prefix,
-keeping dimension and distance metric consistent. Append deduplicate mode also
-requires ``_REALTIME_OFFSET`` in ``file-index.bitmap.columns``.
+Queries over both memory and disk require ``realtime.index.lumina.columns`` and
+``file-index.lumina.columns``, each with its own per-column options. Keep dimension
+and distance metric consistent; other options can differ.
 
 Use ``ReadContextBuilder::EnablePreciseFileIndexEvaluate(true)`` with
 ``SetVectorSearch()``. Keep scalar predicate fields in the read projection and
 project ``_embedding_INDEX_SCORE`` for scores. Scalar filters, including those
 without indexes, and committed or pending DVs are applied before vector TopK.
 
-TopK is per memory segment or data file; apply global ranking in the calling
-engine.
+The table reader returns global TopK across the disk files and memory segments
+in all splits supplied to ``TableRead::CreateReader()``.
 Real-time vector tag predicates are unsupported.
 
 Implementation by Mode

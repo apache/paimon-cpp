@@ -29,13 +29,16 @@
 #include <vector>
 
 #include "arrow/api.h"
+#include "arrow/ipc/json_simple.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/catalog/table.h"
 #include "paimon/common/catalog/catalog_context.h"
 #include "paimon/common/data/binary_row.h"
+#include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/reader/reader_utils.h"
+#include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/operation/abstract_split_read.h"
@@ -45,6 +48,7 @@
 #include "paimon/core/table/source/append_only_table_read.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/key_value_table_read.h"
+#include "paimon/core/table/source/topk_batch_reader.h"
 #include "paimon/defs.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/predicate/full_text_match.h"
@@ -57,6 +61,7 @@
 #include "paimon/status.h"
 #include "paimon/table/format/format_table.h"
 #include "paimon/table/source/table_scan.h"
+#include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/mock/mock_search_file_index.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/counting_reader_file_system.h"
@@ -261,6 +266,40 @@ TEST(TableReadTest, TestRootTopKEmptyInput) {
                          read->CreateReader(std::vector<std::shared_ptr<Split>>{}));
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch eof, empty->NextBatch());
     ASSERT_TRUE(BatchReader::IsEofBatch(eof));
+}
+
+TEST(TableReadTest, TestRootTopKCombinesDifferentFieldNullability) {
+    const std::string score_name = "_embedding_INDEX_SCORE";
+    auto pool = GetArrowPool(GetDefaultPool());
+    for (bool project_score : {false, true}) {
+        SCOPED_TRACE(project_score);
+        std::vector<std::unique_ptr<BatchReader>> readers;
+        for (bool nullable : {false, true}) {
+            auto type = arrow::struct_({arrow::field("id", arrow::int64(), nullable),
+                                        arrow::field(score_name, arrow::float32(), nullable)});
+            auto data = arrow::ipc::internal::json::ArrayFromJSON(
+                type, nullable ? "[[3,3],[4,2]]" : "[[1,4],[2,1]]");
+            ASSERT_TRUE(data.ok()) << data.status().ToString();
+            readers.push_back(std::make_unique<MockFileBatchReader>(data.ValueOrDie(), type, 1));
+        }
+        arrow::FieldVector fields{arrow::field("id", arrow::int64(), /*nullable=*/false)};
+        if (project_score) {
+            fields.push_back(arrow::field(score_name, arrow::float32()));
+        }
+        auto reader = std::make_unique<TopKBatchReader>(
+            std::make_unique<ConcatBatchReader>(std::move(readers), pool), score_name,
+            TopKBatchReader::ScoreOrder::ASCENDING, /*limit=*/3, /*batch_size=*/1,
+            arrow::schema(fields), pool);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                             ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_NE(nullptr, actual);
+        fields[0] = fields[0]->WithNullable(true);
+        auto expected = arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_(fields), project_score ? "[[2,1],[4,2],[3,3]]" : "[[2],[4],[3]]");
+        ASSERT_TRUE(expected.ok()) << expected.status().ToString();
+        ASSERT_TRUE(actual->Equals(std::make_shared<arrow::ChunkedArray>(expected.ValueOrDie())))
+            << actual->ToString();
+    }
 }
 
 TEST(TableReadTest, TestRootTopKRejectsFallbackBranch) {

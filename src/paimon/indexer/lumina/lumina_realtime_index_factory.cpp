@@ -24,7 +24,6 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/indexer/lumina/lumina_realtime_index.h"
-#include "paimon/indexer/lumina/lumina_utils.h"
 
 namespace paimon::lumina {
 
@@ -44,12 +43,8 @@ Result<std::shared_ptr<RealtimeIndex>> LuminaRealtimeIndexFactory::Create(
     const std::string prefix = "realtime.index.lumina." + schema->field(1)->name() + ".";
     const std::map<std::string, std::string> column_options =
         OptionsUtils::FetchOptionsWithPrefix(prefix, options);
-    std::map<std::string, std::string> lumina_options;
-    for (const auto& [key, value] : column_options) {
-        lumina_options.emplace(std::string(LuminaDefines::kOptionKeyPrefix) + key, value);
-    }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeIndex> index,
-                           LuminaRealtimeIndex::Create(schema, lumina_options, pool));
+                           LuminaRealtimeIndex::Create(schema, column_options, pool));
     return index;
 }
 

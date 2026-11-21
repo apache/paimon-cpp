@@ -32,7 +32,6 @@
 #include "lumina/core/Constants.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
-#include "paimon/common/utils/options_utils.h"
 #include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/indexer/lumina/lumina_memory_pool.h"
 #include "paimon/indexer/lumina/lumina_utils.h"
@@ -52,7 +51,8 @@ LuminaRealtimeIndex::LuminaRealtimeIndex(
 LuminaRealtimeIndex::~LuminaRealtimeIndex() = default;
 
 Result<std::shared_ptr<LuminaRealtimeIndex>> LuminaRealtimeIndex::Create(
-    const std::shared_ptr<arrow::Schema>& schema, const std::map<std::string, std::string>& options,
+    const std::shared_ptr<arrow::Schema>& schema,
+    const std::map<std::string, std::string>& lumina_options,
     const std::shared_ptr<MemoryPool>& pool) {
     if (!pool) {
         return Status::Invalid("Lumina realtime index requires a memory pool");
@@ -63,8 +63,6 @@ Result<std::shared_ptr<LuminaRealtimeIndex>> LuminaRealtimeIndex::Create(
             arrow::Type::FLOAT) {
         return Status::Invalid("Lumina realtime index requires [offset, LIST<FLOAT>]");
     }
-    const std::map<std::string, std::string> lumina_options =
-        OptionsUtils::FetchOptionsWithPrefix(LuminaDefines::kOptionKeyPrefix, options);
     if (lumina_options.count(std::string(::lumina::core::kExtensionTagSchema))) {
         return Status::NotImplemented("Lumina realtime tags are not supported");
     }
