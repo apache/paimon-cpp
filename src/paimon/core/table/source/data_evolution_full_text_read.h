@@ -32,6 +32,7 @@
 #include "paimon/core/global_index/global_index_file_manager.h"
 #include "paimon/core/index/index_path_factory.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/snapshot.h"
 #include "paimon/core/table/source/index_full_text_search_split_impl.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/executor.h"
@@ -72,12 +73,15 @@ class DataEvolutionFullTextRead : public FullTextRead {
     /// Checks query authorization and binds BLOB field options to the selected schema.
     static Status BindSchemaOptions(const TableSchema& schema,
                                     const std::map<std::string, std::string>& option_overrides,
-                                    CoreOptions* options);
+                                    CoreOptions* options, const char* search = "Full-text search");
 
     using FullTextRead::Read;
 
     Result<std::shared_ptr<ScoredGlobalIndexResult>> Read(
         const std::vector<std::shared_ptr<FullTextSearchSplit>>& splits) override;
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> Read(
+        const std::vector<std::shared_ptr<FullTextSearchSplit>>& splits,
+        const std::optional<Snapshot>& planned_snapshot);
 
     /// Returns the row ids that `split` ranks, as Java `DataEvolutionFullTextRead#includeRowIds`
     /// does: its search row ranges, intersected with `eligible_rows` if not null, which are the
@@ -103,17 +107,18 @@ class DataEvolutionFullTextRead : public FullTextRead {
 
     Result<std::shared_ptr<ScoredGlobalIndexResult>> SearchSplits(
         const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits,
-        int64_t snapshot_id, const RowRangeIndex& raw_rows,
-        const std::string& raw_index_type) const;
+        int64_t snapshot_id, const std::optional<Snapshot>& planned_snapshot,
+        const RowRangeIndex& raw_rows, const std::string& raw_index_type) const;
 
     Result<std::optional<RoaringBitmap64>> LiveRows(
         const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits,
-        int64_t snapshot_id) const;
+        int64_t snapshot_id, const std::optional<Snapshot>& planned_snapshot) const;
 
     /// Returns nullopt when the live-row filter alone determines which indexed rows can rank.
     Result<std::optional<RoaringBitmap64>> MatchedRows(
         const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits,
-        int64_t snapshot_id, const std::optional<RoaringBitmap64>& live_rows) const;
+        int64_t snapshot_id, const std::optional<Snapshot>& planned_snapshot,
+        const std::optional<RoaringBitmap64>& live_rows) const;
 
     static std::vector<Range> CollectSearchRanges(
         const std::vector<std::shared_ptr<IndexFullTextSearchSplitImpl>>& index_splits);

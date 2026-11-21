@@ -86,6 +86,7 @@ set(PAIMON_COMMON_SRCS
     common/fs/credential_provider_factory.cpp
     common/fs/file_system_factory.cpp
     common/global_index/union_global_index_reader.cpp
+    common/global_index/hybrid_search_ranker.cpp
     common/global_index/scored_global_index_result_utils.cpp
     common/global_index/offset_global_index_reader.cpp
     common/global_index/bitmap_scored_global_index_result.cpp
@@ -512,6 +513,9 @@ set(PAIMON_CORE_SRCS
     core/table/source/data_evolution_full_text_read.cpp
     core/table/source/data_evolution_full_text_scan.cpp
     core/table/source/filtered_row_id_reader.cpp
+    core/table/source/hybrid_search_builder.cpp
+    core/table/source/table_search_context.cpp
+    core/table/source/vector_search_builder.cpp
     core/table/source/full_text_search_builder.cpp
     core/table/source/full_text_search_split.cpp
     core/table/source/raw_full_text_read_impl.cpp
@@ -699,6 +703,7 @@ if(PAIMON_BUILD_TESTS)
                     common/file_index/bloomfilter/fast_hash_test.cpp
                     common/global_index/global_index_result_test.cpp
                     common/global_index/global_index_utils_test.cpp
+                    common/global_index/hybrid_search_ranker_test.cpp
                     common/global_index/offset_global_index_reader_test.cpp
                     common/global_index/union_global_index_reader_test.cpp
                     common/global_index/global_indexer_factory_test.cpp
@@ -1088,6 +1093,7 @@ if(PAIMON_BUILD_TESTS)
                     core/table/source/data_evolution_full_text_scan_test.cpp
                     core/table/source/filtered_row_id_reader_test.cpp
                     core/table/source/full_text_search_split_test.cpp
+                    core/table/source/hybrid_search_builder_test.cpp
                     core/table/source/data_split_test.cpp
                     core/table/source/deletion_file_test.cpp
                     core/table/source/split_generator_test.cpp

@@ -88,6 +88,9 @@ class FileStoreTable : public Table {
         return identifier_.GetFullName();
     }
 
+    Result<std::unique_ptr<HybridSearchBuilder>> NewHybridSearchBuilder() const override;
+    Result<std::unique_ptr<VectorSearchBuilder>> NewVectorSearchBuilder() const override;
+
     Result<std::unique_ptr<TableScan>> NewScan(std::unique_ptr<ScanContext> context) const override;
 
     Result<std::unique_ptr<TableRead>> NewRead(std::unique_ptr<ReadContext> context) const override;
@@ -100,6 +103,7 @@ class FileStoreTable : public Table {
 
  private:
     friend class TableFactory;
+    friend struct TableSearchSettings;
     // Only the legacy static factory may use its context to load the fallback branch.
     bool loaded_from_read_context_ = false;
 

@@ -64,6 +64,26 @@ Interface
    :members:
    :undoc-members:
 
+.. doxygenclass:: paimon::HybridSearchBuilder
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: paimon::HybridSearchRanker
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: paimon::VectorSearchBuilder
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: paimon::VectorScan
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: paimon::VectorRead
+   :members:
+   :undoc-members:
+
 .. doxygenclass:: paimon::FullTextSearchBuilder
    :members:
    :undoc-members:

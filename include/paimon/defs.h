@@ -645,20 +645,24 @@ struct PAIMON_EXPORT Options {
     /// search the gaps if a selected partition has a full-text index for the column.
     /// Defaults to "global-index.search-mode", then "fast".
     static const char FULL_TEXT_INDEX_SEARCH_MODE[];
-    /// "scalar-index.search-mode" - Controls row filtering on full-text index shards. "fast"
-    /// uses scalar index candidates. "full" and "detail" also read the filter columns for gaps
-    /// in scalar index coverage. Defaults to "global-index.search-mode", then "fast".
+    /// "scalar-index.search-mode" - Controls row filtering on search shards. "fast" uses scalar
+    /// index candidates. For full-text search, "full" and "detail" also read the filter columns
+    /// for gaps in scalar index coverage. Vector search supports "fast".
+    /// Defaults to "global-index.search-mode", then "fast".
     static const char SCALAR_INDEX_SEARCH_MODE[];
-    /// "vector-index.search-mode" - Reserved for table-level vector search. Accepts "fast",
-    /// "full" or "detail". Defaults to "global-index.search-mode", then "fast".
+    /// "vector-index.search-mode" - Vector search coverage. Defaults to "global-index.search-mode"
+    /// or "fast". Table-level vector searches currently support "fast".
     static const char VECTOR_INDEX_SEARCH_MODE[];
+    /// "vector-index.post-filter.candidates-factor" - Positive multiplier of the vector route's
+    /// top-k when candidate rows must be checked against table data. Defaults to 10.
+    static const char VECTOR_INDEX_POST_FILTER_CANDIDATES_FACTOR[];
     /// "global-index.filter.refine-from-data" - Whether a vector, hybrid or full-text search may
     /// read the filter columns of candidate rows to verify a row filter that the scalar global
     /// index can only answer with a superset, such as contains, ends-with or like on a BTree index
     /// or a conjunction with a member no index can evaluate. When false, such candidates are
     /// excluded from the search, which never returns a non-matching row but may return fewer than
     /// the requested top-k. When true, the read runs on the caller and may cover every candidate
-    /// row. Default value is "false". Paimon C++ reads it only in full-text search so far.
+    /// row. Default value is "false".
     static const char GLOBAL_INDEX_FILTER_REFINE_FROM_DATA[];
     /// "pk-btree.index.columns" - Comma-separated columns indexed by primary-key BTree indexes.
     /// No default value.

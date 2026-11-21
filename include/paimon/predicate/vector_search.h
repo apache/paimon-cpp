@@ -101,5 +101,9 @@ struct PAIMON_EXPORT VectorSearch {
     /// If null, the search uses the reader's pool. Must support concurrent allocations when
     /// the search runs in parallel or the pool is shared by concurrent queries.
     std::shared_ptr<MemoryPool> pool;
+
+    /// Requests higher-is-better similarity scores from global index readers for table-level
+    /// ranking. Low-level callers receive the backend's native scores by default.
+    bool return_similarity_score = false;
 };
 }  // namespace paimon

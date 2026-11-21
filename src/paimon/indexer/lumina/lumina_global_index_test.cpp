@@ -341,6 +341,39 @@ TEST_P(LuminaGlobalIndexBackendTest, TestSimple) {
     }
 }
 
+TEST_F(LuminaGlobalIndexTest, NativeAndTableSearchScores) {
+    auto data = arrow::ipc::internal::json::ArrayFromJSON(
+        data_type_, R"([[[2,0,0,0]], [[0,2,0,0]], [[-1,0,0,0]]])");
+    ASSERT_TRUE(data.ok()) << data.status();
+    struct MetricScores {
+        std::string metric;
+        std::vector<float> native;
+        std::vector<float> similarity;
+    };
+    for (const auto& [metric, native, similarity] :
+         std::vector<MetricScores>{{"l2", {0, 8, 9}, {1, 1.0f / 9, 0.1f}},
+                                   {"cosine", {0, 1, 2}, {1, 0, -1}},
+                                   {"inner_product", {4, 0, -2}, {4, 0, -2}}}) {
+        SCOPED_TRACE(metric);
+        auto dir = paimon::test::UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        auto options = options_;
+        options["lumina.distance.metric"] = metric;
+        ASSERT_OK_AND_ASSIGN(GlobalIndexIOMeta meta,
+                             WriteGlobalIndex(dir->Str(), data_type_, options, *data, Range(0, 2)));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> reader,
+                             CreateGlobalIndexReader(dir->Str(), data_type_, options, meta));
+        auto search = std::make_shared<VectorSearch>("f0", 3, std::vector<float>{2, 0, 0, 0},
+                                                     nullptr, nullptr, std::nullopt, options);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredGlobalIndexResult> result,
+                             reader->VisitVectorSearch(search));
+        CheckResult(result, {0, 1, 2}, native);
+        search->return_similarity_score = true;
+        ASSERT_OK_AND_ASSIGN(result, reader->VisitVectorSearch(search));
+        CheckResult(result, {0, 1, 2}, similarity);
+    }
+}
+
 TEST_P(LuminaGlobalIndexBackendTest, TestWithFilter) {
     auto test_root_dir = paimon::test::UniqueTestDirectory::Create();
     ASSERT_TRUE(test_root_dir);

@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,7 @@
 #include "paimon/common/types/data_field.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/snapshot.h"
 #include "paimon/executor.h"
 #include "paimon/global_index/global_index_result.h"
 #include "paimon/global_index/io/global_index_file_reader.h"
@@ -71,9 +73,9 @@ class RawFullTextReadImpl {
                         const std::shared_ptr<Executor>& executor,
                         const std::shared_ptr<MemoryPool>& pool);
 
-    Result<std::shared_ptr<ScoredGlobalIndexResult>> Search(int64_t snapshot_id,
-                                                            const std::string& index_type,
-                                                            const RowRangeIndex& raw_rows) const;
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> Search(
+        int64_t snapshot_id, const std::optional<Snapshot>& planned_snapshot,
+        const std::string& index_type, const RowRangeIndex& raw_rows) const;
 
  private:
     std::string root_path_;

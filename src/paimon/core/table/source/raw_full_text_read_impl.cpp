@@ -200,7 +200,8 @@ RawFullTextReadImpl::RawFullTextReadImpl(const std::string& root_path,
       pool_(pool) {}
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> RawFullTextReadImpl::Search(
-    int64_t snapshot_id, const std::string& index_type, const RowRangeIndex& raw_rows) const {
+    int64_t snapshot_id, const std::optional<Snapshot>& planned_snapshot,
+    const std::string& index_type, const RowRangeIndex& raw_rows) const {
     if (raw_rows.Ranges().empty()) {
         return EmptyResult();
     }
@@ -212,8 +213,9 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> RawFullTextReadImpl::Search(
             "indexer that supports full-text search",
             index_type));
     }
-    PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot,
-                           FilteredRowIdReader::LoadSnapshot(options_, root_path_, snapshot_id));
+    PAIMON_ASSIGN_OR_RAISE(
+        Snapshot snapshot,
+        FilteredRowIdReader::LoadSnapshot(options_, root_path_, snapshot_id, planned_snapshot));
     auto index_schema = DataField::ConvertDataFieldsToArrowSchema({text_field_});
     auto files = std::make_shared<InMemoryGlobalIndexFiles>(pool_);
     std::shared_ptr<GlobalIndexWriter> writer;

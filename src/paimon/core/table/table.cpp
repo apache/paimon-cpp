@@ -18,6 +18,9 @@
 
 #include "paimon/catalog/table.h"
 
+#include "paimon/table/source/hybrid_search_builder.h"
+#include "paimon/table/source/vector_search_builder.h"
+
 namespace paimon {
 Table::Table(const std::shared_ptr<FileSystem>& file_system, const std::string& root_path,
              const std::shared_ptr<Schema>& schema, const Identifier& identifier,
@@ -27,4 +30,12 @@ Table::Table(const std::shared_ptr<FileSystem>& file_system, const std::string& 
       schema_(schema),
       identifier_(identifier),
       uuid_(uuid) {}
+
+Result<std::unique_ptr<HybridSearchBuilder>> Table::NewHybridSearchBuilder() const {
+    return Status::NotImplemented("Hybrid search requires a managed table");
+}
+
+Result<std::unique_ptr<VectorSearchBuilder>> Table::NewVectorSearchBuilder() const {
+    return Status::NotImplemented("Vector search requires a managed table");
+}
 }  // namespace paimon

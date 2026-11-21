@@ -37,6 +37,16 @@ LuminaIndexSearcher::~LuminaIndexSearcher() {
     [[maybe_unused]] ::lumina::core::Status status = searcher_->Close();
 }
 
+float LuminaIndexSearcher::ToSimilarityScore(float value) const {
+    if (index_info_.distance_type == VectorSearch::DistanceType::EUCLIDEAN) {
+        return 1.0f / (1.0f + value);
+    }
+    if (index_info_.distance_type == VectorSearch::DistanceType::COSINE) {
+        return 1.0f - value;
+    }
+    return value;
+}
+
 Result<std::unique_ptr<LuminaIndexSearcher>> LuminaIndexSearcher::Open(
     const std::map<std::string, std::string>& lumina_options, const LuminaIndexInfo& index_info,
     const std::shared_ptr<InputStream>& input, const std::shared_ptr<LuminaMemoryPool>& pool) {

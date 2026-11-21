@@ -175,6 +175,9 @@ TEST_F(GlobalIndexUtilsTest, TestRowIdsOfAndWithin) {
     ASSERT_EQ(GlobalIndexUtils::RowIdsWithin(row_ids, Range(8, max_row_id)),
               RoaringBitmap64::From({10, max_row_id}));
     ASSERT_EQ(GlobalIndexUtils::RowIdsWithin(row_ids, Range(4, 6)), RoaringBitmap64());
+    ASSERT_EQ(GlobalIndexUtils::RowIdsWithin(row_ids, std::vector<Range>{}), RoaringBitmap64());
+    ASSERT_EQ(GlobalIndexUtils::RowIdsWithin(row_ids, {Range(3, 3), Range(10, max_row_id)}),
+              RoaringBitmap64::From({3, 10, max_row_id}));
     ASSERT_EQ(row_ids, RoaringBitmap64::From({0, 3, 7, 10, max_row_id}));
 }
 

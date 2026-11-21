@@ -90,6 +90,12 @@ class PAIMON_EXPORT GlobalIndexer {
     virtual bool SupportsFullTextSearch() const {
         return false;
     }
+
+    /// Whether the primary field supports table-level vector search. Its readers must honor
+    /// `VectorSearch::return_similarity_score` so the caller can rank hits across shards.
+    virtual bool SupportsVectorSearch() const {
+        return false;
+    }
 };
 
 }  // namespace paimon

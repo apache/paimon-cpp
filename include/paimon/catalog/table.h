@@ -36,6 +36,8 @@ namespace paimon {
 class CommitContext;
 class FileStoreCommit;
 class FileStoreWrite;
+class HybridSearchBuilder;
+class VectorSearchBuilder;
 class ReadContext;
 class ScanContext;
 class TableRead;
@@ -98,6 +100,11 @@ class PAIMON_EXPORT Table {
     /// Creates a commit using this table's schema and options.
     virtual Result<std::unique_ptr<FileStoreCommit>> NewCommit(
         std::unique_ptr<CommitContext> context) const = 0;
+
+    /// Creates a hybrid search bound to the table's branch. Search requires data evolution.
+    virtual Result<std::unique_ptr<HybridSearchBuilder>> NewHybridSearchBuilder() const;
+    /// Creates a vector search bound to the table's branch. Search requires data evolution.
+    virtual Result<std::unique_ptr<VectorSearchBuilder>> NewVectorSearchBuilder() const;
 
  protected:
     /// @param file_system File system the table's data is accessed through.

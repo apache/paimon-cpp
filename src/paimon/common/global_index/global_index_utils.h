@@ -36,6 +36,20 @@ class GlobalIndexUtils {
     GlobalIndexUtils() = delete;
     ~GlobalIndexUtils() = delete;
 
+    static Result<RoaringBitmap64> ToBitmap(const std::shared_ptr<GlobalIndexResult>& result) {
+        if (auto bitmap_result = std::dynamic_pointer_cast<BitmapGlobalIndexResult>(result)) {
+            PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap64* bitmap, bitmap_result->GetBitmap());
+            return *bitmap;
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<GlobalIndexResult::Iterator> iterator,
+                               result->CreateIterator());
+        RoaringBitmap64 bitmap;
+        while (iterator->HasNext()) {
+            bitmap.Add(iterator->Next());
+        }
+        return bitmap;
+    }
+
     /// Unions non-null results, returning nullptr for an empty vector.
     /// Bitmap results are merged in one batch; other results use their virtual Or methods.
     static Result<std::shared_ptr<GlobalIndexResult>> UnionResults(
@@ -110,6 +124,20 @@ class GlobalIndexUtils {
             // RemoveRange leaves out its end, so the largest int64 value is removed on its own.
             result.RemoveRange(range.to + 1, RoaringBitmap64::MAX_VALUE);
             result -= RoaringBitmap64::From({RoaringBitmap64::MAX_VALUE});
+        }
+        return result;
+    }
+
+    /// Intersects a bitmap with sorted, disjoint row ranges.
+    static RoaringBitmap64 RowIdsWithin(const RoaringBitmap64& row_ids,
+                                        const std::vector<Range>& ranges) {
+        if (ranges.empty()) {
+            return RoaringBitmap64();
+        }
+        RoaringBitmap64 result =
+            RowIdsWithin(row_ids, Range(ranges.front().from, ranges.back().to));
+        for (size_t i = 1; i < ranges.size(); ++i) {
+            result.RemoveRange(ranges[i - 1].to + 1, ranges[i].from);
         }
         return result;
     }
