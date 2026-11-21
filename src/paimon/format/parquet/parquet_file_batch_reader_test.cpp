@@ -686,6 +686,7 @@ TEST_F(ParquetFileBatchReaderTest, ReleasesUnpublishedBatchWhenMetricsFail) {
                            "parquet/parquet_append_table.db/parquet_append_table/bucket-0/"
                            "data-9ea62f34-1dca-49c1-bf7a-d37303d8fb76-0.parquet";
     const auto initial_bytes = pool_->bytes_allocated();
+    const auto initial_export_bytes = arrow::default_memory_pool()->bytes_allocated();
     auto metrics = std::make_shared<FailingReadMetrics>();
     auto reader =
         PrepareParquetFileBatchReader(file_name, schema_, /*predicate=*/nullptr,
@@ -699,6 +700,7 @@ TEST_F(ParquetFileBatchReaderTest, ReleasesUnpublishedBatchWhenMetricsFail) {
     reader->Close();
     reader.reset();
     EXPECT_EQ(pool_->bytes_allocated(), initial_bytes);
+    EXPECT_EQ(arrow::default_memory_pool()->bytes_allocated(), initial_export_bytes);
 
     auto retry = PrepareParquetFileBatchReader(file_name, schema_, /*predicate=*/nullptr,
                                                /*selection_bitmap=*/std::nullopt, /*batch_size=*/1);
@@ -713,6 +715,7 @@ TEST_F(ParquetFileBatchReaderTest, ReleasesUnpublishedBatchWhenMetricsFail) {
     retry->Close();
     retry.reset();
     EXPECT_EQ(pool_->bytes_allocated(), initial_bytes);
+    EXPECT_EQ(arrow::default_memory_pool()->bytes_allocated(), initial_export_bytes);
 }
 
 TEST_F(ParquetFileBatchReaderTest, TestNextBatchWithTargetSchema) {
