@@ -75,7 +75,7 @@ class RealtimeIndexTest : public testing::Test {
 
     Result<std::optional<RoaringBitmap64>> Evaluate(const std::shared_ptr<Predicate>& predicate,
                                                     const OffsetRange& range) const {
-        return RealtimeIndexEvaluator::Evaluate(index_, predicate, range);
+        return RealtimeIndexEvaluator::Evaluate(index_, predicate, range, GetDefaultPool());
     }
 
     Status Add(const std::string& json, const OffsetRange& range) const {
@@ -240,9 +240,9 @@ TEST_F(RealtimeIndexTest, FieldReadersBindIndependentRangesAndShareAppendOnlyPos
     std::shared_ptr<RealtimeIndex> key_index = std::move(key_indexes[0]);
     ASSERT_NE(key_index, value_indexes[0]);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeIndexReader> first,
-                         key_index->CreateReader(OffsetRange(10, 14)));
+                         key_index->CreateReader(OffsetRange(10, 14), GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeIndexReader> second,
-                         key_index->CreateReader(OffsetRange(20, 21)));
+                         key_index->CreateReader(OffsetRange(20, 21), GetDefaultPool()));
     ASSERT_OK(Add(R"([[25, 1, "d"]])", OffsetRange(25, 26)));
     ASSERT_OK_AND_ASSIGN(std::optional<RoaringBitmap64> candidates,
                          first->VisitEqual(Literal(int64_t{1})));
@@ -252,7 +252,7 @@ TEST_F(RealtimeIndexTest, FieldReadersBindIndependentRangesAndShareAppendOnlyPos
     ASSERT_TRUE(candidates.has_value());
     ASSERT_EQ(RoaringBitmap64::From({20}), *candidates);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeIndexReader> later,
-                         key_index->CreateReader(OffsetRange(25, 26)));
+                         key_index->CreateReader(OffsetRange(25, 26), GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(candidates, later->VisitEqual(Literal(int64_t{1})));
     ASSERT_TRUE(candidates.has_value());
     ASSERT_EQ(RoaringBitmap64::From({25}), *candidates);
@@ -261,10 +261,10 @@ TEST_F(RealtimeIndexTest, FieldReadersBindIndependentRangesAndShareAppendOnlyPos
     ASSERT_EQ(RoaringBitmap64::From({10}), *candidates);
     ASSERT_OK_AND_ASSIGN(candidates, first->VisitGreaterThan(Literal(int64_t{0})));
     ASSERT_FALSE(candidates.has_value());
-    ASSERT_NOK(key_index->CreateReader(OffsetRange(-1, 20)));
-    ASSERT_NOK(key_index->CreateReader(OffsetRange(20, 10)));
+    ASSERT_NOK(key_index->CreateReader(OffsetRange(-1, 20), GetDefaultPool()));
+    ASSERT_NOK(key_index->CreateReader(OffsetRange(20, 10), GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeIndexReader> empty,
-                         key_index->CreateReader(OffsetRange(10, 10)));
+                         key_index->CreateReader(OffsetRange(10, 10), GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(candidates, empty->VisitEqual(Literal(int64_t{1})));
     ASSERT_TRUE(candidates.has_value());
     ASSERT_TRUE(candidates->IsEmpty());
@@ -325,7 +325,7 @@ TEST_F(RealtimeIndexTest, FactoryAcceptsOnlyOneIndexedFieldAndReaderNeedsNoField
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeIndex> index,
                          RealtimeIndexFactory::Get("hash", &c_schema, {}, GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeIndexReader> reader,
-                         index->CreateReader(OffsetRange(0, 10)));
+                         index->CreateReader(OffsetRange(0, 10), GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(std::optional<RoaringBitmap64> candidates,
                          reader->VisitEqual(Literal(int64_t{1})));
     ASSERT_TRUE(candidates.has_value());
@@ -343,7 +343,7 @@ TEST_F(RealtimeIndexTest, FactoryAcceptsOnlyOneIndexedFieldAndReaderNeedsNoField
     ASSERT_TRUE(arrow::ExportArray(*data, &batch).ok());
     ScopeGuard batch_guard([&batch]() { ArrowArrayRelease(&batch); });
     ASSERT_OK(index->AddBatch(&batch));
-    ASSERT_OK_AND_ASSIGN(reader, index->CreateReader(OffsetRange(11, 31)));
+    ASSERT_OK_AND_ASSIGN(reader, index->CreateReader(OffsetRange(11, 31), GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(candidates, reader->VisitEqual(Literal(int64_t{1})));
     ASSERT_TRUE(candidates.has_value());
     ASSERT_EQ(RoaringBitmap64::From({30}), *candidates);
@@ -369,7 +369,7 @@ TEST_F(RealtimeIndexTest, IndexesTimeField) {
     ASSERT_OK(index->AddBatch(&batch));
 
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeIndexReader> reader,
-                         index->CreateReader(OffsetRange(0, 41)));
+                         index->CreateReader(OffsetRange(0, 41), GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(std::optional<RoaringBitmap64> candidates,
                          reader->VisitEqual(Literal(FieldType::TIME, 45296123)));
     ASSERT_TRUE(candidates.has_value());

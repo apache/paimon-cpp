@@ -585,7 +585,8 @@ class ArrowRealtimeStore::AppendQueryBatchReader : public BatchReader {
                     RealtimeIndexEvaluator::Evaluate(
                         segment->GetIndex(), predicate_,
                         OffsetRange(std::max(segment_range.begin, offset_range_.begin),
-                                    std::min(segment_range.end, offset_range_.end))));
+                                    std::min(segment_range.end, offset_range_.end)),
+                        memory_pool_));
                 if (indexed) {
                     if (candidates_) {
                         *candidates_ &= *indexed;
@@ -802,12 +803,12 @@ class ArrowRealtimeStore::IndexReadSource final : public RealtimeIndexReadSource
     }
 
     Result<std::vector<std::shared_ptr<RealtimeIndexReader>>> CreateIndexReaders(
-        const std::string& field_name) const override {
+        const std::string& field_name, const std::shared_ptr<MemoryPool>& pool) const override {
         std::vector<std::shared_ptr<RealtimeIndexReader>> readers;
         if (segment_->GetIndex()) {
             for (const auto& index : segment_->GetIndex()->FindIndexes(field_name)) {
                 PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeIndexReader> reader,
-                                       index->CreateReader(offset_range_));
+                                       index->CreateReader(offset_range_, pool));
                 if (reader) {
                     readers.push_back(std::move(reader));
                 }

@@ -25,6 +25,8 @@ if(PAIMON_ENABLE_LUMINA)
         lumina_index_accumulator.cpp
         lumina_index_options.cpp
         lumina_index_searcher.cpp
+        lumina_realtime_index.cpp
+        lumina_realtime_index_factory.cpp
         lumina_tag_utils.cpp)
     add_paimon_lib(paimon_lumina_index
                    SOURCES
@@ -50,6 +52,7 @@ if(PAIMON_ENABLE_LUMINA)
                         lumina_file_index_test.cpp
                         lumina_file_io_test.cpp
                         lumina_global_index_test.cpp
+                        lumina_realtime_index_test.cpp
                         EXTRA_INCLUDES
                         ${LUMINA_INCLUDE_DIR}
                         STATIC_LINK_LIBS

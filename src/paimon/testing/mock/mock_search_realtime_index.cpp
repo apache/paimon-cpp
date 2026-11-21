@@ -51,7 +51,7 @@ Status MockRealtimeIndex::AddBatch(::ArrowArray* batch) {
 }
 
 Result<std::shared_ptr<RealtimeIndexReader>> MockRealtimeIndex::CreateReader(
-    const OffsetRange& offset_range) const {
+    const OffsetRange& offset_range, const std::shared_ptr<MemoryPool>&) const {
     if (offset_range.begin < 0 || offset_range.begin > offset_range.end) {
         return Status::Invalid("Invalid mock real-time index reader bounds");
     }

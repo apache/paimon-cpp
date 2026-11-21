@@ -36,7 +36,7 @@ class LuminaInterfaceTest : public ::testing::Test {
                        const std::vector<::lumina::core::vector_id_t>& row_ids) const {
         auto fs = std::make_shared<LocalFileSystem>();
         std::shared_ptr<MemoryPool> paimon_pool = GetMemoryPool();
-        auto pool = std::make_shared<LuminaMemoryPool>(paimon_pool);
+        auto pool = std::make_shared<LuminaMemoryPool>(/*track_memory=*/false, paimon_pool);
         ::lumina::core::MemoryResourceConfig memory_resource(pool.get());
         {  // create writer
             ::lumina::api::BuilderOptions builder_options;
@@ -74,7 +74,7 @@ class LuminaInterfaceTest : public ::testing::Test {
         ASSERT_EQ(expected_row_ids.size(), expected_distances.size());
         auto fs = std::make_shared<LocalFileSystem>();
         std::shared_ptr<MemoryPool> paimon_pool = GetMemoryPool();
-        auto pool = std::make_shared<LuminaMemoryPool>(paimon_pool);
+        auto pool = std::make_shared<LuminaMemoryPool>(/*track_memory=*/false, paimon_pool);
         ::lumina::core::MemoryResourceConfig memory_resource(pool.get());
         {
             // create reader

@@ -27,7 +27,7 @@ namespace paimon {
 class InternalReadContext;
 
 /// Executes the same precise predicate/search plan as file reads, using pinned real-time offsets.
-/// TopK is source-local, matching the existing file-local search contract.
+/// Each source supplies TopK candidates; the table reader selects and sorts the global TopK.
 class PreciseRealtimeIndexRead {
  public:
     PreciseRealtimeIndexRead() = delete;
