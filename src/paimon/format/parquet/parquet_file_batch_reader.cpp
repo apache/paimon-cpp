@@ -30,6 +30,7 @@
 #include "arrow/array/array_nested.h"
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
+#include "arrow/c/helpers.h"
 #include "arrow/compute/api.h"
 #include "arrow/dataset/dataset.h"
 #include "arrow/dataset/file_base.h"
@@ -778,6 +779,10 @@ Result<BatchReader::ReadBatch> ParquetFileBatchReader::NextBatch() {
         PAIMON_RETURN_NOT_OK(GenerateRowMapping(array->length()));
         std::unique_ptr<ArrowArray> c_array = std::make_unique<ArrowArray>();
         std::unique_ptr<ArrowSchema> c_schema = std::make_unique<ArrowSchema>();
+        ScopeGuard release_roots([&]() {
+            ArrowArrayRelease(c_array.get());
+            ArrowSchemaRelease(c_schema.get());
+        });
         PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportArray(*array, c_array.get(), c_schema.get()));
         PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
 
@@ -786,6 +791,7 @@ Result<BatchReader::ReadBatch> ParquetFileBatchReader::NextBatch() {
         metrics_->SetCounter(ParquetMetrics::READ_ROWS, read_rows_);
         metrics_->SetCounter(ParquetMetrics::READ_BATCH_COUNT, read_batch_count_);
 
+        release_roots.Release();
         return make_pair(std::move(c_array), std::move(c_schema));
     }
     PAIMON_PARQUET_CATCH_AND_RETURN_STATUS("ParquetFileBatchReader::NextBatch")
