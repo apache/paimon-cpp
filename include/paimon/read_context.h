@@ -42,6 +42,7 @@ class FormatTable;
 class MemoryPool;
 class Predicate;
 class FileSystem;
+class FileStoreTable;
 class RealtimeContext;
 struct VectorSearch;
 
@@ -208,6 +209,8 @@ class PAIMON_EXPORT ReadContext {
     void SetReadSchema(std::unique_ptr<ArrowSchema> schema);
 
  private:
+    friend class FileStoreTable;
+
     std::string path_;
     std::string branch_;
     std::vector<std::string> read_field_names_;
