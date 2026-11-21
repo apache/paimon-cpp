@@ -195,7 +195,7 @@ Result<std::shared_ptr<ScoredRealtimeIndexResult>> LuminaRealtimeIndexReader::Vi
         if (hit.id > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
             return Status::Invalid("Lumina returned an out-of-range realtime offset");
         }
-        const int64_t offset = static_cast<int64_t>(hit.id);
+        const auto offset = static_cast<int64_t>(hit.id);
         if (offset < offset_range_.begin || offset >= offset_range_.end || offset <= previous) {
             return Status::Invalid("Lumina returned invalid or duplicate realtime offsets");
         }
