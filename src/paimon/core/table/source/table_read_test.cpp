@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "arrow/api.h"
+#include "arrow/c/bridge.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
 #include "paimon/catalog/identifier.h"
@@ -134,6 +135,45 @@ TEST(TableReadTest, TestReadWithSpecifiedInvalidSchema) {
     ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
     ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
                         "Get field field_no_exist failed: not exist in table schema");
+}
+
+TEST(TableReadTest, SuppliedManagedSchemaIsReleasedBeforeReading) {
+    const auto path = GetDataDir() + "/parquet/append_types_compatibility.db/rust_time_types";
+    LocalFileSystem fs;
+    std::string schema;
+    ASSERT_OK(fs.ReadFile(path + "/schema/schema-0", &schema));
+
+    ReadContextBuilder builder(path);
+    builder.SetReadFieldIds({0}).SetTableSchema("{");
+    ASSERT_OK_AND_ASSIGN(auto invalid_context, builder.Finish());
+    ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(invalid_context)), "deserialize failed");
+
+    builder.SetReadFieldIds({0}).SetTableSchema(schema);
+    ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+    ASSERT_EQ(context->GetSpecificTableSchema(), schema);
+    const auto* retained_context = context.get();
+    ASSERT_OK_AND_ASSIGN(auto read, TableRead::Create(std::move(context)));
+    // AppendOnlyTableRead retains this exact ReadContext through InternalReadContext.
+    ASSERT_NE(dynamic_cast<AppendOnlyTableRead*>(read.get()), nullptr);
+    EXPECT_FALSE(retained_context->GetSpecificTableSchema());
+
+    ScanContextBuilder scan_builder(path);
+    scan_builder.AddOption("scan.mode", "from-snapshot-full").AddOption("scan.snapshot-id", "1");
+    ASSERT_OK_AND_ASSIGN(auto scan_context, scan_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(scan_context)));
+    ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+    const auto splits = plan->Splits();
+    ASSERT_FALSE(splits.empty());
+    ASSERT_OK_AND_ASSIGN(auto reader, read->CreateReader(splits.front()));
+    ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
+    ASSERT_FALSE(BatchReader::IsEofBatch(batch));
+    const auto rows = arrow::ImportRecordBatch(batch.first.get(), batch.second.get());
+    ASSERT_TRUE(rows.ok()) << rows.status();
+    EXPECT_GT((*rows)->num_rows(), 0);
+    EXPECT_NE((*rows)->schema()->GetFieldByName("id"), nullptr);
+    EXPECT_EQ((*rows)->schema()->GetFieldByName("f_time_0"), nullptr);
+    EXPECT_FALSE(retained_context->GetSpecificTableSchema());
+    reader->Close();
 }
 
 TEST(TableReadTest, TestFullTextMatchReadEntryAndScoreValidation) {
