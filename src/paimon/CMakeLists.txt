@@ -605,6 +605,16 @@ if(PAIMON_BUILD_TESTS)
                         ${GTEST_LINK_TOOLCHAIN})
         target_link_options(paimon-executor-submission-test PRIVATE "LINKER:--wrap=_Znwm")
         set_tests_properties(paimon-executor-submission-test PROPERTIES TIMEOUT 30)
+
+        add_paimon_test(arrow_lifetime_failure_test
+                        SOURCES
+                        common/utils/arrow/arrow_lifetime_failure_test.cpp
+                        STATIC_LINK_LIBS
+                        paimon_static
+                        ${GTEST_LINK_TOOLCHAIN})
+        target_link_options(paimon-arrow-lifetime-failure-test PRIVATE
+                            "LINKER:--wrap=_Znwm")
+        set_tests_properties(paimon-arrow-lifetime-failure-test PROPERTIES TIMEOUT 30)
     endif()
 
     # The shared HTTP client is compiled only for the components that need libcurl,
