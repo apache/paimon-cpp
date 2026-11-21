@@ -104,22 +104,31 @@ respectively. Adjust ``target-file-size`` to move the threshold.
 
 Custom Compaction
 ~~~~~~~~~~~~~~~~~
-``FileStoreWrite::CompactFiles(partition, bucket, file_names)`` asynchronously
-rewrites selected files, accepting partition values, a bucket, and distinct data
-file basenames. As with ``Compact``, each partition-bucket restores the latest
-snapshot when its writer is initialized and reuses that state. Files need not be
-contiguous; compaction thresholds do not apply.
+``AppendFileCompaction::PrepareCommit(table_path, branch, partition, bucket,
+file_names, options, file_system, pool, executor)`` synchronously rewrites selected
+files and returns commit messages. Each call creates a dedicated batch writer
+and restores the latest snapshot for the specified partition-bucket. Input files
+must be distinct data file basenames. Files need not be contiguous; compaction
+thresholds do not apply.
 
 Supports fixed-bucket append tables with or without deletion vectors. Requires
-``bucket-append-ordered = false``, ``write-only = false`` and a dedicated writer
-with the full schema. Real-time mode and data evolution are unsupported.
+``bucket-append-ordered = false`` and ``write-only = false``. The internal writer
+always uses the full schema. Real-time mode and data evolution are unsupported.
 
-Use ``PrepareCommit`` to collect results and background errors, following the
-usual ``Compact`` waiting rules. Commit or abort the returned messages through
-``FileStoreCommit``.
+The call waits for compaction and closes its internal writer before returning.
+Commit or abort the returned messages through ``FileStoreCommit``. All arguments
+are explicit; pass an empty branch for main and ``nullptr`` for the default file
+system, memory pool or executor. Failures may leave orphan files for later cleanup.
 
-Do not update deletion vectors or run another compaction for the same
-partition-bucket until the custom compaction result is committed or discarded.
+With deletion vectors enabled, callers must serialize compactions within each
+partition-bucket, even when input files are disjoint. From the start of a compaction
+until its returned messages have been committed or discarded, do not start another
+compaction, update deletion vectors or overwrite the same partition-bucket.
+
+Without deletion vectors, compactions of disjoint input files may run concurrently
+in the same partition-bucket. For example, compacting ``f1, f2`` into ``a`` and
+``f3, f4`` into ``b`` is allowed. Overlapping compaction or overwrite that removes
+another task's input files may cause its commit to fail.
 
 Dictionary Passthrough
 ~~~~~~~~~~~~~~~~~~~~~~

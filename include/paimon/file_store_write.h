@@ -89,18 +89,6 @@ class PAIMON_EXPORT FileStoreWrite {
     virtual Status Compact(const std::map<std::string, std::string>& partition, int32_t bucket,
                            bool full_compaction) = 0;
 
-    /// Asynchronously compacts requested files from the writer's restored state, as with Compact().
-    /// Supports fixed-bucket append tables with or without deletion vectors.
-    /// Requires bucket-append-ordered=false, write-only=false and the full write schema.
-    /// Use a dedicated writer. Real-time mode and data evolution are unsupported.
-    /// Accepts complete partition values and distinct data file basenames.
-    /// Files need not be contiguous.
-    /// Collect results and background errors through PrepareCommit(), as with Compact().
-    /// Do not update deletion vectors or compact the same partition-bucket until commit or discard.
-    /// TODO(xinyu.lxy): Consider extracting this API into a separate interface.
-    virtual Status CompactFiles(const std::map<std::string, std::string>& partition, int32_t bucket,
-                                const std::vector<std::string>& file_names);
-
     /// Generate a list of commit messages with the latest generated data file meta
     /// information of the current snapshot.
     ///
