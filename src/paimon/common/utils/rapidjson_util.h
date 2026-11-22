@@ -93,8 +93,7 @@ class RapidJsonUtil {
             PAIMON_ASSIGN_OR_RAISE(*obj, MapFromJsonString(json_str.data(), diagnostic));
         } else {
             rapidjson::Document doc;
-            doc.Parse(json_str.data());
-            if (doc.HasParseError()) {
+            if (!FromJson(json_str.data(), &doc)) {
                 return Status::Invalid("deserialize failed: ", diagnostic);
             }
             try {
@@ -143,6 +142,15 @@ class RapidJsonUtil {
         }
         *json_str = buffer.GetString();
         return true;
+    }
+
+    static inline bool FromJson(const std::string& json_str, rapidjson::Document* doc) {
+        return FromJson(json_str.c_str(), doc);
+    }
+
+    static inline bool FromJson(const char* json_str, rapidjson::Document* doc) {
+        doc->Parse(json_str);
+        return !doc->HasParseError();
     }
 
     template <typename T>

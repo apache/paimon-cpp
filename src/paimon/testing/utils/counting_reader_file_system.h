@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -56,21 +57,21 @@ class CountingReaderFileSystem : public LocalFileSystem {
             PAIMON_RETURN_NOT_OK(before_open(path));
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input, LocalFileSystem::Open(path));
-        return std::make_unique<CountedInput>(std::move(input), counts, length_override);
+        return std::make_unique<CountedInput>(std::move(input), counts, sequential_read_limit);
     }
 
     std::shared_ptr<Counts> counts = std::make_shared<Counts>();
     std::function<Status(const std::string&)> before_open;
-    std::optional<int64_t> length_override;
+    std::optional<int64_t> sequential_read_limit;
 
  private:
     class CountedInput : public InputStream {
      public:
         CountedInput(std::unique_ptr<InputStream> input, std::shared_ptr<Counts> counts,
-                     std::optional<int64_t> length_override)
+                     std::optional<int64_t> sequential_read_limit)
             : input_(std::move(input)),
               counts_(std::move(counts)),
-              length_override_(length_override) {
+              sequential_read_limit_(sequential_read_limit) {
             const uint64_t live = ++counts_->live;
             uint64_t peak = counts_->peak.load();
             while (peak < live && !counts_->peak.compare_exchange_weak(peak, live)) {
@@ -91,6 +92,9 @@ class CountingReaderFileSystem : public LocalFileSystem {
         }
         Result<int64_t> Read(char* buffer, int64_t size) override {
             counts_->reads++;
+            if (sequential_read_limit_) {
+                size = std::min(size, *sequential_read_limit_);
+            }
             PAIMON_ASSIGN_OR_RAISE(int64_t bytes, input_->Read(buffer, size));
             counts_->bytes += bytes;
             return bytes;
@@ -117,16 +121,13 @@ class CountingReaderFileSystem : public LocalFileSystem {
             return input_->GetUri();
         }
         Result<int64_t> Length() const override {
-            if (length_override_) {
-                return *length_override_;
-            }
             return input_->Length();
         }
 
      private:
         std::unique_ptr<InputStream> input_;
         std::shared_ptr<Counts> counts_;
-        std::optional<int64_t> length_override_;
+        std::optional<int64_t> sequential_read_limit_;
     };
 
     std::string suffix_;

@@ -358,20 +358,21 @@ TEST(ScanExceptionSafetyTest, SnapshotBufferUsesScanPoolBeforeReading) {
     EXPECT_EQ(pool->CurrentUsage(), 0);
 
     ASSERT_OK(fs->WriteFile(snapshot_path, snapshot_json, /*overwrite=*/true));
-    fs->length_override = static_cast<int64_t>(snapshot_json.size()) + 1;
+    fs->sequential_read_limit = static_cast<int64_t>(snapshot_json.size()) - 1;
     {
         ASSERT_OK_AND_ASSIGN(auto scan, OrdinaryScan(pool, executor, input));
         const auto usage_before = pool->CurrentUsage();
         const auto closes_before = fs->counts->closes.load();
         auto plan = scan->CreatePlan();
         EXPECT_TRUE(plan.status().IsIOError()) << plan.status();
+        ASSERT_NOK_WITH_MSG(plan.status(), "expect read len");
         EXPECT_EQ(fs->counts->closes.load(), closes_before + 1);
         EXPECT_EQ(fs->counts->live.load(), 0);
         EXPECT_EQ(pool->CurrentUsage(), usage_before);
     }
     EXPECT_EQ(pool->CurrentUsage(), 0);
 
-    fs->length_override.reset();
+    fs->sequential_read_limit.reset();
     const auto reads_before = fs->counts->reads.load();
     {
         ASSERT_OK_AND_ASSIGN(auto scan, OrdinaryScan(pool, executor, input));
