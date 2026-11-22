@@ -25,6 +25,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <new>
 #include <string>
 #include <utility>
 #include <vector>
@@ -665,6 +666,56 @@ TEST_F(ParquetFileBatchReaderTest, TestNextBatchSimple) {
                              read_metrics->GetCounter(ParquetMetrics::READ_STORAGE_BYTES));
         ASSERT_GT(storage_read_bytes, 0u);
     }
+}
+
+TEST_F(ParquetFileBatchReaderTest, ReleasesUnpublishedBatchWhenMetricsFail) {
+    class FailingReadMetrics final : public MetricsImpl {
+     public:
+        void SetCounter(const std::string& name, uint64_t value) override {
+            if (name == ParquetMetrics::READ_ROWS) {
+                failed = true;
+                throw std::bad_alloc();
+            }
+            MetricsImpl::SetCounter(name, value);
+        }
+
+        bool failed = false;
+    };
+
+    const auto file_name = paimon::test::GetDataDir() +
+                           "parquet/parquet_append_table.db/parquet_append_table/bucket-0/"
+                           "data-9ea62f34-1dca-49c1-bf7a-d37303d8fb76-0.parquet";
+    const auto initial_bytes = pool_->bytes_allocated();
+    const auto initial_export_bytes = arrow::default_memory_pool()->bytes_allocated();
+    auto metrics = std::make_shared<FailingReadMetrics>();
+    auto reader =
+        PrepareParquetFileBatchReader(file_name, schema_, /*predicate=*/nullptr,
+                                      /*selection_bitmap=*/std::nullopt, /*batch_size=*/1);
+    ASSERT_TRUE(reader);
+    reader->metrics_ = metrics;
+    const auto batch = reader->NextBatch();
+    EXPECT_TRUE(metrics->failed);
+    ASSERT_NOK(batch);
+    EXPECT_TRUE(batch.status().IsInvalid());
+    reader->Close();
+    reader.reset();
+    EXPECT_EQ(pool_->bytes_allocated(), initial_bytes);
+    EXPECT_EQ(arrow::default_memory_pool()->bytes_allocated(), initial_export_bytes);
+
+    auto retry = PrepareParquetFileBatchReader(file_name, schema_, /*predicate=*/nullptr,
+                                               /*selection_bitmap=*/std::nullopt, /*batch_size=*/1);
+    ASSERT_TRUE(retry);
+    ASSERT_OK_AND_ASSIGN(auto returned, retry->NextBatch());
+    EXPECT_FALSE(BatchReader::IsEofBatch(returned));
+    {
+        auto array = arrow::ImportArray(returned.first.get(), returned.second.get());
+        ASSERT_TRUE(array.ok()) << array.status().ToString();
+        EXPECT_EQ(array.ValueOrDie()->length(), 1);
+    }
+    retry->Close();
+    retry.reset();
+    EXPECT_EQ(pool_->bytes_allocated(), initial_bytes);
+    EXPECT_EQ(arrow::default_memory_pool()->bytes_allocated(), initial_export_bytes);
 }
 
 TEST_F(ParquetFileBatchReaderTest, TestNextBatchWithTargetSchema) {

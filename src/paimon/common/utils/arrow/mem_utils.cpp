@@ -52,6 +52,13 @@ bool HasSameOwner(const std::shared_ptr<void>& lhs, const std::shared_ptr<void>&
     return !lhs.owner_before(rhs) && !rhs.owner_before(lhs);
 }
 
+void ReleaseExportedRoots(ArrowArray* array, ArrowSchema* schema) {
+    ArrowArrayRelease(array);
+    if (schema != nullptr) {
+        ArrowSchemaRelease(schema);
+    }
+}
+
 class ArrowMemPoolAdaptor : public arrow::MemoryPool {
  public:
     explicit ArrowMemPoolAdaptor(const std::shared_ptr<paimon::MemoryPool>& pool)
@@ -136,10 +143,7 @@ Status AddArrowArrayLifetime(ArrowArray* array, ArrowSchema* schema,
         return Status::Invalid("cannot add lifetime to a released ArrowArray");
     }
     if (lifetime.use_count() == 0) {
-        ArrowArrayRelease(array);
-        if (schema != nullptr && schema->release != nullptr) {
-            ArrowSchemaRelease(schema);
-        }
+        ReleaseExportedRoots(array, schema);
         return Status::Invalid("cannot add an empty lifetime to an ArrowArray");
     }
     if (array->release == ReleaseArrowArray) {
@@ -148,10 +152,15 @@ Status AddArrowArrayLifetime(ArrowArray* array, ArrowSchema* schema,
             return Status::OK();
         }
     }
-    std::unique_ptr<ArrowArrayPrivateData> data = std::make_unique<ArrowArrayPrivateData>(
-        ArrowArrayPrivateData{array->release, array->private_data, lifetime});
-    array->release = ReleaseArrowArray;
-    array->private_data = data.release();
+    try {
+        auto data = std::make_unique<ArrowArrayPrivateData>(
+            ArrowArrayPrivateData{array->release, array->private_data, lifetime});
+        array->release = ReleaseArrowArray;
+        array->private_data = data.release();
+    } catch (const std::bad_alloc&) {
+        ReleaseExportedRoots(array, schema);
+        return Status::OutOfMemory("failed to retain exported ArrowArray lifetime");
+    }
     return Status::OK();
 }
 
