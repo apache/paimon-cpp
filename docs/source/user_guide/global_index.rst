@@ -24,6 +24,8 @@ Paimon C++ supports the following global index types:
 
 - **Bitmap Index**: An index that maps each distinct scalar value to its matching row IDs. The
   file format is compatible with the Java bitmap global index.
+- **Legacy Bitmap Index**: Wraps the bitmap file index as a global index under the name
+  ``bitmap-legacy``, accepting unsorted input and storing one index file per shard.
 - **BTree Index**: An efficient index based on multi-level SST files for scalar column lookups.
 - **Range Bitmap Index**: A range bitmap index optimized for range predicates on ordered scalar columns. Extends the bitmap approach by encoding value ordering, enabling efficient less-than, greater-than, and range conditions.
 - **Lucene Index**: A full-text search index powered by Lucene++. Supports tokenized text search with the JSON queries of the full-text index: match, multi-match, phrase and boolean queries.
@@ -74,6 +76,18 @@ string predicates can scan selected dictionary files within a configurable fallb
 - ``bitmap-index.compression-level``: Dictionary block compression level. Default: ``1``.
 - ``bitmap-index.fallback-scan-max-size``: Maximum total selected index file size for fallback
   scans. Default: ``256MB``; set to ``0`` to disable fallback scans.
+
+Legacy Bitmap Index
+-------------------
+
+Use ``bitmap-legacy`` as the index type to build a global index using the bitmap file index
+format. Input values may be unsorted. It supports equality, inequality, ``IN``, ``NOT IN``,
+``IS NULL`` and ``IS NOT NULL`` predicates. Other predicates fall back to data filtering.
+Each shard uses 32-bit local row IDs; the global index scan maps results to 64-bit global row IDs
+and merges results across shards.
+
+The file index options ``version`` (default: ``2``) and ``index-block-size`` are passed through
+to the bitmap file index writer.
 
 BTree Index
 -----------
