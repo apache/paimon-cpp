@@ -42,11 +42,19 @@ class CountingReaderFileSystem : public LocalFileSystem {
         std::atomic<uint64_t> peak = 0;
         std::atomic<uint64_t> reads = 0;
         std::atomic<uint64_t> bytes = 0;
+        std::atomic<uint64_t> read_file_calls = 0;
     };
 
     explicit CountingReaderFileSystem(std::string suffix) : suffix_(std::move(suffix)) {}
 
     using LocalFileSystem::Open;
+
+    Status ReadFile(const std::string& path, std::string* content) override {
+        if (StringUtils::EndsWith(path, suffix_)) {
+            counts->read_file_calls++;
+        }
+        return LocalFileSystem::ReadFile(path, content);
+    }
 
     Result<std::unique_ptr<InputStream>> Open(const std::string& path) const override {
         if (!StringUtils::EndsWith(path, suffix_)) {

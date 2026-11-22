@@ -131,8 +131,9 @@ Result<std::unique_ptr<TableScan>> OrdinaryScan(
     std::string schema{std::istreambuf_iterator<char>(schema_file),
                        std::istreambuf_iterator<char>()};
     ScanContextBuilder builder(input.path);
-    builder.SetTableSchema(schema).WithMemoryPool(pool).WithExecutor(executor).AddOption(
-        "scan.snapshot-id", input.snapshot);
+    builder.SetTableSchema(schema).WithExecutor(executor).AddOption("scan.snapshot-id",
+                                                                    input.snapshot);
+    if (pool) builder.WithMemoryPool(pool);
     if (input.scan_mode) builder.AddOption("scan.mode", *input.scan_mode);
     if (input.cache) {
         builder.WithCache(input.cache)
@@ -374,6 +375,7 @@ TEST(ScanExceptionSafetyTest, SnapshotBufferUsesScanPoolBeforeReading) {
 
     fs->sequential_read_limit.reset();
     const auto reads_before = fs->counts->reads.load();
+    const auto read_file_calls_before = fs->counts->read_file_calls.load();
     {
         ASSERT_OK_AND_ASSIGN(auto scan, OrdinaryScan(pool, executor, input));
         ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
@@ -381,8 +383,15 @@ TEST(ScanExceptionSafetyTest, SnapshotBufferUsesScanPoolBeforeReading) {
         EXPECT_FALSE(plan->Splits().empty());
     }
     EXPECT_EQ(fs->counts->reads.load(), reads_before + 1);
+    EXPECT_EQ(fs->counts->read_file_calls.load(), read_file_calls_before);
     EXPECT_EQ(fs->counts->live.load(), 0);
     EXPECT_EQ(pool->CurrentUsage(), 0);
+
+    ASSERT_OK_AND_ASSIGN(auto default_scan, OrdinaryScan(nullptr, executor, input));
+    ASSERT_OK_AND_ASSIGN(auto default_plan, default_scan->CreatePlan());
+    EXPECT_EQ(default_plan->SnapshotId(), 1);
+    EXPECT_FALSE(default_plan->Splits().empty());
+    EXPECT_EQ(fs->counts->read_file_calls.load(), read_file_calls_before + 1);
 }
 
 TEST(ScanExceptionSafetyTest, RefusedArrowReallocationPreservesExistingBuffer) {
