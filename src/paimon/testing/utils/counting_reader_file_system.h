@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -35,6 +36,7 @@ class CountingReaderFileSystem : public LocalFileSystem {
  public:
     struct Counts {
         std::atomic<uint64_t> opens = 0;
+        std::atomic<uint64_t> closes = 0;
         std::atomic<uint64_t> live = 0;
         std::atomic<uint64_t> peak = 0;
         std::atomic<uint64_t> reads = 0;
@@ -54,17 +56,21 @@ class CountingReaderFileSystem : public LocalFileSystem {
             PAIMON_RETURN_NOT_OK(before_open(path));
         }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input, LocalFileSystem::Open(path));
-        return std::make_unique<CountedInput>(std::move(input), counts);
+        return std::make_unique<CountedInput>(std::move(input), counts, length_override);
     }
 
     std::shared_ptr<Counts> counts = std::make_shared<Counts>();
     std::function<Status(const std::string&)> before_open;
+    std::optional<int64_t> length_override;
 
  private:
     class CountedInput : public InputStream {
      public:
-        CountedInput(std::unique_ptr<InputStream> input, std::shared_ptr<Counts> counts)
-            : input_(std::move(input)), counts_(std::move(counts)) {
+        CountedInput(std::unique_ptr<InputStream> input, std::shared_ptr<Counts> counts,
+                     std::optional<int64_t> length_override)
+            : input_(std::move(input)),
+              counts_(std::move(counts)),
+              length_override_(length_override) {
             const uint64_t live = ++counts_->live;
             uint64_t peak = counts_->peak.load();
             while (peak < live && !counts_->peak.compare_exchange_weak(peak, live)) {
@@ -74,6 +80,7 @@ class CountingReaderFileSystem : public LocalFileSystem {
             counts_->live--;
         }
         Status Close() override {
+            counts_->closes++;
             return input_->Close();
         }
         Status Seek(int64_t offset, SeekOrigin origin) override {
@@ -110,12 +117,16 @@ class CountingReaderFileSystem : public LocalFileSystem {
             return input_->GetUri();
         }
         Result<int64_t> Length() const override {
+            if (length_override_) {
+                return *length_override_;
+            }
             return input_->Length();
         }
 
      private:
         std::unique_ptr<InputStream> input_;
         std::shared_ptr<Counts> counts_;
+        std::optional<int64_t> length_override_;
     };
 
     std::string suffix_;

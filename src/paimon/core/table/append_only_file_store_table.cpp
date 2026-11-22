@@ -158,16 +158,17 @@ Result<std::unique_ptr<FileStoreScan>> AppendOnlyFileStoreTable::NewFileStoreSca
     const ScanContext* context) const {
     // TODO(liancheng.lsz): support fallback branch in scan
     std::shared_ptr<TableSchema> table_schema = checked_pointer_cast<TableSchema>(schema_);
+    const auto snapshot_manager = GetSnapshotManager(memory_pool);
     std::unique_ptr<FileStoreScan> scan;
     if (core_options.DataEvolutionEnabled()) {
         PAIMON_ASSIGN_OR_RAISE(
-            scan, DataEvolutionFileStoreScan::Create(GetSnapshotManager(), GetSchemaManager(),
+            scan, DataEvolutionFileStoreScan::Create(snapshot_manager, GetSchemaManager(),
                                                      manifest_list, manifest_file, table_schema,
                                                      arrow_schema, context->GetScanFilters(),
                                                      core_options, executor, memory_pool));
     } else {
         PAIMON_ASSIGN_OR_RAISE(
-            scan, AppendOnlyFileStoreScan::Create(GetSnapshotManager(), GetSchemaManager(),
+            scan, AppendOnlyFileStoreScan::Create(snapshot_manager, GetSchemaManager(),
                                                   manifest_list, manifest_file, table_schema,
                                                   arrow_schema, context->GetScanFilters(),
                                                   core_options, executor, memory_pool));

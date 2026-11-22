@@ -233,10 +233,10 @@ Result<std::unique_ptr<FileStoreScan>> PrimaryKeyFileStoreTable::NewFileStoreSca
     std::shared_ptr<TableSchema> table_schema = checked_pointer_cast<TableSchema>(schema_);
     std::unique_ptr<FileStoreScan> scan;
     PAIMON_ASSIGN_OR_RAISE(
-        scan, KeyValueFileStoreScan::Create(GetSnapshotManager(), GetSchemaManager(), manifest_list,
-                                            manifest_file, table_schema, arrow_schema,
-                                            context->GetScanFilters(), core_options, executor,
-                                            memory_pool));
+        scan, KeyValueFileStoreScan::Create(GetSnapshotManager(memory_pool), GetSchemaManager(),
+                                            manifest_list, manifest_file, table_schema,
+                                            arrow_schema, context->GetScanFilters(), core_options,
+                                            executor, memory_pool));
     return WithTablePath(std::move(scan), root_path_);
 }
 

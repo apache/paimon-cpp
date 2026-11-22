@@ -242,8 +242,8 @@ class Snapshot : public Jsonizable<Snapshot> {
 
     void FromJson(const rapidjson::Value& obj) noexcept(false) override;
 
-    static Result<Snapshot> FromPath(const std::shared_ptr<FileSystem>& fs,
-                                     const std::string& path);
+    static Result<Snapshot> FromPath(const std::shared_ptr<FileSystem>& fs, const std::string& path,
+                                     MemoryPool* pool = nullptr);
 
  private:
     // version of snapshot

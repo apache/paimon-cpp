@@ -48,7 +48,7 @@ class SnapshotManager {
 
     SnapshotManager(const std::shared_ptr<FileSystem>& fs, const std::string& root_path);
     SnapshotManager(const std::shared_ptr<FileSystem>& fs, const std::string& root_path,
-                    const std::string& branch);
+                    const std::string& branch, const std::shared_ptr<MemoryPool>& pool = nullptr);
     ~SnapshotManager();
 
     /// Sets the loader for `LatestSnapshot()` and `LatestSnapshotId()`.
@@ -126,6 +126,7 @@ class SnapshotManager {
     std::string root_path_;
     std::string branch_;
     SnapshotLoader snapshot_loader_;
+    std::shared_ptr<MemoryPool> pool_;
 };
 
 }  // namespace paimon

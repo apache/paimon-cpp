@@ -16,6 +16,7 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -35,9 +36,11 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/executor.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/scan_context.h"
 #include "paimon/table/source/table_scan.h"
+#include "paimon/testing/utils/counting_reader_file_system.h"
 #include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
@@ -55,15 +58,18 @@ class InlinePlanningExecutor final : public Executor {
 
 class PlanningFaultPool final : public MemoryPool {
  public:
+    explicit PlanningFaultPool(uint64_t capacity = std::numeric_limits<uint64_t>::max())
+        : capacity_(capacity) {}
+
     void* Malloc(uint64_t size, uint64_t alignment) override {
         std::lock_guard<std::mutex> lock(mutex_);
-        Check();
+        Check(size);
         ++malloc_calls;
         return upstream_->Malloc(size, alignment);
     }
     void* Realloc(void* pointer, size_t old_size, size_t new_size, uint64_t alignment) override {
         std::lock_guard<std::mutex> lock(mutex_);
-        Check();
+        Check(new_size - std::min(old_size, new_size));
         ++realloc_calls;
         return upstream_->Realloc(pointer, old_size, new_size, alignment);
     }
@@ -86,14 +92,20 @@ class PlanningFaultPool final : public MemoryPool {
     std::atomic<uint64_t> malloc_calls{0};
     std::atomic<uint64_t> realloc_calls{0};
     std::atomic<bool> rejected{false};
+    std::atomic<uint64_t> refused_bytes{0};
 
  private:
-    void Check() {
+    void Check(uint64_t additional_bytes) {
         if (calls.fetch_add(1) == fail_at.load()) {
             rejected = true;
             throw std::bad_alloc();
         }
+        if (additional_bytes > capacity_ - upstream_->CurrentUsage()) {
+            refused_bytes = additional_bytes;
+            throw std::bad_alloc();
+        }
     }
+    const uint64_t capacity_;
     std::unique_ptr<MemoryPool> upstream_ = GetMemoryPool();
     std::mutex mutex_;
 };
@@ -108,6 +120,7 @@ struct PlanningInput {
     std::shared_ptr<Cache> cache;
     std::optional<int32_t> bucket;
     std::shared_ptr<FileSystem> file_system;
+    std::optional<std::string> scan_mode;
 };
 
 Result<std::unique_ptr<TableScan>> OrdinaryScan(
@@ -120,6 +133,7 @@ Result<std::unique_ptr<TableScan>> OrdinaryScan(
     ScanContextBuilder builder(input.path);
     builder.SetTableSchema(schema).WithMemoryPool(pool).WithExecutor(executor).AddOption(
         "scan.snapshot-id", input.snapshot);
+    if (input.scan_mode) builder.AddOption("scan.mode", *input.scan_mode);
     if (input.cache) {
         builder.WithCache(input.cache)
             .AddOption("scan.manifest-entry-cache.max-snapshots", "8")
@@ -288,6 +302,85 @@ TEST(ScanExceptionSafetyTest, RetainedSplitRemainsUsableWithCallerOwnedPool) {
     ASSERT_OK_AND_ASSIGN(auto retained, Split::Serialize(split, pool));
     EXPECT_EQ(original, retained);
     split.reset();
+    EXPECT_EQ(pool->CurrentUsage(), 0);
+}
+
+TEST(ScanExceptionSafetyTest, SnapshotBufferUsesScanPoolBeforeReading) {
+    // Leave headroom for the fixture's manifest readers on the successful path.
+    constexpr size_t kPoolCapacity = 8 * 1024 * 1024;
+    auto temp_dir = UniqueTestDirectory::Create();
+    ASSERT_NE(temp_dir, nullptr);
+    PlanningInput input;
+    input.path = temp_dir->Str();
+    ASSERT_TRUE(TestUtil::CopyDirectory(PlanningFixture(), input.path));
+    const std::string snapshot_path = input.path + "/snapshot/snapshot-1";
+    auto fs = std::make_shared<CountingReaderFileSystem>("/snapshot/snapshot-1");
+    input.file_system = fs;
+    input.scan_mode = "from-snapshot-full";
+    std::string snapshot_json;
+    ASSERT_OK(fs->ReadFile(snapshot_path, &snapshot_json));
+    auto pool = std::make_shared<PlanningFaultPool>(kPoolCapacity);
+    auto executor = std::make_shared<InlinePlanningExecutor>();
+
+    std::string oversized_snapshot = snapshot_json;
+    // The file fits in an empty pool, but other query memory has already been admitted.
+    oversized_snapshot.resize(kPoolCapacity / 2 + 1, ' ');
+    ASSERT_OK(fs->WriteFile(snapshot_path, oversized_snapshot, /*overwrite=*/true));
+    {
+        Bytes existing_buffer(kPoolCapacity / 2, pool.get());
+        ASSERT_OK_AND_ASSIGN(auto scan, OrdinaryScan(pool, executor, input));
+        const auto usage_before = pool->CurrentUsage();
+        const auto opens_before = fs->counts->opens.load();
+        const auto closes_before = fs->counts->closes.load();
+        const auto reads_before = fs->counts->reads.load();
+        auto plan = scan->CreatePlan();
+        EXPECT_FALSE(plan.ok());
+        EXPECT_TRUE(plan.status().IsOutOfMemory()) << plan.status();
+        EXPECT_EQ(pool->refused_bytes.load(), oversized_snapshot.size() + 1);
+        EXPECT_LE(pool->MaxMemoryUsage(), kPoolCapacity);
+        EXPECT_EQ(fs->counts->opens.load(), opens_before + 1);
+        EXPECT_EQ(fs->counts->closes.load(), closes_before + 1);
+        EXPECT_EQ(fs->counts->reads.load(), reads_before);
+        EXPECT_EQ(fs->counts->live.load(), 0);
+        EXPECT_EQ(pool->CurrentUsage(), usage_before);
+    }
+    EXPECT_EQ(pool->CurrentUsage(), 0);
+
+    ASSERT_OK(fs->WriteFile(snapshot_path, snapshot_json + '\0', /*overwrite=*/true));
+    {
+        ASSERT_OK_AND_ASSIGN(auto scan, OrdinaryScan(pool, executor, input));
+        const auto usage_before = pool->CurrentUsage();
+        auto plan = scan->CreatePlan();
+        EXPECT_TRUE(plan.status().IsInvalid()) << plan.status();
+        EXPECT_EQ(fs->counts->live.load(), 0);
+        EXPECT_EQ(pool->CurrentUsage(), usage_before);
+    }
+    EXPECT_EQ(pool->CurrentUsage(), 0);
+
+    ASSERT_OK(fs->WriteFile(snapshot_path, snapshot_json, /*overwrite=*/true));
+    fs->length_override = static_cast<int64_t>(snapshot_json.size()) + 1;
+    {
+        ASSERT_OK_AND_ASSIGN(auto scan, OrdinaryScan(pool, executor, input));
+        const auto usage_before = pool->CurrentUsage();
+        const auto closes_before = fs->counts->closes.load();
+        auto plan = scan->CreatePlan();
+        EXPECT_TRUE(plan.status().IsIOError()) << plan.status();
+        EXPECT_EQ(fs->counts->closes.load(), closes_before + 1);
+        EXPECT_EQ(fs->counts->live.load(), 0);
+        EXPECT_EQ(pool->CurrentUsage(), usage_before);
+    }
+    EXPECT_EQ(pool->CurrentUsage(), 0);
+
+    fs->length_override.reset();
+    const auto reads_before = fs->counts->reads.load();
+    {
+        ASSERT_OK_AND_ASSIGN(auto scan, OrdinaryScan(pool, executor, input));
+        ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+        EXPECT_EQ(plan->SnapshotId(), 1);
+        EXPECT_FALSE(plan->Splits().empty());
+    }
+    EXPECT_EQ(fs->counts->reads.load(), reads_before + 1);
+    EXPECT_EQ(fs->counts->live.load(), 0);
     EXPECT_EQ(pool->CurrentUsage(), 0);
 }
 

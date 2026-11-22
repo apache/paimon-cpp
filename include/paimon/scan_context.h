@@ -251,6 +251,8 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// @param memory_pool The memory pool to use.
     /// @return Reference to this builder for method chaining.
     /// @note if not set, memory_pool is default pool
+    /// With a custom pool, native data scans load numbered snapshot files through FileSystem::Open
+    /// into a buffer allocated from that pool.
     /// A custom pool controls only allocations routed through it, not all planning memory.
     /// Keep it alive while any plan, split, cache entry, or executor task can retain its
     /// allocations; destroying the scan alone does not release all such objects.
