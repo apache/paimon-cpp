@@ -18,6 +18,7 @@
  */
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <new>
 #include <utility>
@@ -43,19 +44,19 @@ namespace paimon::test {
 TEST(ArrowLifetimeFailureTest, ReleasesBothRootsWhenHoldingLifetimeRunsOutOfMemory) {
     ArrowArray array{};
     ArrowSchema schema{};
-    int array_releases = 0;
-    int schema_releases = 0;
+    int32_t array_releases = 0;
+    int32_t schema_releases = 0;
     array.private_data = &array_releases;
     array.release = [](ArrowArray* root) {
-        ++*static_cast<int*>(root->private_data);
+        ++*static_cast<int32_t*>(root->private_data);
         root->release = nullptr;
     };
     schema.private_data = &schema_releases;
     schema.release = [](ArrowSchema* root) {
-        ++*static_cast<int*>(root->private_data);
+        ++*static_cast<int32_t*>(root->private_data);
         root->release = nullptr;
     };
-    std::shared_ptr<void> owner = std::make_shared<int>(1);
+    std::shared_ptr<void> owner = std::make_shared<int32_t>(1);
 
     Status status;
     bool threw = false;

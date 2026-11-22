@@ -695,7 +695,7 @@ TEST_F(ParquetFileBatchReaderTest, ReleasesUnpublishedBatchWhenMetricsFail) {
     reader->metrics_ = metrics;
     const auto batch = reader->NextBatch();
     EXPECT_TRUE(metrics->failed);
-    ASSERT_FALSE(batch.ok());
+    ASSERT_NOK(batch);
     EXPECT_TRUE(batch.status().IsInvalid());
     reader->Close();
     reader.reset();
