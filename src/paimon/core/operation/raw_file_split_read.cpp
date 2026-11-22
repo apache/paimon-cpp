@@ -246,9 +246,9 @@ Result<std::unique_ptr<FileBatchReader>> RawFileSplitRead::CreatePreciseFileInde
     const std::map<std::string, std::string>& extra_format_options) const {
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<PreciseFileIndexRead> precise_read,
-        PreciseFileIndexRead::Create(*this, partition, file, read_schema, predicate,
-                                     field_mapping_builder, path_factory, extra_format_options));
-    return precise_read->CreateReader(dv_factory, row_ranges);
+        PreciseFileIndexRead::Create(*this, partition, file, read_schema, field_mapping_builder,
+                                     path_factory, extra_format_options));
+    return precise_read->CreateReader(predicate, dv_factory, row_ranges);
 }
 
 }  // namespace paimon

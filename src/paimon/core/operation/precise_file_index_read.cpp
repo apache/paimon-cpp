@@ -139,7 +139,7 @@ Status PrepareSearch(const std::shared_ptr<InternalReadContext>& context,
 Result<std::unique_ptr<PreciseFileIndexRead>> PreciseFileIndexRead::Create(
     const RawFileSplitRead& split_read, const BinaryRow& partition,
     const std::shared_ptr<DataFileMeta>& file, const std::shared_ptr<arrow::Schema>& read_schema,
-    const std::shared_ptr<Predicate>& predicate, const FieldMappingBuilder* field_mapping_builder,
+    const FieldMappingBuilder* field_mapping_builder,
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::map<std::string, std::string>& extra_format_options) {
     std::shared_ptr<TableSchema> file_schema = split_read.context_->GetTableSchema();
@@ -177,11 +177,6 @@ Result<std::unique_ptr<PreciseFileIndexRead>> PreciseFileIndexRead::Create(
     for (size_t i = 0; i < data_fields.size(); ++i) {
         data_by_id.emplace(data_fields[i].Id(), std::make_pair(i, data_fields[i]));
     }
-    std::map<std::shared_ptr<LeafPredicate>, std::shared_ptr<LeafPredicate>> mapped_leaves;
-    // Precheck the entire tree before an empty candidate set can short-circuit it.
-    PAIMON_RETURN_NOT_OK(PreparePredicate(predicate, read_by_name, data_by_id,
-                                          split_read.context_->GetPartitionKeys(), indexes.get(),
-                                          &mapped_leaves));
     std::shared_ptr<VectorSearch> vector_search;
     std::shared_ptr<FullTextSearch> full_text_search;
     PAIMON_RETURN_NOT_OK(PrepareSearch(split_read.context_, field_names, file->file_name,
@@ -193,19 +188,19 @@ Result<std::unique_ptr<PreciseFileIndexRead>> PreciseFileIndexRead::Create(
         root_search_field_name = split_read.context_->GetFullTextSearch()->field_name;
     }
     return std::unique_ptr<PreciseFileIndexRead>(new PreciseFileIndexRead(
-        split_read, partition, file, read_schema, predicate, field_mapping_builder, path_factory,
-        extra_format_options, std::move(indexes), mapped_leaves, vector_search, full_text_search,
-        root_search_field_name));
+        split_read, partition, file, read_schema, field_mapping_builder, path_factory,
+        extra_format_options, std::move(indexes), std::move(read_by_name), std::move(data_by_id),
+        vector_search, full_text_search, root_search_field_name));
 }
 
 PreciseFileIndexRead::PreciseFileIndexRead(
     const RawFileSplitRead& split_read, const BinaryRow& partition,
     const std::shared_ptr<DataFileMeta>& file, const std::shared_ptr<arrow::Schema>& read_schema,
-    const std::shared_ptr<Predicate>& predicate, const FieldMappingBuilder* field_mapping_builder,
+    const FieldMappingBuilder* field_mapping_builder,
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::map<std::string, std::string>& extra_format_options,
-    std::unique_ptr<FileIndexEvaluator> indexes,
-    const std::map<std::shared_ptr<LeafPredicate>, std::shared_ptr<LeafPredicate>>& mapped_leaves,
+    std::unique_ptr<FileIndexEvaluator> indexes, std::map<std::string, DataField> read_by_name,
+    std::map<int32_t, std::pair<int32_t, DataField>> data_by_id,
     const std::shared_ptr<VectorSearch>& vector_search,
     const std::shared_ptr<FullTextSearch>& full_text_search,
     const std::optional<std::string>& root_search_field_name)
@@ -213,15 +208,34 @@ PreciseFileIndexRead::PreciseFileIndexRead(
       partition_(partition),
       file_(file),
       read_schema_(read_schema),
-      predicate_(predicate),
       field_mapping_builder_(field_mapping_builder),
       path_factory_(path_factory),
       extra_format_options_(extra_format_options),
       indexes_(std::move(indexes)),
-      mapped_leaves_(mapped_leaves),
+      read_by_name_(std::move(read_by_name)),
+      data_by_id_(std::move(data_by_id)),
       vector_search_(vector_search),
       full_text_search_(full_text_search),
       root_search_field_name_(root_search_field_name) {}
+
+PreciseFileIndexRead::~PreciseFileIndexRead() = default;
+
+Result<RoaringBitmap32> PreciseFileIndexRead::ReadRowPositions(
+    const std::shared_ptr<Predicate>& predicate, const RoaringBitmap32& candidates) const {
+    PAIMON_ASSIGN_OR_RAISE(PredicateMapping mapped_leaves, PreparePredicateMapping(predicate));
+    PAIMON_ASSIGN_OR_RAISE(Evaluation evaluated, Evaluate(predicate, candidates, mapped_leaves));
+    return std::move(evaluated.rows);
+}
+
+Result<PreciseFileIndexRead::PredicateMapping> PreciseFileIndexRead::PreparePredicateMapping(
+    const std::shared_ptr<Predicate>& predicate) const {
+    PredicateMapping mapped_leaves;
+    // Validate every branch before evaluation can short-circuit.
+    PAIMON_RETURN_NOT_OK(PreparePredicate(predicate, read_by_name_, data_by_id_,
+                                          split_read_.context_->GetPartitionKeys(), indexes_.get(),
+                                          &mapped_leaves));
+    return mapped_leaves;
+}
 
 Result<RoaringBitmap32> PreciseFileIndexRead::CreateCandidates(
     const DeletionVector::Factory& dv_factory,
@@ -247,10 +261,24 @@ Result<RoaringBitmap32> PreciseFileIndexRead::CreateCandidates(
     return candidates;
 }
 
+Result<PreciseFileIndexRead::Evaluation> PreciseFileIndexRead::Evaluate(
+    const std::shared_ptr<Predicate>& predicate, const RoaringBitmap32& candidates,
+    const PredicateMapping& mapped_leaves) const {
+    Evaluator evaluator(
+        [this, &mapped_leaves](const std::shared_ptr<LeafPredicate>& leaf,
+                               const RoaringBitmap32& rows) {
+            return EvaluateLeaf(leaf, rows, mapped_leaves);
+        },
+        [this, &mapped_leaves](const std::shared_ptr<LeafPredicate>& leaf) {
+            return EstimateLeafSelectivity(leaf, mapped_leaves);
+        });
+    return evaluator.Evaluate(predicate, candidates);
+}
+
 Result<std::optional<double>> PreciseFileIndexRead::EstimateLeafSelectivity(
-    const std::shared_ptr<LeafPredicate>& predicate) const {
-    auto iter = mapped_leaves_.find(predicate);
-    if (iter == mapped_leaves_.end()) {
+    const std::shared_ptr<LeafPredicate>& predicate, const PredicateMapping& mapped_leaves) const {
+    auto iter = mapped_leaves.find(predicate);
+    if (iter == mapped_leaves.end()) {
         return Status::Invalid("File predicate mapping was not prepared");
     }
     if (!iter->second) {
@@ -260,9 +288,10 @@ Result<std::optional<double>> PreciseFileIndexRead::EstimateLeafSelectivity(
 }
 
 Result<PreciseFileIndexRead::Evaluation> PreciseFileIndexRead::EvaluateLeaf(
-    const std::shared_ptr<LeafPredicate>& predicate, const RoaringBitmap32& candidates) const {
-    auto iter = mapped_leaves_.find(predicate);
-    if (iter == mapped_leaves_.end()) {
+    const std::shared_ptr<LeafPredicate>& predicate, const RoaringBitmap32& candidates,
+    const PredicateMapping& mapped_leaves) const {
+    auto iter = mapped_leaves.find(predicate);
+    if (iter == mapped_leaves.end()) {
         return Status::Invalid("File predicate mapping was not prepared");
     }
     bool needs_scores = split_read_.context_->NeedsScores(
@@ -334,15 +363,11 @@ Status PreciseFileIndexRead::ApplyRootSearch(Evaluation* evaluated) const {
 }
 
 Result<std::unique_ptr<FileBatchReader>> PreciseFileIndexRead::CreateReader(
-    const DeletionVector::Factory& dv_factory,
+    const std::shared_ptr<Predicate>& predicate, const DeletionVector::Factory& dv_factory,
     const std::optional<std::vector<Range>>& row_ranges) const {
+    PAIMON_ASSIGN_OR_RAISE(PredicateMapping mapped_leaves, PreparePredicateMapping(predicate));
     PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 candidates, CreateCandidates(dv_factory, row_ranges));
-    Evaluator evaluator([this](const std::shared_ptr<LeafPredicate>& leaf,
-                               const RoaringBitmap32& rows) { return EvaluateLeaf(leaf, rows); },
-                        [this](const std::shared_ptr<LeafPredicate>& leaf) {
-                            return EstimateLeafSelectivity(leaf);
-                        });
-    PAIMON_ASSIGN_OR_RAISE(Evaluation evaluated, evaluator.Evaluate(predicate_, candidates));
+    PAIMON_ASSIGN_OR_RAISE(Evaluation evaluated, Evaluate(predicate, candidates, mapped_leaves));
     if (evaluated.rows.IsEmpty()) {
         return std::unique_ptr<FileBatchReader>();
     }

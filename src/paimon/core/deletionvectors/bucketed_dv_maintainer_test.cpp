@@ -137,6 +137,67 @@ TEST(BucketedDvMaintainerTest, TestNotifyNewDeletionOnExistingVectorOnlyMarksWhe
     ASSERT_TRUE(modified_write.has_value());
 }
 
+TEST(BucketedDvMaintainerTest, TestNotifyNewDeletionBitmap) {
+    for (bool restored_bitmap64 : {false, true}) {
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        auto index = CreateDvIndexFile(dir->Str(), !restored_bitmap64);
+        auto bitmap = std::make_shared<BitmapDeletionVector>(RoaringBitmap32::From({0, 1, 2}));
+        std::shared_ptr<DeletionVector> existing = bitmap;
+        if (restored_bitmap64) {
+            existing = Bitmap64DeletionVector::FromBitmapDeletionVector(*bitmap);
+        }
+        BucketedDvMaintainer maintainer(index, {{"existing", existing}});
+
+        ASSERT_OK(maintainer.NotifyNewDeletion("empty", RoaringBitmap32()));
+        ASSERT_FALSE(maintainer.DeletionVectorOf("empty").has_value());
+        ASSERT_OK(maintainer.NotifyNewDeletion("existing", RoaringBitmap32::From({1, 2})));
+        ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<IndexFileMeta>> unchanged,
+                             maintainer.WriteDeletionVectorsIndex());
+        ASSERT_FALSE(unchanged.has_value());
+
+        auto positions = RoaringBitmap32::From({2, 7, 65537});
+        ASSERT_OK(maintainer.NotifyNewDeletion("existing", positions));
+        ASSERT_OK(maintainer.NotifyNewDeletion("new", positions));
+        ASSERT_EQ(positions, RoaringBitmap32::From({2, 7, 65537}));
+        ASSERT_OK_AND_ASSIGN(int64_t cardinality, existing->GetCardinality());
+        ASSERT_EQ(cardinality, 5);
+        ASSERT_OK_AND_ASSIGN(std::optional<std::shared_ptr<IndexFileMeta>> written,
+                             maintainer.WriteDeletionVectorsIndex());
+        ASSERT_TRUE(written.has_value());
+        std::map<std::string, std::shared_ptr<DeletionVector>> restored;
+        ASSERT_OK_AND_ASSIGN(restored, index->ReadAllDeletionVectors(*written));
+        ASSERT_EQ(restored.size(), 2);
+        ASSERT_EQ(dynamic_cast<Bitmap64DeletionVector*>(restored.at("existing").get()) != nullptr,
+                  restored_bitmap64);
+        ASSERT_EQ(dynamic_cast<Bitmap64DeletionVector*>(restored.at("new").get()) != nullptr,
+                  !restored_bitmap64);
+        for (int32_t position : {0, 1, 2, 7, 65537}) {
+            ASSERT_OK_AND_ASSIGN(bool deleted, restored.at("existing")->IsDeleted(position));
+            ASSERT_TRUE(deleted);
+        }
+        ASSERT_OK_AND_ASSIGN(cardinality, restored.at("new")->GetCardinality());
+        ASSERT_EQ(cardinality, 3);
+        for (int32_t position : {2, 7, 65537}) {
+            ASSERT_OK_AND_ASSIGN(bool deleted, restored.at("new")->IsDeleted(position));
+            ASSERT_TRUE(deleted);
+        }
+
+        ASSERT_OK(maintainer.NotifyNewDeletion("existing", positions));
+        ASSERT_OK(maintainer.NotifyNewDeletion("new", positions));
+        ASSERT_OK(maintainer.NotifyNewDeletion("existing", RoaringBitmap32()));
+        ASSERT_OK_AND_ASSIGN(unchanged, maintainer.WriteDeletionVectorsIndex());
+        ASSERT_FALSE(unchanged.has_value());
+        positions.Add(9);
+        ASSERT_OK_AND_ASSIGN(bool deleted, existing->IsDeleted(9));
+        ASSERT_FALSE(deleted);
+        auto created = maintainer.DeletionVectorOf("new");
+        ASSERT_TRUE(created.has_value());
+        ASSERT_OK_AND_ASSIGN(deleted, (*created)->IsDeleted(9));
+        ASSERT_FALSE(deleted);
+    }
+}
+
 TEST(BucketedDvMaintainerTest, MixedFormatsAfterConfigurationChanges) {
     for (bool initial_bitmap64 : {false, true}) {
         auto dir = UniqueTestDirectory::Create();
