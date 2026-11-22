@@ -165,7 +165,7 @@ Status FileIndexReadImpl::LoadReader(File* file) {
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<PreciseFileIndexRead> read,
         PreciseFileIndexRead::Create(*split_read_, partition_row_, file->meta,
-                                     context_.arrow_schema, nullptr, nullptr, file_paths_, {}));
+                                     context_.arrow_schema, nullptr, file_paths_, {}));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<DeletionVector> dv, dv_factory_(file->meta->file_name));
     if (dv) {
         auto bitmap = dynamic_cast<BitmapDeletionVector*>(dv.get());

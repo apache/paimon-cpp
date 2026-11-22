@@ -139,7 +139,7 @@ Status PrepareSearch(const std::shared_ptr<InternalReadContext>& context,
 Result<std::unique_ptr<PreciseFileIndexRead>> PreciseFileIndexRead::Create(
     const RawFileSplitRead& split_read, const BinaryRow& partition,
     const std::shared_ptr<DataFileMeta>& file, const std::shared_ptr<arrow::Schema>& read_schema,
-    const std::shared_ptr<Predicate>& predicate, const FieldMappingBuilder* field_mapping_builder,
+    const FieldMappingBuilder* field_mapping_builder,
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::map<std::string, std::string>& extra_format_options) {
     std::shared_ptr<TableSchema> file_schema = split_read.context_->GetTableSchema();
@@ -188,7 +188,7 @@ Result<std::unique_ptr<PreciseFileIndexRead>> PreciseFileIndexRead::Create(
         root_search_field_name = split_read.context_->GetFullTextSearch()->field_name;
     }
     return std::unique_ptr<PreciseFileIndexRead>(new PreciseFileIndexRead(
-        split_read, partition, file, read_schema, predicate, field_mapping_builder, path_factory,
+        split_read, partition, file, read_schema, field_mapping_builder, path_factory,
         extra_format_options, std::move(indexes), std::move(read_by_name), std::move(data_by_id),
         vector_search, full_text_search, root_search_field_name));
 }
@@ -196,7 +196,7 @@ Result<std::unique_ptr<PreciseFileIndexRead>> PreciseFileIndexRead::Create(
 PreciseFileIndexRead::PreciseFileIndexRead(
     const RawFileSplitRead& split_read, const BinaryRow& partition,
     const std::shared_ptr<DataFileMeta>& file, const std::shared_ptr<arrow::Schema>& read_schema,
-    const std::shared_ptr<Predicate>& predicate, const FieldMappingBuilder* field_mapping_builder,
+    const FieldMappingBuilder* field_mapping_builder,
     const std::shared_ptr<DataFilePathFactory>& path_factory,
     const std::map<std::string, std::string>& extra_format_options,
     std::unique_ptr<FileIndexEvaluator> indexes, std::map<std::string, DataField> read_by_name,
@@ -208,7 +208,6 @@ PreciseFileIndexRead::PreciseFileIndexRead(
       partition_(partition),
       file_(file),
       read_schema_(read_schema),
-      predicate_(predicate),
       field_mapping_builder_(field_mapping_builder),
       path_factory_(path_factory),
       extra_format_options_(extra_format_options),
@@ -364,11 +363,11 @@ Status PreciseFileIndexRead::ApplyRootSearch(Evaluation* evaluated) const {
 }
 
 Result<std::unique_ptr<FileBatchReader>> PreciseFileIndexRead::CreateReader(
-    const DeletionVector::Factory& dv_factory,
+    const std::shared_ptr<Predicate>& predicate, const DeletionVector::Factory& dv_factory,
     const std::optional<std::vector<Range>>& row_ranges) const {
-    PAIMON_ASSIGN_OR_RAISE(PredicateMapping mapped_leaves, PreparePredicateMapping(predicate_));
+    PAIMON_ASSIGN_OR_RAISE(PredicateMapping mapped_leaves, PreparePredicateMapping(predicate));
     PAIMON_ASSIGN_OR_RAISE(RoaringBitmap32 candidates, CreateCandidates(dv_factory, row_ranges));
-    PAIMON_ASSIGN_OR_RAISE(Evaluation evaluated, Evaluate(predicate_, candidates, mapped_leaves));
+    PAIMON_ASSIGN_OR_RAISE(Evaluation evaluated, Evaluate(predicate, candidates, mapped_leaves));
     if (evaluated.rows.IsEmpty()) {
         return std::unique_ptr<FileBatchReader>();
     }

@@ -207,8 +207,7 @@ class PreciseFileIndexReadTest : public ::testing::Test {
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<PreciseFileIndexRead> precise_read,
             PreciseFileIndexRead::Create(*split_read, partition, file, context->GetReadSchema(),
-                                         context->GetPredicate(), field_mapping_builder.get(),
-                                         path_factory, {}));
+                                         field_mapping_builder.get(), path_factory, {}));
         if (scalar_index_result_) {
             auto reader = std::make_shared<TestScalarFileIndexReader>(scalar_index_result_);
             precise_read->indexes_->field_readers_["f3"] = {std::move(reader)};
@@ -220,8 +219,9 @@ class PreciseFileIndexReadTest : public ::testing::Test {
             [deletion_vector](const std::string&) -> Result<std::shared_ptr<DeletionVector>> {
             return deletion_vector;
         };
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileBatchReader> reader,
-                               precise_read->CreateReader(dv_factory, row_ranges));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<FileBatchReader> reader,
+            precise_read->CreateReader(context->GetPredicate(), dv_factory, row_ranges));
         if (!reader) {
             return std::shared_ptr<arrow::ChunkedArray>();
         }
@@ -308,11 +308,10 @@ TEST_F(PreciseFileIndexReadTest, TestReadRowPositionsAcrossPredicates) {
         FieldMappingBuilder::Create(split_read->context_->GetReadSchema(),
                                     split_read->context_->GetPartitionKeys(), nullptr));
     const BinaryRow partition = BinaryRowGenerator::GenerateRow({10, 0}, pool_.get());
-    ASSERT_OK_AND_ASSIGN(
-        std::unique_ptr<PreciseFileIndexRead> read,
-        PreciseFileIndexRead::Create(
-            *split_read, partition, file, split_read->context_->GetReadSchema(),
-            split_read->context_->GetPredicate(), field_mapping_builder.get(), path_factory, {}));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<PreciseFileIndexRead> read,
+                         PreciseFileIndexRead::Create(
+                             *split_read, partition, file, split_read->context_->GetReadSchema(),
+                             field_mapping_builder.get(), path_factory, {}));
     const RoaringBitmap32 candidates = RoaringBitmap32::From({0, 1, 2});
     auto first = PredicateBuilder::Equal(3, "f3", FieldType::DOUBLE, Literal(12.1));
     ASSERT_OK_AND_ASSIGN(RoaringBitmap32 rows, read->ReadRowPositions(first, candidates));
@@ -329,8 +328,9 @@ TEST_F(PreciseFileIndexReadTest, TestReadRowPositionsAcrossPredicates) {
     ASSERT_OK_AND_ASSIGN(rows, read->ReadRowPositions(first, candidates));
     ASSERT_EQ(rows, RoaringBitmap32::From({0}));
 
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader,
-                         read->CreateReader({}, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<FileBatchReader> reader,
+        read->CreateReader(split_read->context_->GetPredicate(), {}, std::nullopt));
     ASSERT_TRUE(reader);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                          ReadResultCollector::CollectResult(std::move(reader)));

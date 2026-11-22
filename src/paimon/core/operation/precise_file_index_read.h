@@ -52,13 +52,11 @@ struct VectorSearch;
 /// Evaluates a file predicate and root search before opening the selected output rows.
 class PreciseFileIndexRead {
  public:
-    /// Uses the file-specific predicate and schema supplied by the caller, including any fields
-    /// added for visibility filtering. The predicate is evaluated before root search.
+    /// Uses the file-specific schema supplied by the caller, including visibility filter fields.
     static Result<std::unique_ptr<PreciseFileIndexRead>> Create(
         const RawFileSplitRead& split_read, const BinaryRow& partition,
         const std::shared_ptr<DataFileMeta>& file,
         const std::shared_ptr<arrow::Schema>& read_schema,
-        const std::shared_ptr<Predicate>& predicate,
         const FieldMappingBuilder* field_mapping_builder,
         const std::shared_ptr<DataFilePathFactory>& path_factory,
         const std::map<std::string, std::string>& extra_format_options);
@@ -69,9 +67,10 @@ class PreciseFileIndexRead {
     Result<RoaringBitmap32> ReadRowPositions(const std::shared_ptr<Predicate>& predicate,
                                              const RoaringBitmap32& candidates) const;
 
-    /// Finishes evaluation synchronously. The returned reader does not retain this instance.
+    /// Evaluates the supplied predicate before root search, synchronously.
+    /// The returned reader does not retain this instance.
     Result<std::unique_ptr<FileBatchReader>> CreateReader(
-        const DeletionVector::Factory& dv_factory,
+        const std::shared_ptr<Predicate>& predicate, const DeletionVector::Factory& dv_factory,
         const std::optional<std::vector<Range>>& row_ranges) const;
 
  private:
@@ -83,7 +82,6 @@ class PreciseFileIndexRead {
     PreciseFileIndexRead(const RawFileSplitRead& split_read, const BinaryRow& partition,
                          const std::shared_ptr<DataFileMeta>& file,
                          const std::shared_ptr<arrow::Schema>& read_schema,
-                         const std::shared_ptr<Predicate>& predicate,
                          const FieldMappingBuilder* field_mapping_builder,
                          const std::shared_ptr<DataFilePathFactory>& path_factory,
                          const std::map<std::string, std::string>& extra_format_options,
@@ -121,7 +119,6 @@ class PreciseFileIndexRead {
     const BinaryRow& partition_;
     std::shared_ptr<DataFileMeta> file_;
     std::shared_ptr<arrow::Schema> read_schema_;
-    std::shared_ptr<Predicate> predicate_;
     const FieldMappingBuilder* field_mapping_builder_;
     std::shared_ptr<DataFilePathFactory> path_factory_;
     std::map<std::string, std::string> extra_format_options_;
