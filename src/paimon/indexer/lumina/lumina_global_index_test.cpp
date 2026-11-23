@@ -554,7 +554,7 @@ TEST_F(LuminaGlobalIndexTest, TestResumeFromCheckpoint) {
             .Set(::lumina::core::kEncodingType, ::lumina::core::kEncodingRawf32)
             .Set(::lumina::core::kExtensionCkptThreshold, static_cast<int64_t>(1))
             .Set(::lumina::core::kExtensionCkptCount, static_cast<int64_t>(1));
-        LuminaMemoryPool lumina_pool(pool_);
+        LuminaMemoryPool lumina_pool(/*track_memory=*/false, pool_);
         ::lumina::core::MemoryResourceConfig memory_resource(&lumina_pool);
         auto builder_result =
             ::lumina::api::LuminaBuilder::Create(builder_options, memory_resource);
@@ -672,7 +672,7 @@ TEST_F(LuminaGlobalIndexTest, TestBuildFailureDiscardsCheckpointAndRetries) {
         .Set(::lumina::core::kEncodingType, ::lumina::core::kEncodingRawf32)
         .Set(::lumina::core::kExtensionCkptThreshold, static_cast<int64_t>(1))
         .Set(::lumina::core::kExtensionCkptCount, static_cast<int64_t>(1));
-    LuminaMemoryPool lumina_pool(pool_);
+    LuminaMemoryPool lumina_pool(/*track_memory=*/false, pool_);
     ::lumina::core::MemoryResourceConfig memory_resource(&lumina_pool);
     auto builder_result = ::lumina::api::LuminaBuilder::Create(builder_options, memory_resource);
     ASSERT_TRUE(builder_result.IsOk()) << builder_result.GetStatus().Message();

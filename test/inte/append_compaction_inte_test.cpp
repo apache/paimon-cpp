@@ -25,6 +25,7 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
+#include "paimon/append_file_compaction.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
@@ -230,9 +231,7 @@ TEST_P(AppendCompactionInteTest, TestCompactFilesWithGap) {
         int64_t identifier = 0;
         PrepareSimpleAppendData(gen, with_dv, helper.get(), &identifier);
         ASSERT_OK(helper->write_->Close());
-        ASSERT_OK_AND_ASSIGN(auto compactor,
-                             TestHelper::Create(helper->table_path_, options, true));
-        auto* write = dynamic_cast<AppendOnlyFileStoreWrite*>(compactor->write_.get());
+        auto* write = dynamic_cast<AppendOnlyFileStoreWrite*>(helper->write_.get());
         ASSERT_NE(nullptr, write);
         auto partition = BinaryRowGenerator::GenerateRow({10}, pool_.get());
         ASSERT_OK_AND_ASSIGN(auto restored, write->ScanExistingFileMetas(partition, 1));
@@ -241,9 +240,10 @@ TEST_P(AppendCompactionInteTest, TestCompactFilesWithGap) {
         ASSERT_EQ(3, files.size());
         // Reverse the inputs and leave the middle file untouched. Neither order nor adjacency
         // of the supplied names determines eligibility.
-        ASSERT_OK(compactor->write_->CompactFiles({{"f1", "10"}}, 1,
-                                                  {files[2]->file_name, files[0]->file_name}));
-        ASSERT_OK_AND_ASSIGN(auto messages, compactor->write_->PrepareCommit(true, identifier));
+        ASSERT_OK_AND_ASSIGN(
+            auto messages, AppendFileCompaction::Execute(helper->table_path_, "", {{"f1", "10"}}, 1,
+                                                         {files[2]->file_name, files[0]->file_name},
+                                                         options, nullptr, pool_, nullptr));
         ASSERT_EQ(1, messages.size());
         auto message = messages[0];
         auto impl = std::dynamic_pointer_cast<CommitMessageImpl>(message);
@@ -256,19 +256,12 @@ TEST_P(AppendCompactionInteTest, TestCompactFilesWithGap) {
         ASSERT_EQ(1, increment.CompactAfter().size());
         ASSERT_EQ(with_dv ? 2 : 4, increment.CompactAfter()[0]->row_count);
         ASSERT_EQ(with_dv ? 1 : 0, increment.NewIndexFiles().size());
-        ASSERT_OK_AND_ASSIGN(auto pending, compactor->write_->PrepareCommit(true, identifier));
-        for (const auto& pending_message : pending) {
-            auto pending_impl = std::dynamic_pointer_cast<CommitMessageImpl>(pending_message);
-            ASSERT_TRUE(pending_impl);
-            ASSERT_TRUE(pending_impl->IsEmpty());
-        }
-        // Closing the executor must leave the returned files available for publication.
-        ASSERT_OK(compactor->write_->Close());
+        // The compaction call has already closed its writer; the files remain publishable.
         ASSERT_OK_AND_ASSIGN(std::string bytes, CommitMessage::Serialize(message, pool_));
         ASSERT_OK_AND_ASSIGN(
             message, CommitMessage::Deserialize(CommitMessage::CurrentVersion(), bytes.data(),
                                                 bytes.size(), pool_));
-        ASSERT_OK(compactor->commit_->Commit({message}, identifier++));
+        ASSERT_OK(helper->commit_->Commit({message}, identifier++));
         ASSERT_OK_AND_ASSIGN(auto active, write->ScanExistingFileMetas(partition, 1));
         ASSERT_EQ(2, active->DataFiles().size());
         if (with_dv) {
@@ -325,8 +318,7 @@ TEST_P(AppendCompactionInteTest, TestCompactFilesSingleFullyDeletedFile) {
     int64_t identifier = 0;
     PrepareSimpleAppendData(gen, true, helper.get(), &identifier);
     ASSERT_OK(helper->write_->Close());
-    ASSERT_OK_AND_ASSIGN(auto compactor, TestHelper::Create(helper->table_path_, options, true));
-    auto* write = dynamic_cast<AppendOnlyFileStoreWrite*>(compactor->write_.get());
+    auto* write = dynamic_cast<AppendOnlyFileStoreWrite*>(helper->write_.get());
     ASSERT_NE(nullptr, write);
     auto partition = BinaryRowGenerator::GenerateRow({10}, pool_.get());
     ASSERT_OK_AND_ASSIGN(auto restored, write->ScanExistingFileMetas(partition, 1));
@@ -334,15 +326,17 @@ TEST_P(AppendCompactionInteTest, TestCompactFilesSingleFullyDeletedFile) {
     std::sort(files.begin(), files.end(), BucketedAppendCompactManager::FileComparator(true));
     ASSERT_EQ(3, files.size());
     ASSERT_EQ(1, files.back()->row_count);
-    ASSERT_OK(write->CompactFiles({{"f1", "10"}}, 1, {files.back()->file_name}));
-    ASSERT_OK_AND_ASSIGN(auto messages, compactor->write_->PrepareCommit(true, identifier));
+    ASSERT_OK_AND_ASSIGN(
+        auto messages,
+        AppendFileCompaction::Execute(helper->table_path_, "", {{"f1", "10"}}, 1,
+                                      {files.back()->file_name}, options, nullptr, pool_, nullptr));
     ASSERT_EQ(1, messages.size());
     auto message = messages[0];
     auto impl = std::dynamic_pointer_cast<CommitMessageImpl>(message);
     ASSERT_TRUE(impl);
     ASSERT_EQ(1, impl->GetCompactIncrement().CompactBefore().size());
     ASSERT_TRUE(impl->GetCompactIncrement().CompactAfter().empty());
-    ASSERT_OK(compactor->commit_->Commit({message}, identifier++));
+    ASSERT_OK(helper->commit_->Commit({message}, identifier++));
     ASSERT_OK_AND_ASSIGN(auto active, write->ScanExistingFileMetas(partition, 1));
     ASSERT_EQ(2, active->DataFiles().size());
     ASSERT_OK_AND_ASSIGN(auto dvs, write->dv_maintainer_factory_->Create(
@@ -350,7 +344,6 @@ TEST_P(AppendCompactionInteTest, TestCompactFilesSingleFullyDeletedFile) {
     ASSERT_TRUE(dvs->DeletionVectorOf(files[0]->file_name));
     ASSERT_TRUE(dvs->DeletionVectorOf(files[1]->file_name));
     ASSERT_FALSE(dvs->DeletionVectorOf(files[2]->file_name));
-    ASSERT_OK(compactor->write_->Close());
 
     ASSERT_OK_AND_ASSIGN(auto splits, helper->NewScan(StartupMode::LatestFull(), std::nullopt));
     std::vector<std::shared_ptr<Split>> target_splits;

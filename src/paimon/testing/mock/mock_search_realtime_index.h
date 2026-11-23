@@ -44,7 +44,7 @@ class MockRealtimeIndex final : public RealtimeIndex {
     Status AddBatch(::ArrowArray* batch) override;
 
     Result<std::shared_ptr<RealtimeIndexReader>> CreateReader(
-        const OffsetRange& offset_range) const override;
+        const OffsetRange& offset_range, const std::shared_ptr<MemoryPool>& pool) const override;
 
     uint64_t GetMemoryUsage() const override;
 
