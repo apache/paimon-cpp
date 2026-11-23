@@ -43,6 +43,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "paimon/append_file_compaction.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/commit_context.h"
@@ -1997,7 +1998,9 @@ TEST_P(RealtimeDeduplicateCompactionInteTest, TestCommitTransfersLatestDvToCompa
                          write_builder.SetOptions(options_).WithStreamingMode(true).Finish());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> compactor,
                          FileStoreWrite::Create(std::move(write_context)));
-    ASSERT_NOK_WITH_MSG(compactor->CompactFiles({}, 0, {"unused.parquet"}), "real-time mode");
+    ASSERT_NOK_WITH_MSG(AppendFileCompaction::Execute(table_path_, "", {}, 0, {"unused.parquet"},
+                                                      options_, nullptr, nullptr, nullptr),
+                        "real-time mode");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> forbidden_batch,
                          MakeBatch({{99, "not-written", "p0"}}, /*partitioned=*/false));
     ASSERT_NOK_WITH_MSG(compactor->Write(std::move(forbidden_batch)), "only supports compaction");

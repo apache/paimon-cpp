@@ -24,6 +24,9 @@ Write
 Interface
 =========
 
+.. doxygenclass:: paimon::AppendFileCompaction
+   :members:
+
 .. doxygenclass:: paimon::FileStoreWrite
    :members:
    :undoc-members:

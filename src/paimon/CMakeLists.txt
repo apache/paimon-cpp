@@ -389,6 +389,7 @@ set(PAIMON_CORE_SRCS
     core/operation/data_evolution_split_read.cpp
     core/operation/abstract_file_store_write.cpp
     core/operation/abstract_split_read.cpp
+    core/operation/append_file_compaction.cpp
     core/operation/append_only_file_store_scan.cpp
     core/operation/append_only_file_store_write.cpp
     core/operation/metrics/commit_metrics.cpp
