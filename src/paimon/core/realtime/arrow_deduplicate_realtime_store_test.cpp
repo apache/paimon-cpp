@@ -436,6 +436,35 @@ TEST_F(ArrowDeduplicateRealtimeStoreTest, TestLastWriteWinsAndReadViewIsSnapshot
     ASSERT_EQ(OffsetRange(1, 5), segment.value()->GetOffsetRange());
 }
 
+TEST_F(ArrowDeduplicateRealtimeStoreTest, TestWriteFailureRejectsNewViewsAndPreservesPinnedView) {
+    ASSERT_OK(store_->WriteAndLookup(MakeBatch(R"([[0, 1, "old"]])"),
+                                     {RecordBatch::RowKind::INSERT}, OffsetRange(0, 1),
+                                     RoaringBitmap64()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeReadView> pinned_view, store_->AcquireReadView());
+    auto replacement = MakeBatch(R"([[1, 1, "new"]])");
+    RoaringBitmap64 previous_offsets;
+    previous_offsets.Add(0);
+
+    // The delegate rejects the empty range after the deduplicate state has changed.
+    ASSERT_NOK_WITH_MSG(store_->WriteAndLookup(replacement, {RecordBatch::RowKind::UPDATE_AFTER},
+                                               OffsetRange(1, 1), previous_offsets),
+                        "real-time offset range is invalid");
+    ASSERT_NOK_WITH_MSG(store_->AcquireReadView(), "after a write failure");
+    ASSERT_NOK_WITH_MSG(store_->AcquireKeyOffsetLookup(), "after a write failure");
+    ASSERT_NOK_WITH_MSG(store_->SealForCommit(), "after a write failure");
+    ASSERT_NOK_WITH_MSG(store_->FreezeBuildingSegment(), "after a write failure");
+    ASSERT_NOK_WITH_MSG(store_->RetireCommittedOffsetAndLookup(1, empty_lookup_),
+                        "after a write failure");
+    ASSERT_NOK_WITH_MSG(store_->AttachCommittedKeyOffsetLookup(empty_lookup_),
+                        "after a write failure");
+    ASSERT_NOK_WITH_MSG(store_->WriteAndLookup(replacement, {RecordBatch::RowKind::UPDATE_AFTER},
+                                               OffsetRange(1, 2), previous_offsets),
+                        "after a write failure");
+    ASSERT_NOK_WITH_MSG(store_->AcquireReadView(), "after a write failure");
+    ASSERT_OK_AND_ASSIGN(std::vector<int64_t> offsets, ReadOffsets(pinned_view));
+    ASSERT_EQ((std::vector<int64_t>{0}), offsets);
+}
+
 TEST_F(ArrowDeduplicateRealtimeStoreTest, TestHashPostingsCombineWithPinnedDvWithoutIndexCopies) {
     ASSERT_OK_AND_ASSIGN(
         delegate_, ArrowRealtimeStore::Create(schema_, RealtimeStoreMode::APPEND_ONLY,

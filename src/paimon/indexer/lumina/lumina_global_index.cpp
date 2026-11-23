@@ -82,7 +82,7 @@ Result<std::shared_ptr<GlobalIndexWriter>> LuminaGlobalIndex::CreateWriter(
             return Status::Invalid("Lumina checkpoint requires a checkpoint-capable file writer");
         }
     }
-    auto lumina_pool = std::make_shared<LuminaMemoryPool>(pool);
+    auto lumina_pool = std::make_shared<LuminaMemoryPool>(/*track_memory=*/false, pool);
     return std::make_shared<LuminaIndexWriter>(
         field_name, arrow_type, dimension, file_writer, std::move(builder_options),
         ::lumina::api::IOOptions(), lumina_options, std::move(tag_fields), checkpoint_file_manager,
@@ -128,7 +128,7 @@ Result<std::shared_ptr<GlobalIndexReader>> LuminaGlobalIndex::CreateReader(
     PAIMON_ASSIGN_OR_RAISE(LuminaIndexReader::IndexInfo index_info,
                            LuminaIndexReader::GetIndexInfo(io_meta));
 
-    auto lumina_pool = std::make_shared<LuminaMemoryPool>(pool);
+    auto lumina_pool = std::make_shared<LuminaMemoryPool>(/*track_memory=*/false, pool);
     auto lumina_options =
         OptionsUtils::FetchOptionsWithPrefix(LuminaDefines::kOptionKeyPrefix, options_);
     // get input stream and open index

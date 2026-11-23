@@ -18,6 +18,7 @@
 
 #include "paimon/indexer/lumina/lumina_index_options.h"
 
+#include <set>
 #include <unordered_map>
 
 #include "fmt/format.h"
@@ -69,6 +70,41 @@ Result<::lumina::api::BuilderOptions> LuminaIndexOptions::CreateBuilderOptions(
         ::lumina::api::NormalizeBuilderOptions(std::unordered_map<std::string, std::string>(
             lumina_options.begin(), lumina_options.end())));
     return builder_options;
+}
+
+Result<::lumina::api::StreamerOptions> LuminaIndexOptions::CreateStreamerOptions(
+    const std::map<std::string, std::string>& lumina_options) {
+    // TODO(xinyu.lxy): Use NormalizeStreamerOptions when Lumina exposes it. Convert types here;
+    // leave option value validation and backend support checks to LuminaStreamer::Create.
+    static const std::set<std::string> integer_keys = {"index.dimension",
+                                                       "bruteforce.streamer.capacity",
+                                                       "bruteforce.streamer.rows_per_block",
+                                                       "flatnsw.streamer.capacity",
+                                                       "flatnsw.streamer.rows_per_block",
+                                                       "flatnsw.build.ef_construction",
+                                                       "flatnsw.build.neighbor_count"};
+    static const std::set<std::string> double_keys = {"flatnsw.build.slack_pruning_factor",
+                                                      "extension.build.tag.max_range_label_ratio",
+                                                      "extension.build.tag.min_range_label_ratio"};
+    ::lumina::api::StreamerOptions options;
+    for (const auto& [key, value] : lumina_options) {
+        if (integer_keys.count(key)) {
+            PAIMON_ASSIGN_OR_RAISE(int64_t parsed,
+                                   OptionsUtils::GetValueFromMap<int64_t>(lumina_options, key));
+            options.Set(key, parsed);
+        } else if (double_keys.count(key)) {
+            PAIMON_ASSIGN_OR_RAISE(double parsed,
+                                   OptionsUtils::GetValueFromMap<double>(lumina_options, key));
+            options.Set(key, parsed);
+        } else if (key == ::lumina::core::kEnableExperimental) {
+            PAIMON_ASSIGN_OR_RAISE(bool parsed,
+                                   OptionsUtils::GetValueFromMap<bool>(lumina_options, key));
+            options.Set(key, parsed);
+        } else {
+            options.Set(key, value);
+        }
+    }
+    return options;
 }
 
 bool LuminaIndexOptions::IsCheckpointEnabled(

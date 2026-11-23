@@ -52,6 +52,9 @@ class LuminaIndexOptions {
     static Result<::lumina::api::BuilderOptions> CreateBuilderOptions(
         const std::map<std::string, std::string>& lumina_options);
 
+    static Result<::lumina::api::StreamerOptions> CreateStreamerOptions(
+        const std::map<std::string, std::string>& lumina_options);
+
     static bool IsCheckpointEnabled(const std::map<std::string, std::string>& lumina_options);
 
     static Result<::lumina::api::SearcherOptions> CreateSearcherOptions(

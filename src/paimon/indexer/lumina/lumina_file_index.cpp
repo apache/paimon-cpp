@@ -191,7 +191,7 @@ Result<std::shared_ptr<FileIndexWriter>> LuminaFileIndexer::CreateWriter(
     PAIMON_RETURN_NOT_OK(LuminaTagUtils::ValidateTagFields(*struct_type, tag_fields));
     PAIMON_ASSIGN_OR_RAISE(::lumina::api::BuilderOptions builder_options,
                            LuminaIndexOptions::CreateBuilderOptions(options_));
-    auto lumina_pool = std::make_shared<LuminaMemoryPool>(pool);
+    auto lumina_pool = std::make_shared<LuminaMemoryPool>(/*track_memory=*/false, pool);
     return std::make_shared<LuminaFileIndexWriter>(schema->field(0)->name(), std::move(struct_type),
                                                    index_info, std::move(builder_options),
                                                    std::move(tag_fields), std::move(lumina_pool));
@@ -210,7 +210,7 @@ Result<std::shared_ptr<FileIndexReader>> LuminaFileIndexer::CreateReader(
     PAIMON_ASSIGN_OR_RAISE(LuminaIndexInfo index_info, LuminaIndexOptions::GetIndexInfo(options_));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<OffsetInputStream> artifact_input,
                            OffsetInputStream::Create(input_stream, length, start));
-    auto lumina_pool = std::make_shared<LuminaMemoryPool>(pool);
+    auto lumina_pool = std::make_shared<LuminaMemoryPool>(/*track_memory=*/false, pool);
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<LuminaIndexSearcher> searcher,
         LuminaIndexSearcher::Open(options_, index_info, artifact_input, lumina_pool));
