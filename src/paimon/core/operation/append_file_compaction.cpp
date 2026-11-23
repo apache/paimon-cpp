@@ -27,7 +27,7 @@
 
 namespace paimon {
 
-Result<std::vector<std::shared_ptr<CommitMessage>>> AppendFileCompaction::PrepareCommit(
+Result<std::vector<std::shared_ptr<CommitMessage>>> AppendFileCompaction::Execute(
     const std::string& table_path, const std::string& branch,
     const std::map<std::string, std::string>& partition, int32_t bucket,
     const std::vector<std::string>& file_names, const std::map<std::string, std::string>& options,

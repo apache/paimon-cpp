@@ -292,8 +292,8 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestAppendFileCompactionValidationAndLatest
     auto compact = [&](const std::map<std::string, std::string>& partition, int32_t bucket,
                        const std::vector<std::string>& file_names,
                        const std::map<std::string, std::string>& opts) {
-        return AppendFileCompaction::PrepareCommit(path, "", partition, bucket, file_names, opts,
-                                                   nullptr, nullptr, nullptr);
+        return AppendFileCompaction::Execute(path, "", partition, bucket, file_names, opts, nullptr,
+                                             nullptr, nullptr);
     };
     ASSERT_NOK_WITH_MSG(compact({}, 0, {first_name}, options), "bucket-append-ordered=false");
     options[Options::BUCKET_APPEND_ORDERED] = "false";

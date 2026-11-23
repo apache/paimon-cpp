@@ -34,6 +34,7 @@ class FileSystem;
 class MemoryPool;
 
 /// Rewrites explicitly selected files in a fixed-bucket append table.
+// TODO(xinyu.lxy): Support catalog-based compaction.
 class PAIMON_EXPORT AppendFileCompaction {
  public:
     AppendFileCompaction() = delete;
@@ -59,7 +60,7 @@ class PAIMON_EXPORT AppendFileCompaction {
     /// @param file_system The file system; nullptr selects one from options.
     /// @param pool The memory pool; nullptr uses the default pool.
     /// @param executor The executor; nullptr uses the default executor.
-    static Result<std::vector<std::shared_ptr<CommitMessage>>> PrepareCommit(
+    static Result<std::vector<std::shared_ptr<CommitMessage>>> Execute(
         const std::string& table_path, const std::string& branch,
         const std::map<std::string, std::string>& partition, int32_t bucket,
         const std::vector<std::string>& file_names,

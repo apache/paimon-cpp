@@ -104,7 +104,7 @@ respectively. Adjust ``target-file-size`` to move the threshold.
 
 Custom Compaction
 ~~~~~~~~~~~~~~~~~
-``AppendFileCompaction::PrepareCommit(table_path, branch, partition, bucket,
+``AppendFileCompaction::Execute(table_path, branch, partition, bucket,
 file_names, options, file_system, pool, executor)`` synchronously rewrites selected
 files and returns commit messages. Each call creates a dedicated batch writer
 and restores the latest snapshot for the specified partition-bucket. Input files

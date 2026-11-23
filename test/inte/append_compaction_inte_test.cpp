@@ -240,10 +240,10 @@ TEST_P(AppendCompactionInteTest, TestCompactFilesWithGap) {
         ASSERT_EQ(3, files.size());
         // Reverse the inputs and leave the middle file untouched. Neither order nor adjacency
         // of the supplied names determines eligibility.
-        ASSERT_OK_AND_ASSIGN(auto messages, AppendFileCompaction::PrepareCommit(
-                                                helper->table_path_, "", {{"f1", "10"}}, 1,
-                                                {files[2]->file_name, files[0]->file_name}, options,
-                                                nullptr, pool_, nullptr));
+        ASSERT_OK_AND_ASSIGN(
+            auto messages, AppendFileCompaction::Execute(helper->table_path_, "", {{"f1", "10"}}, 1,
+                                                         {files[2]->file_name, files[0]->file_name},
+                                                         options, nullptr, pool_, nullptr));
         ASSERT_EQ(1, messages.size());
         auto message = messages[0];
         auto impl = std::dynamic_pointer_cast<CommitMessageImpl>(message);
@@ -327,9 +327,9 @@ TEST_P(AppendCompactionInteTest, TestCompactFilesSingleFullyDeletedFile) {
     ASSERT_EQ(3, files.size());
     ASSERT_EQ(1, files.back()->row_count);
     ASSERT_OK_AND_ASSIGN(
-        auto messages, AppendFileCompaction::PrepareCommit(helper->table_path_, "", {{"f1", "10"}},
-                                                           1, {files.back()->file_name}, options,
-                                                           nullptr, pool_, nullptr));
+        auto messages,
+        AppendFileCompaction::Execute(helper->table_path_, "", {{"f1", "10"}}, 1,
+                                      {files.back()->file_name}, options, nullptr, pool_, nullptr));
     ASSERT_EQ(1, messages.size());
     auto message = messages[0];
     auto impl = std::dynamic_pointer_cast<CommitMessageImpl>(message);
