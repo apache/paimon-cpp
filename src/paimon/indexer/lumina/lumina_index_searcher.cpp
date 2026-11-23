@@ -79,8 +79,8 @@ Result<::lumina::api::LuminaSearcher::SearchResult> LuminaIndexSearcher::Search(
     PAIMON_ASSIGN_OR_RAISE(::lumina::api::SearchOptions search_options,
                            LuminaIndexOptions::CreateSearchOptions(*vector_search, index_info_));
     ::lumina::api::Query query(vector_search->query.data(), vector_search->query.size());
-    LuminaMemoryPool session_pool(vector_search->pool ? vector_search->pool
-                                                      : pool_->GetPaimonPool());
+    LuminaMemoryPool session_pool(
+        /*track_memory=*/false, vector_search->pool ? vector_search->pool : pool_->GetPaimonPool());
 
     if (vector_search->predicate) {
         if (!searcher_with_tag_) {

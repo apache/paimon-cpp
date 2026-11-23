@@ -230,8 +230,9 @@ class RealtimeSourceRead {
         const std::string& field_name) {
         auto found = readers_.find(field_name);
         if (found == readers_.end()) {
-            PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<RealtimeIndexReader>> readers,
-                                   source_->CreateIndexReaders(field_name));
+            PAIMON_ASSIGN_OR_RAISE(
+                std::vector<std::shared_ptr<RealtimeIndexReader>> readers,
+                source_->CreateIndexReaders(field_name, context_->GetMemoryPool()));
             for (const auto& reader : readers) {
                 if (!reader) {
                     return Status::Invalid("Real-time source returned a null index reader");

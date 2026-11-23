@@ -196,7 +196,7 @@ Status HashRealtimeIndex::AddBatch(::ArrowArray* batch) {
 }
 
 Result<std::shared_ptr<RealtimeIndexReader>> HashRealtimeIndex::CreateReader(
-    const OffsetRange& offset_range) const {
+    const OffsetRange& offset_range, const std::shared_ptr<MemoryPool>&) const {
     if (offset_range.begin < 0 || offset_range.begin > offset_range.end) {
         return Status::Invalid("real-time index query offset range is invalid");
     }

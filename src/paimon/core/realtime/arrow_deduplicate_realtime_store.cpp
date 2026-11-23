@@ -259,8 +259,8 @@ class ArrowDeduplicateRealtimeStore::IndexReadSource final : public RealtimeInde
     }
 
     Result<std::vector<std::shared_ptr<RealtimeIndexReader>>> CreateIndexReaders(
-        const std::string& field_name) const override {
-        return source_->CreateIndexReaders(field_name);
+        const std::string& field_name, const std::shared_ptr<MemoryPool>& pool) const override {
+        return source_->CreateIndexReaders(field_name, pool);
     }
 
  private:
@@ -336,6 +336,7 @@ Result<std::shared_ptr<arrow::StructArray>> ArrowDeduplicateRealtimeStore::Extra
 Result<std::shared_ptr<const KeyOffsetLookup>>
 ArrowDeduplicateRealtimeStore::AcquireKeyOffsetLookup() {
     std::lock_guard<std::mutex> lock(mutex_);
+    PAIMON_RETURN_NOT_OK(CheckUsableLocked());
     if (!building_key_index_) {
         return Status::Invalid("deduplicate building key-offset index is not initialized");
     }
@@ -349,6 +350,13 @@ ArrowDeduplicateRealtimeStore::AcquireKeyOffsetLookup() {
     }
     lookups.push_back(building_key_index_->Snapshot());
     return std::shared_ptr<const KeyOffsetLookup>(new CompositeKeyOffsetLookup(std::move(lookups)));
+}
+
+Status ArrowDeduplicateRealtimeStore::CheckUsableLocked() const {
+    if (write_failed_) {
+        return Status::Invalid("deduplicate store cannot be reused after a write failure");
+    }
+    return Status::OK();
 }
 
 Status ArrowDeduplicateRealtimeStore::EnsureMutableDeletionBitmap() {
@@ -376,6 +384,7 @@ Status ArrowDeduplicateRealtimeStore::WriteAndLookup(
         checked_pointer_cast<arrow::Int64Array>(raw_offsets);
 
     std::lock_guard<std::mutex> lock(mutex_);
+    PAIMON_RETURN_NOT_OK(CheckUsableLocked());
     if (!building_key_index_) {
         return Status::Invalid("deduplicate building key-offset index is not initialized");
     }
@@ -383,6 +392,8 @@ Status ArrowDeduplicateRealtimeStore::WriteAndLookup(
         return Status::Invalid("real-time offset ranges must be ordered and non-overlapping");
     }
     PAIMON_RETURN_NOT_OK(EnsureMutableDeletionBitmap());
+    // Mark failure before releasing the store lock.
+    ScopeGuard failure_guard([this]() { write_failed_ = true; });
     *pending_offset_deletions_ |= previous_offsets;
 
     arrow::BooleanBuilder add_selection(arrow_pool_.get());
@@ -438,6 +449,7 @@ Status ArrowDeduplicateRealtimeStore::WriteAndLookup(
     } else {
         building_offset_range_ = OffsetRange(building_offset_range_->begin, offset_range.end);
     }
+    failure_guard.Release();
     return Status::OK();
 }
 
@@ -463,6 +475,7 @@ ArrowDeduplicateRealtimeStore::SealCurrentSegment(bool allow_spill) {
     RoaringBitmap64 row_offsets;
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        PAIMON_RETURN_NOT_OK(CheckUsableLocked());
         if (!building_offset_range_) {
             return std::optional<std::shared_ptr<RealtimeSegmentHandle>>();
         }
@@ -533,6 +546,7 @@ ArrowDeduplicateRealtimeStore::CreateCommitReaders(
 
 Result<std::shared_ptr<RealtimeReadView>> ArrowDeduplicateRealtimeStore::AcquireReadView() {
     std::lock_guard<std::mutex> lock(mutex_);
+    PAIMON_RETURN_NOT_OK(CheckUsableLocked());
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeReadView> delegate_view,
                            delegate_->AcquireReadView());
     std::optional<OffsetRange> range;
@@ -599,6 +613,7 @@ ArrowDeduplicateRealtimeStore::RetireCommittedOffsetAndLookup(
     auto retired = std::make_shared<RetiredReadView>();
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        PAIMON_RETURN_NOT_OK(CheckUsableLocked());
         auto* two_phase = dynamic_cast<TwoPhaseSealableRealtimeStore*>(delegate_.get());
         if (two_phase) {
             PAIMON_ASSIGN_OR_RAISE(retired->delegate_view,
@@ -631,6 +646,7 @@ ArrowDeduplicateRealtimeStore::RetireCommittedOffsetAndLookup(
 Status ArrowDeduplicateRealtimeStore::AttachCommittedKeyOffsetLookup(
     const std::shared_ptr<const KeyOffsetLookup>& committed_lookup) {
     std::lock_guard<std::mutex> lock(mutex_);
+    PAIMON_RETURN_NOT_OK(CheckUsableLocked());
     if (committed_key_lookup_ && committed_key_lookup_ != committed_lookup) {
         return Status::Invalid(
             "committed key-offset lookup is already attached to deduplicate store");

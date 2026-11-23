@@ -495,6 +495,26 @@ TEST_P(OrcAdapterTest, TestDeepCopyWithString) {
     ASSERT_TRUE(src_array->Equals(converted_array));
 }
 
+TEST_F(OrcAdapterTest, TestDeepCopyStringExceedsOffsetLimit) {
+    constexpr uint64_t kRowCount = 2048;
+    std::string value(1024 * 1024, 'x');
+    ::orc::StringVectorBatch batch(kRowCount, *::orc::getDefaultPool());
+    batch.numElements = kRowCount;
+    batch.hasNulls = false;
+    // Model decoded dictionary rows sharing one string, with no owned blob.
+    // Expanding all rows would require 2 GiB, exceeding the 32-bit offset limit.
+    for (uint64_t i = 0; i < kRowCount; ++i) {
+        batch.data[i] = value.data();
+        batch.length[i] = value.size();
+    }
+    ASSERT_EQ(batch.blob.size(), 0);
+
+    arrow::ProxyMemoryPool pool(arrow::default_memory_pool());
+    ASSERT_NOK_WITH_MSG(OrcAdapter::AppendBatch(arrow::utf8(), &batch, &pool),
+                        "total length is out-of-bounds");
+    ASSERT_EQ(pool.total_bytes_allocated(), 0);
+}
+
 TEST_P(OrcAdapterTest, TestComplexTypeShallowCopyWithBlob) {
     // when disable_dict, meet condition1 in MakeOrcBackedBinaryBuilder, use shallow copy with valid
     // blob

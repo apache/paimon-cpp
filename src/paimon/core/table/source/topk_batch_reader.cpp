@@ -35,6 +35,7 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/fields_comparator.h"
 #include "paimon/core/operation/internal_read_context.h"
+#include "paimon/core/utils/nested_projection_utils.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/vector_search.h"
 
@@ -139,9 +140,16 @@ Status TopKBatchReader::ReadTopK() {
             continue;
         }
         auto values = checked_pointer_cast<arrow::StructArray>(array);
-        PAIMON_ASSIGN_OR_RAISE(values, ArrowUtils::FlattenUnresolvableDictionaries(
-                                           values, read_type_, pool_.get(),
-                                           /*preserve_layout_recoverable_dictionaries=*/false));
+        // Align nested nullability across sources while retaining implicit columns.
+        const auto& logical_type = checked_cast<const arrow::StructType&>(*read_type_);
+        arrow::FieldVector fields = values->struct_type()->fields();
+        for (auto& field : fields) {
+            auto logical_field = logical_type.GetFieldByName(field->name());
+            field = logical_field ? logical_field : field->WithNullable(true);
+        }
+        PAIMON_ASSIGN_OR_RAISE(array, NestedProjectionUtils::AlignArrayToReadType(
+                                          values, arrow::struct_(std::move(fields)), pool_.get()));
+        values = checked_pointer_cast<arrow::StructArray>(array);
         auto scores =
             std::dynamic_pointer_cast<arrow::FloatArray>(values->GetFieldByName(score_name_));
         if (!scores) {

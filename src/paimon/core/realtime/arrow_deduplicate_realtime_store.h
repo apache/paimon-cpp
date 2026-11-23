@@ -127,6 +127,9 @@ class ArrowDeduplicateRealtimeStore final : public RealtimeStore {
 
     Result<std::shared_ptr<arrow::StructArray>> ExtractKeys(
         const std::shared_ptr<arrow::StructArray>& data) const;
+    // Requires mutex_. A failed write may leave partial DV/index updates before the context
+    // is invalidated. Reject new views and mutations during that window.
+    Status CheckUsableLocked() const;
     Status EnsureMutableDeletionBitmap();
     Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> SealCurrentSegment(
         bool allow_spill);
@@ -141,6 +144,7 @@ class ArrowDeduplicateRealtimeStore final : public RealtimeStore {
     // Serializes seal attempts only; writes never acquire this mutex during spill I/O.
     std::mutex seal_mutex_;
     mutable std::mutex mutex_;
+    bool write_failed_ = false;
     std::shared_ptr<MutableKeyOffsetIndex> building_key_index_;
     std::shared_ptr<const KeyOffsetLookup> committed_key_lookup_;
     std::vector<SealedState> sealed_states_;

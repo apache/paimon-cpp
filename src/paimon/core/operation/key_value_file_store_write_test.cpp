@@ -39,6 +39,7 @@
 #include "arrow/type.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "paimon/append_file_compaction.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/commit_context.h"
@@ -349,8 +350,10 @@ TEST_F(KeyValueFileStoreWriteTest, TestWriteWithInvalidBatch) {
         ASSERT_OK_AND_ASSIGN(auto file_store_write,
                              FileStoreWrite::Create(std::move(write_context)));
         ASSERT_NOK_WITH_MSG(file_store_write->Write(nullptr), "batch is null pointer");
-        ASSERT_NOK_WITH_MSG(file_store_write->CompactFiles({}, 0, {"unused.parquet"}),
-                            "only supports fixed-bucket append tables");
+        ASSERT_NOK_WITH_MSG(
+            AppendFileCompaction::Execute(PathUtil::JoinPath(dir->Str(), "foo.db/bar"), "", {}, 0,
+                                          {"unused.parquet"}, {}, nullptr, nullptr, nullptr),
+            "only supports fixed-bucket append tables");
     }
     {
         arrow::Schema typed_schema(fields);

@@ -778,10 +778,11 @@ Result<std::shared_ptr<arrow::ArrayBuilder>> MakeOrcBackedBinaryBuilder(
     } else {
         // condition3: disable dict batch in orc, while blob is also invalid, degrade to deep copy
         // version
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> data,
-                               DeepCopyDataBufferForString(typed_batch, pool));
+        // Validate 32-bit offsets before allocating or copying the decoded string data.
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> offsets,
                                PrepareOffsetsBufferForString(typed_batch, pool));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Buffer> data,
+                               DeepCopyDataBufferForString(typed_batch, pool));
         auto builder = std::make_shared<UnPooledBinaryBuilder>(type, pool);
         builder->SetData(data);
         builder->SetOffsets(offsets);

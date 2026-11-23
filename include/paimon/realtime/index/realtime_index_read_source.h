@@ -41,8 +41,9 @@ class PAIMON_EXPORT RealtimeIndexReadSource {
 
     /// Returns readers bound to this source's offset range. A missing field has no readers.
     /// Readers must not expose writes published after the pinned snapshot.
+    /// The pool belongs to the query, rather than the retained index.
     virtual Result<std::vector<std::shared_ptr<RealtimeIndexReader>>> CreateIndexReaders(
-        const std::string& field_name) const = 0;
+        const std::string& field_name, const std::shared_ptr<MemoryPool>& pool) const = 0;
 };
 
 /// Optional capability for precise real-time filtering and search. Ordinary query reads do not

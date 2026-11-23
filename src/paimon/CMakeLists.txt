@@ -389,6 +389,7 @@ set(PAIMON_CORE_SRCS
     core/operation/data_evolution_split_read.cpp
     core/operation/abstract_file_store_write.cpp
     core/operation/abstract_split_read.cpp
+    core/operation/append_file_compaction.cpp
     core/operation/append_only_file_store_scan.cpp
     core/operation/append_only_file_store_write.cpp
     core/operation/metrics/commit_metrics.cpp
@@ -452,6 +453,7 @@ set(PAIMON_CORE_SRCS
     core/realtime/realtime_snapshot_offsets.cpp
     core/realtime/realtime_store_read_pipeline.cpp
     core/realtime/realtime_primary_key_writer.cpp
+    core/realtime/realtime_utils.cpp
     core/postpone/postpone_bucket_writer.cpp
     core/schema/arrow_schema_validator.cpp
     core/schema/schema_manager.cpp

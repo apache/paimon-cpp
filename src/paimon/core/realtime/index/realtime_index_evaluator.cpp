@@ -34,7 +34,7 @@ namespace paimon {
 
 Result<std::optional<RoaringBitmap64>> RealtimeIndexEvaluator::Evaluate(
     const std::shared_ptr<RealtimeIndexSet>& indexes, const std::shared_ptr<Predicate>& predicate,
-    const OffsetRange& offset_range) {
+    const OffsetRange& offset_range, const std::shared_ptr<MemoryPool>& pool) {
     if (offset_range.begin < 0 || offset_range.begin > offset_range.end) {
         return Status::Invalid("real-time index query offset range is invalid");
     }
@@ -51,23 +51,24 @@ Result<std::optional<RoaringBitmap64>> RealtimeIndexEvaluator::Evaluate(
         if (!compound || compound->Children().empty()) {
             return Status::Invalid("invalid or empty real-time index compound predicate");
         }
-        return EvaluateCompound(indexes, compound, offset_range);
+        return EvaluateCompound(indexes, compound, offset_range, pool);
     }
     const std::shared_ptr<LeafPredicate> leaf = std::dynamic_pointer_cast<LeafPredicate>(predicate);
     if (!leaf) {
         return std::optional<RoaringBitmap64>();
     }
-    return EvaluateLeaf(indexes, leaf, offset_range);
+    return EvaluateLeaf(indexes, leaf, offset_range, pool);
 }
 
 Result<std::optional<RoaringBitmap64>> RealtimeIndexEvaluator::EvaluateCompound(
     const std::shared_ptr<RealtimeIndexSet>& indexes,
-    const std::shared_ptr<CompoundPredicate>& compound, const OffsetRange& offset_range) {
+    const std::shared_ptr<CompoundPredicate>& compound, const OffsetRange& offset_range,
+    const std::shared_ptr<MemoryPool>& pool) {
     const Function::Type function = compound->GetFunction().GetType();
     std::optional<RoaringBitmap64> result;
     for (const std::shared_ptr<Predicate>& child : compound->Children()) {
         PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap64> candidates,
-                               Evaluate(indexes, child, offset_range));
+                               Evaluate(indexes, child, offset_range, pool));
         if (!candidates) {
             if (function == Function::Type::OR) {
                 return std::optional<RoaringBitmap64>();
@@ -90,12 +91,12 @@ Result<std::optional<RoaringBitmap64>> RealtimeIndexEvaluator::EvaluateCompound(
 
 Result<std::optional<RoaringBitmap64>> RealtimeIndexEvaluator::EvaluateLeaf(
     const std::shared_ptr<RealtimeIndexSet>& indexes, const std::shared_ptr<LeafPredicate>& leaf,
-    const OffsetRange& offset_range) {
+    const OffsetRange& offset_range, const std::shared_ptr<MemoryPool>& pool) {
     std::optional<RoaringBitmap64> result;
     for (const std::shared_ptr<RealtimeIndex>& index :
          indexes->FindIndexes(leaf->FieldName(), leaf->GetFieldType())) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeIndexReader> reader,
-                               index->CreateReader(offset_range));
+                               index->CreateReader(offset_range, pool));
         if (!reader) {
             continue;
         }

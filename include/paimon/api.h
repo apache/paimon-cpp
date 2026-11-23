@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include "paimon/append_file_compaction.h"       // IWYU pragma: export
 #include "paimon/commit_context.h"               // IWYU pragma: export
 #include "paimon/defs.h"                         // IWYU pragma: export
 #include "paimon/factories/factory.h"            // IWYU pragma: export

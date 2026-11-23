@@ -126,23 +126,6 @@ AppendOnlyFileStoreWrite::AppendOnlyFileStoreWrite(
 
 AppendOnlyFileStoreWrite::~AppendOnlyFileStoreWrite() = default;
 
-Status AppendOnlyFileStoreWrite::Write(std::unique_ptr<RecordBatch>&& batch) {
-    if (custom_compaction_) {
-        return Status::Invalid("cannot mix custom compaction with Write or Compact");
-    }
-    regular_write_ = true;
-    return AbstractFileStoreWrite::Write(std::move(batch));
-}
-
-Status AppendOnlyFileStoreWrite::Compact(const std::map<std::string, std::string>& partition,
-                                         int32_t bucket, bool full_compaction) {
-    if (custom_compaction_) {
-        return Status::Invalid("cannot mix custom compaction with Write or Compact");
-    }
-    regular_write_ = true;
-    return AbstractFileStoreWrite::Compact(partition, bucket, full_compaction);
-}
-
 Status AppendOnlyFileStoreWrite::CompactFiles(const std::map<std::string, std::string>& partition,
                                               int32_t bucket,
                                               const std::vector<std::string>& file_names) {
@@ -163,9 +146,6 @@ Status AppendOnlyFileStoreWrite::CompactFiles(const std::map<std::string, std::s
     if (write_cols_) {
         return Status::Invalid("custom compaction requires the full write schema");
     }
-    if (regular_write_) {
-        return Status::Invalid("cannot mix custom compaction with Write or Compact");
-    }
     if (bucket < 0 || bucket >= options_.GetBucket()) {
         return Status::Invalid("custom compaction bucket is out of range");
     }
@@ -179,7 +159,6 @@ Status AppendOnlyFileStoreWrite::CompactFiles(const std::map<std::string, std::s
         PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("data file", name));
     }
     PAIMON_ASSIGN_OR_RAISE(BinaryRow part, file_store_path_factory_->ToBinaryRow(partition));
-    custom_compaction_ = true;
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BatchWriter> writer, GetWriter(part, bucket));
     auto append_writer = std::dynamic_pointer_cast<AppendOnlyWriter>(writer);
     if (!append_writer) {
