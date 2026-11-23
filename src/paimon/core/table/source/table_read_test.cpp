@@ -275,14 +275,25 @@ TEST(TableReadTest, TestRootTopKCombinesDifferentFieldNullability) {
         SCOPED_TRACE(project_score);
         std::vector<std::unique_ptr<BatchReader>> readers;
         for (bool nullable : {false, true}) {
+            auto items = arrow::list(arrow::field(
+                "item", arrow::struct_({arrow::field("value", arrow::int64(), nullable)}),
+                nullable));
             auto type = arrow::struct_({arrow::field("id", arrow::int64(), nullable),
+                                        arrow::field("items", items),
                                         arrow::field(score_name, arrow::float32(), nullable)});
             auto data = arrow::ipc::internal::json::ArrayFromJSON(
-                type, nullable ? "[[3,3],[4,2]]" : "[[1,4],[2,1]]");
+                type, nullable ? "[[3,null,3],[4,[],2]]" : "[[1,[[10]],4],[2,[[20],[21]],1]]");
             ASSERT_TRUE(data.ok()) << data.status().ToString();
             readers.push_back(std::make_unique<MockFileBatchReader>(data.ValueOrDie(), type, 1));
         }
-        arrow::FieldVector fields{arrow::field("id", arrow::int64(), /*nullable=*/false)};
+        arrow::FieldVector fields{
+            arrow::field("id", arrow::int64(), /*nullable=*/false),
+            arrow::field(
+                "items",
+                arrow::list(arrow::field(
+                    "item",
+                    arrow::struct_({arrow::field("value", arrow::int64(), /*nullable=*/false)}),
+                    /*nullable=*/false)))};
         if (project_score) {
             fields.push_back(arrow::field(score_name, arrow::float32()));
         }
@@ -294,8 +305,11 @@ TEST(TableReadTest, TestRootTopKCombinesDifferentFieldNullability) {
                              ReadResultCollector::CollectResult(std::move(reader)));
         ASSERT_NE(nullptr, actual);
         fields[0] = fields[0]->WithNullable(true);
+        fields[1] = arrow::field(
+            "items", arrow::list(arrow::struct_({arrow::field("value", arrow::int64())})));
         auto expected = arrow::ipc::internal::json::ArrayFromJSON(
-            arrow::struct_(fields), project_score ? "[[2,1],[4,2],[3,3]]" : "[[2],[4],[3]]");
+            arrow::struct_(fields), project_score ? "[[2,[[20],[21]],1],[4,[],2],[3,null,3]]"
+                                                  : "[[2,[[20],[21]]],[4,[]],[3,null]]");
         ASSERT_TRUE(expected.ok()) << expected.status().ToString();
         ASSERT_TRUE(actual->Equals(std::make_shared<arrow::ChunkedArray>(expected.ValueOrDie())))
             << actual->ToString();

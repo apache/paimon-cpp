@@ -7062,6 +7062,39 @@ TEST_F(RealtimePreciseIndexInteTest, TestVectorSearchAcrossDiskSealedAndBuilding
     ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
+TEST_F(RealtimePreciseIndexInteTest, TestOrcAndMemoryTopKWithNonNullableListElements) {
+    options_[Options::FILE_FORMAT] = "orc";
+    fields_.back() = arrow::field(
+        "embedding", arrow::list(arrow::field("item", arrow::float32(), /*nullable=*/false)));
+    schema_ = arrow::schema(fields_);
+    CreateSearchTable(/*deduplicate=*/false);
+    ASSERT_FALSE(HasFatalFailure());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContext> context, RealtimeContext::Create());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileStoreWrite> writer, CreateRealtimeWriter(context));
+    vector_state_->ranked = {{0, 0.5f}, {1, 0.75f}};
+    ASSERT_OK(WriteSearchBatch(R"([[0,1,"disk","p0",[1]]])", {}, writer.get()));
+    ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> progress,
+                         writer->PrepareCommitWithProgress(/*commit_identifier=*/0));
+    ASSERT_NO_FATAL_FAILURE(SetDiskRanking(progress, {{0, 0.5f}}));
+    ASSERT_OK_AND_ASSIGN(int64_t snapshot, Commit(progress, /*commit_identifier=*/0));
+    ASSERT_OK(writer->RefreshCommittedSnapshot(snapshot));
+    ASSERT_OK(WriteSearchBatch(R"([[1,2,"memory","p0",[2]]])", {}, writer.get()));
+
+    SearchQuery query{{"id", "embedding", "_embedding_INDEX_SCORE"}, nullptr, Vector(2), nullptr};
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, nullptr));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                         CreateSearchReader(plan, context, query));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                         ReadResultCollector::CollectResult(std::move(reader)));
+    ASSERT_NE(nullptr, actual);
+    auto expected = arrow::ipc::internal::json::ArrayFromJSON(actual->type(),
+                                                              R"([[0,2,[2],0.75],[0,1,[1],0.5]])");
+    ASSERT_TRUE(expected.ok()) << expected.status().ToString();
+    ASSERT_TRUE(actual->Equals(std::make_shared<arrow::ChunkedArray>(expected.ValueOrDie())))
+        << actual->ToString();
+    ASSERT_OK(PrepareAndClose(writer.get()));
+}
+
 TEST_F(RealtimePreciseIndexInteTest, TestDeduplicateMemoryDvBeforeVectorTopK) {
     CreateSearchTable(/*deduplicate=*/true);
     ASSERT_FALSE(HasFatalFailure());
