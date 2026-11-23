@@ -18,10 +18,8 @@
 
 #pragma once
 
-#include <cstdint>
 #include <map>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,7 +28,6 @@
 #include "paimon/visibility.h"
 
 namespace paimon {
-class Executor;
 class FileSystem;
 class InputStream;
 class MemoryPool;
@@ -44,15 +41,13 @@ struct PAIMON_EXPORT FileIndexInput {
     std::shared_ptr<InputStream> input;
 };
 
-/// Index updates for one live data file in the base snapshot.
+/// Index updates for one data file added by the supplied commit messages.
 struct PAIMON_EXPORT DataFileIndexInput {
     std::string data_file_name;
     std::vector<FileIndexInput> indexes;
 };
 
-/// Prepares file-index updates for fixed-bucket append tables.
-/// Serialize backfill commits with compaction/overwrite per partition/bucket;
-/// keep base metadata valid through commit.
+/// Attaches file indexes to pending commits for fixed-bucket append tables.
 class PAIMON_EXPORT FileIndexWrite {
  public:
     FileIndexWrite() = delete;
@@ -65,21 +60,22 @@ class PAIMON_EXPORT FileIndexWrite {
     /// reuses it and cleans up the temporary file best-effort. Existing contents are not validated.
     /// Concurrent publication requires atomic rename without overwrite from the file system.
     /// Payloads must use physical row positions, including DV-deleted rows. Do not use input
-    /// streams concurrently. Null file system, pool or executor uses the corresponding default.
+    /// streams concurrently. Null file system or pool uses the corresponding default.
     ///
     /// @param branch Target branch; empty selects main.
     /// @param options Table option overrides; bucket count cannot change.
-    /// @param base_snapshot_id Base snapshot; nullopt pins latest once for the batch.
-    /// @param files Unique live file names and field/type pairs; empty index lists are skipped.
-    /// @return Messages grouped by partition/bucket for commit to the same table and branch.
-    /// New files are cleaned up best-effort on failure; callers handle commit recovery and orphans.
+    /// @param messages Pending messages from the same table and branch; no snapshot is required.
+    /// @param files Unique names of NewFiles or CompactAfter files and field/type pairs.
+    /// Empty index lists leave the corresponding files unchanged.
+    /// @return Messages in input order with updated file metadata; inputs are not modified.
+    /// Commit the returned messages instead of the originals. Other increments are preserved.
+    /// New index files are cleaned up best-effort on failure; callers handle commit recovery.
     static Result<std::vector<std::shared_ptr<CommitMessage>>> PrepareCommit(
         const std::string& table_path, const std::string& branch,
         const std::map<std::string, std::string>& options,
-        const std::optional<int64_t>& base_snapshot_id,
+        const std::vector<std::shared_ptr<CommitMessage>>& messages,
         const std::vector<DataFileIndexInput>& files,
-        const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool,
-        const std::shared_ptr<Executor>& executor);
+        const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool);
 };
 
 }  // namespace paimon

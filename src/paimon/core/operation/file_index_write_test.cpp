@@ -27,10 +27,8 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <tuple>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -61,7 +59,6 @@
 #include "paimon/core/utils/file_store_path_factory_cache.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
-#include "paimon/executor.h"
 #include "paimon/file_index/file_index_format.h"
 #include "paimon/file_index/file_indexer.h"
 #include "paimon/file_index/file_indexer_factory.h"
@@ -260,7 +257,6 @@ class FileIndexWriteTest : public ::testing::Test {
         ASSERT_TRUE(directory_);
         fs_ = std::make_shared<LocalFileSystem>();
         pool_ = GetDefaultPool();
-        executor_ = CreateDefaultExecutor();
         schema_ = arrow::schema({arrow::field("part", arrow::int32(), false),
                                  arrow::field("value", arrow::int32(), false),
                                  arrow::field("other", arrow::int32())});
@@ -321,7 +317,6 @@ class FileIndexWriteTest : public ::testing::Test {
         PAIMON_RETURN_NOT_OK(writer->Write(std::move(batch)));
         PAIMON_ASSIGN_OR_RAISE(Messages messages,
                                writer->PrepareCommit(/*wait_compaction=*/true, next_commit_));
-        PAIMON_RETURN_NOT_OK(Commit(messages));
         PAIMON_RETURN_NOT_OK(writer->Close());
         return messages;
     }
@@ -331,15 +326,6 @@ class FileIndexWriteTest : public ::testing::Test {
         const auto& files = message->GetNewFilesIncrement().NewFiles();
         if (files.size() != 1) {
             return Status::Invalid("expected one new data file");
-        }
-        return files[0];
-    }
-
-    Result<std::shared_ptr<DataFileMeta>> UpdatedFile(const Messages& messages) const {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<CommitMessageImpl> message, OnlyMessage(messages));
-        const auto& files = message->GetCompactIncrement().CompactAfter();
-        if (files.size() != 1) {
-            return Status::Invalid("expected one updated data file");
         }
         return files[0];
     }
@@ -364,11 +350,11 @@ class FileIndexWriteTest : public ::testing::Test {
         return *snapshot;
     }
 
-    Result<Messages> Prepare(const std::vector<DataFileIndexInput>& inputs,
-                             const std::map<std::string, std::string>& overrides = {},
-                             const std::optional<int64_t>& snapshot = std::nullopt) const {
-        return FileIndexWrite::PrepareCommit(table_path_, branch_, overrides, snapshot, inputs, fs_,
-                                             pool_, executor_);
+    Result<Messages> Prepare(const Messages& messages,
+                             const std::vector<DataFileIndexInput>& inputs,
+                             const std::map<std::string, std::string>& overrides = {}) const {
+        return FileIndexWrite::PrepareCommit(table_path_, branch_, overrides, messages, inputs, fs_,
+                                             pool_);
     }
 
     Result<std::shared_ptr<PayloadInput>> MakePayload(
@@ -398,10 +384,13 @@ class FileIndexWriteTest : public ::testing::Test {
 
     Result<std::shared_ptr<DataFilePathFactory>> Paths(int32_t partition = 10,
                                                        int32_t bucket = 0) const {
-        PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, LatestSnapshot());
         SchemaManager manager(fs_, table_path_, branch_);
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> schema,
-                               manager.ReadSchema(snapshot.SchemaId()));
+        PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest,
+                               manager.Latest());
+        if (!latest) {
+            return Status::Invalid("expected a table schema");
+        }
+        const auto& schema = *latest;
         PAIMON_ASSIGN_OR_RAISE(CoreOptions options, CoreOptions::FromMap(schema->Options(), fs_));
         FileStorePathFactoryCache cache(table_path_, schema, options, pool_);
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> paths,
@@ -502,19 +491,18 @@ class FileIndexWriteTest : public ::testing::Test {
         return values;
     }
 
-    Status RewriteMetadata(const std::shared_ptr<DataFileMeta>& before,
-                           const std::shared_ptr<DataFileMeta>& after) {
-        PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<Split>> splits, Scan());
-        if (splits.size() != 1) {
-            return Status::Invalid("expected one split for metadata rewrite");
-        }
-        auto split = std::dynamic_pointer_cast<DataSplitImpl>(splits[0]);
-        if (!split) {
-            return Status::Invalid("expected a data split");
-        }
-        return Commit({std::make_shared<CommitMessageImpl>(
-            split->Partition(), split->Bucket(), split->TotalBuckets(), DataIncrement({}, {}, {}),
-            CompactIncrement({before}, {after}, {}))});
+    Result<Messages> WithNewFiles(const Messages& messages,
+                                  std::vector<std::shared_ptr<DataFileMeta>> files) const {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<CommitMessageImpl> message, OnlyMessage(messages));
+        return Messages{std::make_shared<CommitMessageImpl>(
+            message->Partition(), message->Bucket(), message->TotalBuckets(),
+            DataIncrement(std::move(files), {}, {}), message->GetCompactIncrement())};
+    }
+
+    void AssertNoSnapshot() const {
+        SnapshotManager manager(fs_, table_path_, branch_);
+        ASSERT_OK_AND_ASSIGN(std::optional<Snapshot> snapshot, manager.LatestSnapshot());
+        ASSERT_FALSE(snapshot);
     }
 
     Status WriteContainer(const std::shared_ptr<DataFileMeta>& file, const std::string& name,
@@ -554,7 +542,6 @@ class FileIndexWriteTest : public ::testing::Test {
     std::unique_ptr<UniqueTestDirectory> directory_;
     std::shared_ptr<LocalFileSystem> fs_;
     std::shared_ptr<MemoryPool> pool_;
-    std::shared_ptr<Executor> executor_;
     std::shared_ptr<arrow::Schema> schema_;
     std::map<std::string, std::string> options_;
     std::string table_path_;
@@ -582,7 +569,7 @@ TEST_P(VersionedFileIndexWriteTest, MergeAndCommit) {
     ASSERT_OK(CreateTable(table_options));
     ASSERT_OK_AND_ASSIGN(Messages written, WriteData());
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> before, NewFile(written));
-    ASSERT_OK_AND_ASSIGN(Snapshot base, LatestSnapshot());
+    AssertNoSnapshot();
     PayloadBytes old_payloads;
     if (old_location != 0) {
         ASSERT_EQ(old_location == 1, before->embedded_index != nullptr);
@@ -595,23 +582,22 @@ TEST_P(VersionedFileIndexWriteTest, MergeAndCommit) {
     ASSERT_OK_AND_ASSIGN(
         Messages updates,
         Prepare(
+            written,
             {{before->file_name,
               {{"value", "bitmap", bitmap}, {"value", "bsi", bsi}, {"other", "bitmap", other}}}},
             {{Options::FILE_INDEX_FORMAT_VERSION, std::to_string(new_version)},
-             {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1GB"}},
-            base.Id()));
-    ASSERT_OK_AND_ASSIGN(Snapshot uncommitted, LatestSnapshot());
-    ASSERT_EQ(base.Id(), uncommitted.Id());
+             {Options::FILE_INDEX_IN_MANIFEST_THRESHOLD, "1GB"}}));
+    AssertNoSnapshot();
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<CommitMessageImpl> update, OnlyMessage(updates));
-    ASSERT_TRUE(update->GetNewFilesIncrement().IsEmpty());
+    ASSERT_TRUE(update->GetCompactIncrement().IsEmpty());
     ASSERT_EQ(2, update->TotalBuckets());
-    const auto& increment = update->GetCompactIncrement();
-    ASSERT_EQ(1u, increment.CompactBefore().size());
-    ASSERT_EQ(1u, increment.CompactAfter().size());
+    const auto& increment = update->GetNewFilesIncrement();
+    ASSERT_EQ(1u, increment.NewFiles().size());
+    ASSERT_TRUE(increment.DeletedFiles().empty());
     ASSERT_TRUE(increment.ChangelogFiles().empty());
     ASSERT_TRUE(increment.NewIndexFiles().empty());
     ASSERT_TRUE(increment.DeletedIndexFiles().empty());
-    auto after = increment.CompactAfter()[0];
+    auto after = increment.NewFiles()[0];
     ASSERT_FALSE(after->embedded_index);
     ASSERT_EQ(1u, after->extra_files.size());
     ASSERT_EQ(before->file_name + (old_location == 2 ? "-1.index" : ".index"),
@@ -636,8 +622,8 @@ TEST_P(VersionedFileIndexWriteTest, MergeAndCommit) {
     ASSERT_OK(index->Close());
     ASSERT_OK(Commit(updates));
     ASSERT_OK_AND_ASSIGN(Snapshot committed, LatestSnapshot());
-    ASSERT_EQ(base.Id() + 1, committed.Id());
-    ASSERT_EQ(Snapshot::CommitKind::Compact(), committed.GetCommitKind());
+    ASSERT_EQ(Snapshot::FIRST_SNAPSHOT_ID, committed.Id());
+    ASSERT_EQ(Snapshot::CommitKind::Append(), committed.GetCommitKind());
     ASSERT_OK_AND_ASSIGN(auto splits, Scan());
     ASSERT_EQ(1u, splits.size());
     auto split = std::dynamic_pointer_cast<DataSplitImpl>(splits[0]);
@@ -658,10 +644,10 @@ INSTANTIATE_TEST_SUITE_P(AllContainers, VersionedFileIndexWriteTest,
                          ::testing::Combine(::testing::Values(1, 2), ::testing::Values(1, 2),
                                             ::testing::Values(0, 1, 2)));
 
-TEST_F(FileIndexWriteTest, GroupsFilesByPartitionAndBucket) {
+TEST_F(FileIndexWriteTest, PreservesMessageOrderAndUnrequestedFiles) {
     ASSERT_OK(CreateTable());
+    Messages messages;
     std::vector<DataFileIndexInput> requests;
-    std::unordered_map<std::pair<BinaryRow, int32_t>, std::set<std::string>> expected;
     for (const auto& [partition, bucket] :
          std::vector<std::pair<int32_t, int32_t>>{{10, 0}, {10, 0}, {10, 1}, {20, 0}}) {
         ASSERT_OK_AND_ASSIGN(Messages written,
@@ -669,27 +655,29 @@ TEST_F(FileIndexWriteTest, GroupsFilesByPartitionAndBucket) {
                                                    partition, partition),
                                        bucket, partition));
         ASSERT_OK_AND_ASSIGN(auto file, NewFile(written));
-        ASSERT_OK_AND_ASSIGN(auto message, OnlyMessage(written));
-        expected[{message->Partition(), message->Bucket()}].insert(file->file_name);
-        requests.push_back(
-            {file->file_name, {{"value", "opaque", std::make_shared<PayloadInput>("payload")}}});
-    }
-    ASSERT_OK_AND_ASSIGN(Messages updates, Prepare(requests));
-    ASSERT_EQ(expected.size(), updates.size());
-    for (const auto& raw : updates) {
-        auto message = std::dynamic_pointer_cast<CommitMessageImpl>(raw);
-        ASSERT_TRUE(message);
-        std::set<std::string> names;
-        ASSERT_EQ(2, message->TotalBuckets());
-        for (const auto& file : message->GetCompactIncrement().CompactAfter()) {
-            names.insert(file->file_name);
-            ASSERT_EQ(1u, file->extra_files.size());
+        messages.push_back(written[0]);
+        if (messages.size() != 2) {
+            requests.push_back({file->file_name,
+                                {{"value", "opaque", std::make_shared<PayloadInput>("payload")}}});
         }
-        auto key = std::make_pair(message->Partition(), message->Bucket());
-        ASSERT_EQ(expected.at(key), names);
-        expected.erase(key);
     }
-    ASSERT_TRUE(expected.empty());
+    ASSERT_OK_AND_ASSIGN(Messages updates, Prepare(messages, requests));
+    ASSERT_EQ(messages.size(), updates.size());
+    for (size_t i = 0; i < updates.size(); ++i) {
+        ASSERT_OK_AND_ASSIGN(auto before, OnlyMessage({messages[i]}));
+        ASSERT_OK_AND_ASSIGN(auto after, OnlyMessage({updates[i]}));
+        ASSERT_EQ(before->Partition(), after->Partition());
+        ASSERT_EQ(before->Bucket(), after->Bucket());
+        ASSERT_EQ(before->TotalBuckets(), after->TotalBuckets());
+        ASSERT_TRUE(after->GetCompactIncrement().IsEmpty());
+        ASSERT_OK_AND_ASSIGN(auto original_file, NewFile({messages[i]}));
+        ASSERT_OK_AND_ASSIGN(auto indexed_file, NewFile({updates[i]}));
+        ASSERT_EQ(original_file->file_name, indexed_file->file_name);
+        ASSERT_TRUE(original_file->extra_files.empty());
+        ASSERT_EQ(i == 1 ? 0u : 1u, indexed_file->extra_files.size());
+    }
+    ASSERT_EQ(messages[1], updates[1]);
+    AssertNoSnapshot();
     ASSERT_OK(Commit(updates));
     ASSERT_OK_AND_ASSIGN(auto values, ReadValues());
     ASSERT_EQ(12u, values.size());
@@ -708,12 +696,13 @@ TEST_F(FileIndexWriteTest, PreservesOpaqueIndexesAndExtraFiles) {
     const std::string aux_path = paths->ToAlignedPath("shared.aux", file);
     ASSERT_OK(fs_->WriteFile(aux_path, "auxiliary data", false));
     auto before = file->CopyWithExtraFiles({"old.index", "shared.aux"});
-    ASSERT_OK(RewriteMetadata(file, before));
+    ASSERT_OK_AND_ASSIGN(written, WithNewFiles(written, {before}));
     ASSERT_OK_AND_ASSIGN(auto bitmap, MakePayload());
-    ASSERT_OK_AND_ASSIGN(Messages updates,
-                         Prepare({{before->file_name,
-                                   {{"value", "bitmap", bitmap}, {"other", "opaque", nullptr}}}}));
-    ASSERT_OK_AND_ASSIGN(auto after, UpdatedFile(updates));
+    ASSERT_OK_AND_ASSIGN(
+        Messages updates,
+        Prepare(written, {{before->file_name,
+                           {{"value", "bitmap", bitmap}, {"other", "opaque", nullptr}}}}));
+    ASSERT_OK_AND_ASSIGN(auto after, NewFile(updates));
     ASSERT_EQ(2u, after->extra_files.size());
     ASSERT_EQ("shared.aux", after->extra_files[0]);
     ASSERT_OK_AND_ASSIGN(PayloadBytes actual, ReadPayloads(after));
@@ -736,13 +725,13 @@ TEST_F(FileIndexWriteTest, WritesIndexBesideExternalDataFile) {
     ASSERT_OK_AND_ASSIGN(Messages written, WriteData());
     ASSERT_OK_AND_ASSIGN(auto file, NewFile(written));
     ASSERT_TRUE(file->external_path);
-    ASSERT_OK_AND_ASSIGN(Snapshot base, LatestSnapshot());
+    AssertNoSnapshot();
     ASSERT_OK_AND_ASSIGN(auto payload, MakePayload());
     ASSERT_OK(payload->Seek(1, FS_SEEK_SET));
     for (int32_t generation = 0; generation < 3; ++generation) {
         ASSERT_OK_AND_ASSIGN(Messages updates,
-                             Prepare({{file->file_name, {{"value", "bitmap", payload}}}}));
-        ASSERT_OK_AND_ASSIGN(auto after, UpdatedFile(updates));
+                             Prepare(written, {{file->file_name, {{"value", "bitmap", payload}}}}));
+        ASSERT_OK_AND_ASSIGN(auto after, NewFile(updates));
         ASSERT_EQ(file->external_path, after->external_path);
         ASSERT_EQ(1u, after->extra_files.size());
         ASSERT_TRUE(after->extra_files[0]);
@@ -754,17 +743,17 @@ TEST_F(FileIndexWriteTest, WritesIndexBesideExternalDataFile) {
             PathUtil::GetParentDirPath(*file->external_path), *after->extra_files[0]);
         ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(index_path));
         ASSERT_TRUE(exists);
-        ASSERT_OK(Commit(updates));
+        written = updates;
         if (generation > 0) {
             ASSERT_OK_AND_ASSIGN(PayloadBytes old_payloads, ReadPayloads(file));
             ASSERT_EQ(payload->BytesValue(), old_payloads.at("value").at("bitmap"));
         }
         file = after;
     }
+    AssertNoSnapshot();
+    ASSERT_OK(Commit(written));
     ASSERT_OK_AND_ASSIGN(auto values, ReadValues());
     ASSERT_EQ((std::vector<int32_t>{1, 1, 2}), values);
-    ASSERT_OK_AND_ASSIGN(auto historical, ReadValues(base.Id()));
-    ASSERT_EQ(values, historical);
     ASSERT_OK_AND_ASSIGN(
         auto filtered, ReadValues(std::nullopt, "value",
                                   PredicateBuilder::Equal(0, "value", FieldType::INT, Literal(1))));
@@ -773,34 +762,209 @@ TEST_F(FileIndexWriteTest, WritesIndexBesideExternalDataFile) {
     ASSERT_EQ(1, payload.use_count());
 }
 
-TEST_F(FileIndexWriteTest, HonorsHistoricalSnapshotAndLatestSelection) {
+TEST_F(FileIndexWriteTest, UsesOnlySuppliedCommitMessages) {
     ASSERT_OK(CreateTable());
     ASSERT_OK_AND_ASSIGN(Messages first_write, WriteData());
     ASSERT_OK_AND_ASSIGN(auto first, NewFile(first_write));
+    ASSERT_OK(Commit(first_write));
     ASSERT_OK_AND_ASSIGN(Snapshot base, LatestSnapshot());
     ASSERT_OK_AND_ASSIGN(Messages second_write, WriteData());
     ASSERT_OK_AND_ASSIGN(auto second, NewFile(second_write));
     ASSERT_OK_AND_ASSIGN(auto payload, MakePayload());
-    const DataFileIndexInput first_input{first->file_name, {{"value", "bitmap", payload}}};
-    const DataFileIndexInput second_input{second->file_name, {{"value", "bitmap", payload}}};
-    ASSERT_NOK_WITH_MSG(Prepare({second_input}, {}, base.Id()), "not live in the base snapshot");
-    ASSERT_OK_AND_ASSIGN(Messages explicit_updates, Prepare({first_input}, {}, base.Id()));
-    ASSERT_OK_AND_ASSIGN(auto explicit_message, OnlyMessage(explicit_updates));
-    ASSERT_EQ(1u, explicit_message->GetCompactIncrement().CompactBefore().size());
-    ASSERT_EQ(*first, *explicit_message->GetCompactIncrement().CompactBefore()[0]);
-    ASSERT_OK_AND_ASSIGN(Messages latest_updates, Prepare({second_input}));
-    explicit_updates.insert(explicit_updates.end(), latest_updates.begin(), latest_updates.end());
-    ASSERT_OK(Commit(explicit_updates));
+    ASSERT_NOK_WITH_MSG(Prepare(second_write, {{first->file_name, {{"value", "bitmap", payload}}}}),
+                        "not an added data file in commit messages");
+    ASSERT_OK_AND_ASSIGN(
+        Messages updates,
+        Prepare(second_write, {{second->file_name, {{"value", "bitmap", payload}}}}));
+    ASSERT_OK_AND_ASSIGN(Snapshot unchanged, LatestSnapshot());
+    ASSERT_EQ(base.Id(), unchanged.Id());
+    ASSERT_OK(Commit(updates));
     ASSERT_OK_AND_ASSIGN(auto old_values, ReadValues(base.Id()));
     ASSERT_EQ((std::vector<int32_t>{1, 1, 2}), old_values);
     ASSERT_OK_AND_ASSIGN(auto current_values, ReadValues());
     ASSERT_EQ((std::vector<int32_t>{1, 1, 1, 1, 2, 2}), current_values);
 }
 
+TEST_F(FileIndexWriteTest, AbortRemovesPendingDataAndIndex) {
+    ASSERT_OK(CreateTable());
+    ASSERT_OK_AND_ASSIGN(Messages written, WriteData());
+    ASSERT_OK_AND_ASSIGN(auto file, NewFile(written));
+    ASSERT_OK_AND_ASSIGN(auto payload, MakePayload());
+    ASSERT_OK_AND_ASSIGN(Messages updates,
+                         Prepare(written, {{file->file_name, {{"value", "bitmap", payload}}}}));
+    ASSERT_OK_AND_ASSIGN(auto indexed, NewFile(updates));
+    ASSERT_EQ(1u, indexed->extra_files.size());
+    ASSERT_TRUE(indexed->extra_files[0]);
+    ASSERT_OK_AND_ASSIGN(auto paths, Paths());
+    const std::vector<std::string> generated = {
+        paths->ToPath(indexed), paths->ToAlignedPath(*indexed->extra_files[0], indexed)};
+    for (const auto& path : generated) {
+        ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(path));
+        ASSERT_TRUE(exists);
+    }
+    ASSERT_OK(Abort(updates));
+    AssertRemoved(generated);
+    AssertNoSnapshot();
+}
+
+TEST_F(FileIndexWriteTest, AbortIndexUpdatePreservesCommittedData) {
+    ASSERT_OK(CreateTable());
+    ASSERT_OK_AND_ASSIGN(Messages written, WriteData());
+    ASSERT_OK_AND_ASSIGN(auto file, NewFile(written));
+    ASSERT_TRUE(file->extra_files.empty());
+    ASSERT_FALSE(file->embedded_index);
+    ASSERT_OK(Commit(written));
+    ASSERT_OK_AND_ASSIGN(Snapshot base, LatestSnapshot());
+    ASSERT_OK_AND_ASSIGN(auto message, OnlyMessage(written));
+    // A metadata-only rewrite retains the committed file in CompactBefore.
+    Messages pending = {std::make_shared<CommitMessageImpl>(
+        message->Partition(), message->Bucket(), message->TotalBuckets(), DataIncrement({}, {}, {}),
+        CompactIncrement({file}, {file}, {}))};
+    ASSERT_OK_AND_ASSIGN(auto payload, MakePayload());
+    ASSERT_OK_AND_ASSIGN(Messages updates,
+                         Prepare(pending, {{file->file_name, {{"value", "bitmap", payload}}}}));
+    ASSERT_OK_AND_ASSIGN(auto update, OnlyMessage(updates));
+    ASSERT_TRUE(update->GetNewFilesIncrement().IsEmpty());
+    ASSERT_EQ((std::vector<std::shared_ptr<DataFileMeta>>{file}),
+              update->GetCompactIncrement().CompactBefore());
+    ASSERT_EQ(1u, update->GetCompactIncrement().CompactAfter().size());
+    const auto& indexed = update->GetCompactIncrement().CompactAfter()[0];
+    ASSERT_EQ(file->file_name, indexed->file_name);
+    ASSERT_EQ(1u, indexed->extra_files.size());
+    ASSERT_TRUE(indexed->extra_files[0]);
+    ASSERT_OK_AND_ASSIGN(auto paths, Paths());
+    const std::string index_path = paths->ToAlignedPath(*indexed->extra_files[0], indexed);
+    ASSERT_OK_AND_ASSIGN(bool index_exists, fs_->Exists(index_path));
+    ASSERT_TRUE(index_exists);
+    ASSERT_OK(Abort(updates));
+    AssertRemoved({index_path});
+    ASSERT_OK_AND_ASSIGN(bool data_exists, fs_->Exists(paths->ToPath(file)));
+    ASSERT_TRUE(data_exists);
+    ASSERT_OK_AND_ASSIGN(Snapshot unchanged, LatestSnapshot());
+    ASSERT_EQ(base.Id(), unchanged.Id());
+    ASSERT_OK_AND_ASSIGN(auto values, ReadValues());
+    ASSERT_EQ((std::vector<int32_t>{1, 1, 2}), values);
+}
+
+TEST_F(FileIndexWriteTest, IndexesPendingCompactionOutput) {
+    ASSERT_OK(CreateTable());
+    ASSERT_OK_AND_ASSIGN(Messages original, WriteData());
+    ASSERT_OK_AND_ASSIGN(auto before, NewFile(original));
+    ASSERT_OK(Commit(original));
+    ASSERT_OK_AND_ASSIGN(Messages compacted, WriteData());
+    ASSERT_OK_AND_ASSIGN(auto after, NewFile(compacted));
+    ASSERT_OK_AND_ASSIGN(auto message, OnlyMessage(compacted));
+    Messages pending = {std::make_shared<CommitMessageImpl>(
+        message->Partition(), message->Bucket(), message->TotalBuckets(), DataIncrement({}, {}, {}),
+        CompactIncrement({before}, {after}, {}))};
+    ASSERT_OK_AND_ASSIGN(auto payload, MakePayload());
+    ASSERT_OK_AND_ASSIGN(Messages updates,
+                         Prepare(pending, {{after->file_name, {{"value", "bitmap", payload}}}}));
+    ASSERT_OK_AND_ASSIGN(auto update, OnlyMessage(updates));
+    ASSERT_TRUE(update->GetNewFilesIncrement().IsEmpty());
+    ASSERT_EQ((std::vector<std::shared_ptr<DataFileMeta>>{before}),
+              update->GetCompactIncrement().CompactBefore());
+    ASSERT_EQ(1u, update->GetCompactIncrement().CompactAfter().size());
+    ASSERT_EQ(1u, update->GetCompactIncrement().CompactAfter()[0]->extra_files.size());
+    ASSERT_TRUE(after->extra_files.empty());
+    ASSERT_OK(Commit(updates));
+    ASSERT_OK_AND_ASSIGN(auto values, ReadValues());
+    ASSERT_EQ((std::vector<int32_t>{1, 1, 2}), values);
+    ASSERT_OK_AND_ASSIGN(
+        auto filtered, ReadValues(std::nullopt, "value",
+                                  PredicateBuilder::Equal(0, "value", FieldType::INT, Literal(1))));
+    ASSERT_EQ((std::vector<int32_t>{1, 1}), filtered);
+}
+
+TEST_F(FileIndexWriteTest, PreservesAppendAndCompactionIncrements) {
+    ASSERT_OK(CreateTable({{Options::DELETION_VECTORS_ENABLED, "true"}}));
+    ASSERT_OK_AND_ASSIGN(Messages original, WriteData());
+    ASSERT_OK_AND_ASSIGN(auto before, NewFile(original));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<CommitMessage> old_deletion,
+        DeletionVectorTestHelper::CreateDeletionVectorCommitMessage(
+            fs_, table_path_, "parquet", original[0], {{before->file_name, {0}}}, pool_));
+    ASSERT_OK(Commit({original[0], old_deletion}));
+
+    // Each phase publishes the complete bucket DV; compaction applies the old file's deletion.
+    ASSERT_OK_AND_ASSIGN(Messages compacted, WriteData("[[10,2,20],[10,1,30]]"));
+    ASSERT_OK_AND_ASSIGN(auto compact_after, NewFile(compacted));
+    ASSERT_OK_AND_ASSIGN(Messages appended, WriteData());
+    ASSERT_OK_AND_ASSIGN(auto new_file, NewFile(appended));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<CommitMessage> append_deletion,
+        DeletionVectorTestHelper::CreateDeletionVectorCommitMessage(
+            fs_, table_path_, "parquet", appended[0],
+            {{before->file_name, {0}}, {new_file->file_name, {0}}}, pool_, old_deletion));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<CommitMessage> compact_deletion,
+                         DeletionVectorTestHelper::CreateDeletionVectorCommitMessage(
+                             fs_, table_path_, "parquet", appended[0], {{new_file->file_name, {0}}},
+                             pool_, append_deletion));
+    ASSERT_OK_AND_ASSIGN(auto message, OnlyMessage(appended));
+    ASSERT_OK_AND_ASSIGN(auto append_dv, OnlyMessage({append_deletion}));
+    ASSERT_OK_AND_ASSIGN(auto compact_dv, OnlyMessage({compact_deletion}));
+    auto data = message->GetNewFilesIncrement();
+    data.AddNewIndexFiles(std::vector<std::shared_ptr<IndexFileMeta>>(
+        append_dv->GetNewFilesIncrement().NewIndexFiles()));
+    data.AddDeletedIndexFiles(std::vector<std::shared_ptr<IndexFileMeta>>(
+        append_dv->GetNewFilesIncrement().DeletedIndexFiles()));
+    CompactIncrement compact({before}, {compact_after}, {},
+                             std::vector<std::shared_ptr<IndexFileMeta>>(
+                                 compact_dv->GetNewFilesIncrement().NewIndexFiles()),
+                             std::vector<std::shared_ptr<IndexFileMeta>>(
+                                 compact_dv->GetNewFilesIncrement().DeletedIndexFiles()));
+    Messages pending = {std::make_shared<CommitMessageImpl>(
+        message->Partition(), message->Bucket(), message->TotalBuckets(), data, compact)};
+    ASSERT_OK_AND_ASSIGN(auto appended_payload, MakePayload());
+    ASSERT_OK_AND_ASSIGN(auto compacted_payload, MakePayload("value", "bitmap", "[[2],[1]]"));
+    ASSERT_OK_AND_ASSIGN(
+        Messages updates,
+        Prepare(pending, {{new_file->file_name, {{"value", "bitmap", appended_payload}}},
+                          {compact_after->file_name, {{"value", "bitmap", compacted_payload}}}}));
+    ASSERT_OK_AND_ASSIGN(auto update, OnlyMessage(updates));
+    const auto& updated_data = update->GetNewFilesIncrement();
+    const auto& updated_compact = update->GetCompactIncrement();
+    ASSERT_EQ(data.DeletedFiles(), updated_data.DeletedFiles());
+    ASSERT_EQ(data.ChangelogFiles(), updated_data.ChangelogFiles());
+    ASSERT_EQ(data.NewIndexFiles(), updated_data.NewIndexFiles());
+    ASSERT_EQ(data.DeletedIndexFiles(), updated_data.DeletedIndexFiles());
+    ASSERT_EQ(compact.CompactBefore(), updated_compact.CompactBefore());
+    ASSERT_EQ(compact.ChangelogFiles(), updated_compact.ChangelogFiles());
+    ASSERT_EQ(compact.NewIndexFiles(), updated_compact.NewIndexFiles());
+    ASSERT_EQ(compact.DeletedIndexFiles(), updated_compact.DeletedIndexFiles());
+    ASSERT_EQ(1u, updated_data.NewFiles().size());
+    ASSERT_EQ(1u, updated_compact.CompactAfter().size());
+    ASSERT_EQ(1u, updated_data.NewFiles()[0]->extra_files.size());
+    ASSERT_EQ(1u, updated_compact.CompactAfter()[0]->extra_files.size());
+    ASSERT_TRUE(new_file->extra_files.empty());
+    ASSERT_TRUE(compact_after->extra_files.empty());
+    ASSERT_OK(Commit(updates));
+    ASSERT_OK_AND_ASSIGN(auto values, ReadValues());
+    ASSERT_EQ((std::vector<int32_t>{1, 1, 2, 2}), values);
+    ASSERT_OK_AND_ASSIGN(Snapshot committed, LatestSnapshot());
+    ASSERT_OK_AND_ASSIGN(auto appended_values, ReadValues(committed.Id() - 1));
+    ASSERT_EQ((std::vector<int32_t>{1, 1, 2, 2}), appended_values);
+    ASSERT_OK_AND_ASSIGN(auto splits, Scan());
+    ASSERT_EQ(1u, splits.size());
+    auto split = std::dynamic_pointer_cast<DataSplitImpl>(splits[0]);
+    ASSERT_TRUE(split);
+    ASSERT_EQ(2u, split->DataFiles().size());
+    ASSERT_EQ(2u, split->DeletionFiles().size());
+    for (size_t i = 0; i < split->DataFiles().size(); ++i) {
+        ASSERT_EQ(split->DataFiles()[i]->file_name == new_file->file_name,
+                  split->DeletionFiles()[i].has_value());
+    }
+    ASSERT_OK_AND_ASSIGN(
+        auto filtered, ReadValues(std::nullopt, "value",
+                                  PredicateBuilder::Equal(0, "value", FieldType::INT, Literal(1))));
+    ASSERT_EQ((std::vector<int32_t>{1, 1}), filtered);
+}
+
 TEST_F(FileIndexWriteTest, IsolatesBranchCommits) {
     ASSERT_OK(CreateTable());
     ASSERT_OK_AND_ASSIGN(Messages written, WriteData());
     ASSERT_OK_AND_ASSIGN(auto file, NewFile(written));
+    ASSERT_OK(Commit(written));
     ASSERT_OK_AND_ASSIGN(Snapshot base, LatestSnapshot());
     SchemaManager main_schema(fs_, table_path_);
     ASSERT_OK_AND_ASSIGN(auto schema, main_schema.ReadSchema(base.SchemaId()));
@@ -808,18 +972,18 @@ TEST_F(FileIndexWriteTest, IsolatesBranchCommits) {
     SchemaManager branch_schema(fs_, table_path_, "dev");
     ASSERT_OK(fs_->AtomicStore(PathUtil::JoinPath(branch_schema.SchemaDirectory(), "schema-0"),
                                schema_json));
-    SnapshotManager branch_snapshots(fs_, table_path_, "dev");
-    ASSERT_OK_AND_ASSIGN(std::string snapshot_json, base.ToJsonString());
-    ASSERT_OK(fs_->AtomicStore(branch_snapshots.SnapshotPath(base.Id()), snapshot_json));
     branch_ = "dev";
     options_[Options::BRANCH] = branch_;
+    ASSERT_OK_AND_ASSIGN(Messages dev_written, WriteData());
+    ASSERT_OK_AND_ASSIGN(auto dev_file, NewFile(dev_written));
+    AssertNoSnapshot();
     ASSERT_OK_AND_ASSIGN(auto payload, MakePayload());
     ASSERT_OK_AND_ASSIGN(
         Messages updates,
-        Prepare({{file->file_name, {{"value", "bitmap", payload}}}}, {}, base.Id()));
+        Prepare(dev_written, {{dev_file->file_name, {{"value", "bitmap", payload}}}}));
     ASSERT_OK(Commit(updates));
     ASSERT_OK_AND_ASSIGN(Snapshot dev, LatestSnapshot());
-    ASSERT_EQ(base.Id() + 1, dev.Id());
+    ASSERT_EQ(Snapshot::FIRST_SNAPSHOT_ID, dev.Id());
     ASSERT_OK_AND_ASSIGN(auto dev_splits, Scan());
     ASSERT_EQ(1u, dev_splits.size());
     auto dev_split = std::dynamic_pointer_cast<DataSplitImpl>(dev_splits[0]);
@@ -858,8 +1022,8 @@ TEST_F(FileIndexWriteTest, UsesOriginalFieldNameAfterRename) {
     options_[Options::BUCKET_KEY] = "renamed_value";
     ASSERT_OK_AND_ASSIGN(auto payload, MakePayload());
     ASSERT_OK_AND_ASSIGN(Messages updates,
-                         Prepare({{file->file_name, {{"value", "bitmap", payload}}}}));
-    ASSERT_OK_AND_ASSIGN(auto after, UpdatedFile(updates));
+                         Prepare(written, {{file->file_name, {{"value", "bitmap", payload}}}}));
+    ASSERT_OK_AND_ASSIGN(auto after, NewFile(updates));
     ASSERT_EQ(file->schema_id, after->schema_id);
     ASSERT_OK_AND_ASSIGN(PayloadBytes payloads, ReadPayloads(after));
     ASSERT_EQ(1u, payloads.count("value"));
@@ -880,10 +1044,20 @@ TEST_F(FileIndexWriteTest, PreservesDeletionVectorsAndPhysicalPositions) {
         std::shared_ptr<CommitMessage> deletion,
         DeletionVectorTestHelper::CreateDeletionVectorCommitMessage(
             fs_, table_path_, "parquet", written[0], {{file->file_name, {0}}}, pool_));
-    ASSERT_OK(Commit({deletion}));
+    ASSERT_OK_AND_ASSIGN(auto data_message, OnlyMessage(written));
+    ASSERT_OK_AND_ASSIGN(auto deletion_message, OnlyMessage({deletion}));
+    auto increment = data_message->GetNewFilesIncrement();
+    increment.AddNewIndexFiles(std::vector<std::shared_ptr<IndexFileMeta>>(
+        deletion_message->GetNewFilesIncrement().NewIndexFiles()));
+    written = {std::make_shared<CommitMessageImpl>(
+        data_message->Partition(), data_message->Bucket(), data_message->TotalBuckets(), increment,
+        data_message->GetCompactIncrement())};
     ASSERT_OK_AND_ASSIGN(auto payload, MakePayload());
     ASSERT_OK_AND_ASSIGN(Messages updates,
-                         Prepare({{file->file_name, {{"value", "bitmap", payload}}}}));
+                         Prepare(written, {{file->file_name, {{"value", "bitmap", payload}}}}));
+    ASSERT_OK_AND_ASSIGN(auto updated_message, OnlyMessage(updates));
+    ASSERT_EQ(increment.NewIndexFiles(), updated_message->GetNewFilesIncrement().NewIndexFiles());
+    AssertNoSnapshot();
     ASSERT_OK(Commit(updates));
     ASSERT_OK_AND_ASSIGN(auto values, ReadValues());
     ASSERT_EQ((std::vector<int32_t>{1, 2}), values);
@@ -899,35 +1073,34 @@ TEST_F(FileIndexWriteTest, OptionalDependenciesAndCallerOverrides) {
     ASSERT_OK_AND_ASSIGN(auto file, NewFile(written));
     auto fs = std::make_shared<IndexFileSystem>();
     auto payload = std::make_shared<PayloadInput>("opaque payload");
-    // Bits 1/2/4 supply filesystem/pool/executor respectively.
-    // 0: all null; 7: all supplied; 6: filesystem null; 5: pool null; 3: executor null.
-    for (int32_t mask : {0, 7, 6, 5, 3}) {
+    // Bits 1/2 supply filesystem/pool respectively.
+    for (int32_t mask : {0, 1, 2, 3}) {
         SCOPED_TRACE(mask);
         size_t creates = fs->created.size();
         ASSERT_OK_AND_ASSIGN(
             Messages updates,
-            FileIndexWrite::PrepareCommit(table_path_, "", {}, std::nullopt,
+            FileIndexWrite::PrepareCommit(table_path_, "", {}, written,
                                           {{file->file_name, {{"value", "opaque", payload}}}},
-                                          mask & 1 ? fs : nullptr, mask & 2 ? pool_ : nullptr,
-                                          mask & 4 ? executor_ : nullptr));
+                                          mask & 1 ? fs : nullptr, mask & 2 ? pool_ : nullptr));
         ASSERT_EQ(creates + ((mask & 1) != 0), fs->created.size());
-        ASSERT_OK(Abort(updates));
+        ASSERT_OK_AND_ASSIGN(auto indexed, NewFile(updates));
+        ASSERT_OK_AND_ASSIGN(auto paths, Paths());
+        ASSERT_OK(fs_->Delete(paths->ToAlignedPath(*indexed->extra_files[0], indexed), false));
     }
     ASSERT_OK_AND_ASSIGN(
         Messages updates,
         FileIndexWrite::PrepareCommit(
             table_path_, "",
             {{Options::FILE_INDEX_FORMAT_VERSION, "2"}, {Options::FILE_SYSTEM, "unregistered-fs"}},
-            std::nullopt, {{file->file_name, {{"value", "opaque", payload}}}}, fs, pool_,
-            executor_));
-    ASSERT_OK_AND_ASSIGN(auto after, UpdatedFile(updates));
+            written, {{file->file_name, {{"value", "opaque", payload}}}}, fs, pool_));
+    ASSERT_OK_AND_ASSIGN(auto after, NewFile(updates));
     ASSERT_OK_AND_ASSIGN(auto input, OpenIndex(after));
     DataInputStream in(input);
     ASSERT_OK(in.Seek(8));
     ASSERT_OK_AND_ASSIGN(int32_t version, in.ReadValue<int32_t>());
     ASSERT_EQ(2, version);
     ASSERT_OK(input->Close());
-    ASSERT_OK(Abort(updates));
+    ASSERT_OK(Commit(updates));
     ASSERT_EQ(0, payload->close_count);
     ASSERT_OK_AND_ASSIGN(auto values, ReadValues());
     ASSERT_EQ((std::vector<int32_t>{1, 1, 2}), values);
@@ -935,13 +1108,14 @@ TEST_F(FileIndexWriteTest, OptionalDependenciesAndCallerOverrides) {
 
 TEST_F(FileIndexWriteTest, EmptyAndInvalidInputs) {
     ASSERT_OK(CreateTable());
-    ASSERT_NOK_WITH_MSG(Prepare({}), "requires an existing snapshot");
+    ASSERT_OK_AND_ASSIGN(Messages no_messages, Prepare({}, {}));
+    ASSERT_TRUE(no_messages.empty());
     ASSERT_OK_AND_ASSIGN(Messages written, WriteData());
     ASSERT_OK_AND_ASSIGN(auto file, NewFile(written));
-    ASSERT_OK_AND_ASSIGN(Messages empty, Prepare({}));
-    ASSERT_TRUE(empty.empty());
-    ASSERT_OK_AND_ASSIGN(Messages skipped, Prepare({{file->file_name, {}}}));
-    ASSERT_TRUE(skipped.empty());
+    ASSERT_OK_AND_ASSIGN(Messages empty, Prepare(written, {}));
+    ASSERT_EQ(written, empty);
+    ASSERT_OK_AND_ASSIGN(Messages skipped, Prepare(written, {{file->file_name, {}}}));
+    ASSERT_EQ(written, skipped);
     auto payload = std::make_shared<PayloadInput>("payload");
     DataFileIndexInput valid{file->file_name, {{"value", "opaque", payload}}};
     const std::vector<std::pair<std::vector<DataFileIndexInput>, std::string>> invalid = {
@@ -952,22 +1126,19 @@ TEST_F(FileIndexWriteTest, EmptyAndInvalidInputs) {
         {{{file->file_name, {{"value", "", payload}}}}, "must not be empty"},
         {{{"", valid.indexes}}, "data file name"},
         {{{"../outside.orc", valid.indexes}}, "data file name"},
-        {{{"missing.orc", valid.indexes}}, "not live in the base snapshot"},
+        {{{"missing.orc", valid.indexes}}, "not an added data file in commit messages"},
         {{{file->file_name, {{"value", "opaque", std::make_shared<PayloadInput>("")}}}},
          "positive length"}};
     for (const auto& [inputs, error] : invalid) {
         SCOPED_TRACE(error);
-        ASSERT_NOK_WITH_MSG(Prepare(inputs), error);
+        ASSERT_NOK_WITH_MSG(Prepare(written, inputs), error);
     }
-    ASSERT_NOK_WITH_MSG(Prepare({valid}, {}, 0), "Invalid base snapshot id");
-    ASSERT_NOK(Prepare({valid}, {}, 999999));
-    ASSERT_NOK_WITH_MSG(Prepare({valid}, {{Options::BUCKET, "3"}}), "cannot override");
-    ASSERT_NOK(Prepare({valid}, {{Options::FILE_INDEX_FORMAT_VERSION, "3"}}));
-    ASSERT_NOK(Prepare({valid}, {{Options::BRANCH, "dev"}}));
-    ASSERT_NOK(FileIndexWrite::PrepareCommit(table_path_, "../dev", {}, std::nullopt, {valid}, fs_,
-                                             pool_, executor_));
-    ASSERT_NOK(FileIndexWrite::PrepareCommit("", "main", {}, std::nullopt, {valid}, nullptr,
-                                             nullptr, nullptr));
+    ASSERT_NOK_WITH_MSG(Prepare(written, {valid}, {{Options::BUCKET, "3"}}), "cannot override");
+    ASSERT_NOK(Prepare(written, {valid}, {{Options::FILE_INDEX_FORMAT_VERSION, "3"}}));
+    ASSERT_NOK(Prepare(written, {valid}, {{Options::BRANCH, "dev"}}));
+    ASSERT_NOK(
+        FileIndexWrite::PrepareCommit(table_path_, "../dev", {}, written, {valid}, fs_, pool_));
+    ASSERT_NOK(FileIndexWrite::PrepareCommit("", "main", {}, written, {valid}, nullptr, nullptr));
     ASSERT_EQ(0, payload->close_count);
 }
 
@@ -978,29 +1149,39 @@ TEST_F(FileIndexWriteTest, RejectsUnsupportedTableModes) {
             primary_key ? std::vector<std::string>{"part", "value"} : std::vector<std::string>{}));
         ASSERT_OK_AND_ASSIGN(Messages written, WriteData());
         ASSERT_OK_AND_ASSIGN(auto file, NewFile(written));
-        ASSERT_NOK_WITH_MSG(Prepare({{file->file_name, {{"value", "opaque", nullptr}}}}),
+        ASSERT_NOK_WITH_MSG(Prepare(written, {{file->file_name, {{"value", "opaque", nullptr}}}}),
                             "only supports append tables with fixed buckets");
     }
 }
 
-TEST_F(FileIndexWriteTest, RejectsAmbiguousFileNames) {
+TEST_F(FileIndexWriteTest, RejectsInvalidCommitMessages) {
     ASSERT_OK(CreateTable());
-    ASSERT_OK_AND_ASSIGN(Messages first_write, WriteData());
-    ASSERT_OK_AND_ASSIGN(Messages second_write, WriteData("[[20,1,10]]", 0, 20));
-    ASSERT_OK_AND_ASSIGN(auto first, NewFile(first_write));
-    ASSERT_OK_AND_ASSIGN(auto second, NewFile(second_write));
-    ASSERT_OK_AND_ASSIGN(auto paths, Paths(20, 0));
-    auto duplicate = std::make_shared<DataFileMeta>(*second);
-    duplicate->file_name = first->file_name;
-    std::string data;
-    ASSERT_OK(fs_->ReadFile(paths->ToPath(second), &data));
-    ASSERT_OK(fs_->WriteFile(paths->ToPath(duplicate), data, false));
-    ASSERT_OK_AND_ASSIGN(auto message, OnlyMessage(second_write));
-    ASSERT_OK(Commit(
-        {std::make_shared<CommitMessageImpl>(message->Partition(), 0, 2, DataIncrement({}, {}, {}),
-                                             CompactIncrement({second}, {duplicate}, {}))}));
-    ASSERT_NOK_WITH_MSG(Prepare({{first->file_name, {{"value", "opaque", nullptr}}}}),
-                        "Ambiguous data file name");
+    ASSERT_OK_AND_ASSIGN(Messages written, WriteData());
+    ASSERT_OK_AND_ASSIGN(auto file, NewFile(written));
+    ASSERT_OK_AND_ASSIGN(auto message, OnlyMessage(written));
+    const std::vector<DataFileIndexInput> inputs = {
+        {file->file_name, {{"value", "opaque", nullptr}}}};
+    ASSERT_NOK_WITH_MSG(Prepare({nullptr}, inputs), "non-null CommitMessageImpl");
+    ASSERT_NOK_WITH_MSG(Prepare({std::make_shared<CommitMessage>()}, inputs),
+                        "non-null CommitMessageImpl");
+    ASSERT_NOK_WITH_MSG(Prepare({written[0], written[0]}, inputs), "Ambiguous data file name");
+    ASSERT_OK_AND_ASSIGN(Messages null_file, WithNewFiles(written, {nullptr}));
+    ASSERT_NOK_WITH_MSG(Prepare(null_file, inputs), "Null data file");
+    for (const auto& [bucket, total_buckets] :
+         std::vector<std::pair<int32_t, std::optional<int32_t>>>{
+             {-1, 2}, {2, 2}, {0, 0}, {0, std::nullopt}}) {
+        auto invalid = std::make_shared<CommitMessageImpl>(
+            message->Partition(), bucket, total_buckets, message->GetNewFilesIncrement(),
+            message->GetCompactIncrement());
+        ASSERT_NOK_WITH_MSG(Prepare({invalid}, inputs), "requires data files in fixed buckets");
+    }
+    auto before_only = std::make_shared<CommitMessageImpl>(message->Partition(), 0, 2,
+                                                           DataIncrement({}, {file}, {}),
+                                                           CompactIncrement({file}, {}, {}));
+    ASSERT_NOK_WITH_MSG(Prepare({before_only}, inputs),
+                        "not an added data file in commit messages");
+    ASSERT_OK_AND_ASSIGN(Messages passthrough, Prepare({before_only}, {}));
+    ASSERT_EQ(before_only, passthrough[0]);
 }
 
 TEST_F(FileIndexWriteTest, ShortReadsPreservePayload) {
@@ -1010,9 +1191,9 @@ TEST_F(FileIndexWriteTest, ShortReadsPreservePayload) {
     auto payload = std::make_shared<PayloadInput>(std::string(1024 * 1024 + 17, 'x'));
     payload->max_read = 65521;
     ASSERT_OK_AND_ASSIGN(Messages updates,
-                         Prepare({{file->file_name, {{"value", "opaque", payload}}}},
+                         Prepare(written, {{file->file_name, {{"value", "opaque", payload}}}},
                                  {{Options::FILE_INDEX_FORMAT_VERSION, "2"}}));
-    ASSERT_OK_AND_ASSIGN(auto after, UpdatedFile(updates));
+    ASSERT_OK_AND_ASSIGN(auto after, NewFile(updates));
     ASSERT_OK_AND_ASSIGN(PayloadBytes actual, ReadPayloads(after));
     ASSERT_EQ(payload->BytesValue(), actual.at("value").at("opaque"));
     ASSERT_EQ(0, payload->close_count);
@@ -1044,8 +1225,8 @@ TEST_F(FileIndexWriteTest, PublishesCompleteTemporaryIndex) {
             Messages updates,
             FileIndexWrite::PrepareCommit(
                 table_path_, branch_,
-                {{Options::FILE_INDEX_FORMAT_VERSION, std::to_string(version)}}, std::nullopt,
-                {{file->file_name, {{"value", "opaque", payload}}}}, fs, pool_, executor_));
+                {{Options::FILE_INDEX_FORMAT_VERSION, std::to_string(version)}}, written,
+                {{file->file_name, {{"value", "opaque", payload}}}}, fs, pool_));
         ASSERT_EQ(1u, fs->created.size());
         ASSERT_EQ(1u, fs->published.size());
         ASSERT_EQ(1u, fs->rename_attempts.size());
@@ -1053,10 +1234,10 @@ TEST_F(FileIndexWriteTest, PublishesCompleteTemporaryIndex) {
         ASSERT_EQ(fs->created[0], fs->rename_attempts[0].first);
         ASSERT_EQ(fs->published[0], fs->rename_attempts[0].second);
         AssertRemoved(fs->created);
-        ASSERT_OK_AND_ASSIGN(auto after, UpdatedFile(updates));
+        ASSERT_OK_AND_ASSIGN(auto after, NewFile(updates));
         ASSERT_OK_AND_ASSIGN(PayloadBytes actual, ReadPayloads(after));
         ASSERT_EQ(payload->BytesValue(), actual.at("value").at("opaque"));
-        ASSERT_OK(Abort(updates));
+        ASSERT_OK(fs_->Delete(fs->published[0], false));
         AssertRemoved(fs->published);
     }
 }
@@ -1070,7 +1251,8 @@ TEST_F(FileIndexWriteTest, ReusesExistingIndexAndPreparesWholeBatch) {
     if (second->file_name < first->file_name) {
         std::swap(first, second);
     }
-    ASSERT_OK_AND_ASSIGN(Snapshot base, LatestSnapshot());
+    ASSERT_OK_AND_ASSIGN(Messages written, WithNewFiles(first_write, {first, second}));
+    AssertNoSnapshot();
     ASSERT_OK_AND_ASSIGN(auto paths, Paths());
     const std::string target = paths->ToFileIndexPath(paths->ToPath(first));
     ASSERT_OK(WriteContainer(first, PathUtil::GetName(target),
@@ -1084,10 +1266,10 @@ TEST_F(FileIndexWriteTest, ReusesExistingIndexAndPreparesWholeBatch) {
     auto payload = std::make_shared<PayloadInput>("payload");
     ASSERT_OK_AND_ASSIGN(
         Messages updates,
-        FileIndexWrite::PrepareCommit(table_path_, branch_, {}, std::nullopt,
+        FileIndexWrite::PrepareCommit(table_path_, branch_, {}, written,
                                       {{first->file_name, {{"value", "opaque", unused_payload}}},
                                        {second->file_name, {{"value", "opaque", payload}}}},
-                                      fs, pool_, executor_));
+                                      fs, pool_));
     ASSERT_EQ(1, fs->create_attempts);
     ASSERT_EQ(1u, fs->created.size());
     ASSERT_EQ(1u, fs->published.size());
@@ -1096,23 +1278,20 @@ TEST_F(FileIndexWriteTest, ReusesExistingIndexAndPreparesWholeBatch) {
     ASSERT_EQ(0, unused_payload->close_count);
     AssertRemoved(fs->created);
     ASSERT_OK_AND_ASSIGN(auto update, OnlyMessage(updates));
-    const auto& increment = update->GetCompactIncrement();
-    ASSERT_EQ(2u, increment.CompactBefore().size());
-    ASSERT_EQ(2u, increment.CompactAfter().size());
-    ASSERT_EQ(*first, *increment.CompactBefore()[0]);
-    ASSERT_EQ(*second, *increment.CompactBefore()[1]);
-    ASSERT_EQ(first->file_name, increment.CompactAfter()[0]->file_name);
-    ASSERT_EQ(second->file_name, increment.CompactAfter()[1]->file_name);
-    ASSERT_OK_AND_ASSIGN(PayloadBytes reused, ReadPayloads(increment.CompactAfter()[0]));
+    const auto& increment = update->GetNewFilesIncrement();
+    ASSERT_TRUE(update->GetCompactIncrement().IsEmpty());
+    ASSERT_EQ(2u, increment.NewFiles().size());
+    ASSERT_EQ(first->file_name, increment.NewFiles()[0]->file_name);
+    ASSERT_EQ(second->file_name, increment.NewFiles()[1]->file_name);
+    ASSERT_OK_AND_ASSIGN(PayloadBytes reused, ReadPayloads(increment.NewFiles()[0]));
     ASSERT_EQ("existing payload", reused.at("value").at("opaque"));
-    ASSERT_OK_AND_ASSIGN(PayloadBytes actual, ReadPayloads(increment.CompactAfter()[1]));
+    ASSERT_OK_AND_ASSIGN(PayloadBytes actual, ReadPayloads(increment.NewFiles()[1]));
     ASSERT_EQ(payload->BytesValue(), actual.at("value").at("opaque"));
     ASSERT_EQ(0, std::count(fs->delete_attempts.begin(), fs->delete_attempts.end(), target));
     std::string content;
     ASSERT_OK(fs_->ReadFile(target, &content));
     ASSERT_EQ(existing_bytes, content);
-    ASSERT_OK_AND_ASSIGN(Snapshot unchanged, LatestSnapshot());
-    ASSERT_EQ(base.Id(), unchanged.Id());
+    AssertNoSnapshot();
     ASSERT_OK(Commit(updates));
 }
 
@@ -1134,12 +1313,11 @@ TEST_F(FileIndexWriteTest, PreparesCommitForTargetsCreatedDuringRename) {
                                {{"value", {{"opaque", "another writer's payload"}}}}));
             return error;
         };
-        ASSERT_OK_AND_ASSIGN(
-            Messages updates,
-            FileIndexWrite::PrepareCommit(table_path_, branch_, {}, std::nullopt,
-                                          {{file->file_name, {{"value", "opaque", payload}}}}, fs,
-                                          pool_, executor_));
-        ASSERT_OK_AND_ASSIGN(auto after, UpdatedFile(updates));
+        ASSERT_OK_AND_ASSIGN(Messages updates,
+                             FileIndexWrite::PrepareCommit(
+                                 table_path_, branch_, {}, written,
+                                 {{file->file_name, {{"value", "opaque", payload}}}}, fs, pool_));
+        ASSERT_OK_AND_ASSIGN(auto after, NewFile(updates));
         ASSERT_EQ(file->file_name, after->file_name);
         ASSERT_EQ(1u, after->extra_files.size());
         ASSERT_EQ(PathUtil::GetName(target), after->extra_files[0]);
@@ -1168,7 +1346,7 @@ TEST_F(FileIndexWriteTest, PayloadFailuresRemoveAllGeneratedIndexes) {
     std::sort(files.begin(), files.end(),
               [](const auto& lhs, const auto& rhs) { return lhs->file_name < rhs->file_name; });
     ASSERT_OK_AND_ASSIGN(auto paths, Paths());
-    ASSERT_OK_AND_ASSIGN(Snapshot base, LatestSnapshot());
+    AssertNoSnapshot();
     for (int32_t version : {1, 2}) {
         for (int32_t failure = 0; failure < 4; ++failure) {
             SCOPED_TRACE(fmt::format("version={}, failure={}", version, failure));
@@ -1181,17 +1359,17 @@ TEST_F(FileIndexWriteTest, PayloadFailuresRemoveAllGeneratedIndexes) {
             auto fs = std::make_shared<IndexFileSystem>();
             ASSERT_NOK(FileIndexWrite::PrepareCommit(
                 table_path_, branch_,
-                {{Options::FILE_INDEX_FORMAT_VERSION, std::to_string(version)}}, base.Id(),
+                {{Options::FILE_INDEX_FORMAT_VERSION, std::to_string(version)}},
+                {first[0], second[0]},
                 {{files[0]->file_name, {{"value", "opaque", good}}},
                  {files[1]->file_name, {{"value", "opaque", bad}}}},
-                fs, pool_, executor_));
+                fs, pool_));
             ASSERT_FALSE(fs->created.empty());
             AssertRemoved(fs->created);
             AssertRemoved(fs->published);
             ASSERT_EQ(0, good->close_count);
             ASSERT_EQ(0, bad->close_count);
-            ASSERT_OK_AND_ASSIGN(Snapshot unchanged, LatestSnapshot());
-            ASSERT_EQ(base.Id(), unchanged.Id());
+            AssertNoSnapshot();
             for (const auto& file : files) {
                 ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(paths->ToPath(file)));
                 ASSERT_TRUE(exists);
@@ -1214,8 +1392,8 @@ TEST_F(FileIndexWriteTest, OutputFailuresRemovePartialIndexes) {
             fs->failure = failure;
             ASSERT_NOK(FileIndexWrite::PrepareCommit(
                 table_path_, branch_,
-                {{Options::FILE_INDEX_FORMAT_VERSION, std::to_string(version)}}, std::nullopt,
-                {{file->file_name, {{"value", "opaque", payload}}}}, fs, pool_, executor_));
+                {{Options::FILE_INDEX_FORMAT_VERSION, std::to_string(version)}}, written,
+                {{file->file_name, {{"value", "opaque", payload}}}}, fs, pool_));
             ASSERT_EQ(1, fs->create_attempts);
             if (failure != OutputFailure::CREATE) {
                 ASSERT_EQ(1u, fs->created.size());
@@ -1230,6 +1408,7 @@ TEST_F(FileIndexWriteTest, OutputFailuresRemovePartialIndexes) {
         }
     }
     ASSERT_EQ(0, payload->close_count);
+    ASSERT_OK(Commit(written));
     ASSERT_OK_AND_ASSIGN(auto values, ReadValues());
     ASSERT_EQ((std::vector<int32_t>{1, 1, 2}), values);
 }
@@ -1249,10 +1428,10 @@ TEST_F(FileIndexWriteTest, CleanupFailuresPreserveOriginalError) {
     auto fs = std::make_shared<IndexFileSystem>();
     fs->fail_delete = true;
     ASSERT_NOK_WITH_MSG(
-        FileIndexWrite::PrepareCommit(table_path_, branch_, {}, std::nullopt,
+        FileIndexWrite::PrepareCommit(table_path_, branch_, {}, {first_write[0], second_write[0]},
                                       {{first->file_name, {{"value", "opaque", good}}},
                                        {second->file_name, {{"value", "opaque", bad}}}},
-                                      fs, pool_, executor_),
+                                      fs, pool_),
         "injected payload read failure");
     ASSERT_EQ(2u, fs->created.size());
     ASSERT_EQ(1u, fs->published.size());
@@ -1265,6 +1444,7 @@ TEST_F(FileIndexWriteTest, CleanupFailuresPreserveOriginalError) {
         ASSERT_TRUE(exists);
         ASSERT_OK(fs->Delete(path, false));
     }
+    ASSERT_OK(Commit({first_write[0], second_write[0]}));
     ASSERT_OK_AND_ASSIGN(auto values, ReadValues());
     ASSERT_EQ((std::vector<int32_t>{1, 1, 1, 1, 2, 2}), values);
 }
@@ -1301,11 +1481,11 @@ TEST_F(FileIndexWriteTest, RejectsMalformedExistingIndexes) {
             ASSERT_OK(
                 fs_->WriteFile(paths->ToAlignedPath("duplicate.index", file), "duplicate", false));
         }
-        ASSERT_OK(RewriteMetadata(file, before));
+        ASSERT_OK_AND_ASSIGN(written, WithNewFiles(written, {before}));
         auto fs = std::make_shared<IndexFileSystem>();
         ASSERT_NOK(FileIndexWrite::PrepareCommit(
-            table_path_, branch_, {}, std::nullopt,
-            {{file->file_name, {{"other", "opaque", nullptr}}}}, fs, pool_, executor_));
+            table_path_, branch_, {}, written, {{file->file_name, {{"other", "opaque", nullptr}}}},
+            fs, pool_));
         ASSERT_TRUE(fs->created.empty());
         ASSERT_OK_AND_ASSIGN(bool exists, fs_->Exists(paths->ToPath(file)));
         ASSERT_TRUE(exists);

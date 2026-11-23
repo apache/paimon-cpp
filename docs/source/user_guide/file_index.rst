@@ -18,12 +18,13 @@
 File Index
 ==========
 
-Attach indexes to existing data files
-------------------------------------
+Attach indexes before committing data files
+------------------------------------------
 
 ``FileIndexWrite::PrepareCommit`` supports managed append tables with fixed buckets.
-It merges serialized payloads into one external index file per data file and returns
-commit messages. Inputs use original file field names and physical row positions,
+It takes pending commit messages, merges serialized payloads into one external index
+file per requested data file, and returns updated messages. No snapshot is required.
+Inputs use original file field names and physical row positions,
 including DV-deleted rows. Given a serialized bitmap stream ``payload``:
 
 .. code-block:: cpp
@@ -33,14 +34,15 @@ including DV-deleted rows. Given a serialized bitmap stream ``payload``:
    std::vector<paimon::DataFileIndexInput> inputs = {
        {"data-example.parquet", {{"original_field_name", "bitmap", payload}}}};
    PAIMON_ASSIGN_OR_RAISE(
-       std::vector<std::shared_ptr<paimon::CommitMessage>> messages,
+       std::vector<std::shared_ptr<paimon::CommitMessage>> indexed_messages,
        paimon::FileIndexWrite::PrepareCommit(
-           table_path, branch, options, base_snapshot_id, inputs,
-           file_system, pool, executor));
+           table_path, branch, options, messages, inputs,
+           file_system, pool));
 
-Use the payloads' snapshot as ``base_snapshot_id``; ``std::nullopt`` selects latest
-once. Null file system, pool or executor selects internal defaults. Input streams
-are borrowed synchronously and are not closed.
+Pass messages from ``FileStoreWrite::PrepareCommit`` for the same table and branch.
+Requested files must be in ``NewFiles`` or ``CompactAfter``. Message order and other
+increments are preserved; input messages are not modified. Null file system or pool
+selects internal defaults. Input streams are borrowed synchronously and are not closed.
 
 Existing targets are reused without reading or writing index payloads, and commit
 messages are still prepared. Otherwise, index files are published from UUID temporary
@@ -48,9 +50,7 @@ files using ``Rename``. If the target appears meanwhile, it is reused and the te
 file is cleaned up best-effort. Existing contents are not validated.
 Concurrent publication requires atomic rename without overwrite from the file system.
 
-Commit the messages with ``FileStoreCommit`` to the same table and branch.
-Serialize backfill commits with compaction/overwrite per partition/bucket,
-keeping base metadata valid through commit.
+Commit ``indexed_messages`` with ``FileStoreCommit`` instead of the original messages.
 
 Full-text predicates and root TopK
 ----------------------------------
