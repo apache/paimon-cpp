@@ -376,6 +376,93 @@ TEST_P(WriteAndReadInteTest, TestAppendSimple) {
     ASSERT_TRUE(success);
 }
 
+TEST_P(WriteAndReadInteTest, TestOrcDictionaryStringExceedsOffsetLimit) {
+    auto [file_format, file_system] = GetParam();
+    if (file_format != "orc" || file_system != "local") {
+        GTEST_SKIP() << "Requires ORC on the local file system";
+    }
+    constexpr int32_t kRowCount = 2048;
+    constexpr int32_t kSmallBatchSize = 8;
+    const std::string value(1024 * 1024, 'x');
+    arrow::FieldVector fields = {arrow::field("value", arrow::utf8())};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format},
+        {Options::FILE_SYSTEM, file_system},
+        {Options::BUCKET, "-1"},
+        {Options::TARGET_FILE_SIZE, "4 gb"},
+        {"orc.dictionary-key-size-threshold", "1"},
+        {"orc.read.enable-lazy-decoding", "false"},
+    };
+    ASSERT_OK_AND_ASSIGN(auto helper,
+                         TestHelper::Create(test_dir_, arrow::schema(fields), /*partition_keys=*/{},
+                                            /*primary_keys=*/{}, options,
+                                            /*is_streaming_mode=*/false));
+
+    // Reuse a small Arrow batch: the ORC dictionary stores just one 1 MiB value,
+    // but decoding all 2048 rows in one read batch would require 2 GiB of string data.
+    arrow::StringBuilder builder;
+    for (int32_t i = 0; i < kSmallBatchSize; ++i) {
+        ASSERT_TRUE(builder.Append(value).ok());
+    }
+    std::shared_ptr<arrow::Array> values;
+    ASSERT_TRUE(builder.Finish(&values).ok());
+    auto array_result = arrow::StructArray::Make({values}, fields);
+    ASSERT_TRUE(array_result.ok()) << array_result.status().ToString();
+    auto array = array_result.ValueOrDie();
+    std::vector<std::unique_ptr<RecordBatch>> batches;
+    for (int32_t i = 0; i < kRowCount; i += kSmallBatchSize) {
+        ArrowArray c_array;
+        ASSERT_TRUE(arrow::ExportArray(*array, &c_array).ok());
+        RecordBatchBuilder batch_builder(&c_array);
+        ASSERT_OK_AND_ASSIGN(auto batch, batch_builder.SetBucket(0).Finish());
+        batches.push_back(std::move(batch));
+    }
+    ASSERT_OK(helper->WriteAndCommit(std::move(batches), /*commit_identifier=*/0,
+                                     /*expected_commit_messages=*/std::nullopt));
+    ASSERT_OK_AND_ASSIGN(auto splits,
+                         helper->NewScan(StartupMode::LatestFull(), /*snapshot_id=*/std::nullopt));
+    ASSERT_EQ(splits.size(), 1);
+
+    auto create_reader = [&](int32_t batch_size) -> Result<std::unique_ptr<BatchReader>> {
+        ReadContextBuilder read_context_builder(helper->TablePath());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context,
+                               read_context_builder.SetOptions(options)
+                                   .AddOption(Options::READ_BATCH_SIZE, std::to_string(batch_size))
+                                   .SetReadFieldNames({"value"})
+                                   .Finish());
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,
+                               TableRead::Create(std::move(read_context)));
+        return table_read->CreateReader(splits);
+    };
+    ASSERT_OK_AND_ASSIGN(auto reader, create_reader(kRowCount));
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "total length is out-of-bounds");
+    reader.reset();
+
+    // The same committed table remains readable with batches below the offset limit.
+    ASSERT_OK_AND_ASSIGN(reader, create_reader(kSmallBatchSize));
+    int64_t rows_read = 0;
+    while (true) {
+        ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
+        if (BatchReader::IsEofBatch(batch)) {
+            break;
+        }
+        auto import_result = arrow::ImportArray(batch.first.get(), batch.second.get());
+        ASSERT_TRUE(import_result.ok()) << import_result.status().ToString();
+        auto result = import_result.ValueOrDie();
+        ASSERT_TRUE(result->ValidateFull().ok());
+        auto struct_array = checked_pointer_cast<arrow::StructArray>(result);
+        auto strings =
+            checked_pointer_cast<arrow::StringArray>(struct_array->GetFieldByName("value"));
+        ASSERT_EQ(strings->length(), kSmallBatchSize);
+        ASSERT_EQ(strings->null_count(), 0);
+        for (int64_t i = 0; i < strings->length(); ++i) {
+            ASSERT_EQ(strings->GetView(i), value);
+        }
+        rows_read += strings->length();
+    }
+    ASSERT_EQ(rows_read, kRowCount);
+}
+
 TEST_P(WriteAndReadInteTest, TestAppendReadWithNestedPredicateAcrossBatches) {
     auto [file_format, file_system] = GetParam();
     arrow::FieldVector fields = {
