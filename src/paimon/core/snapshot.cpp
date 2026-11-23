@@ -332,14 +332,15 @@ void Snapshot::FromJson(const rapidjson::Value& obj) noexcept(false) {
         RapidJsonUtil::DeserializeKeyValue<std::optional<int64_t>>(obj, FIELD_NEXT_ROW_ID);
 }
 
-Result<Snapshot> Snapshot::FromPath(const std::shared_ptr<FileSystem>& fs, const std::string& path,
-                                    MemoryPool* pool) {
-    if (pool == nullptr || pool == GetDefaultPool().get()) {
-        std::string json_str;
-        PAIMON_RETURN_NOT_OK(fs->ReadFile(path, &json_str));
-        return Snapshot::FromJsonString(json_str);
-    }
+Result<Snapshot> Snapshot::FromPath(const std::shared_ptr<FileSystem>& fs,
+                                    const std::string& path) {
+    std::string json_str;
+    PAIMON_RETURN_NOT_OK(fs->ReadFile(path, &json_str));
+    return Snapshot::FromJsonString(json_str);
+}
 
+Result<Snapshot> Snapshot::FromPath(const std::shared_ptr<FileSystem>& fs, const std::string& path,
+                                    MemoryPool& pool) {
     Bytes json;
     {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<InputStream> input, fs->Open(path));
@@ -350,24 +351,25 @@ Result<Snapshot> Snapshot::FromPath(const std::shared_ptr<FileSystem>& fs, const
         ScopeGuard close([&input]() { (void)input->Close(); });
         PAIMON_ASSIGN_OR_RAISE(int64_t length, input->Length());
         PAIMON_RETURN_NOT_OK(ValidateValueNonNegative(length, "read length"));
-        const uint64_t allocation_size = static_cast<uint64_t>(length) + 1;
-        PAIMON_RETURN_NOT_OK(ValidateValueInRange<size_t>(allocation_size, "snapshot buffer size"));
+        if (length == 0) {
+            return Status::Invalid("empty snapshot: ", path);
+        }
+        PAIMON_RETURN_NOT_OK(ValidateValueInRange<size_t>(length, "snapshot buffer size"));
+        // MemoryPool::Malloc throws on refusal. Report it through the snapshot Result.
         try {
-            json = Bytes(static_cast<size_t>(allocation_size), pool);
+            json = Bytes(static_cast<size_t>(length), &pool);
         } catch (const std::bad_alloc&) {
-            return Status::OutOfMemory("cannot allocate ", allocation_size, " bytes for snapshot ",
-                                       path);
+            return Status::OutOfMemory("cannot allocate ", length, " bytes for snapshot ", path);
         }
         PAIMON_ASSIGN_OR_RAISE(int64_t read_length, input->Read(json.data(), length));
         if (read_length != length) {
             return Status::IOError(fmt::format("path {}, expect read len {}, actual read len {}",
                                                path, length, read_length));
         }
-        json.data()[length] = '\0';
     }
     Snapshot snapshot;
-    PAIMON_RETURN_NOT_OK(RapidJsonUtil::FromNullTerminatedJson(
-        std::string_view(json.data(), json.size() - 1), &snapshot, path));
+    PAIMON_RETURN_NOT_OK(
+        RapidJsonUtil::FromJsonView(std::string_view(json.data(), json.size()), path, &snapshot));
     return snapshot;
 }
 

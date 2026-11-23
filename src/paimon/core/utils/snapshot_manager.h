@@ -48,7 +48,9 @@ class SnapshotManager {
 
     SnapshotManager(const std::shared_ptr<FileSystem>& fs, const std::string& root_path);
     SnapshotManager(const std::shared_ptr<FileSystem>& fs, const std::string& root_path,
-                    const std::string& branch, const std::shared_ptr<MemoryPool>& pool = nullptr);
+                    const std::string& branch);
+    SnapshotManager(const std::shared_ptr<FileSystem>& fs, const std::string& root_path,
+                    const std::string& branch, const std::shared_ptr<MemoryPool>& pool);
     ~SnapshotManager();
 
     /// Sets the loader for `LatestSnapshot()` and `LatestSnapshotId()`.

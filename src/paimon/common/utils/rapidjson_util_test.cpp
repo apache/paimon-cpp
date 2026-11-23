@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "gtest/gtest.h"
@@ -150,6 +151,25 @@ TEST(RapidJsonUtilTest, TestRejectUnescapedNul) {
         ASSERT_NOK_WITH_MSG(RapidJsonUtil::FromJsonString("{}" + suffix, &result),
                             "JSON contains an unescaped NUL byte");
     }
+}
+
+TEST(RapidJsonUtilTest, TestFromJsonViewUsesExactLength) {
+    struct SnapshotField {
+        void FromJson(const rapidjson::Value& doc) {
+            id = RapidJsonUtil::DeserializeKeyValue<int64_t>(doc, "id");
+        }
+        int64_t id = 0;
+    } value;
+    constexpr std::string_view json = R"({"id":17}trailing)";
+    ASSERT_OK(RapidJsonUtil::FromJsonView(json.substr(0, 9), "snapshot", &value));
+    EXPECT_EQ(17, value.id);
+    ASSERT_NOK_WITH_MSG(RapidJsonUtil::FromJsonView(json, "snapshot", &value), "snapshot");
+
+    const std::string bom_json =
+        "\xEF\xBB\xBF"
+        R"({"id":17})";
+    ASSERT_NOK_WITH_MSG(RapidJsonUtil::FromJsonString(bom_json, &value), "deserialize failed");
+    ASSERT_NOK_WITH_MSG(RapidJsonUtil::FromJsonView(bom_json, "snapshot", &value), "snapshot");
 }
 
 TEST(RapidJsonUtilTest, TestSerializeStringWithEmbeddedNul) {

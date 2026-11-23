@@ -337,11 +337,23 @@ TEST(ScanExceptionSafetyTest, SnapshotBufferUsesScanPoolBeforeReading) {
         auto plan = scan->CreatePlan();
         EXPECT_FALSE(plan.ok());
         EXPECT_TRUE(plan.status().IsOutOfMemory()) << plan.status();
-        EXPECT_EQ(pool->refused_bytes.load(), oversized_snapshot.size() + 1);
+        EXPECT_EQ(pool->refused_bytes.load(), oversized_snapshot.size());
         EXPECT_LE(pool->MaxMemoryUsage(), kPoolCapacity);
         EXPECT_EQ(fs->counts->opens.load(), opens_before + 1);
         EXPECT_EQ(fs->counts->closes.load(), closes_before + 1);
         EXPECT_EQ(fs->counts->reads.load(), reads_before);
+        EXPECT_EQ(fs->counts->live.load(), 0);
+        EXPECT_EQ(pool->CurrentUsage(), usage_before);
+    }
+    EXPECT_EQ(pool->CurrentUsage(), 0);
+
+    // An empty file has no input bytes to charge and is invalid JSON.
+    ASSERT_OK(fs->WriteFile(snapshot_path, "", /*overwrite=*/true));
+    {
+        ASSERT_OK_AND_ASSIGN(auto scan, OrdinaryScan(pool, executor, input));
+        const auto usage_before = pool->CurrentUsage();
+        auto plan = scan->CreatePlan();
+        EXPECT_TRUE(plan.status().IsInvalid()) << plan.status();
         EXPECT_EQ(fs->counts->live.load(), 0);
         EXPECT_EQ(pool->CurrentUsage(), usage_before);
     }

@@ -76,8 +76,12 @@ class FileStoreTable : public Table {
         return schema_manager_;
     }
 
-    std::shared_ptr<SnapshotManager> GetSnapshotManager(
-        const std::shared_ptr<MemoryPool>& pool = nullptr) const {
+    std::shared_ptr<SnapshotManager> GetSnapshotManager() const {
+        return std::make_shared<SnapshotManager>(file_system_, root_path_, CurrentBranch());
+    }
+
+    std::shared_ptr<SnapshotManager> GetSnapshotManagerForScan(
+        const std::shared_ptr<MemoryPool>& pool) const {
         return std::make_shared<SnapshotManager>(file_system_, root_path_, CurrentBranch(), pool);
     }
 

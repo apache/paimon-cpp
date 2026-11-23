@@ -34,6 +34,7 @@
 #include "rapidjson/allocators.h"
 #include "rapidjson/document.h"
 #include "rapidjson/encodings.h"
+#include "rapidjson/memorystream.h"
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/rapidjson.h"
 #include "rapidjson/stringbuffer.h"
@@ -75,37 +76,46 @@ class RapidJsonUtil {
     // if T is custom type, T must have FromJson()
     template <typename T>
     static inline Status FromJsonString(const std::string& json_str, T* obj) {
-        return FromNullTerminatedJson(json_str, obj, json_str);
-    }
-
-    // The view excludes the final NUL, which must follow it in the backing buffer.
-    template <typename T>
-    static inline Status FromNullTerminatedJson(std::string_view json_str, T* obj,
-                                                std::string_view diagnostic) {
         if (!obj) {
             return Status::Invalid("deserialize failed: obj is nullptr");
         }
         // RapidJSON treats an unescaped NUL as end-of-input, even with an explicit length.
-        if (json_str.find('\0') != std::string_view::npos) {
+        if (json_str.find('\0') != std::string::npos) {
             return Status::Invalid("deserialize failed: JSON contains an unescaped NUL byte");
         }
         if constexpr (std::is_same_v<T, std::map<std::string, std::string>>) {
-            PAIMON_ASSIGN_OR_RAISE(*obj, MapFromJsonString(json_str.data(), diagnostic));
+            PAIMON_ASSIGN_OR_RAISE(*obj, MapFromJsonString(json_str));
         } else {
             rapidjson::Document doc;
-            if (!FromJson(json_str.data(), &doc)) {
-                return Status::Invalid("deserialize failed: ", diagnostic);
+            if (!FromJson(json_str, &doc)) {
+                return Status::Invalid("deserialize failed: ", json_str);
             }
-            try {
-                obj->FromJson(doc);
-            } catch (const std::invalid_argument& e) {
-                return Status::Invalid("deserialize failed, possibly type incompatible: ",
-                                       e.what());
-            } catch (...) {
-                return Status::Invalid("deserialize failed, reason unknown: ", diagnostic);
-            }
+            return DeserializeObject(doc, json_str, obj);
         }
         return Status::OK();
+    }
+
+    // T must have FromJson(). The view need not be NUL-terminated.
+    template <typename T>
+    static Status FromJsonView(std::string_view json, std::string_view diagnostic, T* obj) {
+        if (!obj) {
+            return Status::Invalid("deserialize failed: obj is nullptr");
+        }
+        if (json.empty()) {
+            return Status::Invalid("deserialize failed: ", diagnostic);
+        }
+        if (json.find('\0') != std::string_view::npos) {
+            return Status::Invalid("deserialize failed: JSON contains an unescaped NUL byte");
+        }
+        // Parse(data, size) uses an encoded stream that consumes a leading BOM.
+        // Keep the same JSON syntax as FromJsonString's UTF-8 string stream.
+        rapidjson::MemoryStream stream(json.data(), json.size());
+        rapidjson::Document doc;
+        doc.ParseStream(stream);
+        if (doc.HasParseError()) {
+            return Status::Invalid("deserialize failed: ", diagnostic);
+        }
+        return DeserializeObject(doc, diagnostic, obj);
     }
 
     // if T is std::nullopt, will use rapid_json null_value
@@ -133,6 +143,19 @@ class RapidJsonUtil {
     static Status CheckNoDuplicateMembers(const rapidjson::Value& value);
 
  private:
+    template <typename T>
+    static Status DeserializeObject(const rapidjson::Document& doc, std::string_view diagnostic,
+                                    T* obj) {
+        try {
+            obj->FromJson(doc);
+        } catch (const std::invalid_argument& e) {
+            return Status::Invalid("deserialize failed, possibly type incompatible: ", e.what());
+        } catch (...) {
+            return Status::Invalid("deserialize failed, reason unknown: ", diagnostic);
+        }
+        return Status::OK();
+    }
+
     static inline bool ToJson(const rapidjson::Value& value, std::string* json_str) {
         assert(json_str);
         rapidjson::StringBuffer buffer;
@@ -145,12 +168,11 @@ class RapidJsonUtil {
     }
 
     static inline bool FromJson(const std::string& json_str, rapidjson::Document* doc) {
-        return FromJson(json_str.c_str(), doc);
-    }
-
-    static inline bool FromJson(const char* json_str, rapidjson::Document* doc) {
-        doc->Parse(json_str);
-        return !doc->HasParseError();
+        doc->Parse(json_str.c_str());
+        if (doc->HasParseError()) {
+            return false;
+        }
+        return true;
     }
 
     template <typename T>
@@ -187,19 +209,19 @@ class RapidJsonUtil {
         return buffer.GetString();
     }
     static Result<std::map<std::string, std::string>> MapFromJsonString(
-        const char* json_str, std::string_view diagnostic) {
+        const std::string& json_str) {
         rapidjson::Document doc;
-        doc.Parse(json_str);
+        doc.Parse(json_str.c_str());
         if (doc.HasParseError() || !doc.IsObject()) {
             return Status::Invalid("deserialize failed: parse error or not JSON object: ",
-                                   diagnostic);
+                                   json_str);
         }
 
         std::map<std::string, std::string> result;
         for (auto it = doc.MemberBegin(); it != doc.MemberEnd(); ++it) {
             if (!it->name.IsString() || !it->value.IsString()) {
                 return Status::Invalid(
-                    "deserialize failed: non-string key or value in JSON object: ", diagnostic);
+                    "deserialize failed: non-string key or value in JSON object: ", json_str);
             }
             result[it->name.GetString()] = it->value.GetString();
         }

@@ -31,6 +31,7 @@
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/file_utils.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/memory/memory_pool.h"
 #include "paimon/result.h"
 
 namespace paimon {
@@ -40,12 +41,17 @@ SnapshotManager::SnapshotManager(const std::shared_ptr<FileSystem>& fs,
     : SnapshotManager(fs, root_path, BranchManager::DEFAULT_MAIN_BRANCH) {}
 
 SnapshotManager::SnapshotManager(const std::shared_ptr<FileSystem>& fs,
+                                 const std::string& root_path, const std::string& branch)
+    : fs_(fs), root_path_(root_path), branch_(BranchManager::NormalizeBranch(branch)) {}
+
+SnapshotManager::SnapshotManager(const std::shared_ptr<FileSystem>& fs,
                                  const std::string& root_path, const std::string& branch,
                                  const std::shared_ptr<MemoryPool>& pool)
-    : fs_(fs),
-      root_path_(root_path),
-      branch_(BranchManager::NormalizeBranch(branch)),
-      pool_(pool) {}
+    : SnapshotManager(fs, root_path, branch) {
+    if (pool && pool != GetDefaultPool()) {
+        pool_ = pool;
+    }
+}
 
 SnapshotManager::~SnapshotManager() = default;
 
@@ -128,7 +134,8 @@ bool SnapshotManager::ExpiredSinceBoundaryWasRead(int64_t id) const {
 }
 
 Result<Snapshot> SnapshotManager::LoadSnapshot(int64_t snapshot_id) const {
-    return Snapshot::FromPath(fs_, SnapshotPath(snapshot_id), pool_.get());
+    const std::string path = SnapshotPath(snapshot_id);
+    return pool_ ? Snapshot::FromPath(fs_, path, *pool_) : Snapshot::FromPath(fs_, path);
 }
 
 void SnapshotManager::SetSnapshotLoader(SnapshotLoader loader) {
