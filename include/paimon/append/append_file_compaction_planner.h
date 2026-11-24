@@ -93,6 +93,8 @@ class PAIMON_EXPORT AppendFileCompactionPlanner {
     /// Reads indexes and applies snapshot deletion vectors in the selected partition/bucket.
     /// Supports fixed-bucket append tables without real-time mode or data evolution.
     /// If any input has indexes, all source row counts and the output row count must fit int32.
+    /// @note IMPORTANT: Returned index metadata uses each file's schema.
+    /// Callers must handle schema changes.
     ///
     /// Uses the same file name and physical row order as AppendFileCompaction::Execute.
     /// Callers must retain source files and use the same snapshot deletion state for execution.
