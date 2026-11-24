@@ -33,6 +33,8 @@ class InputStream;
 class MemoryPool;
 
 /// Serialized index payload using the data file's original field name.
+/// @note IMPORTANT: Callers must ensure fields and payloads match the file's original schema.
+/// This is not validated.
 struct PAIMON_EXPORT FileIndexInput {
     std::string field_name;
     std::string index_type;
