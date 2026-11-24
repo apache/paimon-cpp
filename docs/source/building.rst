@@ -32,7 +32,7 @@ out-of-source. For example, you could create ``paimon-cpp/build`` and invoke
 
 Building requires:
 
-* A C++17-enabled compiler. On Linux, gcc 8 and higher should be sufficient.
+* A C++20-enabled compiler, such as GCC 13 or later on Linux.
   Windows is not supported for now.
 * ``patch`` and ``lsdiff`` (provided by ``patchutils``) for patched dependencies.
 * At least 2GB of RAM for a minimal build, 8GB for a minimal
@@ -323,7 +323,8 @@ several times with different options if you want to exercise all of them.
 CMake version requirements
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-We support CMake 3.22 and higher.
+Building Paimon requires CMake 3.26 or later because of the Apache Thrift
+dependency bundled with Arrow. Paimon bundles Apache Arrow and Parquet 26.0.1.
 
 LLVM and Clang Tools
 ~~~~~~~~~~~~~~~~~~~~

@@ -18,7 +18,8 @@ cmake_minimum_required(VERSION 3.22)
 
 project(example)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Arrow's static export refers to LZ4::lz4, while some lz4 packages export a
 # differently named target. Define a compatibility alias before loading Arrow.

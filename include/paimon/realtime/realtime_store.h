@@ -27,15 +27,13 @@
 #include <utility>
 #include <vector>
 
-#include "arrow/c/abi.h"
+#include "paimon/arrow/abi.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/realtime/offset_range.h"
 #include "paimon/record_batch.h"
 #include "paimon/result.h"
 #include "paimon/statistics_mode.h"
 #include "paimon/visibility.h"
-
-struct ArrowSchema;
 
 namespace paimon {
 

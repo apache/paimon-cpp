@@ -25,8 +25,9 @@ This document defines the coding conventions for the Paimon C++ project. All pul
 
 ## Language Standard
 
-- **C++17** is the target standard.
-- Do **not** use C++20 or later features.
+- The implementation builds with **C++20**.
+- Public headers under `include/paimon/` must compile as **C++17**. Use the Arrow
+  C Data Interface for public Arrow types.
 - The **x86_64** and **aarch64** architectures are supported. Do not assume a specific
   architecture.
 - Never rely on the signedness of plain `char`. It is

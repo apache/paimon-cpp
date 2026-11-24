@@ -157,6 +157,23 @@ TEST(ArrowStreamAdapterTest, TestInputAndOutputStream) {
     auto buffer2 = fut.result().ValueOrDie();
     ASSERT_EQ(data, buffer2->ToString());
 
+    arrow::io::RandomAccessFile& file = *in_stream;
+    const auto& bytes_read = in_stream->StorageReadBytes();
+    const auto bytes_before_short_read = bytes_read->load();
+    auto short_read = file.ReadAsync(/*position=*/3, /*nbytes=*/5);
+    ASSERT_TRUE(short_read.status().ok()) << short_read.status();
+    ASSERT_EQ("lo", short_read.result().ValueOrDie()->ToString());
+    auto exact_read = file.ReadAsync(/*position=*/3, /*nbytes=*/5, /*allow_short_read=*/false);
+    ASSERT_TRUE(exact_read.status().IsIOError()) << exact_read.status();
+    auto eof_read = file.ReadAsync(/*position=*/5, /*nbytes=*/2, /*allow_short_read=*/true);
+    ASSERT_TRUE(eof_read.status().ok()) << eof_read.status();
+    ASSERT_EQ(0, eof_read.result().ValueOrDie()->size());
+    ASSERT_TRUE(file.ReadAsync(/*position=*/5, /*nbytes=*/1, /*allow_short_read=*/false)
+                    .status()
+                    .IsIOError());
+    ASSERT_TRUE(file.ReadAsync(/*position=*/6, /*nbytes=*/1).status().IsIOError());
+    ASSERT_EQ(bytes_before_short_read + 2, bytes_read->load());
+
     auto buffer3 = in_stream->ReadAt(/*position=*/1, /*nbytes=*/2).ValueOrDie();
     ASSERT_EQ(buffer3->ToString(), "el");
     int64_t read_len2 = in_stream->ReadAt(/*position=*/4, /*nbytes=*/1, ret).ValueOrDie();
@@ -165,6 +182,7 @@ TEST(ArrowStreamAdapterTest, TestInputAndOutputStream) {
 
     ASSERT_TRUE(in_stream->Close().ok());
     ASSERT_TRUE(in_stream->closed());
+    ASSERT_TRUE(file.ReadAsync(/*position=*/0, /*nbytes=*/1).status().IsInvalid());
 }
 
 TEST(ArrowStreamAdapterTest, TestReadKeepsMemoryPoolAliveUntilBufferReleased) {
@@ -198,10 +216,11 @@ TEST(ArrowStreamAdapterTest, TestReadAtKeepsMemoryPoolAliveUntilBufferReleased) 
 TEST(ArrowStreamAdapterTest, TestAsyncReadKeepsMemoryPoolAliveUntilBufferReleased) {
     auto stream = std::make_shared<DeferredInputStream>();
     std::shared_ptr<arrow::MemoryPool> pool(GetArrowPool(GetDefaultPool()));
-    auto adapter = CreateAdapter(stream, pool);
+    std::shared_ptr<arrow::io::RandomAccessFile> adapter = CreateAdapter(stream, pool);
     ASSERT_NE(adapter, nullptr);
 
-    auto future = adapter->ReadAsync(arrow::io::default_io_context(), 0, kTestSize);
+    auto future = adapter->ReadAsync(arrow::io::default_io_context(), 0, kTestSize,
+                                     /*allow_short_read=*/false);
     adapter.reset();
     pool.reset();
 

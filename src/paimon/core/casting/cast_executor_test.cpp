@@ -1351,18 +1351,10 @@ TEST_F(CastExecutorTest, TestStringToBinaryCastExecutorCastArray) {
 
     {
         // invalid utf-8 is not an error for binary
-        std::string invalid_utf8_str =
-            "["
-            R"(
-                       "Hi",
-                       "olá mundo",
-                       "你好世界",
-                       "",
-                       )"
-            "\"\xa0\xa1\""
-            "]";
-        CheckArrayResult(cast_executor, arrow::utf8(), arrow::binary(), invalid_utf8_str,
-                         invalid_utf8_str);
+        const std::vector<std::string> values = {"Hi", "olá mundo", "你好世界", "", "\xa0\xa1"};
+        auto src_array = MakeArrowArray<std::string, arrow::StringBuilder>(arrow::utf8(), values);
+        auto expected = MakeArrowArray<std::string, arrow::BinaryBuilder>(arrow::binary(), values);
+        CheckArrayResult(cast_executor, arrow::binary(), src_array, expected);
     }
 }
 
@@ -1392,18 +1384,10 @@ TEST_F(CastExecutorTest, TestBinaryToStringCastExecutorCastArray) {
 
     {
         // invalid utf-8 is not an error for string
-        std::string invalid_utf8_str =
-            "["
-            R"(
-                       "Hi",
-                       "olá mundo",
-                       "你好世界",
-                       "",
-                       )"
-            "\"\xa0\xa1\""
-            "]";
-        CheckArrayResult(cast_executor, arrow::binary(), arrow::utf8(), invalid_utf8_str,
-                         invalid_utf8_str);
+        const std::vector<std::string> values = {"Hi", "olá mundo", "你好世界", "", "\xa0\xa1"};
+        auto src_array = MakeArrowArray<std::string, arrow::BinaryBuilder>(arrow::binary(), values);
+        auto expected = MakeArrowArray<std::string, arrow::StringBuilder>(arrow::utf8(), values);
+        CheckArrayResult(cast_executor, arrow::utf8(), src_array, expected);
     }
 }
 
@@ -1968,6 +1952,11 @@ TEST_F(CastExecutorTest, TestStringToTimestampCastExecutorCastArray) {
             MakeArrowArray<int64_t, arrow::TimestampBuilder>(target_type, target_data);
 
         CheckArrayResult(cast_executor, target_type, src_array, target_array);
+        for (const char* input :
+             {R"(["1677-09-21 00:12:43.145224191"])", R"(["2262-04-11 23:47:16.854775808"])"}) {
+            ASSERT_FALSE(
+                CheckArrayInvalidResult(cast_executor, arrow::utf8(), target_type, input).empty());
+        }
     }
     {
         auto target_type = arrow::timestamp(arrow::TimeUnit::MICRO, "Asia/Shanghai");

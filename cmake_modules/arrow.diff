@@ -15,53 +15,139 @@
 # specific language governing permissions and limitations
 # under the License.
 
-diff --git a/cpp/cmake_modules/BuildUtils.cmake b/cpp/cmake_modules/BuildUtils.cmake
-index e7523add27..e079a1ad41 100644
---- a/cpp/cmake_modules/BuildUtils.cmake
-+++ b/cpp/cmake_modules/BuildUtils.cmake
-@@ -112,7 +112,7 @@ function(arrow_create_merged_static_lib output_target)
-     execute_process(COMMAND ${LIBTOOL_MACOS} -V
-                     OUTPUT_VARIABLE LIBTOOL_V_OUTPUT
-                     OUTPUT_STRIP_TRAILING_WHITESPACE)
--    if(NOT "${LIBTOOL_V_OUTPUT}" MATCHES ".*cctools-([0-9.]+).*")
-+    if(NOT "${LIBTOOL_V_OUTPUT}" MATCHES ".*cctools(_ld)?-([0-9.]+).*")
-       message(FATAL_ERROR "libtool found appears to be the incompatible GNU libtool: ${LIBTOOL_MACOS}"
-       )
-     endif()
 diff --git a/cpp/cmake_modules/ThirdpartyToolchain.cmake b/cpp/cmake_modules/ThirdpartyToolchain.cmake
-index 8cb3ec83f5..9aad83ac95 100644
+index e8bd9dd..a1578a0 100644
 --- a/cpp/cmake_modules/ThirdpartyToolchain.cmake
 +++ b/cpp/cmake_modules/ThirdpartyToolchain.cmake
-@@ -814,6 +814,7 @@ if(DEFINED ENV{ARROW_THRIFT_URL})
+@@ -808,6 +808,7 @@ if(DEFINED ENV{ARROW_THRIFT_URL})
    set(THRIFT_SOURCE_URL "$ENV{ARROW_THRIFT_URL}")
  else()
-   set_urls(THRIFT_SOURCE_URL
-+           "https://archive.apache.org/dist/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
-            "https://www.apache.org/dyn/closer.cgi?action=download&filename=/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
-            "https://downloads.apache.org/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
-            "https://apache.claz.org/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
-@@ -983,6 +984,11 @@ if(CMAKE_TOOLCHAIN_FILE)
-   list(APPEND EP_COMMON_CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE})
+   set(THRIFT_SOURCE_URL
++      "https://archive.apache.org/dist/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
+       "https://www.apache.org/dyn/closer.lua/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz?action=download"
+       "https://dlcdn.apache.org/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
+   )
+diff --git a/cpp/src/arrow/CMakeLists.txt b/cpp/src/arrow/CMakeLists.txt
+index 0426a26..0bb0501 100644
+--- a/cpp/src/arrow/CMakeLists.txt
++++ b/cpp/src/arrow/CMakeLists.txt
+@@ -903,7 +903,9 @@ if(ARROW_COMPUTE)
+
+   list(APPEND ARROW_COMPUTE_STATIC_INSTALL_INTERFACE_LIBS Arrow::arrow_static)
+   list(APPEND ARROW_COMPUTE_SHARED_INSTALL_INTERFACE_LIBS Arrow::arrow_shared)
+-  list(APPEND ARROW_COMPUTE_STATIC_LINK_LIBS arrow_static)
++  if(NOT PAIMON_ARROW_STATIC_COMPUTE)
++    list(APPEND ARROW_COMPUTE_STATIC_LINK_LIBS arrow_static)
++  endif()
+   list(APPEND ARROW_COMPUTE_SHARED_LINK_LIBS arrow_shared)
+   list(APPEND ARROW_COMPUTE_STATIC_LINK_LIBS ${ARROW_XSIMD})
+   list(APPEND ARROW_COMPUTE_SHARED_PRIVATE_LINK_LIBS ${ARROW_XSIMD})
+@@ -954,12 +956,23 @@ if(ARROW_COMPUTE)
+   if(ARROW_BUILD_STATIC AND WIN32)
+     target_compile_definitions(arrow_compute_static PUBLIC ARROW_COMPUTE_STATIC)
+   endif()
++
++  if(PAIMON_ARROW_STATIC_COMPUTE)
++    # Paimon links Arrow statically into each plugin. Keep the kernel registration
++    # and implementation in the same archive as the default function registry.
++    target_compile_definitions(arrow_compute_objlib PRIVATE PAIMON_ARROW_STATIC_COMPUTE)
++    target_link_libraries(arrow_compute_static PUBLIC "$<BUILD_INTERFACE:arrow_static>")
++  endif()
  endif()
 
-+# Compatibility with bundled dependencies that require old CMake versions.
-+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.30")
-+  list(APPEND EP_COMMON_CMAKE_ARGS -DCMAKE_POLICY_VERSION_MINIMUM=3.5)
+ arrow_add_object_library(ARROW_COMPUTE_CORE ${ARROW_COMPUTE_SRCS})
+
+ foreach(ARROW_COMPUTE_CORE_TARGET ${ARROW_COMPUTE_CORE_TARGETS})
+   target_link_libraries(${ARROW_COMPUTE_CORE_TARGET} PRIVATE ${ARROW_XSIMD})
++  if(PAIMON_ARROW_STATIC_COMPUTE)
++    target_compile_definitions(${ARROW_COMPUTE_CORE_TARGET}
++                               PRIVATE PAIMON_ARROW_STATIC_COMPUTE)
++  endif()
+ endforeach()
+ if(ARROW_WITH_OPENTELEMETRY)
+   foreach(ARROW_COMPUTE_CORE_TARGET ${ARROW_COMPUTE_CORE_TARGETS})
+@@ -1258,6 +1271,10 @@ add_arrow_lib(arrow
+               ${ARROW_STATIC_INSTALL_INTERFACE_LIBS}
+               SHARED_INSTALL_INTERFACE_LIBS
+               ${ARROW_SHARED_INSTALL_INTERFACE_LIBS})
++if(PAIMON_ARROW_STATIC_COMPUTE)
++  target_sources(arrow_static PRIVATE $<TARGET_OBJECTS:arrow_compute_objlib>)
 +endif()
 +
- # and crosscompiling emulator (for try_run() )
- if(CMAKE_CROSSCOMPILING_EMULATOR)
-   string(REPLACE ";" ${EP_LIST_SEPARATOR} EP_CMAKE_CROSSCOMPILING_EMULATOR
-@@ -1716,6 +1722,7 @@ macro(build_thrift)
-       -DWITH_JAVASCRIPT=OFF
-       -DWITH_LIBEVENT=OFF
-       -DWITH_NODEJS=OFF
-+      -DWITH_OPENSSL=OFF
-       -DWITH_PYTHON=OFF
-       -DWITH_QT5=OFF
-       -DWITH_ZLIB=OFF)
+ # The following block includes a code for MSYS2 but GDB on MSYS2 doesn't
+ # auto load our plugin. GDB's auto load may not be supported on MSYS2...
+ # So it's disabled for now.
+diff --git a/cpp/src/arrow/compute/initialize.cc b/cpp/src/arrow/compute/initialize.cc
+index ec531e8..7e9f38e 100644
+--- a/cpp/src/arrow/compute/initialize.cc
++++ b/cpp/src/arrow/compute/initialize.cc
+@@ -21,10 +21,7 @@
+ #include "arrow/status.h"
+
+ namespace arrow::compute {
+-namespace {
+-
+-Status RegisterComputeKernels() {
+-  auto registry = GetFunctionRegistry();
++void internal::RegisterComputeKernels(FunctionRegistry* registry) {
+
+   // Register additional kernels on libarrow_compute
+   // Scalar functions
+@@ -66,15 +63,19 @@
+   internal::RegisterScalarAggregateQuantile(registry);
+   internal::RegisterScalarAggregateTDigest(registry);
+   internal::RegisterScalarAggregateVariance(registry);
+-
+-  return Status::OK();
+ }
+
+-}  // namespace
+-
+ Status Initialize() {
+-  static auto st = RegisterComputeKernels();
+-  return st;
++#ifdef PAIMON_ARROW_STATIC_COMPUTE
++  GetFunctionRegistry();
++  return Status::OK();
++#else
++  static const auto initialized = [] {
++    internal::RegisterComputeKernels(GetFunctionRegistry());
++    return Status::OK();
++  }();
++  return initialized;
++#endif
+ }
+
+ }  // namespace arrow::compute
+diff --git a/cpp/src/arrow/compute/registry.cc b/cpp/src/arrow/compute/registry.cc
+index ad6e044..c0e360e 100644
+--- a/cpp/src/arrow/compute/registry.cc
++++ b/cpp/src/arrow/compute/registry.cc
+@@ -292,6 +292,9 @@ static std::unique_ptr<FunctionRegistry> CreateBuiltInRegistry() {
+   RegisterScalarOptions(registry.get());
+   RegisterVectorOptions(registry.get());
+   RegisterAggregateOptions(registry.get());
++#ifdef PAIMON_ARROW_STATIC_COMPUTE
++  RegisterComputeKernels(registry.get());
++#endif
+
+   return registry;
+ }
+diff --git a/cpp/src/arrow/compute/registry_internal.h b/cpp/src/arrow/compute/registry_internal.h
+index d457f6f..f6c6afc 100644
+--- a/cpp/src/arrow/compute/registry_internal.h
++++ b/cpp/src/arrow/compute/registry_internal.h
+@@ -24,6 +24,8 @@ class FunctionRegistry;
+
+ namespace internal {
+
++void RegisterComputeKernels(FunctionRegistry* registry);
++
+ // Built-in scalar / elementwise functions
+ void RegisterScalarArithmetic(FunctionRegistry* registry);
+ void RegisterScalarBoolean(FunctionRegistry* registry);
 diff --git a/cpp/src/arrow/io/interfaces.h b/cpp/src/arrow/io/interfaces.h
-index b36c38c6d4..f974a33073 100644
+index 8cb9824..41e61d6 100644
 --- a/cpp/src/arrow/io/interfaces.h
 +++ b/cpp/src/arrow/io/interfaces.h
 @@ -210,7 +210,7 @@ class ARROW_EXPORT InputStream : virtual public FileInterface, virtual public Re
@@ -73,72 +159,11 @@ index b36c38c6d4..f974a33073 100644
 
    /// \brief Return zero-copy string_view to upcoming bytes.
    ///
-diff --git a/cpp/src/arrow/util/bit_run_reader.h b/cpp/src/arrow/util/bit_run_reader.h
-index a436a50b86..27d483978c 100644
---- a/cpp/src/arrow/util/bit_run_reader.h
-+++ b/cpp/src/arrow/util/bit_run_reader.h
-@@ -168,6 +168,26 @@ class ARROW_EXPORT BitRunReader {
- using BitRunReader = BitRunReaderLinear;
- #endif
-
-+template <typename Visit>
-+inline Status VisitBitRuns(const uint8_t* bitmap, int64_t offset, int64_t length,
-+                           Visit&& visit) {
-+  if (bitmap == NULLPTR) {
-+    // Assuming all set (as in a null bitmap)
-+    return visit(static_cast<int64_t>(0), length, true);
-+  }
-+  BitRunReader reader(bitmap, offset, length);
-+  int64_t position = 0;
-+  while (true) {
-+    const auto run = reader.NextRun();
-+    if (run.length == 0) {
-+      break;
-+    }
-+    ARROW_RETURN_NOT_OK(visit(position, run.length, run.set));
-+    position += run.length;
-+  }
-+  return Status::OK();
-+}
-+
- struct SetBitRun {
-   int64_t position;
-   int64_t length;
 diff --git a/cpp/src/parquet/arrow/reader.cc b/cpp/src/parquet/arrow/reader.cc
-index 285e2a5973..40bddef195 100644
+index 5d75f09..d3d9198 100644
 --- a/cpp/src/parquet/arrow/reader.cc
 +++ b/cpp/src/parquet/arrow/reader.cc
-@@ -19,12 +19,14 @@
-
- #include <algorithm>
- #include <cstring>
-+#include <iterator>
- #include <memory>
- #include <unordered_set>
- #include <utility>
- #include <vector>
-
- #include "arrow/array.h"
-+#include "arrow/array/concatenate.h"
- #include "arrow/buffer.h"
- #include "arrow/extension_type.h"
- #include "arrow/io/memory.h"
-@@ -32,12 +34,14 @@
- #include "arrow/table.h"
- #include "arrow/type.h"
- #include "arrow/util/async_generator.h"
-+#include "arrow/util/bit_run_reader.h"
- #include "arrow/util/bit_util.h"
- #include "arrow/util/future.h"
- #include "arrow/util/iterator.h"
- #include "arrow/util/logging.h"
- #include "arrow/util/parallel.h"
- #include "arrow/util/range.h"
-+#include "arrow/util/span.h"
- #include "arrow/util/tracing_internal.h"
- #include "parquet/arrow/reader_internal.h"
- #include "parquet/column_reader.h"
-@@ -254,6 +258,11 @@ class FileReaderImpl : public FileReader {
+@@ -265,6 +265,11 @@ class FileReaderImpl : public FileReader {
      return GetColumn(i, AllRowGroupsFactory(), out);
    }
 
@@ -150,14 +175,15 @@ index 285e2a5973..40bddef195 100644
    Status GetSchema(std::shared_ptr<::arrow::Schema>* out) override {
      return FromParquetSchema(reader_->metadata()->schema(), reader_properties_,
                               reader_->metadata()->key_value_metadata(), out);
-@@ -493,10 +502,43 @@ class LeafReader : public ColumnReaderImpl {
+@@ -532,10 +537,44 @@ class LeafReader : public ColumnReaderImpl {
 
    ::arrow::Status BuildArray(int64_t length_upper_bound,
                               std::shared_ptr<::arrow::ChunkedArray>* out) final {
 +    if (!out_) {
 +      BEGIN_PARQUET_CATCH_EXCEPTIONS
 +      RETURN_NOT_OK(
-+          TransferColumnData(record_reader_.get(), field_, descr_, ctx_->pool, &out_));
++          TransferColumnData(record_reader_.get(), /*metadata=*/nullptr, field_, descr_,
++                             ctx_.get(), &out_));
 +      END_PARQUET_CATCH_EXCEPTIONS
 +    }
      *out = out_;
@@ -194,7 +220,7 @@ index 285e2a5973..40bddef195 100644
    const std::shared_ptr<Field> field() override { return field_; }
 
   private:
-@@ -532,6 +574,25 @@ class ExtensionReader : public ColumnReaderImpl {
+@@ -571,6 +610,25 @@ class ExtensionReader : public ColumnReaderImpl {
      return storage_reader_->LoadBatch(number_of_records);
    }
 
@@ -220,7 +246,7 @@ index 285e2a5973..40bddef195 100644
    Status BuildArray(int64_t length_upper_bound,
                      std::shared_ptr<ChunkedArray>* out) override {
      std::shared_ptr<ChunkedArray> storage;
-@@ -576,6 +637,25 @@ class ListReader : public ColumnReaderImpl {
+@@ -615,6 +673,25 @@ class ListReader : public ColumnReaderImpl {
      return item_reader_->LoadBatch(number_of_records);
    }
 
@@ -246,87 +272,7 @@ index 285e2a5973..40bddef195 100644
    virtual ::arrow::Result<std::shared_ptr<ChunkedArray>> AssembleArray(
        std::shared_ptr<ArrayData> data) {
      if (field_->type()->id() == ::arrow::Type::MAP) {
-@@ -642,8 +722,10 @@ class ListReader : public ColumnReaderImpl {
-
-   const std::shared_ptr<Field> field() override { return field_; }
-
-- private:
-+ protected:
-   std::shared_ptr<ReaderContext> ctx_;
-+
-+ private:
-   std::shared_ptr<Field> field_;
-   ::parquet::internal::LevelInfo level_info_;
-   std::unique_ptr<ColumnReaderImpl> item_reader_;
-@@ -662,12 +744,62 @@ class PARQUET_NO_EXPORT FixedSizeListReader : public ListReader<int32_t> {
-     DCHECK_EQ(field()->type()->id(), ::arrow::Type::FIXED_SIZE_LIST);
-     const auto& type = checked_cast<::arrow::FixedSizeListType&>(*field()->type());
-     const int32_t* offsets = reinterpret_cast<const int32_t*>(data->buffers[1]->data());
--    for (int x = 1; x <= data->length; x++) {
--      int32_t size = offsets[x] - offsets[x - 1];
--      if (size != type.list_size()) {
--        return Status::Invalid("Expected all lists to be of size=", type.list_size(),
--                               " but index ", x, " had size=", size);
-+    const int32_t list_size = type.list_size();
-+    auto validate_offsets = [&](int64_t start, int64_t length,
-+                                bool has_elements) -> Status {
-+      const int32_t expected_size = has_elements ? list_size : 0;
-+      ::arrow::util::span<const int32_t> run_offsets(
-+          offsets + start, static_cast<size_t>(length + 1));
-+      const auto first_invalid_offset = std::adjacent_find(
-+          run_offsets.begin(), run_offsets.end(),
-+          [&](int32_t left, int32_t right) { return right - left != expected_size; });
-+      if (first_invalid_offset != run_offsets.end()) {
-+        const int64_t x =
-+            start + std::distance(run_offsets.begin(), first_invalid_offset);
-+        const int32_t size = offsets[x + 1] - offsets[x];
-+        if (has_elements) {
-+          return Status::Invalid("Expected all lists to be of size=", list_size,
-+                                 " but index ", x + 1, " had size=", size);
-+        }
-+        return Status::Invalid("Expected null fixed-size list at index ", x + 1,
-+                               " to have no child values but had size=", size);
-       }
-+      return Status::OK();
-+    };
-+    if (data->GetNullCount() != 0) {
-+      // Rebuild the child array run-by-run so null fixed-size list slots still
-+      // contribute list_size child values in the final layout.
-+      ::arrow::ArrayVector child_arrays;
-+
-+      auto visit_run = [&](int64_t start, int64_t length, bool has_elements) -> Status {
-+        RETURN_NOT_OK(validate_offsets(start, length, has_elements));
-+
-+        const int64_t child_length = length * list_size;
-+        // Valid runs reuse the decoded child slice; null runs materialize null
-+        // children to preserve the fixed-size list shape.
-+        if (!has_elements) {
-+          ARROW_ASSIGN_OR_RAISE(
-+              auto null_array,
-+              ::arrow::MakeArrayOfNull(type.value_type(), child_length, ctx_->pool));
-+          child_arrays.push_back(std::move(null_array));
-+          return Status::OK();
-+        }
-+        child_arrays.push_back(
-+            ::arrow::MakeArray(data->child_data[0]->Slice(offsets[start], child_length)));
-+        return Status::OK();
-+      };
-+
-+      DCHECK_NE(data->buffers[0], nullptr);
-+      RETURN_NOT_OK(::arrow::internal::VisitBitRuns(
-+          data->buffers[0]->data(), data->offset, data->length, visit_run));
-+
-+      // TODO(GH-50271): Build one padded child array directly instead of creating
-+      // one temporary Array/ArrayData per validity run and concatenating them.
-+      ARROW_ASSIGN_OR_RAISE(auto child_array_with_padding,
-+                            ::arrow::Concatenate(child_arrays, ctx_->pool));
-+      data->child_data[0] = child_array_with_padding->data();
-+    } else {
-+      RETURN_NOT_OK(validate_offsets(/*start=*/0, data->length, /*valid=*/true));
-     }
-     data->buffers.resize(1);
-     std::shared_ptr<Array> result = ::arrow::MakeArray(data);
-@@ -709,6 +841,42 @@ class PARQUET_NO_EXPORT StructReader : public ColumnReaderImpl {
+@@ -830,6 +907,42 @@ class PARQUET_NO_EXPORT StructReader : public ColumnReaderImpl {
      }
      return Status::OK();
    }
@@ -369,46 +315,44 @@ index 285e2a5973..40bddef195 100644
    Status BuildArray(int64_t length_upper_bound,
                      std::shared_ptr<ChunkedArray>* out) override;
    Status GetDefLevels(const int16_t** data, int64_t* length) override;
-@@ -1013,25 +1181,32 @@ Status FileReaderImpl::GetRecordBatchReader(const std::vector<int>& row_groups,
-     return Status::OK();
+@@ -1149,9 +1262,10 @@ Result<std::unique_ptr<RecordBatchReader>> FileReaderImpl::GetRecordBatchReader(
+         ::arrow::MakeVectorIterator(std::move(batches)), std::move(batch_schema));
    }
 
 -  int64_t num_rows = 0;
 +  std::vector<int64_t> num_rows;
++  num_rows.reserve(row_groups.size());
    for (int row_group : row_groups) {
 -    num_rows += parquet_reader()->metadata()->RowGroup(row_group)->num_rows();
 +    num_rows.push_back(parquet_reader()->metadata()->RowGroup(row_group)->num_rows());
    }
 
    using ::arrow::RecordBatchIterator;
-+  int row_group_idx = 0;
-
-   // NB: This lambda will be invoked outside the scope of this call to
-   // `GetRecordBatchReader()`, so it must capture `readers` and `batch_schema` by value.
+@@ -1161,13 +1275,19 @@ Result<std::unique_ptr<RecordBatchReader>> FileReaderImpl::GetRecordBatchReader(
    // `this` is a non-owning pointer so we are relying on the parent FileReader outliving
    // this RecordBatchReader.
    ::arrow::Iterator<RecordBatchIterator> batches = ::arrow::MakeFunctionIterator(
 -      [readers, batch_schema, num_rows,
-+      [readers, batch_schema, num_rows, row_group_idx,
++      [readers, batch_schema, num_rows = std::move(num_rows), row_group_idx = size_t{0},
         this]() mutable -> ::arrow::Result<RecordBatchIterator> {
          ::arrow::ChunkedArrayVector columns(readers.size());
 
 -        // don't reserve more rows than necessary
 -        int64_t batch_size = std::min(properties().batch_size(), num_rows);
 -        num_rows -= batch_size;
-+        int64_t batch_size = 0;
-+        if (!num_rows.empty()) {
-+          // don't reserve more rows than necessary
-+          batch_size = std::min(properties().batch_size(), num_rows[row_group_idx]);
-+          num_rows[row_group_idx] -= batch_size;
-+          if (num_rows[row_group_idx] == 0 && (num_rows.size() - 1) != row_group_idx) {
-+            row_group_idx++;
-+          }
++        while (row_group_idx < num_rows.size() && num_rows[row_group_idx] == 0) {
++          ++row_group_idx;
 +        }
++        if (row_group_idx == num_rows.size()) {
++          return ::arrow::IterationTraits<RecordBatchIterator>::End();
++        }
++        const int64_t batch_size =
++            std::min(properties().batch_size(), num_rows[row_group_idx]);
++        num_rows[row_group_idx] -= batch_size;
 
          RETURN_NOT_OK(::arrow::internal::OptionalParallelFor(
              reader_properties_.use_threads(), static_cast<int>(readers.size()),
-@@ -1224,6 +1399,23 @@ Status FileReaderImpl::GetColumn(int i, FileColumnIteratorFactory iterator_facto
+@@ -1359,6 +1479,24 @@ Status FileReaderImpl::GetColumn(int i, FileColumnIteratorFactory iterator_facto
    return Status::OK();
  }
 
@@ -423,17 +367,18 @@ index 285e2a5973..40bddef195 100644
 +  ctx->iterator_factory = iterator_factory;
 +  ctx->filter_leaves = true;
 +  ctx->included_leaves = column_indices;
++  ctx->reader_properties = &reader_properties_;
 +  std::unique_ptr<ColumnReaderImpl> result;
 +  RETURN_NOT_OK(GetReader(manifest_.schema_fields[i], ctx, &result));
 +  *out = std::move(result);
 +  return Status::OK();
 +}
 +
- Status FileReaderImpl::ReadRowGroups(const std::vector<int>& row_groups,
-                                      const std::vector<int>& column_indices,
-                                      std::shared_ptr<Table>* out) {
+ Result<std::shared_ptr<Table>> FileReaderImpl::ReadRowGroups(
+     const std::vector<int>& row_groups, const std::vector<int>& column_indices) {
+   RETURN_NOT_OK(BoundsCheck(row_groups, column_indices));
 diff --git a/cpp/src/parquet/arrow/reader.h b/cpp/src/parquet/arrow/reader.h
-index 6e46ca43f7..e202c6404e 100644
+index 0d60c09..b2d39e7 100644
 --- a/cpp/src/parquet/arrow/reader.h
 +++ b/cpp/src/parquet/arrow/reader.h
 @@ -21,6 +21,7 @@
@@ -458,7 +403,7 @@ index 6e46ca43f7..e202c6404e 100644
  /// \brief Arrow read adapter class for deserializing Parquet files as Arrow row batches.
  ///
  /// This interfaces caters for different use cases and thus provides different
-@@ -136,6 +141,27 @@ class PARQUET_EXPORT FileReader {
+@@ -134,6 +139,27 @@ class PARQUET_EXPORT FileReader {
    // The indicated column index is relative to the schema
    virtual ::arrow::Status GetColumn(int i, std::unique_ptr<ColumnReader>* out) = 0;
 
@@ -486,7 +431,7 @@ index 6e46ca43f7..e202c6404e 100644
    /// \brief Return arrow schema for all the columns.
    virtual ::arrow::Status GetSchema(std::shared_ptr<::arrow::Schema>* out) = 0;
 
-@@ -316,6 +342,51 @@ class PARQUET_EXPORT ColumnReader {
+@@ -326,6 +352,51 @@ class PARQUET_EXPORT ColumnReader {
    // the data available in the file.
    virtual ::arrow::Status NextBatch(int64_t batch_size,
                                      std::shared_ptr<::arrow::ChunkedArray>* out) = 0;
@@ -539,7 +484,7 @@ index 6e46ca43f7..e202c6404e 100644
 
  /// \brief Experimental helper class for bindings (like Python) that struggle
 diff --git a/cpp/src/parquet/arrow/reader_internal.h b/cpp/src/parquet/arrow/reader_internal.h
-index cf9dbb8657..9216f18289 100644
+index 4ee3bf9..fdb1905 100644
 --- a/cpp/src/parquet/arrow/reader_internal.h
 +++ b/cpp/src/parquet/arrow/reader_internal.h
 @@ -26,6 +26,7 @@
@@ -550,7 +495,7 @@ index cf9dbb8657..9216f18289 100644
  #include "parquet/arrow/schema.h"
  #include "parquet/column_reader.h"
  #include "parquet/file_reader.h"
-@@ -70,7 +71,10 @@ class FileColumnIterator {
+@@ -71,7 +72,10 @@ class FileColumnIterator {
 
    virtual ~FileColumnIterator() {}
 
@@ -562,21 +507,20 @@ index cf9dbb8657..9216f18289 100644
      if (row_groups_.empty()) {
        return nullptr;
      }
-@@ -95,9 +99,6 @@ class FileColumnIterator {
-   std::deque<int> row_groups_;
+@@ -108,8 +112,6 @@ class FileColumnIterator {
+   int row_group_index_;
  };
 
 -using FileColumnIteratorFactory =
 -    std::function<FileColumnIterator*(int, ParquetFileReader*)>;
--
- Status TransferColumnData(::parquet::internal::RecordReader* reader,
-                           const std::shared_ptr<::arrow::Field>& value_field,
-                           const ColumnDescriptor* descr, ::arrow::MemoryPool* pool,
+
+ struct ReaderContext {
+   ParquetFileReader* reader;
 diff --git a/cpp/src/parquet/arrow/schema.cc b/cpp/src/parquet/arrow/schema.cc
-index ec3890a41f..943f69bb6c 100644
+index bc4de6c..1b1ffa5 100644
 --- a/cpp/src/parquet/arrow/schema.cc
 +++ b/cpp/src/parquet/arrow/schema.cc
-@@ -178,7 +178,7 @@ static Status GetTimestampMetadata(const ::arrow::TimestampType& type,
+@@ -216,7 +216,7 @@ static Status GetTimestampMetadata(const ::arrow::TimestampType& type,
 
    // The user is explicitly asking for Impala int96 encoding, there is no
    // logical type.
@@ -586,49 +530,10 @@ index ec3890a41f..943f69bb6c 100644
      return Status::OK();
    }
 diff --git a/cpp/src/parquet/arrow/writer.cc b/cpp/src/parquet/arrow/writer.cc
-index 4fd7ef1b47..feff99c99b 100644
+index e0fbe30..b2031b1 100644
 --- a/cpp/src/parquet/arrow/writer.cc
 +++ b/cpp/src/parquet/arrow/writer.cc
-@@ -26,6 +26,7 @@
- #include <vector>
-
- #include "arrow/array.h"
-+#include "arrow/array/concatenate.h"
- #include "arrow/extension_type.h"
- #include "arrow/ipc/writer.h"
- #include "arrow/record_batch.h"
-@@ -142,13 +143,24 @@ class ArrowColumnWriterV2 {
-             leaf_idx, ctx, [&](const MultipathLevelBuilderResult& result) {
-               size_t visited_component_size = result.post_list_visited_elements.size();
-               DCHECK_GT(visited_component_size, 0);
--              if (visited_component_size != 1) {
--                return Status::NotImplemented(
--                    "Lists with non-zero length null components are not supported");
-+              std::shared_ptr<Array> values_array;
-+              if (visited_component_size == 1) {
-+                const ElementRange& range = result.post_list_visited_elements[0];
-+                values_array = result.leaf_array->Slice(range.start, range.Size());
-+              } else {
-+                // Multiple leaf ranges can be produced when child values are
-+                // skipped, such as null fixed-size-list slots, or when
-+                // list-view ranges are non-contiguous. Concatenate the slices
-+                // in logical write order.
-+                ::arrow::ArrayVector arrays;
-+                arrays.reserve(visited_component_size);
-+                for (const auto& range : result.post_list_visited_elements) {
-+                  DCHECK(!range.Empty());
-+                  arrays.push_back(result.leaf_array->Slice(range.start, range.Size()));
-+                }
-+                ARROW_ASSIGN_OR_RAISE(values_array,
-+                                      ::arrow::Concatenate(arrays, ctx->memory_pool));
-               }
--              const ElementRange& range = result.post_list_visited_elements[0];
--              std::shared_ptr<Array> values_array =
--                  result.leaf_array->Slice(range.start, range.Size());
-
-               return column_writer->WriteArrow(result.def_levels, result.rep_levels,
-                                                result.def_rep_level_count, *values_array,
-@@ -314,6 +326,14 @@ class FileWriterImpl : public FileWriter {
+@@ -353,6 +353,14 @@ class FileWriterImpl : public FileWriter {
      return Status::OK();
    }
 
@@ -643,7 +548,7 @@ index 4fd7ef1b47..feff99c99b 100644
    Status Close() override {
      if (!closed_) {
        // Make idempotent
-@@ -418,10 +438,13 @@ class FileWriterImpl : public FileWriter {
+@@ -456,10 +464,13 @@ class FileWriterImpl : public FileWriter {
 
      // Max number of rows allowed in a row group.
      const int64_t max_row_group_length = this->properties().max_row_group_length();
@@ -659,10 +564,10 @@ index 4fd7ef1b47..feff99c99b 100644
      }
 
 diff --git a/cpp/src/parquet/arrow/writer.h b/cpp/src/parquet/arrow/writer.h
-index 4a1a033a7b..0f13d05e44 100644
+index 8ec8796..496920d 100644
 --- a/cpp/src/parquet/arrow/writer.h
 +++ b/cpp/src/parquet/arrow/writer.h
-@@ -138,6 +138,9 @@ class PARQUET_EXPORT FileWriter {
+@@ -124,6 +124,9 @@ class PARQUET_EXPORT FileWriter {
    /// option in this case.
    virtual ::arrow::Status WriteRecordBatch(const ::arrow::RecordBatch& batch) = 0;
 
@@ -673,10 +578,10 @@ index 4a1a033a7b..0f13d05e44 100644
    virtual ::arrow::Status Close() = 0;
    virtual ~FileWriter();
 diff --git a/cpp/src/parquet/column_reader.cc b/cpp/src/parquet/column_reader.cc
-index ebf9515f27..00b96797d9 100644
+index 56c65fd..b983b7a 100644
 --- a/cpp/src/parquet/column_reader.cc
 +++ b/cpp/src/parquet/column_reader.cc
-@@ -208,6 +208,39 @@ ReaderProperties default_reader_properties() {
+@@ -227,6 +227,39 @@ ReaderProperties default_reader_properties() {
    return default_reader_properties;
  }
 
@@ -716,14 +621,14 @@ index ebf9515f27..00b96797d9 100644
  namespace {
 
  // Extracts encoded statistics from V1 and V2 data page headers
-@@ -430,9 +463,43 @@ std::shared_ptr<Page> SerializedPageReader::NextPage() {
+@@ -433,9 +466,42 @@ std::shared_ptr<Page> SerializedPageReader::NextPage() {
 
    // Loop here because there may be unhandled page types that we skip until
    // finding a page that we do know what to do with
 -  while (seen_num_values_ < total_num_values_) {
 +  while (data_page_read_plan_enabled_ || seen_num_values_ < total_num_values_) {
 +    const DataPageReadPlanEntry* planned_data_page = nullptr;
-+    uint32_t page_header_limit = max_page_header_size_;
++    int64_t page_header_limit = max_page_header_size_;
 +
 +    if (data_page_read_plan_enabled_) {
 +      if (next_data_page_ >= data_page_read_plan_.size()) {
@@ -732,8 +637,7 @@ index ebf9515f27..00b96797d9 100644
 +
 +      PARQUET_ASSIGN_OR_THROW(int64_t current_position, stream_->Tell());
 +      if (current_position < first_data_page_offset_) {
-+        page_header_limit = static_cast<uint32_t>(std::min<int64_t>(
-+            page_header_limit, first_data_page_offset_ - current_position));
++        page_header_limit = std::min(page_header_limit, first_data_page_offset_ - current_position);
 +      } else {
 +        planned_data_page = &data_page_read_plan_[next_data_page_];
 +        if (current_position > planned_data_page->offset) {
@@ -746,8 +650,8 @@ index ebf9515f27..00b96797d9 100644
 +          throw ParquetException("Failed to seek to planned data page");
 +        }
 +        page_ordinal_ = planned_data_page->page_ordinal;
-+        page_header_limit = static_cast<uint32_t>(std::min<int64_t>(
-+            page_header_limit, planned_data_page->compressed_page_size));
++        page_header_limit = std::min<int64_t>(page_header_limit,
++                                              planned_data_page->compressed_page_size);
 +      }
 +    }
 +
@@ -755,14 +659,14 @@ index ebf9515f27..00b96797d9 100644
 +      throw ParquetException("No bytes available for page header");
 +    }
 +
-     uint32_t header_size = 0;
--    uint32_t allowed_page_size = kDefaultPageHeaderSize;
-+    uint32_t allowed_page_size =
-+        std::min<uint32_t>(kDefaultPageHeaderSize, page_header_limit);
+     int64_t header_size = 0;
+-    int64_t allowed_page_size = kDefaultPageHeaderSize;
++    int64_t allowed_page_size =
++        std::min<int64_t>(kDefaultPageHeaderSize, page_header_limit);
 
      // Page headers can be very large because of page statistics
      // We try to deserialize a larger buffer progressively
-@@ -458,11 +525,12 @@ std::shared_ptr<Page> SerializedPageReader::NextPage() {
+@@ -459,11 +525,12 @@ std::shared_ptr<Page> SerializedPageReader::NextPage() {
          // Failed to deserialize. Double the allowed page header size and try again
          std::stringstream ss;
          ss << e.what();
@@ -773,11 +677,11 @@ index ebf9515f27..00b96797d9 100644
            throw ParquetException(ss.str());
          }
 +        allowed_page_size =
-+            std::min<uint32_t>(allowed_page_size * 2, page_header_limit);
++            std::min(allowed_page_size * 2, page_header_limit);
        }
      }
      // Advance the stream offset
-@@ -474,6 +542,20 @@ std::shared_ptr<Page> SerializedPageReader::NextPage() {
+@@ -475,8 +542,25 @@ std::shared_ptr<Page> SerializedPageReader::NextPage() {
        throw ParquetException("Invalid page header");
      }
 
@@ -797,8 +701,13 @@ index ebf9515f27..00b96797d9 100644
 +
      EncodedStatistics data_page_statistics;
      if (ShouldSkipPage(&data_page_statistics)) {
++      if (planned_data_page != nullptr) {
++        ++next_data_page_;
++      }
        PARQUET_THROW_NOT_OK(stream_->Advance(compressed_len));
-@@ -494,8 +576,6 @@ std::shared_ptr<Page> SerializedPageReader::NextPage() {
+       continue;
+     }
+@@ -495,8 +579,6 @@ std::shared_ptr<Page> SerializedPageReader::NextPage() {
        ParquetException::EofException(ss.str());
      }
 
@@ -807,7 +716,7 @@ index ebf9515f27..00b96797d9 100644
      if (properties_.page_checksum_verification() && current_page_header_.__isset.crc &&
          PageCanUseChecksum(page_type)) {
        // verify crc
-@@ -534,6 +614,9 @@ std::shared_ptr<Page> SerializedPageReader::NextPage() {
+@@ -533,6 +615,9 @@ std::shared_ptr<Page> SerializedPageReader::NextPage() {
                                                LoadEnumSafe(&dict_header.encoding),
                                                is_sorted);
      } else if (page_type == PageType::DATA_PAGE) {
@@ -817,7 +726,7 @@ index ebf9515f27..00b96797d9 100644
        ++page_ordinal_;
        const format::DataPageHeader& header = current_page_header_.data_page_header;
        page_buffer =
-@@ -545,6 +628,9 @@ std::shared_ptr<Page> SerializedPageReader::NextPage() {
+@@ -544,6 +629,9 @@ std::shared_ptr<Page> SerializedPageReader::NextPage() {
            LoadEnumSafe(&header.repetition_level_encoding), uncompressed_len,
            std::move(data_page_statistics));
      } else if (page_type == PageType::DATA_PAGE_V2) {
@@ -827,23 +736,26 @@ index ebf9515f27..00b96797d9 100644
        ++page_ordinal_;
        const format::DataPageHeaderV2& header = current_page_header_.data_page_header_v2;
 
-@@ -2156,6 +2242,22 @@ class ByteArrayChunkedRecordReader final : public TypedRecordReader<ByteArrayTyp
-     return result;
+@@ -2149,6 +2237,25 @@ class ByteArrayChunkedRecordReader final : public TypedRecordReader<ByteArrayTyp
+     PARQUET_THROW_NOT_OK(accumulator_.builder->Reserve(extra_values));
    }
 
 +  void ReserveValueBytes(int64_t num_values, int64_t num_bytes) override {
 +    if (num_values > 0) {
 +      PARQUET_THROW_NOT_OK(accumulator_.builder->Reserve(num_values));
 +    }
-+    if (num_bytes > 0) {
++    const auto type_id = accumulator_.builder->type()->id();
++    if (num_bytes > 0 && (type_id == ::arrow::Type::BINARY ||
++                          type_id == ::arrow::Type::STRING)) {
++      auto* builder = checked_cast<::arrow::BinaryBuilder*>(accumulator_.builder.get());
 +      // Never reserve past the current chunk: ArrowBinaryHelper pushes a chunk
 +      // when the builder's data would exceed kBinaryMemoryLimit, and
 +      // ReserveData() would fail the overflow check on a request past it. The
 +      // clamp mirrors the one in ArrowBinaryHelper::Prepare.
 +      const int64_t room =
-+          ::arrow::kBinaryMemoryLimit - accumulator_.builder->value_data_length();
++          ::arrow::kBinaryMemoryLimit - builder->value_data_length();
 +      PARQUET_THROW_NOT_OK(
-+          accumulator_.builder->ReserveData(std::min<int64_t>(num_bytes, room)));
++          builder->ReserveData(std::min(num_bytes, room)));
 +    }
 +  }
 +
@@ -851,10 +763,10 @@ index ebf9515f27..00b96797d9 100644
      int64_t num_decoded = this->current_decoder_->DecodeArrowNonNull(
          static_cast<int>(values_to_read), &accumulator_);
 diff --git a/cpp/src/parquet/column_reader.h b/cpp/src/parquet/column_reader.h
-index 29e1b2a25e..a7e68b7dd6 100644
+index 07064a9..5a29587 100644
 --- a/cpp/src/parquet/column_reader.h
 +++ b/cpp/src/parquet/column_reader.h
-@@ -76,6 +76,18 @@ struct PARQUET_EXPORT DataPageStats {
+@@ -63,6 +63,18 @@ struct PARQUET_EXPORT DataPageStats {
    std::optional<int32_t> num_rows;
  };
 
@@ -872,8 +784,8 @@ index 29e1b2a25e..a7e68b7dd6 100644
 +
  class PARQUET_EXPORT LevelDecoder {
   public:
-   LevelDecoder();
-@@ -147,9 +159,21 @@ class PARQUET_EXPORT PageReader {
+   explicit LevelDecoder(int16_t max_level = 0);
+@@ -158,9 +170,21 @@ class PARQUET_EXPORT PageReader {
    // ApplicationVersion::HasCorrectStatistics().
    // \note API EXPERIMENTAL
    void set_data_page_filter(DataPageFilter data_page_filter) {
@@ -895,7 +807,7 @@ index 29e1b2a25e..a7e68b7dd6 100644
    // @returns: shared_ptr<Page>(nullptr) on EOS, std::shared_ptr<Page>
    // containing new Page otherwise
    //
-@@ -162,6 +186,11 @@ class PARQUET_EXPORT PageReader {
+@@ -173,6 +197,11 @@ class PARQUET_EXPORT PageReader {
   protected:
    // Callback that decides if we should skip a page or not.
    DataPageFilter data_page_filter_;
@@ -907,7 +819,7 @@ index 29e1b2a25e..a7e68b7dd6 100644
  };
 
  class PARQUET_EXPORT ColumnReader {
-@@ -341,6 +370,19 @@ class PARQUET_EXPORT RecordReader {
+@@ -313,6 +342,19 @@ class PARQUET_EXPORT RecordReader {
    /// \brief Pre-allocate space for data. Results in better flat read performance
    virtual void Reserve(int64_t num_values) = 0;
 
@@ -928,23 +840,14 @@ index 29e1b2a25e..a7e68b7dd6 100644
    /// result of calling ReadRecords
    /// For FLBA and ByteArray types, call GetBuilderChunks() to reset them.
 diff --git a/cpp/src/parquet/file_reader.cc b/cpp/src/parquet/file_reader.cc
-index 3e9eeea6c6..671ebe4644 100644
+index 9214f7b..d376698 100644
 --- a/cpp/src/parquet/file_reader.cc
 +++ b/cpp/src/parquet/file_reader.cc
-@@ -207,6 +207,117 @@ const RowGroupMetaData* RowGroupReader::metadata() const { return contents_->met
+@@ -212,6 +212,102 @@ namespace {
    return {col_start, col_length};
  }
 
-+// CachedInputStream: InputStream adapter that reads through ReadRangeCache with
-+// zero-cost skip for non-cached pages. Used for page-level caching where only
-+// specific pages are pre-buffered.
-+//
-+// Key behavior:
-+// - Read(): On cache hit, returns cached data. On cache miss, returns zero-filled
-+//   buffer (zero I/O). This makes InputStream::Advance() (which calls Read() and
-+//   discards) effectively free for skipped pages.
-+// - Peek(): Always falls back to source on cache miss, because PageReader uses
-+//   Peek() to read Thrift page headers (~30 bytes) which must have real data.
++// Reads pre-buffered page ranges and falls back to the file for cache misses.
 +class CachedInputStream : public ::arrow::io::InputStream {
 + public:
 +  CachedInputStream(
@@ -975,7 +878,6 @@ index 3e9eeea6c6..671ebe4644 100644
 +    if (result.ok()) {
 +      peek_buffer_ = *result;
 +    } else {
-+      // Peek is used for Thrift page headers (~30 bytes) — must read real data
 +      ARROW_ASSIGN_OR_RAISE(peek_buffer_,
 +                            source_->ReadAt(range.offset, range.length));
 +    }
@@ -995,7 +897,6 @@ index 3e9eeea6c6..671ebe4644 100644
 +      position_ += buf->size();
 +      return buf->size();
 +    }
-+    // Cache miss: fall back to real I/O from source
 +    ARROW_ASSIGN_OR_RAISE(auto buf, source_->ReadAt(range.offset, range.length));
 +    memcpy(out, buf->data(), static_cast<size_t>(buf->size()));
 +    position_ += buf->size();
@@ -1013,17 +914,13 @@ index 3e9eeea6c6..671ebe4644 100644
 +      position_ += (*result)->size();
 +      return *result;
 +    }
-+    // Cache miss: fall back to real I/O from source
 +    ARROW_ASSIGN_OR_RAISE(auto buf, source_->ReadAt(range.offset, range.length));
 +    position_ += buf->size();
 +    return std::shared_ptr<::arrow::Buffer>(std::move(buf));
 +  }
 +
-+  // Override Advance to avoid real I/O for skipped pages.
-+  // The default InputStream::Advance() calls Read() and discards the result,
-+  // which would trigger source_->ReadAt() on cache miss — defeating page-level
-+  // I/O skipping via data_page_filter. Since Advance() is only used to skip
-+  // over data that will not be consumed, we can safely just move the position.
++  // The base implementation reads the bytes before discarding them.
++  // Moving the cursor is enough to skip an unselected page.
 +  ::arrow::Status Advance(int64_t nbytes) override {
 +    if (nbytes <= 0) {
 +      return ::arrow::Status::OK();
@@ -1046,22 +943,20 @@ index 3e9eeea6c6..671ebe4644 100644
 +  std::shared_ptr<::arrow::Buffer> peek_buffer_;
 +};
 +
+ }  // namespace
+
  // RowGroupReader::Contents implementation for the Parquet file specification
- class SerializedRowGroup : public RowGroupReader::Contents {
-  public:
-@@ -242,6 +353,11 @@ class SerializedRowGroup : public RowGroupReader::Contents {
+@@ -250,6 +346,9 @@ class SerializedRowGroup : public RowGroupReader::Contents {
        // segments.
        PARQUET_ASSIGN_OR_THROW(auto buffer, cached_source_->Read(col_range));
        stream = std::make_shared<::arrow::io::BufferReader>(buffer);
 +    } else if (cached_source_) {
-+      // Page-level caching: read through cache with fallback to source.
-+      // Advance() is zero-cost for skipped pages via data_page_filter.
 +      stream = std::make_shared<CachedInputStream>(
 +          cached_source_, source_, col_range.offset, col_range.length);
      } else {
        stream = properties_.GetStream(source_, col_range.offset, col_range.length);
      }
-@@ -417,6 +533,26 @@ class SerializedFile : public ParquetFileReader::Contents {
+@@ -433,6 +532,25 @@ class SerializedFile : public ParquetFileReader::Contents {
      return cached_source_->WaitFor(ranges);
    }
 
@@ -1070,8 +965,7 @@ index 3e9eeea6c6..671ebe4644 100644
 +                       const ::arrow::io::CacheOptions& options) {
 +    cached_source_ =
 +        std::make_shared<::arrow::io::internal::ReadRangeCache>(source_, ctx, options);
-+    // Do NOT set prebuffered_column_chunks_ bitmap — GetColumnPageReader will
-+    // use CachedInputStream path instead of full-chunk BufferReader path.
++    // Clear the full-column markers so page readers use the range cache.
 +    prebuffered_column_chunks_.clear();
 +    PARQUET_THROW_NOT_OK(cached_source_->Cache(ranges));
 +  }
@@ -1088,7 +982,7 @@ index 3e9eeea6c6..671ebe4644 100644
    // Metadata/footer parsing. Divided up to separate sync/async paths, and to use
    // exceptions for error handling (with the async path converting to Future/Status).
 
-@@ -911,6 +1047,22 @@ void ParquetFileReader::PreBuffer(const std::vector<int>& row_groups,
+@@ -924,6 +1042,22 @@ Future<> ParquetFileReader::WhenBuffered(const std::vector<int>& row_groups,
    return file->WhenBuffered(row_groups, column_indices);
  }
 
@@ -1112,10 +1006,10 @@ index 3e9eeea6c6..671ebe4644 100644
  // File metadata helpers
 
 diff --git a/cpp/src/parquet/file_reader.h b/cpp/src/parquet/file_reader.h
-index b59b59f95c..657a438a3a 100644
+index c421632..03bfe6b 100644
 --- a/cpp/src/parquet/file_reader.h
 +++ b/cpp/src/parquet/file_reader.h
-@@ -210,6 +210,17 @@ class PARQUET_EXPORT ParquetFileReader {
+@@ -236,6 +236,17 @@ class PARQUET_EXPORT ParquetFileReader {
    ::arrow::Future<> WhenBuffered(const std::vector<int>& row_groups,
                                   const std::vector<int>& column_indices) const;
 
@@ -1134,10 +1028,10 @@ index b59b59f95c..657a438a3a 100644
    // Holds a pointer to an instance of Contents implementation
    std::unique_ptr<Contents> contents_;
 diff --git a/cpp/src/parquet/properties.h b/cpp/src/parquet/properties.h
-index 4d3acb491e..3906ff3c59 100644
+index 89f2be4..8f0017e 100644
 --- a/cpp/src/parquet/properties.h
 +++ b/cpp/src/parquet/properties.h
-@@ -139,6 +139,7 @@ static constexpr bool DEFAULT_IS_DICTIONARY_ENABLED = true;
+@@ -178,6 +178,7 @@ static constexpr bool DEFAULT_IS_DICTIONARY_ENABLED = true;
  static constexpr int64_t DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT = kDefaultDataPageSize;
  static constexpr int64_t DEFAULT_WRITE_BATCH_SIZE = 1024;
  static constexpr int64_t DEFAULT_MAX_ROW_GROUP_LENGTH = 1024 * 1024;
@@ -1145,23 +1039,23 @@ index 4d3acb491e..3906ff3c59 100644
  static constexpr bool DEFAULT_ARE_STATISTICS_ENABLED = true;
  static constexpr int64_t DEFAULT_MAX_STATISTICS_SIZE = 4096;
  static constexpr Encoding::type DEFAULT_ENCODING = Encoding::UNKNOWN;
-@@ -232,6 +233,7 @@ class PARQUET_EXPORT WriterProperties {
+@@ -383,6 +384,7 @@ class PARQUET_EXPORT WriterProperties {
            dictionary_pagesize_limit_(DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT),
            write_batch_size_(DEFAULT_WRITE_BATCH_SIZE),
            max_row_group_length_(DEFAULT_MAX_ROW_GROUP_LENGTH),
 +          max_row_group_size_(DEFAULT_MAX_ROW_GROUP_SIZE),
            pagesize_(kDefaultDataPageSize),
+           max_rows_per_page_(kDefaultMaxRowsPerPage),
            version_(ParquetVersion::PARQUET_2_6),
-           data_page_version_(ParquetDataPageVersion::V1),
-@@ -244,6 +246,7 @@ class PARQUET_EXPORT WriterProperties {
+@@ -399,6 +401,7 @@ class PARQUET_EXPORT WriterProperties {
            dictionary_pagesize_limit_(properties.dictionary_pagesize_limit()),
            write_batch_size_(properties.write_batch_size()),
            max_row_group_length_(properties.max_row_group_length()),
 +          max_row_group_size_(properties.max_row_group_size()),
            pagesize_(properties.data_pagesize()),
+           max_rows_per_page_(properties.max_rows_per_page()),
            version_(properties.version()),
-           data_page_version_(properties.data_page_version()),
-@@ -321,6 +324,13 @@ class PARQUET_EXPORT WriterProperties {
+@@ -508,6 +511,13 @@ class PARQUET_EXPORT WriterProperties {
        return this;
      }
 
@@ -1175,24 +1069,24 @@ index 4d3acb491e..3906ff3c59 100644
      /// Specify the data page size.
      /// Default 1MB.
      Builder* data_pagesize(int64_t pg_size) {
-@@ -664,7 +674,7 @@ class PARQUET_EXPORT WriterProperties {
+@@ -915,7 +925,7 @@ class PARQUET_EXPORT WriterProperties {
 
        return std::shared_ptr<WriterProperties>(new WriterProperties(
            pool_, dictionary_pagesize_limit_, write_batch_size_, max_row_group_length_,
--          pagesize_, version_, created_by_, page_checksum_enabled_,
-+          max_row_group_size_, pagesize_, version_, created_by_, page_checksum_enabled_,
-           std::move(file_encryption_properties_), default_column_properties_,
-           column_properties, data_page_version_, store_decimal_as_integer_,
-           std::move(sorting_columns_)));
-@@ -675,6 +685,7 @@ class PARQUET_EXPORT WriterProperties {
+-          pagesize_, max_rows_per_page_, version_, created_by_, page_checksum_enabled_,
++          max_row_group_size_, pagesize_, max_rows_per_page_, version_, created_by_, page_checksum_enabled_,
+           size_statistics_level_, std::move(file_encryption_properties_),
+           default_column_properties_, column_properties, data_page_version_,
+           store_decimal_as_integer_, std::move(sorting_columns_),
+@@ -929,6 +939,7 @@ class PARQUET_EXPORT WriterProperties {
      int64_t dictionary_pagesize_limit_;
      int64_t write_batch_size_;
      int64_t max_row_group_length_;
 +    int64_t max_row_group_size_;
      int64_t pagesize_;
+     int64_t max_rows_per_page_;
      ParquetVersion::type version_;
-     ParquetDataPageVersion data_page_version_;
-@@ -705,6 +716,8 @@ class PARQUET_EXPORT WriterProperties {
+@@ -965,6 +976,8 @@ class PARQUET_EXPORT WriterProperties {
 
    inline int64_t max_row_group_length() const { return max_row_group_length_; }
 
@@ -1200,29 +1094,48 @@ index 4d3acb491e..3906ff3c59 100644
 +
    inline int64_t data_pagesize() const { return pagesize_; }
 
-   inline ParquetDataPageVersion data_page_version() const {
-@@ -810,7 +823,7 @@ class PARQUET_EXPORT WriterProperties {
+   inline int64_t max_rows_per_page() const { return max_rows_per_page_; }
+@@ -1094,7 +1107,8 @@ class PARQUET_EXPORT WriterProperties {
   private:
    explicit WriterProperties(
        MemoryPool* pool, int64_t dictionary_pagesize_limit, int64_t write_batch_size,
--      int64_t max_row_group_length, int64_t pagesize, ParquetVersion::type version,
-+      int64_t max_row_group_length, int64_t max_row_group_size, int64_t pagesize, ParquetVersion::type version,
-       const std::string& created_by, bool page_write_checksum_enabled,
+-      int64_t max_row_group_length, int64_t pagesize, int64_t max_rows_per_page,
++      int64_t max_row_group_length, int64_t max_row_group_size, int64_t pagesize,
++      int64_t max_rows_per_page,
+       ParquetVersion::type version, const std::string& created_by,
+       bool page_write_checksum_enabled, SizeStatisticsLevel size_statistics_level,
        std::shared_ptr<FileEncryptionProperties> file_encryption_properties,
-       const ColumnProperties& default_column_properties,
-@@ -821,6 +834,7 @@ class PARQUET_EXPORT WriterProperties {
+@@ -1107,6 +1121,7 @@ class PARQUET_EXPORT WriterProperties {
          dictionary_pagesize_limit_(dictionary_pagesize_limit),
          write_batch_size_(write_batch_size),
          max_row_group_length_(max_row_group_length),
 +        max_row_group_size_(max_row_group_size),
          pagesize_(pagesize),
+         max_rows_per_page_(max_rows_per_page),
          parquet_data_page_version_(data_page_version),
-         parquet_version_(version),
-@@ -836,6 +850,7 @@ class PARQUET_EXPORT WriterProperties {
+@@ -1126,6 +1141,7 @@ class PARQUET_EXPORT WriterProperties {
    int64_t dictionary_pagesize_limit_;
    int64_t write_batch_size_;
    int64_t max_row_group_length_;
 +  int64_t max_row_group_size_;
    int64_t pagesize_;
+   int64_t max_rows_per_page_;
    ParquetDataPageVersion parquet_data_page_version_;
-   ParquetVersion::type parquet_version_;
+diff --git a/cpp/src/arrow/util/value_parsing.h b/cpp/src/arrow/util/value_parsing.h
+--- a/cpp/src/arrow/util/value_parsing.h
++++ b/cpp/src/arrow/util/value_parsing.h
+@@ -793,7 +793,13 @@ static inline bool ParseTimestampISO8601(const char* s, size_t length,
+   if (ARROW_PREDICT_FALSE(!util::CastSecondsToUnit(unit, count, out))) {
+-    return false;
++    if (count >= 0 || subseconds == 0 ||
++        !util::CastSecondsToUnit(unit, count + 1, out)) {
++      return false;
++    }
++    const auto units_per_second = *util::CastSecondsToUnit(unit, 1);
++    return !::arrow::internal::AddWithOverflow(
++        *out, static_cast<int64_t>(subseconds) - units_per_second, out);
+   }
+   if (ARROW_PREDICT_FALSE(::arrow::internal::AddWithOverflow(*out, subseconds, out))) {
+     return false;
+   }
+   return true;

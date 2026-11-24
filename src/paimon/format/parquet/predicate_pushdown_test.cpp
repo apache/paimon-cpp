@@ -104,6 +104,8 @@ class PredicatePushdownTest : public ::testing::Test {
         if (enable_page_index) {
             builder.enable_write_page_index();
             builder.data_pagesize(1);
+        } else {
+            builder.disable_write_page_index();
         }
         auto writer_properties = builder.build();
         ASSERT_OK_AND_ASSIGN(

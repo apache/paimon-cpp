@@ -352,12 +352,31 @@ class TestColumnIndex : public ::parquet::ColumnIndex {
         return has_null_counts_;
     }
 
+    bool has_definition_level_histograms() const override {
+        return false;
+    }
+
+    bool has_repetition_level_histograms() const override {
+        return false;
+    }
+
+    const std::vector<int64_t>& definition_level_histograms() const override {
+        return empty_histogram_;
+    }
+
+    const std::vector<int64_t>& repetition_level_histograms() const override {
+        return empty_histogram_;
+    }
+
     std::vector<bool> null_pages_ = std::vector<bool>(10, false);
     std::vector<std::string> min_values_ = std::vector<std::string>(10, std::string(4, '\0'));
     std::vector<std::string> max_values_ = min_values_;
     std::vector<int64_t> null_counts_ = std::vector<int64_t>(10, 0);
     std::vector<int32_t> non_null_pages_{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
     bool has_null_counts_ = true;
+
+ private:
+    std::vector<int64_t> empty_histogram_;
 };
 
 class TestRowGroupPageIndexReader : public ::parquet::RowGroupPageIndexReader {

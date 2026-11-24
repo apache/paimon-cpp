@@ -1142,8 +1142,7 @@ macro(build_boost)
                                       -sZLIB_LIBRARY_PATH=${ZLIB_PREFIX}/lib
                                       runtime-link=shared threading=multi variant=release
                                       --user-config=${BOOST_USER_CONFIG}
-                                      toolset=${BOOST_TOOLSET}
-                                      cxxstd=${CMAKE_CXX_STANDARD}
+                                      toolset=${BOOST_TOOLSET} cxxstd=17
                                       cxxflags=${BOOST_CXX_FLAGS}
                                       linkflags=${BOOST_CXX_FLAGS} install
                         INSTALL_COMMAND ""
@@ -2045,11 +2044,6 @@ macro(build_arrow)
     get_target_property(ARROW_RE2_INCLUDE_DIR re2::re2 INTERFACE_INCLUDE_DIRECTORIES)
     get_filename_component(ARROW_RE2_ROOT "${ARROW_RE2_INCLUDE_DIR}" DIRECTORY)
 
-    set(ARROW_CMAKE_CXX_FLAGS "${EP_CXX_FLAGS}")
-    # Fix for thrift Mutex.h missing #include <cstdint> (GCC 15 strictness)
-    # Use -include to force include cstdint for all C++ files
-    string(APPEND ARROW_CMAKE_CXX_FLAGS " -include cstdint")
-
     set(ARROW_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/arrow_ep-install")
     set(ARROW_HOME "${ARROW_PREFIX}")
     set(ARROW_SOURCE_DIR "${CMAKE_CURRENT_BINARY_DIR}/arrow_ep-prefix/src/arrow_ep")
@@ -2079,7 +2073,8 @@ macro(build_arrow)
     set(ARROW_CMAKE_ARGS
         ${EP_COMMON_CMAKE_ARGS}
         "-DCMAKE_INSTALL_PREFIX=${ARROW_PREFIX}"
-        "-DCMAKE_CXX_FLAGS=${ARROW_CMAKE_CXX_FLAGS}"
+        -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}
+        -DPAIMON_ARROW_STATIC_COMPUTE=ON
         -DARROW_DEPENDENCY_SOURCE=BUNDLED
         -DARROW_DEPENDENCY_USE_SHARED=OFF
         -DARROW_BUILD_SHARED=OFF
@@ -2088,6 +2083,7 @@ macro(build_arrow)
         -DARROW_BUILD_BENCHMARKS=OFF
         -DARROW_BUILD_EXAMPLES=OFF
         -DARROW_JEMALLOC=OFF
+        -DARROW_MIMALLOC=OFF
         -DARROW_WITH_RE2=ON
         -DARROW_WITH_UTF8PROC=OFF
         -DARROW_ORC=OFF
@@ -2115,7 +2111,7 @@ macro(build_arrow)
         -DSnappy_ROOT=${ARROW_SNAPPY_ROOT}
         -DLZ4_ROOT=${ARROW_LZ4_ROOT}
         -Dre2_ROOT=${ARROW_RE2_ROOT}
-        -DBUILD_WARNING_LEVEL=PRODUCTION) # ignore warnings under gcc8
+        -DBUILD_WARNING_LEVEL=PRODUCTION)
 
     set(ARROW_CONFIGURE SOURCE_SUBDIR "cpp" CMAKE_ARGS ${ARROW_CMAKE_ARGS})
     set(PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/arrow.diff")

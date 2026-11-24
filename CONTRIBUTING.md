@@ -85,8 +85,8 @@ Before submitting, please verify:
 
 ### Prerequisites
 
-- **C++17** compatible compiler (GCC recommended)
-- **CMake** ≥ 3.22
+- **C++20** compatible compiler (GCC recommended)
+- **CMake** ≥ 3.26
 - **Python 3** (for linting scripts and pre-commit)
 
 ---

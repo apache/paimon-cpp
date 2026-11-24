@@ -42,9 +42,10 @@ class PAIMON_EXPORT ArrowInputStreamAdapter : public arrow::io::RandomAccessFile
     arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t nbytes) override;
     arrow::Result<int64_t> ReadAt(int64_t position, int64_t nbytes, void* out) override;
     arrow::Result<std::shared_ptr<arrow::Buffer>> ReadAt(int64_t position, int64_t nbytes) override;
-    arrow::Future<std::shared_ptr<arrow::Buffer>> ReadAsync(const arrow::io::IOContext& io_context,
-                                                            int64_t position,
-                                                            int64_t nbytes) override;
+    using arrow::io::RandomAccessFile::ReadAsync;
+    arrow::Future<std::shared_ptr<arrow::Buffer>> ReadAsync(const arrow::io::IOContext&,
+                                                            int64_t position, int64_t nbytes,
+                                                            bool allow_short_read) override;
     arrow::Status Seek(int64_t position) override;
     arrow::Result<int64_t> Tell() const override;
     arrow::Result<int64_t> GetSize() override;

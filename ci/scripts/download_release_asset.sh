@@ -15,13 +15,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Fetch a pinned GitHub release asset. Use the release API if the browser
-# download endpoint times out, and publish a file only after verification.
 set -euo pipefail
 
 url=$1
 output=$2
 sha256=$3
+shift 3
 
 verify() {
     if command -v sha256sum >/dev/null; then
@@ -39,16 +38,25 @@ mkdir -p "$(dirname "${output}")"
 tmp=$(mktemp "${output}.XXXXXX")
 trap 'rm -f "${tmp}"' EXIT
 curl_args=(--proto '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 15 --max-time 180)
-if ! curl "${curl_args[@]}" "${url}" -o "${tmp}" || ! verify "${tmp}"; then
-    release=${url#https://github.com/}
-    repo=${release%%/releases/download/*}
-    asset=${release##*/}
-    tag=${release#*/releases/download/}
-    tag=${tag%/*}
-    asset_url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/tags/${tag}" |
-        python3 -c 'import json, sys
-print(next(a["url"] for a in json.load(sys.stdin)["assets"] if a["name"] == sys.argv[1]))' "${asset}")
-    curl "${curl_args[@]}" -H 'Accept: application/octet-stream' "${asset_url}" -o "${tmp}"
-    verify "${tmp}"
+for candidate in "${url}" "$@"; do
+    if curl "${curl_args[@]}" "${candidate}" -o "${tmp}" && verify "${tmp}"; then
+        mv -f "${tmp}" "${output}"
+        exit 0
+    fi
+done
+
+if [[ "${url}" != https://github.com/*/releases/download/* ]]; then
+    exit 1
 fi
+
+release=${url#https://github.com/}
+repo=${release%%/releases/download/*}
+asset=${release##*/}
+tag=${release#*/releases/download/}
+tag=${tag%/*}
+asset_url=$(curl "${curl_args[@]}" "https://api.github.com/repos/${repo}/releases/tags/${tag}" |
+    python3 -c 'import json, sys
+print(next(a["url"] for a in json.load(sys.stdin)["assets"] if a["name"] == sys.argv[1]))' "${asset}")
+curl "${curl_args[@]}" -H 'Accept: application/octet-stream' "${asset_url}" -o "${tmp}"
+verify "${tmp}"
 mv -f "${tmp}" "${output}"

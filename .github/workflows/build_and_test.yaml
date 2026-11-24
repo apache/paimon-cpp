@@ -64,7 +64,7 @@ jobs:
           - name: gcc-release-x86_64
             cc: gcc-14
             cxx: g++-14
-            build_args: --build_type Release
+            build_args: --build_type Release --install_smoke
           - name: clang-release-x86_64
             build_args: --build_type Release
           - name: gcc-debug-x86_64

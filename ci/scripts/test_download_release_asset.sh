@@ -32,6 +32,9 @@ case "$*" in
         echo '{"assets":[{"name":"archive","url":"https://api.github.com/assets/123"}]}' ;;
     *application/octet-stream*https://api.github.com/assets/123*)
         printf '%s' "${ASSET_CONTENT:-abc}" > "${!#}" ;;
+    *downloads.apache.org/example/archive*) exit 28 ;;
+    *dlcdn.apache.org/example/archive*) printf '%s' corrupt > "${!#}" ;;
+    *archive.apache.org/dist/example/archive*) printf '%s' abc > "${!#}" ;;
     *) exit 1 ;;
 esac
 MOCK
@@ -55,3 +58,16 @@ if ASSET_CONTENT=invalid fetch; then
     exit 1
 fi
 [[ ! -e "${work}/archive" ]]
+
+: > "${REQUEST_LOG}"
+url=https://downloads.apache.org/example/archive
+if fetch; then
+    exit 1
+fi
+[[ ! -e "${work}/archive" ]]
+[[ $(wc -l < "${REQUEST_LOG}") -eq 1 ]]
+
+bash "${script}" "${url}" "${work}/archive" "${checksum}" \
+    https://dlcdn.apache.org/example/archive https://archive.apache.org/dist/example/archive
+[[ $(cat "${work}/archive") == abc ]]
+[[ $(wc -l < "${REQUEST_LOG}") -eq 4 ]]

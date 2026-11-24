@@ -19,6 +19,7 @@
 
 #include "paimon/common/utils/arrow/arrow_input_stream_adapter.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <utility>
@@ -125,41 +126,54 @@ arrow::Result<std::shared_ptr<arrow::Buffer>> ArrowInputStreamAdapter::ReadAt(in
 }
 
 arrow::Future<std::shared_ptr<arrow::Buffer>> ArrowInputStreamAdapter::ReadAsync(
-    const arrow::io::IOContext& io_context, int64_t position, int64_t nbytes) {
-    auto fut = arrow::Future<std::shared_ptr<arrow::Buffer>>::Make();
+    const arrow::io::IOContext&, int64_t position, int64_t nbytes, bool allow_short_read) {
+    using ReadFuture = arrow::Future<std::shared_ptr<arrow::Buffer>>;
+    if (closed()) {
+        return ReadFuture::MakeFinished(arrow::Status::Invalid("Read on closed file"));
+    }
     auto range_status = ValidateArrowIoRange(position, "position");
     if (!range_status.ok()) {
-        fut.MarkFinished(range_status);
-        return fut;
+        return ReadFuture::MakeFinished(range_status);
     }
     range_status = ValidateArrowIoRange(nbytes, "nbytes");
     if (!range_status.ok()) {
-        fut.MarkFinished(range_status);
-        return fut;
+        return ReadFuture::MakeFinished(range_status);
+    }
+    if (position > file_size_) {
+        return ReadFuture::MakeFinished(
+            arrow::Status::IOError("Read offset ", position, " exceeds file size ", file_size_));
+    }
+
+    // InputStream::ReadAsync requires an exact read and reports only status on completion.
+    const int64_t read_size = std::min(nbytes, file_size_ - position);
+    if (!allow_short_read && read_size < nbytes) {
+        return ReadFuture::MakeFinished(arrow::Status::IOError("File too short: expected to read ",
+                                                               nbytes, " bytes, got ", read_size));
+    }
+    if (read_size == 0) {
+        return ReadFuture::MakeFinished(std::make_shared<arrow::Buffer>(nullptr, 0));
     }
 
     arrow::Result<std::shared_ptr<arrow::Buffer>> buffer_result =
-        arrow::AllocateResizableBuffer(nbytes, pool_.get());
+        arrow::AllocateResizableBuffer(read_size, pool_.get());
     if (PAIMON_UNLIKELY(!buffer_result.ok())) {
-        fut.MarkFinished(buffer_result.status());
-        return fut;
+        return ReadFuture::MakeFinished(buffer_result.status());
     }
-    std::shared_ptr<arrow::Buffer> buffer = std::move(buffer_result).ValueUnsafe();
-    buffer = KeepMemoryPoolAlive(std::move(buffer), pool_);
-    std::shared_ptr<std::atomic<uint64_t>> storage_read_bytes = storage_read_bytes_;
+    auto buffer = KeepMemoryPoolAlive(std::move(buffer_result).ValueUnsafe(), pool_);
+    auto* read_data = reinterpret_cast<char*>(buffer->mutable_data());
+    auto future = ReadFuture::Make();
     input_stream_->ReadAsync(
-        reinterpret_cast<char*>(buffer->mutable_data()), nbytes, position,
-        [fut, buffer, storage_read_bytes, nbytes](Status callback_status) mutable {
-            if (callback_status.ok()) {
-                if (storage_read_bytes) {
-                    storage_read_bytes->fetch_add(static_cast<uint64_t>(nbytes));
-                }
-                fut.MarkFinished(std::move(buffer));
-            } else {
-                fut.MarkFinished(ToArrowStatus(callback_status));
+        read_data, read_size, position,
+        [future, buffer = std::move(buffer), storage_read_bytes = storage_read_bytes_,
+         read_size](Status callback_status) mutable {
+            if (!callback_status.ok()) {
+                future.MarkFinished(ToArrowStatus(callback_status));
+                return;
             }
+            storage_read_bytes->fetch_add(static_cast<uint64_t>(read_size));
+            future.MarkFinished(std::move(buffer));
         });
-    return fut;
+    return future;
 }
 
 arrow::Result<int64_t> ArrowInputStreamAdapter::Tell() const {

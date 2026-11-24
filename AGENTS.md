@@ -60,7 +60,7 @@ When changing a public API, check the declaration under `include/paimon/`, its i
 
 The full rules are in [`docs/code-style.md`](docs/code-style.md). In particular:
 
-- Use C++17; do not introduce C++20 or later features.
+- Build the implementation with C++20. Keep installed public headers C++17-compatible.
 - Use `Status` and `Result<T>` for fallible operations. Do not use exceptions for production error propagation.
 - Propagate errors with the project macros, including `PAIMON_RETURN_NOT_OK` and `PAIMON_ASSIGN_OR_RAISE`.
 - Use an explicit type, not `auto`, as the declaration in `PAIMON_ASSIGN_OR_RAISE` and `PAIMON_ASSIGN_OR_RAISE_FROM_ARROW`.

@@ -2357,8 +2357,8 @@ TEST_F(ParquetFileBatchReaderTest, TestDictionaryPassthroughSkipsFallbackToPlain
     auto metadata_file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
     ASSERT_TRUE(metadata_file.ok());
     std::unique_ptr<::parquet::arrow::FileReader> metadata_reader;
-    ASSERT_TRUE(::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), arrow::default_memory_pool(),
-                                           &metadata_reader)
+    ASSERT_TRUE(::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), arrow::default_memory_pool())
+                    .Value(&metadata_reader)
                     .ok());
     std::unique_ptr<::parquet::ColumnChunkMetaData> column_chunk =
         metadata_reader->parquet_reader()->metadata()->RowGroup(0)->ColumnChunk(0);
@@ -2453,8 +2453,8 @@ TEST_F(ParquetFileBatchReaderTest, TestDictionaryPassthroughRequiresEveryRowGrou
     auto metadata_file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
     ASSERT_TRUE(metadata_file.ok());
     std::unique_ptr<::parquet::arrow::FileReader> metadata_reader;
-    ASSERT_TRUE(::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), arrow::default_memory_pool(),
-                                           &metadata_reader)
+    ASSERT_TRUE(::parquet::arrow::OpenFile(metadata_file.ValueOrDie(), arrow::default_memory_pool())
+                    .Value(&metadata_reader)
                     .ok());
     std::shared_ptr<::parquet::FileMetaData> metadata =
         metadata_reader->parquet_reader()->metadata();

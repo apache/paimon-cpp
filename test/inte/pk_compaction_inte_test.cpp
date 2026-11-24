@@ -43,6 +43,7 @@
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/table/sink/commit_message_impl.h"
 #include "paimon/core/table/source/data_split_impl.h"
+#include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/file_store_commit.h"
@@ -1709,54 +1710,58 @@ TEST_F(PkCompactionInteTest, CompactWithSchemaEvolution) {
         arrow::field("key0", arrow::int32()),  arrow::field("e", arrow::int32())};
     auto data_type = arrow::struct_(fields);
     int64_t commit_id = 4;  // snapshot-6 has commitIdentifier=3, so start from 4
+    const std::map<std::string, std::string> partition_0 = {{"key0", "0"}, {"key1", "1"}};
+    const std::map<std::string, std::string> partition_1 = {{"key0", "1"}, {"key1", "1"}};
 
     // Step 2: Write new data to both partitions.
     // Write to partition (key0=0, key1=1): update Alice's c field.
-    // As commit.force-compact = true, write data will force commit.
-    std::vector<std::shared_ptr<CommitMessage>> write_msgs_p0;
     {
         auto array = arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
             [1, "Alice", 12, 194, 198, 196, 0, 199]
         ])")
                          .ValueOrDie();
-        ASSERT_OK_AND_ASSIGN(write_msgs_p0, WriteArray(table_path, {{"key0", "0"}, {"key1", "1"}},
-                                                       0, array, commit_id, /*is_streaming=*/true,
-                                                       /*row_kinds=*/{}, /*write_only=*/false));
-        ASSERT_FALSE(HasExtraLookupFiles(write_msgs_p0));
-        ASSERT_OK(Commit(table_path, write_msgs_p0));
+        ASSERT_OK_AND_ASSIGN(auto write_msgs, WriteArray(table_path, partition_0, 0, array,
+                                                         commit_id, true, {}, false));
+        ASSERT_FALSE(HasExtraLookupFiles(write_msgs));
+        ASSERT_OK(Commit(table_path, write_msgs));
         commit_id++;
     }
 
     // Write to partition (key0=1, key1=1): update Bob and add Frank.
-    // As commit.force-compact = true, write data will force commit
-    std::vector<std::shared_ptr<CommitMessage>> write_msgs_p1;
     {
         auto array = arrow::ipc::internal::json::ArrayFromJSON(data_type, R"([
             [1, "Bob",   22, 124, 128, 126, 1, 129],
             [1, "Frank", 92, 904, 908, 906, 1, 909]
         ])")
                          .ValueOrDie();
-        ASSERT_OK_AND_ASSIGN(write_msgs_p1, WriteArray(table_path, {{"key0", "1"}, {"key1", "1"}},
-                                                       0, array, commit_id, /*is_streaming=*/true,
-                                                       /*row_kinds=*/{}, /*write_only=*/false));
-        ASSERT_FALSE(HasExtraLookupFiles(write_msgs_p1));
-        ASSERT_OK(Commit(table_path, write_msgs_p1));
+        ASSERT_OK_AND_ASSIGN(auto write_msgs, WriteArray(table_path, partition_1, 0, array,
+                                                         commit_id, true, {}, false));
+        ASSERT_FALSE(HasExtraLookupFiles(write_msgs));
+        ASSERT_OK(Commit(table_path, write_msgs));
         commit_id++;
     }
 
-    // Step 5: Read and verify using DataSplits from CompactAfter in write CommitMessages.
+    const std::map<std::string, std::string> compact_options = {
+        {Options::COMPACTION_FORCE_REWRITE_ALL_FILES, "true"}};
+    ASSERT_OK_AND_ASSIGN(auto compact_msgs_p0, CompactAndCommit(table_path, partition_0, 0, true,
+                                                                commit_id++, compact_options));
+    ASSERT_OK_AND_ASSIGN(auto compact_msgs_p1, CompactAndCommit(table_path, partition_1, 0, true,
+                                                                commit_id++, compact_options));
+    ASSERT_EQ(compact_msgs_p0.size(), 1);
+    ASSERT_EQ(compact_msgs_p1.size(), 1);
+
     {
         ReadContextBuilder context_builder(table_path);
         context_builder.AddOption(Options::FILE_FORMAT, "parquet");
         ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
         ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
 
-        // Use the latest snapshot id for both splits.
-        // The original table has 6 snapshots. Each write with force-compact produces
-        // 2 snapshots (append + compact), so 2 writes => 6 + 4 = 10.
-        int64_t latest_snapshot_id = 10;
-        auto split_p0 = BuildSplit(write_msgs_p0, latest_snapshot_id);
-        auto split_p1 = BuildSplit(write_msgs_p1, latest_snapshot_id);
+        SnapshotManager snapshot_manager(dir_->GetFileSystem(), table_path);
+        ASSERT_OK_AND_ASSIGN(std::optional<int64_t> snapshot_id,
+                             snapshot_manager.LatestSnapshotId());
+        ASSERT_TRUE(snapshot_id);
+        auto split_p0 = BuildSplit(compact_msgs_p0, *snapshot_id);
+        auto split_p1 = BuildSplit(compact_msgs_p1, *snapshot_id);
 
         // Read partition (key0=0, key1=1)
         {
@@ -1778,7 +1783,9 @@ TEST_F(PkCompactionInteTest, CompactWithSchemaEvolution) {
                                                                            &expected_array);
             ASSERT_TRUE(status.ok());
             ASSERT_TRUE(result_array);
-            ASSERT_TRUE(result_array->Equals(*expected_array));
+            ASSERT_TRUE(result_array->Equals(*expected_array))
+                << "Actual: " << result_array->ToString()
+                << "Expected: " << expected_array->ToString();
         }
 
         // Read partition (key0=1, key1=1)
@@ -1804,7 +1811,9 @@ TEST_F(PkCompactionInteTest, CompactWithSchemaEvolution) {
                                                                            &expected_array);
             ASSERT_TRUE(status.ok());
             ASSERT_TRUE(result_array);
-            ASSERT_TRUE(result_array->Equals(*expected_array));
+            ASSERT_TRUE(result_array->Equals(*expected_array))
+                << "Actual: " << result_array->ToString()
+                << "Expected: " << expected_array->ToString();
         }
     }
 }

@@ -133,16 +133,16 @@ KeyValueInMemoryRecordReader::SortBatch() const {
     std::vector<arrow::compute::SortKey> sort_keys;
     sort_keys.reserve(primary_keys_.size() + user_defined_sequence_fields_.size());
     for (const auto& name : primary_keys_) {
-        sort_keys.emplace_back(name, arrow::compute::SortOrder::Ascending);
+        sort_keys.emplace_back(name, arrow::compute::SortOrder::Ascending,
+                               arrow::compute::NullPlacement::AtStart);
     }
     const auto sequence_sort_order = sequence_fields_ascending_
                                          ? arrow::compute::SortOrder::Ascending
                                          : arrow::compute::SortOrder::Descending;
     for (const auto& name : user_defined_sequence_fields_) {
-        sort_keys.emplace_back(name, sequence_sort_order);
+        sort_keys.emplace_back(name, sequence_sort_order, arrow::compute::NullPlacement::AtStart);
     }
-    auto sort_options =
-        arrow::compute::SortOptions(sort_keys, arrow::compute::NullPlacement::AtStart);
+    arrow::compute::SortOptions sort_options(std::move(sort_keys));
     arrow::compute::ExecContext exec_context(arrow_pool_.get());
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Array> sorted_indices,
                                       arrow::compute::SortIndices(arrow::Datum(value_struct_array_),

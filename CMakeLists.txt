@@ -17,11 +17,8 @@
 # Adapted from Apache Arrow:
 # https://github.com/apache/arrow/blob/apache-arrow-17.0.0/cpp/CMakeLists.txt
 
-cmake_minimum_required(VERSION 3.22)
-# 3.22 is the minimum required by Corrosion-rs (used for the Rust<->C++ FFI
-# integration, see crates/lance_ffi). Ubuntu 24.04 ships CMake 3.28 and
-# CentOS 8+/RHEL 9+ ship 3.20+, so older distributions need a newer CMake
-# installation.
+# Arrow's bundled Apache Thrift build requires CMake 3.26 or later.
+cmake_minimum_required(VERSION 3.26)
 message(STATUS "Building using CMake version: ${CMAKE_VERSION}")
 
 # https://cmake.org/cmake/help/latest/policy/CMP0135.html
@@ -46,7 +43,7 @@ project(paimon
 
 string(TOUPPER "${CMAKE_BUILD_TYPE}" UPPERCASE_BUILD_TYPE)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -286,14 +283,11 @@ enable_testing()
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX_COMMON_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${PAIMON_CXXFLAGS}")
 
-# For any C code, use the same flags. These flags don't contain C++ specific
-# flags.
+# PAIMON_CXXFLAGS is shared with C builds but can contain a C++ standard flag.
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${CXX_COMMON_FLAGS} ${PAIMON_CXXFLAGS}")
+string(REGEX REPLACE "(^|[ \t])-std=(c|gnu)\\+\\+[^ \t]+" "" CMAKE_C_FLAGS
+                     "${CMAKE_C_FLAGS}")
 
-# Remove --std=c++17 to avoid errors from C compilers
-string(REPLACE "-std=c++17" "" CMAKE_C_FLAGS ${CMAKE_C_FLAGS})
-
-# Add C++-only flags, like -std=c++11
 set(CMAKE_CXX_FLAGS "${CXX_ONLY_FLAGS} ${CMAKE_CXX_FLAGS}")
 
 include(san-config)
@@ -393,6 +387,7 @@ set(ENV{PAIMON_TEST_DATA} "${CMAKE_SOURCE_DIR}/test/test_data")
 if(PAIMON_BUILD_TESTS OR PAIMON_BUILD_BENCHMARKS)
     resolve_dependency(GTest)
     include_directories(SYSTEM ${GTEST_INCLUDE_DIR})
+    include_directories("${CMAKE_SOURCE_DIR}/src/paimon/testing/arrow_compat")
 
     paimon_link_libraries_whole_archive(PAIMON_LOCAL_FILE_SYSTEM_STATIC_LINK_LIBS
                                         paimon_local_file_system_static)
