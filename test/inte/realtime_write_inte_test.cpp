@@ -43,7 +43,7 @@
 #include "arrow/ipc/json_simple.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
-#include "paimon/append_file_compaction.h"
+#include "paimon/append/append_file_compaction.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/commit_context.h"

@@ -232,6 +232,8 @@ set(PAIMON_CORE_SRCS
     core/io/arrow_ipc_file.cpp
     core/mergetree/spill_reader.cpp
     core/mergetree/spill_writer.cpp
+    core/append/append_file_compaction.cpp
+    core/append/append_file_compaction_planner.cpp
     core/append/append_only_writer.cpp
     core/append/bucketed_append_compact_manager.cpp
     core/bucket/bucket_select_converter.cpp
@@ -389,7 +391,6 @@ set(PAIMON_CORE_SRCS
     core/operation/data_evolution_split_read.cpp
     core/operation/abstract_file_store_write.cpp
     core/operation/abstract_split_read.cpp
-    core/operation/append_file_compaction.cpp
     core/operation/append_only_file_store_scan.cpp
     core/operation/append_only_file_store_write.cpp
     core/operation/metrics/commit_metrics.cpp
@@ -862,6 +863,7 @@ if(PAIMON_BUILD_TESTS)
 
     add_paimon_test(core_test
                     SOURCES
+                    core/append/append_file_compaction_planner_test.cpp
                     core/append/append_only_writer_test.cpp
                     core/append/append_compact_coordinator_test.cpp
                     core/append/bucketed_append_compact_manager_test.cpp

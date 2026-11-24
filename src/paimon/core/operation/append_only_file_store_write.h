@@ -22,6 +22,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -109,7 +110,7 @@ class AppendOnlyFileStoreWrite : public AbstractFileStoreWrite {
 
     // Only called on a fresh, dedicated writer owned by AppendFileCompaction.
     Status CompactFiles(const std::map<std::string, std::string>& partition, int32_t bucket,
-                        const std::vector<std::string>& file_names);
+                        const std::set<std::string>& file_names);
 
     using WriterFactory =
         std::shared_ptr<SingleFileWriterFactory<::ArrowArray*, std::shared_ptr<DataFileMeta>>>;
@@ -168,6 +169,7 @@ class AppendOnlyFileStoreWrite : public AbstractFileStoreWrite {
         const std::shared_ptr<ShreddingWritePlanFactory>& plan_factory) const;
 
     std::optional<std::vector<std::string>> write_cols_;
+    bool custom_compaction_ = false;
     std::shared_ptr<RealtimeContext> realtime_context_;
     std::unique_ptr<Logger> logger_;
 };

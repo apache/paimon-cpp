@@ -70,7 +70,7 @@ class AppendOnlyWriter : public BatchWriter {
     Status Compact(bool full_compaction) override {
         return Flush(/*wait_for_latest_compaction=*/true, full_compaction);
     }
-    Status CompactFiles(const std::vector<std::string>& file_names);
+    Status CompactFiles(const std::set<std::string>& file_names);
 
     uint64_t GetMemoryUsage() const override {
         // used for spill, AppendOnlyWriter do not support spill, so return 0 to avoid triggering

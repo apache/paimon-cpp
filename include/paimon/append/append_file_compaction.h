@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,8 @@ class PAIMON_EXPORT AppendFileCompaction {
 
     /// Synchronously compacts files and returns messages for FileStoreCommit::Commit or Abort.
     /// Each call creates a dedicated batch writer and restores the latest snapshot for the bucket.
+    /// Writes one file in file name order, preserving surviving physical row order within each
+    /// input. Ignores target-file-size; produces no file when all input rows are deleted.
     /// Supports deletion vectors; real-time mode and data evolution are unsupported.
     /// Requires bucket-append-ordered=false and write-only=false.
     /// With deletion vectors enabled, callers must serialize compactions within each
@@ -55,7 +58,7 @@ class PAIMON_EXPORT AppendFileCompaction {
     /// @param branch The branch to use; an empty string selects main.
     /// @param partition Complete partition values; empty for an unpartitioned table.
     /// @param bucket The bucket containing the input files.
-    /// @param file_names Nonempty, distinct data file basenames. Files need not be contiguous.
+    /// @param file_names Nonempty set of data file basenames. Files need not be contiguous.
     /// @param options Options overriding the table options.
     /// @param file_system The file system; nullptr selects one from options.
     /// @param pool The memory pool; nullptr uses the default pool.
@@ -63,8 +66,7 @@ class PAIMON_EXPORT AppendFileCompaction {
     static Result<std::vector<std::shared_ptr<CommitMessage>>> Execute(
         const std::string& table_path, const std::string& branch,
         const std::map<std::string, std::string>& partition, int32_t bucket,
-        const std::vector<std::string>& file_names,
-        const std::map<std::string, std::string>& options,
+        const std::set<std::string>& file_names, const std::map<std::string, std::string>& options,
         const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool,
         const std::shared_ptr<Executor>& executor);
 };

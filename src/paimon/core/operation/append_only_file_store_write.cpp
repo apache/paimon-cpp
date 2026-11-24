@@ -18,6 +18,7 @@
 
 #include "paimon/core/operation/append_only_file_store_write.h"
 
+#include <algorithm>
 #include <functional>
 #include <limits>
 #include <map>
@@ -128,7 +129,7 @@ AppendOnlyFileStoreWrite::~AppendOnlyFileStoreWrite() = default;
 
 Status AppendOnlyFileStoreWrite::CompactFiles(const std::map<std::string, std::string>& partition,
                                               int32_t bucket,
-                                              const std::vector<std::string>& file_names) {
+                                              const std::set<std::string>& file_names) {
     if (realtime_context_ || options_.RealtimeEnabled() ||
         !options_.GetRealtimeDeduplicateKeyFields().empty()) {
         return Status::NotImplemented("custom compaction does not support real-time mode");
@@ -159,6 +160,7 @@ Status AppendOnlyFileStoreWrite::CompactFiles(const std::map<std::string, std::s
         PAIMON_RETURN_NOT_OK(PathUtil::CheckSinglePathComponent("data file", name));
     }
     PAIMON_ASSIGN_OR_RAISE(BinaryRow part, file_store_path_factory_->ToBinaryRow(partition));
+    custom_compaction_ = true;
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<BatchWriter> writer, GetWriter(part, bucket));
     auto append_writer = std::dynamic_pointer_cast<AppendOnlyWriter>(writer);
     if (!append_writer) {
@@ -248,6 +250,9 @@ Result<std::vector<std::shared_ptr<DataFileMeta>>> AppendOnlyFileStoreWrite::Com
         std::make_unique<RollingFileWriter<::ArrowArray*, std::shared_ptr<DataFileMeta>>>(
             options_.GetTargetFileSize(/*has_primary_key=*/false),
             /*target_file_row_num=*/std::numeric_limits<int64_t>::max(), writer_factory);
+    if (custom_compaction_) {
+        rewriter->DisableRolling();
+    }
 
     ScopeGuard reader_guard([&]() {
         if (reader) {
@@ -375,7 +380,11 @@ Result<AppendOnlyFileStoreWrite::WriterFactory> AppendOnlyFileStoreWrite::GetDat
     const std::optional<std::vector<std::string>>& write_cols,
     const std::vector<std::shared_ptr<DataFileMeta>>& to_compact,
     const std::shared_ptr<ShreddingWritePlanFactory>& plan_factory) const {
-    auto seq_num_counter = std::make_shared<LongCounter>(to_compact[0]->min_sequence_number);
+    auto first = std::min_element(to_compact.begin(), to_compact.end(),
+                                  [](const auto& lhs, const auto& rhs) {
+                                      return lhs->min_sequence_number < rhs->min_sequence_number;
+                                  });
+    auto seq_num_counter = std::make_shared<LongCounter>((*first)->min_sequence_number);
     if (plan_factory != nullptr) {
         return std::make_shared<ShreddingAppendDataFileWriterFactory>(
             options_, table_schema_->Id(), schema, write_cols, seq_num_counter,

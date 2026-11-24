@@ -48,6 +48,11 @@ class RollingFileWriter : public FileWriter<T, std::vector<R>> {
 
     ~RollingFileWriter() = default;
 
+    /// Call before writing to keep all records in one file.
+    void DisableRolling() {
+        rolling_enabled_ = false;
+    }
+
     Status Write(T record) override;
     void Abort() override;
     Status Close() override;
@@ -78,6 +83,7 @@ class RollingFileWriter : public FileWriter<T, std::vector<R>> {
     int64_t current_file_record_count_ = 0;
     int64_t last_need_rolling_record_count_ = 0;
     bool closed_ = false;
+    bool rolling_enabled_ = true;
 
     std::vector<typename SingleFileWriter<T, R>::AbortExecutor> closed_writers_;
     std::vector<R> results_;
@@ -101,6 +107,9 @@ bool RollingFileWriter<T, R>::SuggestCheck() {
 
 template <typename T, typename R>
 Result<bool> RollingFileWriter<T, R>::NeedRollingFile() {
+    if (!rolling_enabled_) {
+        return false;
+    }
     if (current_file_record_count_ >= target_file_row_num_) {
         return true;
     }

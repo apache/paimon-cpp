@@ -18,10 +18,12 @@
 
 #include "paimon/core/operation/append_only_file_store_write.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -35,7 +37,7 @@
 #include "arrow/status.h"
 #include "arrow/type.h"
 #include "gtest/gtest.h"
-#include "paimon/append_file_compaction.h"
+#include "paimon/append/append_file_compaction.h"
 #include "paimon/catalog/catalog.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/commit_context.h"
@@ -290,7 +292,7 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestAppendFileCompactionValidationAndLatest
     const std::string first_name = OnlyNewFile(first)->file_name;
     const std::string second_name = OnlyNewFile(second)->file_name;
     auto compact = [&](const std::map<std::string, std::string>& partition, int32_t bucket,
-                       const std::vector<std::string>& file_names,
+                       const std::set<std::string>& file_names,
                        const std::map<std::string, std::string>& opts) {
         return AppendFileCompaction::Execute(path, "", partition, bucket, file_names, opts, nullptr,
                                              nullptr, nullptr);
@@ -312,7 +314,6 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestAppendFileCompactionValidationAndLatest
     ASSERT_NOK_WITH_MSG(compact({{"unknown", "value"}}, 0, {first_name}, options),
                         "partition keys");
     ASSERT_NOK_WITH_MSG(compact({}, 0, {}, options), "at least one");
-    ASSERT_NOK_WITH_MSG(compact({}, 0, {first_name, first_name}, options), "distinct file names");
     ASSERT_NOK(compact({}, 0, {"../" + first_name}, options));
     ASSERT_NOK_WITH_MSG(compact({}, 0, {"missing.parquet"}, options), "not active");
     ASSERT_NOK_WITH_MSG(compact({}, 1, {first_name}, options), "not active");
@@ -352,8 +353,8 @@ TEST_F(AppendOnlyFileStoreWriteTest, TestAppendFileCompactionValidationAndLatest
     ASSERT_TRUE(latest_impl);
     const auto& compact_increment = latest_impl->GetCompactIncrement();
     ASSERT_EQ(2, compact_increment.CompactBefore().size());
-    ASSERT_EQ(first_name, compact_increment.CompactBefore()[0]->file_name);
-    ASSERT_EQ(third_name, compact_increment.CompactBefore()[1]->file_name);
+    ASSERT_EQ(std::min(first_name, third_name), compact_increment.CompactBefore()[0]->file_name);
+    ASSERT_EQ(std::max(first_name, third_name), compact_increment.CompactBefore()[1]->file_name);
     ASSERT_EQ(1, compact_increment.CompactAfter().size());
     ASSERT_EQ(3, compact_increment.CompactAfter()[0]->row_count);
     ASSERT_OK(commit->Commit(latest_messages));
