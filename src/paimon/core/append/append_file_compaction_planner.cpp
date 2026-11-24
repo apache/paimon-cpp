@@ -213,8 +213,23 @@ Result<PlanningContext> LoadPlanningContext(const std::string& table_path,
                                             const std::shared_ptr<FileSystem>& file_system) {
     PAIMON_ASSIGN_OR_RAISE(CoreOptions temporary_options,
                            CoreOptions::FromMap(options, file_system));
-    auto snapshot_manager = std::make_shared<SnapshotManager>(temporary_options.GetFileSystem(),
+    SchemaManager temporary_schema_manager(temporary_options.GetFileSystem(), table_path,
+                                           normalized_branch);
+    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<TableSchema>> latest_schema,
+                           temporary_schema_manager.Latest());
+    if (!latest_schema) {
+        return Status::Invalid("not found latest schema");
+    }
+    std::map<std::string, std::string> dynamic_options = options;
+    dynamic_options[Options::BRANCH] = normalized_branch;
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> merged_schema,
+                           latest_schema.value()->MergeOptions(dynamic_options));
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
+                           CoreOptions::FromMap(merged_schema->Options(), file_system));
+    auto snapshot_manager = std::make_shared<SnapshotManager>(core_options.GetFileSystem(),
                                                               table_path, normalized_branch);
+    auto schema_manager = std::make_shared<SchemaManager>(core_options.GetFileSystem(), table_path,
+                                                          normalized_branch);
     std::optional<Snapshot> snapshot;
     if (snapshot_id) {
         PAIMON_ASSIGN_OR_RAISE(Snapshot loaded_snapshot,
@@ -226,17 +241,8 @@ Result<PlanningContext> LoadPlanningContext(const std::string& table_path,
     if (!snapshot) {
         return Status::Invalid("compaction planning requires a committed snapshot");
     }
-    auto schema_manager = std::make_shared<SchemaManager>(temporary_options.GetFileSystem(),
-                                                          table_path, normalized_branch);
-    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> table_schema,
-                           schema_manager->ReadSchema(snapshot->SchemaId()));
-    std::map<std::string, std::string> dynamic_options = options;
-    dynamic_options[Options::BRANCH] = normalized_branch;
-    PAIMON_ASSIGN_OR_RAISE(table_schema, table_schema->MergeOptions(dynamic_options));
-    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
-                           CoreOptions::FromMap(table_schema->Options(), file_system));
     return PlanningContext{std::move(snapshot.value()), std::move(snapshot_manager),
-                           std::move(schema_manager), std::move(table_schema),
+                           std::move(schema_manager), std::move(merged_schema),
                            std::move(core_options)};
 }
 
@@ -362,6 +368,22 @@ Result<DeletionVectors> ReadDeletionVectors(
     return index_handler.ReadAllDeletionVectors(part, bucket, dv_files);
 }
 
+Status ValidateIndexedRowCounts(const AppendFileCompactionPlan& plan) {
+    if (std::none_of(plan.files.begin(), plan.files.end(),
+                     [](const FileCompactionInfo& file) { return file.index_meta.has_value(); })) {
+        return Status::OK();
+    }
+    for (const auto& file : plan.files) {
+        if (file.source_row_count > std::numeric_limits<int32_t>::max()) {
+            return Status::Invalid("source row count exceeds int32 range for ", file.file_name);
+        }
+    }
+    if (plan.output_row_count > std::numeric_limits<int32_t>::max()) {
+        return Status::Invalid("compacted row count exceeds int32 range with file indexes");
+    }
+    return Status::OK();
+}
+
 Result<AppendFileCompactionPlan> BuildCompactionPlan(
     int64_t snapshot_id, const std::vector<std::shared_ptr<DataFileMeta>>& files,
     const DeletionVectors& deletion_vectors,
@@ -381,6 +403,7 @@ Result<AppendFileCompactionPlan> BuildCompactionPlan(
         plan.output_row_count += info.live_row_count;
         plan.files.push_back(std::move(info));
     }
+    PAIMON_RETURN_NOT_OK(ValidateIndexedRowCounts(plan));
     return plan;
 }
 

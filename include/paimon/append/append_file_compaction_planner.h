@@ -92,6 +92,7 @@ class PAIMON_EXPORT AppendFileCompactionPlanner {
 
     /// Reads indexes and applies snapshot deletion vectors in the selected partition/bucket.
     /// Supports fixed-bucket append tables without real-time mode or data evolution.
+    /// If any input has indexes, all source row counts and the output row count must fit int32.
     ///
     /// Uses the same file name and physical row order as AppendFileCompaction::Execute.
     /// Callers must retain source files and use the same snapshot deletion state for execution.
@@ -102,7 +103,7 @@ class PAIMON_EXPORT AppendFileCompactionPlanner {
     /// @param bucket Bucket containing the input files.
     /// @param file_names Nonempty set of unambiguous live file basenames.
     /// @param snapshot_id Snapshot to scan; nullopt fixes the latest snapshot once per call.
-    /// @param options Overrides for the snapshot's schema options.
+    /// @param options Overrides for the latest schema options.
     /// @param file_system File system; nullptr selects one from options.
     /// @param pool Memory pool; nullptr uses the default.
     /// @param executor Manifest scan executor; nullptr uses the default.
