@@ -132,7 +132,7 @@ class AppendFileCompactionPlannerTest : public testing::Test,
         for (const auto& [column, indexes] : IndexPayloads()) {
             for (const auto& [type, payload] : indexes) {
                 PAIMON_RETURN_NOT_OK(writer->WriteIndex(
-                    column, type, [payload](OutputStream* stream) -> Result<bool> {
+                    column, type, [payload = payload](OutputStream* stream) -> Result<bool> {
                         if (!payload) {
                             return false;
                         }
