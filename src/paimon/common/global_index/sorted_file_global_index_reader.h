@@ -33,6 +33,7 @@
 namespace paimon {
 
 /// Base reader for sorted global index files with manifest-level min/max pruning.
+/// A null executor evaluates selected files serially on the calling thread.
 class SortedFileGlobalIndexReader : public GlobalIndexReader {
  public:
     Result<std::shared_ptr<GlobalIndexResult>> VisitIsNotNull() override;

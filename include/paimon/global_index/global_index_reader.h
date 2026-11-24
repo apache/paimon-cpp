@@ -56,7 +56,11 @@ class PAIMON_EXPORT GlobalIndexReader : public FunctionVisitor<std::shared_ptr<G
     virtual Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
         const std::shared_ptr<FullTextSearch>& full_text_search) = 0;
 
-    /// @return true if the reader is thread-safe; false otherwise.
+    /// @return true if the same reader supports concurrent queries; false otherwise.
+    /// Query arguments must not be modified during a call, and user callbacks and memory pools
+    /// used concurrently must be thread-safe. Reader lifetime must cover all outstanding calls.
+    /// Submitting nested tasks to the same thread pool and blocking while waiting for them
+    /// may cause a deadlock.
     virtual bool IsThreadSafe() const = 0;
 
     /// @return An identifier representing the index type. (e.g., "btree", "lumina").

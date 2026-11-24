@@ -35,6 +35,9 @@ namespace paimon {
 ///
 /// When an executor is provided, all sub-reader actions are submitted in parallel and results are
 /// collected in submission order. Otherwise, sub-readers are evaluated sequentially.
+/// Concurrent queries are supported when all sub-readers are thread-safe. Each query owns its
+/// execution and merge state. Callers must not occupy the executor's workers while waiting for
+/// queries that submit work to that same executor.
 class UnionGlobalIndexReader : public GlobalIndexReader {
  public:
     /// Constructs a UnionGlobalIndexReader.

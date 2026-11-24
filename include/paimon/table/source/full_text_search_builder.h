@@ -102,9 +102,8 @@ class PAIMON_EXPORT FullTextSearchBuilder {
     /// Sets the memory pool. If not set, the default pool is used.
     FullTextSearchBuilder& WithMemoryPool(const std::shared_ptr<MemoryPool>& memory_pool);
 
-    /// Sets the executor that searches splits in parallel and reads manifests. If not set, each
-    /// read creates an executor with `global-index.thread-num` threads, which defaults to the
-    /// number of CPUs.
+    /// Sets the executor that searches splits in parallel and reads manifests. If not set,
+    /// `global-index.thread-num` determines the pool size (default: CPU count).
     FullTextSearchBuilder& WithExecutor(const std::shared_ptr<Executor>& executor);
 
     /// Sets the file system to access the table with. If not set, the file system is created from

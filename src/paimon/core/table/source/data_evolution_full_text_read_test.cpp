@@ -909,9 +909,11 @@ TEST_F(DataEvolutionFullTextReadTest, TestBuilderValidatesSettings) {
     ASSERT_NOK_WITH_MSG(invalid_mode->NewFullTextScan(),
                         "invalid full-text-index.search-mode: invalid");
 
-    std::unique_ptr<FullTextSearchBuilder> no_thread = NewBuilder(3);
-    no_thread->AddOption(Options::GLOBAL_INDEX_THREAD_NUM, "0");
-    ASSERT_NOK_WITH_MSG(no_thread->NewFullTextRead(), "invalid global index thread number 0");
+    for (const char* thread_num : {"0", "-1"}) {
+        std::unique_ptr<FullTextSearchBuilder> no_thread = NewBuilder(3);
+        no_thread->AddOption(Options::GLOBAL_INDEX_THREAD_NUM, thread_num);
+        ASSERT_NOK_WITH_MSG(no_thread->NewFullTextRead(), "invalid global index thread number");
+    }
 
     FullTextSearchBuilder missing_column(table_path_);
     missing_column.SetQuery("missing", kQuery).SetLimit(3);

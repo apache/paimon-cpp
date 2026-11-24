@@ -57,8 +57,8 @@ class DataEvolutionFullTextRead : public FullTextRead {
     /// @param text_field       The searched column.
     /// @param query            The JSON query.
     /// @param limit            The number of rows to return; must be positive.
-    /// @param executor         Executor to search splits on, or null to create one with
-    ///                         `global-index.thread-num` threads.
+    /// @param executor         Executor to search splits on, or null to use
+    ///                         `global-index.thread-num` (default: CPU count).
     /// @param pool             Memory pool for reading indexes, manifests and candidate rows.
     static Result<std::unique_ptr<DataEvolutionFullTextRead>> Create(
         const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,

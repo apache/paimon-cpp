@@ -622,7 +622,7 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> DataEvolutionFullTextRead::Sear
             }
         }
     });
-    if (searches.size() <= 1) {
+    if (!executor_ || searches.size() <= 1) {
         for (const auto& search : searches) {
             results.push_back(search());
         }

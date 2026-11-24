@@ -39,21 +39,25 @@ namespace paimon {
 /// from the whole index. As Java `AbstractDataEvolutionVectorRead#preFilters` does, a vector search
 /// restricts its pre-filter to those live rows. Predicate visits are delegated unchanged, as the
 /// read drops deleted rows from their untruncated results.
+/// Concurrent queries require a thread-safe wrapped reader and supplier.
 class LiveRowGlobalIndexReader : public GlobalIndexReader {
  public:
     /// Supplies the global row ids of live rows, or null when every row is live.
+    /// Must support concurrent calls when shared by parallel shards or concurrent queries.
+    /// Returned bitmaps must remain immutable for the lifetime of queries using them.
     using LiveRowsSupplier = std::function<Result<std::shared_ptr<const RoaringBitmap64>>()>;
 
     /// Returns a supplier that calls `load` on its first call and shares the live rows it returns
     /// with later calls, so they are read at most once. A failed load is retried on the next call.
+    /// The returned supplier is thread-safe.
     static LiveRowsSupplier CacheLiveRows(
         std::function<Result<std::optional<RoaringBitmap64>>()> load);
 
     /// Creates a union of the shard readers of one index whose full-text and vector searches rank
     /// only live rows. Each shard reader is wrapped in a LiveRowGlobalIndexReader. When a search
     /// may rank rows of a shard, live rows are loaded on the visiting thread before it fans out to
-    /// the shards, so a load that reads manifests on `executor` never waits for it from one of its
-    /// own threads.
+    /// the shards. Callers must run outside `executor` when loading or searching waits for tasks
+    /// on that executor.
     /// @param shard_readers      Readers of the shards. They take and return global row ids.
     /// @param shard_ranges       The global row id range (both ends inclusive) of each shard.
     /// @param search_ranges      The global row ids each shard ranks in a full-text search, as
