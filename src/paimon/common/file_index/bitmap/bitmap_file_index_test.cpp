@@ -30,7 +30,7 @@
 #include "paimon/common/utils/math.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
-#include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/io/byte_array_input_stream.h"

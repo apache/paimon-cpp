@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/global_index_result.h"
 #include "paimon/testing/utils/testharness.h"

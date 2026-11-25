@@ -68,7 +68,7 @@ set(PAIMON_COMMON_SRCS
     common/factories/singleton.cpp
     common/factories/io_hook.cpp
     common/factories/factory_creator.cpp
-    common/file_index/bitmap/bitmap_index_result.cpp
+    common/index/bitmap_result.cpp
     common/file_index/file_indexer.cpp
     common/file_index/file_indexer_factory.cpp
     common/file_index/file_index_format.cpp
@@ -77,8 +77,8 @@ set(PAIMON_COMMON_SRCS
     common/file_index/file_index_format_v2.cpp
     common/file_index/file_index_reader.cpp
     common/file_index/file_index_writer.cpp
-    common/file_index/file_index_result.cpp
-    common/file_index/scored_file_index_result.cpp
+    common/index/index_result.cpp
+    common/index/scored_index_result.cpp
     common/format/column_stats.cpp
     common/format/file_format_factory.cpp
     common/fs/file_system.cpp

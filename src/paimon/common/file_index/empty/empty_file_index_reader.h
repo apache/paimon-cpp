@@ -23,10 +23,8 @@
 #include <utility>
 #include <vector>
 
-#include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/file_index/file_index_reader.h"
 #include "paimon/file_index/file_index_result.h"
-#include "paimon/file_index/scored_file_index_result.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
 #include "paimon/utils/roaring_bitmap32.h"

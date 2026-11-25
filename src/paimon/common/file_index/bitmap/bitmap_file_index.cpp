@@ -35,7 +35,7 @@
 #include "paimon/common/utils/options_utils.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
-#include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/io/data_input_stream.h"
 #include "paimon/memory/bytes.h"

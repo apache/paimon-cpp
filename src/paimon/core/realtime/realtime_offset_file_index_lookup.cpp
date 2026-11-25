@@ -31,7 +31,7 @@
 #include "paimon/core/realtime/realtime_file_schema.h"
 #include "paimon/core/realtime/realtime_key_offset_index.h"
 #include "paimon/core/realtime/realtime_utils.h"
-#include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/predicate/predicate_builder.h"

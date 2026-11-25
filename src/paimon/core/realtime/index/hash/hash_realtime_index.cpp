@@ -37,6 +37,7 @@
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/core/realtime/realtime_utils.h"
 #include "paimon/defs.h"
+#include "paimon/index/bitmap_result.h"
 #include "paimon/macros.h"
 #include "paimon/predicate/function.h"
 #include "paimon/predicate/leaf_predicate.h"
@@ -76,16 +77,16 @@ std::optional<double> HashRealtimeIndex::Reader::EstimateSelectivity(
     return std::min(1.0, count / static_cast<double>(offset_range_.end - offset_range_.begin));
 }
 
-Result<std::optional<RoaringBitmap64>> HashRealtimeIndex::Reader::VisitEqual(
+Result<std::shared_ptr<RealtimeIndexResult>> HashRealtimeIndex::Reader::VisitEqual(
     const Literal& literal) {
     return VisitIn({literal});
 }
 
-Result<std::optional<RoaringBitmap64>> HashRealtimeIndex::Reader::VisitIn(
+Result<std::shared_ptr<RealtimeIndexResult>> HashRealtimeIndex::Reader::VisitIn(
     const std::vector<Literal>& literals) {
     RoaringBitmap64 result;
     if (offset_range_.Empty()) {
-        return std::optional<RoaringBitmap64>(std::move(result));
+        return RealtimeIndexResult::Skip();
     }
     for (const Literal& literal : literals) {
         if (literal.IsNull()) {
@@ -112,7 +113,11 @@ Result<std::optional<RoaringBitmap64>> HashRealtimeIndex::Reader::VisitIn(
             result.Add(*begin);
         }
     }
-    return std::optional<RoaringBitmap64>(std::move(result));
+    if (result.IsEmpty()) {
+        return RealtimeIndexResult::Skip();
+    }
+    // Treat equality and IN results as exact, assuming no hash collisions.
+    return BitmapResult<RoaringBitmap64>::Create(std::move(result), /*is_exact=*/true);
 }
 
 HashRealtimeIndex::HashRealtimeIndex(std::shared_ptr<arrow::Schema> schema, FieldType field_type)

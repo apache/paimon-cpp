@@ -37,10 +37,9 @@
 #include "paimon/common/utils/string_utils.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/io/data_file_path_factory.h"
-#include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/file_index/file_index_format.h"
 #include "paimon/file_index/file_index_reader.h"
-#include "paimon/file_index/scored_file_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/full_text_match.h"
@@ -209,17 +208,7 @@ Result<std::shared_ptr<FileIndexResult>> FileIndexEvaluator::EvaluateLeaf(
     }
     PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<FileIndexReader>> readers,
                            GetReaders(predicate->FieldName()));
-    for (const auto& reader : readers) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileIndexResult> child,
-                               reader->Evaluate(predicate, candidates));
-        // Inexact indexes may miss matches. Try another index over the original scope.
-        // Remain is also inexact and contributes no row selection for this predicate.
-        if (!child->IsExact()) {
-            continue;
-        }
-        return child;
-    }
-    return FileIndexResult::Remain();
+    return IndexReaderUtils::EvaluateScalar<RoaringBitmap32>(readers, predicate, candidates);
 }
 
 Result<std::optional<double>> FileIndexEvaluator::EstimateSelectivity(

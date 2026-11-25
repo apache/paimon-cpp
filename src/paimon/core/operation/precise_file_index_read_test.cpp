@@ -49,7 +49,7 @@
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/factories/factory_creator.h"
-#include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
@@ -259,7 +259,7 @@ class PreciseFileIndexReadTest : public ::testing::Test {
 };
 
 TEST_F(PreciseFileIndexReadTest, FullTextMatchPushesDownCandidates) {
-    using MatchResult = IndexReaderUtils::FullTextResult<RoaringBitmap32, ScoredFileIndexResult>;
+    using MatchResult = IndexReaderUtils::FullTextResult<RoaringBitmap32>;
     auto reader = std::make_shared<MockSearchFileIndexReader>(
         "f0", SearchIndexType::FULL_TEXT,
         MockSearchFileIndex::ScoredRows{{2, 0.9f}, {0, 0.8f}, {1, 0.7f}}, statistics_);

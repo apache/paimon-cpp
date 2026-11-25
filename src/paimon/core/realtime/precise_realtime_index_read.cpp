@@ -53,7 +53,7 @@
 namespace paimon {
 namespace {
 
-using Evaluator = PreciseIndexEvaluator<RoaringBitmap64, ScoredRealtimeIndexResult>;
+using Evaluator = PreciseIndexEvaluator<RoaringBitmap64>;
 using Evaluation = Evaluator::Evaluation;
 // Outer map: output score column name (e.g. _embedding_INDEX_SCORE) -> scores by real-time offset.
 // Inner map: real-time offset -> search score for that row.

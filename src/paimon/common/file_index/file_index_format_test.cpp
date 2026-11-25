@@ -38,7 +38,6 @@
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/file_index/file_index_result.h"
-#include "paimon/file_index/scored_file_index_result.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/memory/bytes.h"

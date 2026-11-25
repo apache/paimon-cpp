@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"

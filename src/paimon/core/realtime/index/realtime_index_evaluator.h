@@ -20,8 +20,8 @@
 #pragma once
 
 #include <memory>
-#include <optional>
 
+#include "paimon/realtime/index/realtime_index_result.h"
 #include "paimon/realtime/offset_range.h"
 #include "paimon/result.h"
 #include "paimon/utils/roaring_bitmap64.h"
@@ -38,18 +38,18 @@ class RealtimeIndexEvaluator {
  public:
     RealtimeIndexEvaluator() = delete;
 
-    static Result<std::optional<RoaringBitmap64>> Evaluate(
+    static Result<std::shared_ptr<RealtimeIndexResult>> Evaluate(
         const std::shared_ptr<RealtimeIndexSet>& indexes,
         const std::shared_ptr<Predicate>& predicate, const OffsetRange& offset_range,
         const std::shared_ptr<MemoryPool>& pool);
 
  private:
-    static Result<std::optional<RoaringBitmap64>> EvaluateCompound(
+    static Result<std::shared_ptr<RealtimeIndexResult>> EvaluateCompound(
         const std::shared_ptr<RealtimeIndexSet>& indexes,
         const std::shared_ptr<CompoundPredicate>& compound, const OffsetRange& offset_range,
         const std::shared_ptr<MemoryPool>& pool);
 
-    static Result<std::optional<RoaringBitmap64>> EvaluateLeaf(
+    static Result<std::shared_ptr<RealtimeIndexResult>> EvaluateLeaf(
         const std::shared_ptr<RealtimeIndexSet>& indexes,
         const std::shared_ptr<LeafPredicate>& leaf, const OffsetRange& offset_range,
         const std::shared_ptr<MemoryPool>& pool);

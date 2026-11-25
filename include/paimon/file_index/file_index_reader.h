@@ -23,7 +23,6 @@
 #include <vector>
 
 #include "paimon/file_index/file_index_result.h"
-#include "paimon/file_index/scored_file_index_result.h"
 #include "paimon/index/index_reader_capabilities.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/function_visitor.h"

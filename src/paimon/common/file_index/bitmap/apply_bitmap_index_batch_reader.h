@@ -26,7 +26,7 @@
 #include "arrow/c/bridge.h"
 #include "arrow/c/helpers.h"
 #include "paimon/common/reader/reader_utils.h"
-#include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/reader/file_batch_reader.h"
 #include "paimon/result.h"
 #include "paimon/status.h"

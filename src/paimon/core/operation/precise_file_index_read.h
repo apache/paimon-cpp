@@ -28,6 +28,7 @@
 
 #include "paimon/core/deletionvectors/deletion_vector.h"
 #include "paimon/core/operation/precise_index_evaluator.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/reader/file_batch_reader.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
@@ -43,7 +44,6 @@ class FileIndexEvaluator;
 class LeafPredicate;
 class Predicate;
 class RawFileSplitRead;
-class ScoredFileIndexResult;
 struct DataFileMeta;
 struct FullTextSearch;
 struct VectorSearch;
@@ -68,7 +68,7 @@ class PreciseFileIndexRead {
         const std::optional<std::vector<Range>>& row_ranges) const;
 
  private:
-    using Evaluator = PreciseIndexEvaluator<RoaringBitmap32, ScoredFileIndexResult>;
+    using Evaluator = PreciseIndexEvaluator<RoaringBitmap32>;
     using Evaluation = Evaluator::Evaluation;
 
     PreciseFileIndexRead(const RawFileSplitRead& split_read, const BinaryRow& partition,
