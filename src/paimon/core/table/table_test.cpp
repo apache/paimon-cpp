@@ -2658,6 +2658,7 @@ TEST(TableTest, StaticFallbackReadUsesSuppliedMainSchema) {
     ASSERT_EQ(main->GetSchema()->FieldNames(),
               fallback_read->context_->GetTableSchema()->FieldNames());
     ASSERT_EQ("main", fallback_read->context_->GetCoreOptions().GetBranch());
+    ASSERT_FALSE(fallback_read->context_->read_context_->GetSpecificTableSchema());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> missing_schema,
                          ReadContextBuilder(dir->Str())
                              .WithBranch("dev")

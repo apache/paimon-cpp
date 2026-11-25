@@ -650,6 +650,8 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
         internal_context->GetCoreOptions().GetScanFallbackBranch();
     if (!scan_fallback_branch ||
         StringUtils::IsNullOrWhitespaceOnly(scan_fallback_branch.value())) {
+        // The typed reader keeps the context, but has finished using the serialized schema.
+        read_context->table_schema_.reset();
         return std::move(table_read);
     }
 
@@ -687,6 +689,7 @@ Result<std::unique_ptr<TableRead>> FileStoreTable::NewRead(
                            CreateTableRead(fallback_context, read_context->GetMemoryPool(),
                                            read_context->GetExecutor()));
     const std::shared_ptr<arrow::MemoryPool>& arrow_pool = internal_context->GetArrowMemoryPool();
+    read_context->table_schema_.reset();
     return std::make_unique<FallbackTableRead>(std::move(table_read),
                                                std::move(fallback_table_read), arrow_pool);
 }
