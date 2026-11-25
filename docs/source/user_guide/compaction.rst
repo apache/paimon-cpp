@@ -108,8 +108,12 @@ Custom Compaction
 file_names, options, file_system, pool, executor)`` synchronously rewrites selected
 files and returns commit messages. Each call creates a dedicated batch writer
 and restores the latest snapshot for the specified partition-bucket. Input files
-must be distinct data file basenames. Files need not be contiguous; compaction
-thresholds do not apply.
+are supplied as a ``std::set<std::string>`` of data file basenames. Files need not
+be contiguous; compaction thresholds do not apply.
+
+Files are merged in file name order, preserving surviving physical row order.
+The call produces one file regardless of ``target-file-size``, or no file when
+all input rows are deleted.
 
 Supports fixed-bucket append tables with or without deletion vectors. Requires
 ``bucket-append-ordered = false`` and ``write-only = false``. The internal writer
@@ -129,6 +133,25 @@ Without deletion vectors, compactions of disjoint input files may run concurrent
 in the same partition-bucket. For example, compacting ``f1, f2`` into ``a`` and
 ``f3, f4`` into ``b`` is allowed. Overlapping compaction or overwrite that removes
 another task's input files may cause its commit to fail.
+
+Planning Indexes and Row Mappings
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``AppendFileCompactionPlanner::CreatePlan()`` returns index metadata and row id
+mappings for selected files, accounting for deletion vectors without writing data.
+
+Files follow file name order, matching ``AppendFileCompaction::Execute()``.
+For example, ``f1`` contains rows 0, 1, 2, with row 0 marked deleted by its
+deletion vector. ``f2`` contains rows 0, 1, with no deletions. Merging ``f1``
+followed by ``f2`` produces one file with four rows. Row ids start at zero::
+
+    Source file   Original row id   Compacted row id
+    f1            0                 deleted (no mapping)
+    f1            1                 0
+    f1            2                 1
+    f2            0                 2
+    f2            1                 3
+
+Use the same input files and snapshot deletion state for planning and execution.
 
 Dictionary Passthrough
 ~~~~~~~~~~~~~~~~~~~~~~

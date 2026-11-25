@@ -21,6 +21,7 @@
 #include <chrono>
 #include <future>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -315,8 +316,10 @@ TEST_F(BucketedAppendCompactManagerTest, TestPick) {
 TEST_F(BucketedAppendCompactManagerTest, TestCompactFilesUsesAsyncResultLifecycle) {
     auto cancellation_controller = std::make_shared<CancellationController>();
     auto files = GenerateDataFileMeta();
-    std::vector<std::shared_ptr<DataFileMeta>> selected = {files[0], files[2]};
-    std::vector<std::string> file_names = {files[2]->file_name, files[0]->file_name};
+    files[0]->file_name = "z-file";
+    files[2]->file_name = "a-file";
+    std::vector<std::shared_ptr<DataFileMeta>> selected = {files[2], files[0]};
+    std::set<std::string> file_names = {files[2]->file_name, files[0]->file_name};
     std::vector<std::shared_ptr<DataFileMeta>> outputs = {
         std::make_shared<DataFileMeta>(*files[0]), std::make_shared<DataFileMeta>(*files[2])};
     outputs[0]->file_name = "compacted1";

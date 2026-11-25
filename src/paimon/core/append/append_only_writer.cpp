@@ -111,7 +111,7 @@ Status AppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     return writer_->Write(batch->GetData());
 }
 
-Status AppendOnlyWriter::CompactFiles(const std::vector<std::string>& file_names) {
+Status AppendOnlyWriter::CompactFiles(const std::set<std::string>& file_names) {
     auto manager = std::dynamic_pointer_cast<BucketedAppendCompactManager>(compact_manager_);
     if (!manager) {
         return Status::Invalid("custom compaction requires a bucketed append compact manager");
