@@ -50,7 +50,9 @@ class PAIMON_EXPORT GlobalIndexScan {
     ///                       If not provided (nullptr), it is inferred from the `FILE_SYSTEM`
     ///                       key in the `options` parameter.
     /// @param executor       The executor to be used for asynchronous operations during global
-    ///                       index scan.
+    ///                       index scan. If nullptr, `global-index.thread-num` determines outer
+    ///                       pool size (default: CPU count).
+    ///                       Bitmap/BTree multi-file readers retain their independent pools.
     /// @param pool           Memory pool for temporary allocations; if nullptr, uses default.
     /// @return A `Result` containing a unique pointer to the created scanner,
     ///         or an error if initialization fails (e.g., I/O error, invalid snapshot id,
@@ -73,7 +75,9 @@ class PAIMON_EXPORT GlobalIndexScan {
     /// @param file_system       File system for accessing index files. If nullptr, it is
     ///                          inferred from the `FILE_SYSTEM` key in `options`.
     /// @param executor          The executor to be used for asynchronous operations during global
-    ///                          index scan.
+    ///                          index scan. If nullptr, `global-index.thread-num` determines outer
+    ///                          pool size (default: CPU count).
+    ///                          Bitmap/BTree multi-file readers retain their independent pools.
     /// @param pool              Memory pool for temporary allocations; if nullptr, uses default.
     /// @return A `Result` containing a unique pointer to the created scanner,
     ///         or an error if initialization fails.

@@ -353,8 +353,12 @@ at its cutoff. The merge breaks ties among the returned candidates by ascending 
   shard.
 - With deletion vectors, only the rows live in that snapshot are ranked, as described for
   ``GlobalIndexScan`` above.
-- The shards are searched in parallel on the executor given to ``WithExecutor()``, or else on one
-  with ``global-index.thread-num`` threads, and each returns at most ``limit`` rows.
+- The shards are searched on the executor given to ``WithExecutor()``. Without an explicit
+  executor, ``global-index.thread-num`` controls outer concurrency and defaults to the CPU count
+  (or 1 if unavailable).
+  Each shard returns at most ``limit`` rows. ``GlobalIndexScan`` follows the same policy.
+  Bitmap/BTree readers retain independent default 4-thread pools for multi-file reads, regardless
+  of ``global-index.thread-num``.
 - If Paimon C++ is built without the backend of a ``full-text`` or ``lucene-fts`` index, the
   search fails instead of skipping the index and leaving its rows out of the result.
 - A column with a primary-key full-text index (``pk-full-text.index.columns``) cannot be searched

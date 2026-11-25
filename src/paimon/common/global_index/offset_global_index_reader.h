@@ -29,6 +29,8 @@ namespace paimon {
 
 /// A GlobalIndexReader that wraps another reader and applies an offset to all row ids in the
 /// results. This is used to convert local row IDs into global row IDs.
+/// Concurrent queries are supported when the wrapped reader is thread-safe. Query rewriting
+/// and result offsetting use per-call state.
 class OffsetGlobalIndexReader : public GlobalIndexReader {
  public:
     /// Constructs an OffsetGlobalIndexReader.

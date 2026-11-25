@@ -68,7 +68,7 @@ class DataEvolutionFullTextScan : public FullTextScan {
     /// @param filter           Row filter beyond the partition filter, or null for all rows.
     /// @param text_field       The searched column.
     /// @param executor         Executor to read manifests on in the `detail` search mode, or null
-    ///                         to create one with `global-index.thread-num` threads if needed.
+    ///                         to use `global-index.thread-num` (default: CPU count).
     /// @param pool             Memory pool for reading index manifests.
     DataEvolutionFullTextScan(const std::string& root_path,
                               const std::shared_ptr<TableSchema>& table_schema,

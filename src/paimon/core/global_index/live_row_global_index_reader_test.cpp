@@ -19,7 +19,9 @@
 
 #include "paimon/core/global_index/live_row_global_index_reader.h"
 
+#include <atomic>
 #include <cstdint>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -30,7 +32,9 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "paimon/common/global_index/offset_global_index_reader.h"
 #include "paimon/executor.h"
+#include "paimon/global_index/bitmap_scored_global_index_result.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/literal.h"
@@ -42,6 +46,40 @@
 #include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon::test {
+namespace {
+// Applies filters to local row ids and scores each row using the query value and local row id.
+class FilteringGlobalIndexReader : public MockGlobalIndexReader {
+ public:
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitVectorSearch(
+        const std::shared_ptr<VectorSearch>& search) override {
+        return Search(search->pre_filter, search->query.front());
+    }
+
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> VisitFullTextSearch(
+        const std::shared_ptr<FullTextSearch>& search) override {
+        return Search(
+            [search](int64_t row_id) {
+                return !search->include_row_ids || search->include_row_ids->Contains(row_id);
+            },
+            static_cast<float>(search->limit));
+    }
+
+ private:
+    Result<std::shared_ptr<ScoredGlobalIndexResult>> Search(const VectorSearch::PreFilter& filter,
+                                                            float query_score) {
+        RoaringBitmap64 rows;
+        std::vector<float> scores;
+        for (int64_t row_id = 0; row_id < 4; ++row_id) {
+            if (!filter || filter(row_id)) {
+                rows.Add(row_id);
+                scores.push_back(query_score + static_cast<float>(row_id) + 0.1f);
+            }
+        }
+        return std::make_shared<BitmapScoredGlobalIndexResult>(std::move(rows), std::move(scores));
+    }
+};
+}  // namespace
+
 class LiveRowGlobalIndexReaderTest : public ::testing::Test {
  public:
     static LiveRowGlobalIndexReader::LiveRowsSupplier Supply(
@@ -321,6 +359,84 @@ TEST_F(LiveRowGlobalIndexReaderTest, TestLiveRowsErrorOnlyFailsSearchesThatRankR
     ASSERT_EQ(captured->include_row_ids.value(), RoaringBitmap64::From({100}));
 }
 
+TEST_F(LiveRowGlobalIndexReaderTest, TestConcurrentSearch) {
+    for (bool parallel_shards : {false, true}) {
+        SCOPED_TRACE(parallel_shards);
+        std::shared_ptr<Executor> executor;
+        if (parallel_shards) {
+            ASSERT_OK_AND_ASSIGN(executor, CreateDefaultExecutor(/*thread_count=*/4));
+        }
+        std::vector<std::shared_ptr<GlobalIndexReader>> shards;
+        for (int64_t offset : {100, 200}) {
+            shards.push_back(std::make_shared<OffsetGlobalIndexReader>(
+                std::make_shared<FilteringGlobalIndexReader>(), offset, offset + 3));
+        }
+        std::atomic<int32_t> load_count{0};
+        auto supplier = LiveRowGlobalIndexReader::CacheLiveRows(
+            [&]() -> Result<std::optional<RoaringBitmap64>> {
+                ++load_count;
+                // Shards cover [100, 103] and [200, 203]; DV deletes 101 and 202.
+                return std::optional<RoaringBitmap64>(
+                    RoaringBitmap64::From({100, 102, 103, 200, 201, 203}));
+            });
+        auto reader = LiveRowGlobalIndexReader::CreateUnion(
+            std::move(shards), {Range(100, 103), Range(200, 203)},
+            {Range(100, 103), Range(200, 203)}, executor, supplier);
+        ASSERT_TRUE(reader->IsThreadSafe());
+
+        std::promise<void> start;
+        std::shared_future<void> ready = start.get_future().share();
+        std::vector<std::future<void>> workers;
+        for (int32_t thread_id = 0; thread_id < 4; ++thread_id) {
+            workers.push_back(std::async(std::launch::async, [reader, ready, thread_id]() {
+                ready.wait();
+                for (int32_t iteration = 0; iteration < 16; ++iteration) {
+                    const int32_t query_id = thread_id * 16 + iteration;
+                    const int32_t parity = query_id % 2;
+                    const float query_score = static_cast<float>(query_id + 3);
+                    const RoaringBitmap64 expected_rows =
+                        parity == 0 ? RoaringBitmap64::From({100, 102, 200})
+                                    : RoaringBitmap64::From({103, 201, 203});
+                    // Scores follow ascending global row ids; offset changes ids, not scores.
+                    const std::vector<float> expected_scores =
+                        parity == 0 ? std::vector<float>{query_score + 0.1f, query_score + 2.1f,
+                                                         query_score + 0.1f}
+                                    : std::vector<float>{query_score + 3.1f, query_score + 1.1f,
+                                                         query_score + 3.1f};
+                    auto vector =
+                        SearchVector([parity](int64_t row_id) { return row_id % 2 == parity; });
+                    vector->query = {query_score};
+                    auto text = Search(parity == 0 ? RoaringBitmap64::From({100, 102, 200, 202})
+                                                   : RoaringBitmap64::From({101, 103, 201, 203}));
+                    text->limit = query_id + 3;
+                    for (bool vector_query : {false, true}) {
+                        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredGlobalIndexResult> result,
+                                             vector_query ? reader->VisitVectorSearch(vector)
+                                                          : reader->VisitFullTextSearch(text));
+                        auto scored =
+                            std::dynamic_pointer_cast<BitmapScoredGlobalIndexResult>(result);
+                        ASSERT_TRUE(scored);
+                        ASSERT_OK_AND_ASSIGN(const RoaringBitmap64* rows, scored->GetBitmap());
+                        ASSERT_EQ(*rows, expected_rows);
+                        const auto& scores = scored->GetScores();
+                        ASSERT_EQ(scores.size(), expected_scores.size());
+                        for (size_t i = 0; i < scores.size(); ++i) {
+                            ASSERT_FLOAT_EQ(scores[i], expected_scores[i]);
+                        }
+                    }
+                    ASSERT_TRUE(vector->pre_filter(parity == 0 ? 202 : 101));
+                    ASSERT_EQ(text->include_row_ids->Cardinality(), 4);
+                }
+            }));
+        }
+        start.set_value();
+        for (auto& worker : workers) {
+            worker.get();
+        }
+        ASSERT_EQ(load_count.load(), 1);
+    }
+}
+
 TEST_F(LiveRowGlobalIndexReaderTest, TestOtherVisitsDoNotReadLiveRows) {
     auto mock_reader = std::make_shared<MockGlobalIndexReader>();
     mock_reader->SetDefaultResult({1, 2});
@@ -338,6 +454,8 @@ TEST_F(LiveRowGlobalIndexReaderTest, TestOtherVisitsDoNotReadLiveRows) {
     ASSERT_EQ(call_count, 0);
     ASSERT_EQ(reader.GetIndexType(), "fake");
     ASSERT_TRUE(reader.IsThreadSafe());
+    mock_reader->SetThreadSafe(false);
+    ASSERT_FALSE(reader.IsThreadSafe());
 }
 
 }  // namespace paimon::test
