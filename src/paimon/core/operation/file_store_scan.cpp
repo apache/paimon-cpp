@@ -52,11 +52,13 @@
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/stats/simple_stats_evolution.h"
+#include "paimon/core/table/source/planning_control.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/duration.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/file_index/file_index_result.h"
+#include "paimon/format/file_format.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_segment.h"
 #include "paimon/predicate/literal.h"
@@ -156,6 +158,9 @@ FileStoreScan::RawPlan::GroupFiles FileStoreScan::RawPlan::GroupByPartFiles(
 }
 
 Result<std::vector<PartitionEntry>> FileStoreScan::ReadPartitionEntries() const {
+    if (planning_control_) {
+        return Status::NotImplemented("controlled planning applies only to CreatePlan");
+    }
     std::optional<Snapshot> snapshot;
     std::vector<ManifestFileMeta> all_manifest_file_metas;
     std::vector<ManifestFileMeta> filtered_manifest_file_metas;
@@ -178,6 +183,7 @@ Result<std::vector<PartitionEntry>> FileStoreScan::ReadPartitionEntries() const 
 }
 
 Result<std::shared_ptr<FileStoreScan::RawPlan>> FileStoreScan::CreatePlan() const {
+    PAIMON_RETURN_NOT_OK(ValidateControlledScanProfile());
     Duration duration;
     Duration manifest_read_duration;
     metrics_->SetCounter(ScanMetrics::LAST_SNAPSHOT_CACHE_LOAD_DURATION, 0);
@@ -312,6 +318,21 @@ Status FileStoreScan::ReadManifestLists(const std::optional<Snapshot>& snapshot,
     return Status::OK();
 }
 
+Status FileStoreScan::ValidateControlledScanProfile() const {
+    if (!planning_control_) {
+        return Status::OK();
+    }
+    if (scan_mode_ != ScanMode::ALL || !table_schema_->PrimaryKeys().empty() ||
+        core_options_.DataEvolutionEnabled() || core_options_.DeletionVectorsEnabled() ||
+        core_options_.GetCache() || core_options_.GetManifestFormat()->Identifier() != "avro" ||
+        row_range_index_) {
+        return Status::NotImplemented(
+            "controlled planning requires an uncached append-only Avro full snapshot "
+            "without row ranges");
+    }
+    return Status::OK();
+}
+
 Status FileStoreScan::ReadManifestsWithSnapshot(const Snapshot& snapshot,
                                                 std::vector<ManifestFileMeta>* manifests) const {
     switch (scan_mode_) {
@@ -322,8 +343,11 @@ Status FileStoreScan::ReadManifestsWithSnapshot(const Snapshot& snapshot,
             // ReadDataManifests produced.
             auto read_list = [this, &snapshot](bool base) -> Result<std::vector<ManifestFileMeta>> {
                 std::vector<ManifestFileMeta> metas;
-                PAIMON_RETURN_NOT_OK(base ? manifest_list_->ReadBaseManifests(snapshot, &metas)
-                                          : manifest_list_->ReadDeltaManifests(snapshot, &metas));
+                auto* row_limit =
+                    planning_control_ ? &planning_control_->manifest_list_rows : nullptr;
+                PAIMON_RETURN_NOT_OK(
+                    base ? manifest_list_->ReadBaseManifests(snapshot, &metas, row_limit)
+                         : manifest_list_->ReadDeltaManifests(snapshot, &metas, row_limit));
                 return metas;
             };
             std::vector<std::future<Result<std::vector<ManifestFileMeta>>>> futures;
@@ -341,7 +365,10 @@ Status FileStoreScan::ReadManifestsWithSnapshot(const Snapshot& snapshot,
                 Via(executor_.get(), [read_list]() { return read_list(/*base=*/false); }));
             for (auto& metas : CollectAll(futures)) {
                 if (!metas.ok()) {
-                    return metas.status();
+                    const auto& status = metas.status();
+                    return planning_control_ && status.IsCapacityError()
+                               ? status.WithMessage("manifest list: ", status.message())
+                               : status;
                 }
                 for (auto& meta : metas.value()) {
                     manifests->emplace_back(std::move(meta));
@@ -375,11 +402,12 @@ Status FileStoreScan::ReadFileEntries(const std::vector<ManifestFileMeta>& manif
         auto read_meta_task = [this, meta,
                                apply_scan_filter]() -> Result<std::vector<ManifestEntry>> {
             std::vector<ManifestEntry> tmp_entries;
+            auto* row_limit = planning_control_ ? &planning_control_->manifest_entry_rows : nullptr;
             if (apply_scan_filter) {
-                PAIMON_RETURN_NOT_OK(ReadManifestFileMeta(meta, &tmp_entries));
+                PAIMON_RETURN_NOT_OK(ReadManifestFileMeta(meta, &tmp_entries, row_limit));
             } else {
-                PAIMON_RETURN_NOT_OK(manifest_file_->Read(meta.FileName(), /*filter=*/nullptr,
-                                                          meta.FileSize(), &tmp_entries));
+                PAIMON_RETURN_NOT_OK(manifest_file_->Read(
+                    meta.FileName(), /*filter=*/nullptr, meta.FileSize(), &tmp_entries, row_limit));
             }
             return tmp_entries;
         };
@@ -390,7 +418,10 @@ Status FileStoreScan::ReadFileEntries(const std::vector<ManifestFileMeta>& manif
     auto unfiltered_entries = CollectAll(futures);
     for (auto& entry_list : unfiltered_entries) {
         if (!entry_list.ok()) {
-            return entry_list.status();
+            const auto& status = entry_list.status();
+            return planning_control_ && status.IsCapacityError()
+                       ? status.WithMessage("manifest entries: ", status.message())
+                       : status;
         }
         manifest_entries->reserve(manifest_entries->size() + entry_list.value().size());
         for (auto& entry : entry_list.value()) {
@@ -669,7 +700,8 @@ bool FileStoreScan::FilterManifestByRowRanges(const ManifestFileMeta& manifest) 
 }
 
 Status FileStoreScan::ReadManifestFileMeta(const ManifestFileMeta& manifest,
-                                           std::vector<ManifestEntry>* entries) const {
+                                           std::vector<ManifestEntry>* entries,
+                                           ManifestRowLimit* row_limit) const {
     const RowRangeIndex* row_ranges = nullptr;
     if (row_range_index_ && core_options_.DataEvolutionEnabled() &&
         core_options_.ScanManifestEntryLazyDecodeEnabled()) {
@@ -683,7 +715,7 @@ Status FileStoreScan::ReadManifestFileMeta(const ManifestFileMeta& manifest,
             return partition_filtered ? FilterNonPartitionManifestEntry(entry)
                                       : FilterManifestEntry(entry);
         },
-        entries);
+        entries, row_limit);
 }
 
 std::function<Result<bool>(const InternalRow&)> FileStoreScan::CreateManifestEntryRowFilter(

@@ -131,6 +131,28 @@ class ManifestListTest : public testing::Test {
     }
 };
 
+TEST_F(ManifestListTest, LimitsRowsBeforeReservingManifestMetadata) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto manifest_list = CreateManifestList("avro", dir->Str(), GetDefaultPool());
+    const std::vector<ManifestFileMeta> expected = {MakeMeta("manifest-a", 100, 1, 0),
+                                                    MakeMeta("manifest-b", 200, 1, 0)};
+    using WrittenFile = std::pair<std::string, int64_t>;
+    ASSERT_OK_AND_ASSIGN(WrittenFile written, manifest_list->Write(expected));
+
+    std::vector<ManifestFileMeta> metas;
+    const auto initial_capacity = metas.capacity();
+    ManifestRowLimit reject_two(1);
+    auto refusal = manifest_list->Read(written.first, nullptr, written.second, &metas, &reject_two);
+    EXPECT_TRUE(refusal.IsCapacityError()) << refusal.ToString();
+    EXPECT_TRUE(metas.empty());
+    EXPECT_EQ(initial_capacity, metas.capacity());
+
+    ManifestRowLimit admit_two(2);
+    ASSERT_OK(manifest_list->Read(written.first, nullptr, written.second, &metas, &admit_two));
+    EXPECT_EQ(expected, metas);
+}
+
 TEST_F(ManifestListTest, DecodedCacheReusesIpcAcrossReaders) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);

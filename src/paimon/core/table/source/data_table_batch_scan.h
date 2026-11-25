@@ -41,6 +41,8 @@ class DataTableBatchScan : public AbstractTableScan {
 
     Result<std::shared_ptr<Plan>> CreatePlan() override;
 
+    Status SetPlanningLimits(const PlanningLimits& limits);
+
     std::shared_ptr<PredicateFilter> GetNonPartitionPredicate() const {
         return snapshot_reader_->GetNonPartitionPredicate();
     }

@@ -20,7 +20,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <functional>
+#include <future>
 #include <map>
 #include <optional>
 #include <string>
@@ -33,6 +36,7 @@
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/data/serializer/binary_row_serializer.h"
+#include "paimon/common/executor/future.h"
 #include "paimon/common/io/cache/lru_cache.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/utils/math.h"
@@ -49,6 +53,7 @@
 #include "paimon/core/table/source/abstract_table_scan.h"
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
 #include "paimon/core/utils/file_store_path_factory.h"
+#include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/defs.h"
 #include "paimon/executor.h"
 #include "paimon/format/file_format_factory.h"
@@ -60,12 +65,15 @@
 #include "paimon/predicate/predicate_builder.h"
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
+#include "paimon/table/source/data_split.h"
 #include "paimon/table/source/scan_metrics.h"
 #include "paimon/table/source/table_scan.h"
 #include "paimon/testing/mock/mock_file_batch_reader.h"
 #include "paimon/testing/mock/mock_format_reader_builder.h"
 #include "paimon/testing/utils/binary_row_generator.h"
+#include "paimon/testing/utils/blocking_file_system.h"
 #include "paimon/testing/utils/counting_cache_test_utils.h"
+#include "paimon/testing/utils/counting_reader_file_system.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
@@ -1069,6 +1077,321 @@ TEST(AppendOnlyFileStoreScanTest, SnapshotCacheRebuildsCorruptValues) {
             ASSERT_EQ(SortedFileNames(all->Files()), all_names);
         }
     }
+}
+
+TEST(AppendOnlyFileStoreScanTest, ControlledPlanRespectsLimits) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
+                                       arrow::field("f1", arrow::int32())};
+    const std::map<std::string, std::string> options = {
+        {Options::BUCKET, "1"}, {Options::BUCKET_KEY, "f0"}, {Options::FILE_FORMAT, "orc"}};
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> writer,
+                         TestHelper::Create(dir->Str(), arrow::schema(fields), {"f1"}, {}, options,
+                                            /*is_streaming_mode=*/false));
+    std::vector<std::unique_ptr<RecordBatch>> batches;
+    for (int32_t partition : {10, 20}) {
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<RecordBatch> batch,
+            TestHelper::MakeRecordBatch(arrow::struct_(fields), fmt::format("[[1, {}]]", partition),
+                                        {{"f1", fmt::format("{}", partition)}}, /*bucket=*/0,
+                                        {RecordBatch::RowKind::INSERT}));
+        batches.push_back(std::move(batch));
+    }
+    ASSERT_OK(writer->WriteAndCommit(std::move(batches), 0, std::nullopt));
+    writer.reset();
+
+    const std::string table_path = dir->Str() + "/foo.db/bar";
+    std::shared_ptr<MemoryPool> pool = GetMemoryPool();
+    auto create_scan = [&](const PlanningLimits& limits) -> Result<std::unique_ptr<TableScan>> {
+        ScanContextBuilder builder(table_path);
+        builder.WithMemoryPool(pool).SetLimit(1).SetPredicate(
+            PredicateBuilder::Equal(1, "f1", FieldType::INT, Literal(10)));
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context, builder.Finish());
+        return TableScan::Create(std::move(context), limits);
+    };
+
+    ASSERT_OK_AND_ASSIGN(auto list_limited, create_scan({0, 32, 32}));
+    auto list_refusal = list_limited->CreatePlan();
+    EXPECT_TRUE(list_refusal.status().IsCapacityError());
+    EXPECT_NE(std::string::npos, list_refusal.status().ToString().find("manifest list"));
+    EXPECT_EQ(0, pool->CurrentUsage());
+
+    ASSERT_OK_AND_ASSIGN(auto entry_limited, create_scan({32, 0, 32}));
+    auto entry_refusal = entry_limited->CreatePlan();
+    EXPECT_TRUE(entry_refusal.status().IsCapacityError());
+    EXPECT_NE(std::string::npos, entry_refusal.status().ToString().find("manifest entries"));
+    EXPECT_EQ(0, pool->CurrentUsage());
+
+    ASSERT_OK_AND_ASSIGN(auto split_limited, create_scan({32, 1, 0}));
+    auto split_refusal = split_limited->CreatePlan();
+    EXPECT_TRUE(split_refusal.status().IsCapacityError());
+    EXPECT_NE(std::string::npos, split_refusal.status().ToString().find("split limit"));
+    EXPECT_EQ(0, pool->CurrentUsage());
+
+    ASSERT_OK_AND_ASSIGN(auto exact, create_scan({32, 1, 1}));
+    ASSERT_OK_AND_ASSIGN(auto plan, exact->CreatePlan());
+    EXPECT_EQ(1, plan->SnapshotId());
+    EXPECT_EQ(1, plan->Splits().size());
+}
+
+TEST(AppendOnlyFileStoreScanTest, ControlledPlanCountsAcrossBaseAndDeltaWithLazyDecodeOff) {
+    const std::string path = GetDataDir() + "/avro/append_multiple.db/append_multiple";
+    SnapshotManager snapshots(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot, snapshots.LoadSnapshot(2));
+    const auto fixture_scan = BuildScan(path, /*cache=*/nullptr);
+    std::vector<ManifestFileMeta> manifests;
+    ASSERT_OK(fixture_scan->manifest_list_->ReadBaseManifests(snapshot, &manifests));
+    ASSERT_EQ(1u, manifests.size());
+    ASSERT_OK(fixture_scan->manifest_list_->ReadDeltaManifests(snapshot, &manifests));
+    ASSERT_EQ(2u, manifests.size());
+    ASSERT_NE(manifests[0].FileName(), manifests[1].FileName());
+    for (const auto& manifest : manifests) {
+        ASSERT_EQ(3, manifest.NumAddedFiles());
+        ASSERT_EQ(0, manifest.NumDeletedFiles());
+    }
+
+    auto delta = std::make_shared<CountingReaderFileSystem>(manifests[1].FileName());
+    std::shared_ptr<MemoryPool> pool = GetMemoryPool();
+    auto create_scan = [&](const PlanningLimits& limits,
+                           bool lazy = false) -> Result<std::unique_ptr<TableScan>> {
+        ScanContextBuilder builder(path);
+        builder.AddOption(Options::SCAN_SNAPSHOT_ID, "2")
+            .AddOption(Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED, lazy ? "true" : "false")
+            .SetPartitionFilter({{{"f1", "10"}}})
+            .WithFileSystem(delta)
+            .WithMemoryPool(pool);
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context, builder.Finish());
+        return TableScan::Create(std::move(context), limits);
+    };
+
+    ASSERT_OK_AND_ASSIGN(auto list_limited, create_scan({1, 6, 6}));
+    const auto list_refusal = list_limited->CreatePlan();
+    EXPECT_TRUE(list_refusal.status().IsCapacityError());
+    EXPECT_NE(std::string::npos, list_refusal.status().ToString().find("manifest list"));
+    EXPECT_EQ(0, delta->counts->opens.load());
+    EXPECT_EQ(0, pool->CurrentUsage());
+
+    ASSERT_OK_AND_ASSIGN(auto entry_limited, create_scan({2, 5, 6}));
+    const auto entry_refusal = entry_limited->CreatePlan();
+    EXPECT_TRUE(entry_refusal.status().IsCapacityError());
+    EXPECT_NE(std::string::npos, entry_refusal.status().ToString().find("manifest entries"));
+    EXPECT_EQ(1, delta->counts->opens.load());
+    EXPECT_EQ(0, delta->counts->live.load());
+    EXPECT_EQ(0, pool->CurrentUsage());
+
+    for (bool lazy : {false, true}) {
+        SCOPED_TRACE(lazy);
+        const size_t entry_limit = lazy ? 4 : 6;
+        ASSERT_OK_AND_ASSIGN(auto exact, create_scan({2, entry_limit, 6}, lazy));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, exact->CreatePlan());
+        EXPECT_EQ(2, plan->SnapshotId());
+        EXPECT_FALSE(plan->Splits().empty());
+        ASSERT_OK_AND_ASSIGN(uint64_t files, exact->GetMetrics()->GetCounter(
+                                                 ScanMetrics::LAST_SCAN_RESULTED_TABLE_FILES));
+        EXPECT_EQ(4, files);
+    }
+    EXPECT_EQ(3, delta->counts->opens.load());
+    EXPECT_EQ(0, delta->counts->live.load());
+    EXPECT_EQ(0, pool->CurrentUsage());
+}
+
+TEST(AppendOnlyFileStoreScanTest, PlanningLimitSharesParallelManifestLists) {
+    const std::string path = GetDataDir() + "/avro/append_multiple.db/append_multiple";
+    SnapshotManager snapshots(std::make_shared<LocalFileSystem>(), path);
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot, snapshots.LoadSnapshot(2));
+    const auto counted = std::make_shared<CountingReaderFileSystem>(snapshot.DeltaManifestList());
+    std::promise<void> delta_open;
+    auto delta_seen = delta_open.get_future();
+    counted->before_open = [&delta_open](const std::string&) {
+        delta_open.set_value();
+        return Status::OK();
+    };
+    auto filesystem = std::make_shared<BlockingFileSystem>(counted);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Executor> workers, CreateDefaultExecutor(2));
+    std::shared_ptr<Executor> executor(std::move(workers));
+    ScanContextBuilder builder(path);
+    builder.AddOption(Options::SCAN_SNAPSHOT_ID, "2")
+        .WithFileSystem(filesystem)
+        .WithExecutor(executor);
+    ASSERT_OK_AND_ASSIGN(auto context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(auto scan, TableScan::Create(std::move(context), {1, 6, 3}));
+
+    auto base = filesystem->BlockNext(
+        BlockingFileSystem::Operation::OPEN,
+        FileStorePathFactory::ManifestPath(path) + "/" + snapshot.BaseManifestList());
+    auto result = std::async(std::launch::async, [&] { return scan->CreatePlan(); });
+    EXPECT_TRUE(base->WaitForArrival());
+    EXPECT_EQ(std::future_status::ready, delta_seen.wait_for(std::chrono::seconds(5)));
+    EXPECT_EQ(std::future_status::timeout, result.wait_for(std::chrono::milliseconds(0)));
+    base->Release();
+    const auto plan = result.get();
+    EXPECT_TRUE(plan.status().IsCapacityError());
+    EXPECT_NE(std::string::npos, plan.status().ToString().find("manifest list"));
+    EXPECT_EQ(1, counted->counts->opens.load());
+    EXPECT_EQ(0, counted->counts->live.load());
+}
+
+TEST(AppendOnlyFileStoreScanTest, ControlledPlanChargesEntriesBeforeDataPredicate) {
+    const std::string path = GetDataDir() + "/avro/append_multiple.db/append_multiple";
+    std::shared_ptr<MemoryPool> pool = GetMemoryPool();
+    auto make_context = [&](const std::shared_ptr<Predicate>& predicate) {
+        return ScanContextBuilder(path)
+            .AddOption(Options::SCAN_SNAPSHOT_ID, "2")
+            .AddOption(Options::SCAN_MANIFEST_ENTRY_LAZY_DECODE_ENABLED, "false")
+            .SetPredicate(predicate)
+            .WithMemoryPool(pool)
+            .Finish();
+    };
+
+    const auto no_match =
+        PredicateBuilder::GreaterThan(3, "f3", FieldType::BIGINT, Literal(int64_t{100}));
+    ASSERT_OK_AND_ASSIGN(auto legacy_context, make_context(no_match));
+    ASSERT_OK_AND_ASSIGN(auto legacy, TableScan::Create(std::move(legacy_context)));
+    ASSERT_OK_AND_ASSIGN(auto legacy_plan, legacy->CreatePlan());
+    ASSERT_EQ(2, legacy_plan->SnapshotId());
+    ASSERT_TRUE(legacy_plan->Splits().empty());
+    legacy.reset();
+    EXPECT_EQ(0, pool->CurrentUsage());
+
+    ASSERT_OK_AND_ASSIGN(auto limited_context, make_context(no_match));
+    ASSERT_OK_AND_ASSIGN(auto limited, TableScan::Create(std::move(limited_context), {2, 5, 0}));
+    const auto refusal = limited->CreatePlan();
+    EXPECT_TRUE(refusal.status().IsCapacityError());
+    EXPECT_NE(std::string::npos, refusal.status().ToString().find("manifest entries"));
+    limited.reset();
+    EXPECT_EQ(0, pool->CurrentUsage());
+
+    ASSERT_OK_AND_ASSIGN(auto exact_context, make_context(no_match));
+    ASSERT_OK_AND_ASSIGN(auto exact, TableScan::Create(std::move(exact_context), {2, 6, 0}));
+    ASSERT_OK_AND_ASSIGN(auto plan, exact->CreatePlan());
+    EXPECT_EQ(legacy_plan->SnapshotId(), plan->SnapshotId());
+    EXPECT_TRUE(plan->Splits().empty());
+    exact.reset();
+    EXPECT_EQ(0, pool->CurrentUsage());
+
+    const auto selective =
+        PredicateBuilder::GreaterThan(0, "f0", FieldType::TINYINT, Literal(int8_t{4}));
+    ASSERT_OK_AND_ASSIGN(auto selected_context, make_context(selective));
+    ASSERT_OK_AND_ASSIGN(auto selected, TableScan::Create(std::move(selected_context), {2, 6, 3}));
+    ASSERT_OK_AND_ASSIGN(auto selected_plan, selected->CreatePlan());
+    EXPECT_EQ(2, selected_plan->SnapshotId());
+    EXPECT_EQ(3, selected_plan->Splits().size());
+    ASSERT_OK_AND_ASSIGN(uint64_t files, selected->GetMetrics()->GetCounter(
+                                             ScanMetrics::LAST_SCAN_RESULTED_TABLE_FILES));
+    EXPECT_EQ(3, files);
+}
+
+TEST(AppendOnlyFileStoreScanTest, ControlledPlanLimitsPackedSplits) {
+    const std::string path = GetDataDir() + "/avro/append_multiple.db/append_multiple";
+    auto make_context = [&](std::optional<int32_t> row_limit = std::nullopt) {
+        ScanContextBuilder builder(path);
+        builder.AddOption(Options::SCAN_SNAPSHOT_ID, "2")
+            .AddOption(Options::SOURCE_SPLIT_TARGET_SIZE, "1GB");
+        if (row_limit) {
+            builder.SetLimit(*row_limit);
+        }
+        return builder.Finish();
+    };
+
+    ASSERT_OK_AND_ASSIGN(auto limited_context, make_context());
+    ASSERT_OK_AND_ASSIGN(auto limited, TableScan::Create(std::move(limited_context), {2, 6, 2}));
+    const auto refusal = limited->CreatePlan();
+    EXPECT_TRUE(refusal.status().IsCapacityError());
+    EXPECT_NE(std::string::npos, refusal.status().ToString().find("split limit"));
+
+    ASSERT_OK_AND_ASSIGN(auto exact_context, make_context());
+    ASSERT_OK_AND_ASSIGN(auto exact, TableScan::Create(std::move(exact_context), {2, 6, 3}));
+    ASSERT_OK_AND_ASSIGN(auto plan, exact->CreatePlan());
+    EXPECT_EQ(2, plan->SnapshotId());
+    EXPECT_EQ(3, plan->Splits().size());
+
+    ASSERT_OK_AND_ASSIGN(auto default_context, make_context());
+    ASSERT_OK_AND_ASSIGN(auto defaults, TableScan::Create(std::move(default_context), {}));
+    ASSERT_OK_AND_ASSIGN(auto default_plan, defaults->CreatePlan());
+    EXPECT_EQ(3, default_plan->Splits().size());
+
+    ASSERT_OK_AND_ASSIGN(auto row_limit_context, make_context(1));
+    ASSERT_OK_AND_ASSIGN(auto row_limited, TableScan::Create(std::move(row_limit_context)));
+    ASSERT_OK_AND_ASSIGN(auto row_limited_plan, row_limited->CreatePlan());
+    EXPECT_EQ(1, row_limited_plan->Splits().size());
+
+    ASSERT_OK_AND_ASSIGN(auto both_limits_context, make_context(1));
+    ASSERT_OK_AND_ASSIGN(auto both_limits,
+                         TableScan::Create(std::move(both_limits_context), {2, 6, 2}));
+    const auto both_limits_refusal = both_limits->CreatePlan();
+    EXPECT_TRUE(both_limits_refusal.status().IsCapacityError());
+    EXPECT_NE(std::string::npos, both_limits_refusal.status().ToString().find("split limit"));
+}
+
+TEST(AppendOnlyFileStoreScanTest, ControlledPlanCountsAcrossManySmallManifests) {
+    constexpr int32_t kManifestCount = 24;
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    const arrow::FieldVector fields = {arrow::field("f0", arrow::int32())};
+    const std::map<std::string, std::string> options = {
+        {Options::BUCKET, "1"},
+        {Options::BUCKET_KEY, "f0"},
+        {Options::FILE_FORMAT, "orc"},
+        {Options::WRITE_ONLY, "true"},
+        {Options::MANIFEST_MERGE_MIN_COUNT, "1000"},
+    };
+    // The fixture commits multiple snapshots through one writer, then plans a batch scan.
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TestHelper> writer,
+                         TestHelper::Create(dir->Str(), arrow::schema(fields), {}, {}, options,
+                                            /*is_streaming_mode=*/true));
+    for (int32_t i = 0; i < kManifestCount; ++i) {
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<RecordBatch> batch,
+            TestHelper::MakeRecordBatch(arrow::struct_(fields), fmt::format("[[{}]]", i), {},
+                                        /*bucket=*/0, {RecordBatch::RowKind::INSERT}));
+        ASSERT_OK(writer->WriteAndCommit(std::move(batch), i, std::nullopt));
+    }
+    writer.reset();
+
+    const std::string path = dir->Str() + "/foo.db/bar";
+    SnapshotManager snapshots(dir->GetFileSystem(), path);
+    ASSERT_OK_AND_ASSIGN(Snapshot snapshot, snapshots.LoadSnapshot(kManifestCount));
+    const auto file_store_scan = BuildScan(path, /*cache=*/nullptr);
+    std::vector<ManifestFileMeta> manifests;
+    ASSERT_OK(file_store_scan->manifest_list_->ReadDataManifests(snapshot, &manifests));
+    ASSERT_EQ(kManifestCount, manifests.size());
+    for (const auto& manifest : manifests) {
+        ASSERT_EQ(1, manifest.NumAddedFiles());
+        ASSERT_EQ(0, manifest.NumDeletedFiles());
+    }
+
+    auto create_scan =
+        [&](const PlanningLimits& limits,
+            const std::shared_ptr<FileSystem>& fs) -> Result<std::unique_ptr<TableScan>> {
+        ScanContextBuilder builder(path);
+        builder.WithFileSystem(fs)
+            .AddOption(Options::SCAN_SNAPSHOT_ID, fmt::format("{}", kManifestCount))
+            .AddOption(Options::SOURCE_SPLIT_TARGET_SIZE, "1GB");
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ScanContext> context, builder.Finish());
+        return TableScan::Create(std::move(context), limits);
+    };
+    auto counted = std::make_shared<CountingReaderFileSystem>(manifests.back().FileName());
+    ASSERT_OK_AND_ASSIGN(auto list_limited,
+                         create_scan({kManifestCount - 1, kManifestCount, 1}, counted));
+    EXPECT_TRUE(list_limited->CreatePlan().status().IsCapacityError());
+    EXPECT_EQ(0, counted->counts->opens.load());
+
+    ASSERT_OK_AND_ASSIGN(auto entries_limited,
+                         create_scan({kManifestCount, kManifestCount - 1, 1}, counted));
+    EXPECT_TRUE(entries_limited->CreatePlan().status().IsCapacityError());
+    EXPECT_EQ(1, counted->counts->opens.load());
+    EXPECT_EQ(0, counted->counts->live.load());
+
+    ASSERT_OK_AND_ASSIGN(auto exact, create_scan({kManifestCount, kManifestCount, 1}, counted));
+    ASSERT_OK_AND_ASSIGN(auto plan, exact->CreatePlan());
+    EXPECT_EQ(kManifestCount, plan->SnapshotId());
+    ASSERT_EQ(1, plan->Splits().size());
+    const auto split = std::dynamic_pointer_cast<DataSplit>(plan->Splits().front());
+    ASSERT_TRUE(split);
+    EXPECT_EQ(kManifestCount, split->GetFileList().size());
+    EXPECT_EQ(2, counted->counts->opens.load());
+    EXPECT_EQ(0, counted->counts->live.load());
 }
 
 TEST(AppendOnlyFileStoreScanTest, PartitionPruningAcrossCacheModes) {

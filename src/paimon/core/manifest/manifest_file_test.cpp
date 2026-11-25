@@ -410,6 +410,101 @@ TEST_F(ManifestFileTest, TestReadBucketEntriesMaterializesOnlySelectedBucket) {
     ASSERT_EQ(1, manifest_cache->SupplierCallCount());
 }
 
+TEST_F(ManifestFileTest, SelectedEntryLimitAppliesAfterRowSelection) {
+    auto pool = GetDefaultPool();
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    // Rewrite a pair of known buckets as an ordinary Avro manifest in the test directory.
+    const auto entries = ReadManifestEntry("orc", GetDataDir() + "/orc/append_09.db/append_09",
+                                           "manifest-3a44a0da-1008-463c-914e-28d271375e24-0", pool);
+    ASSERT_EQ(2, entries.size());
+    ASSERT_NE(entries[0].Bucket(), entries[1].Bucket());
+    auto partition_schema = arrow::schema({arrow::field("f1", arrow::int32())});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileFormat> avro, FileFormatFactory::Get("avro", {}));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<FileStorePathFactory> paths,
+        FileStorePathFactory::Create(
+            dir->Str(), partition_schema, {"f1"}, /*default_part_value=*/"", avro->Identifier(),
+            /*data_file_prefix=*/"data-", /*legacy_partition_name_enabled=*/true,
+            /*external_paths=*/{}, /*global_index_external_paths=*/{},
+            /*index_file_in_data_file_dir=*/false, /*external_path_weights=*/{}, pool));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap({}));
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ManifestFile> file,
+        ManifestFile::Create(dir->GetFileSystem(), avro, "zstd", paths,
+                             /*target_file_size=*/1024 * 1024, pool, options, partition_schema));
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestFileMeta> metas, file->Write(entries));
+    ASSERT_EQ(1, metas.size());
+    const auto& meta = metas.front();
+    const auto matches_second = [bucket =
+                                     entries[1].Bucket()](const InternalRow& row) -> Result<bool> {
+        return ManifestEntrySerializer::GetBucket(row) == bucket;
+    };
+
+    std::vector<ManifestEntry> selected;
+    int decoded = 0;
+    const auto count_decoded = [&decoded](const ManifestEntry&) -> Result<bool> {
+        ++decoded;
+        return true;
+    };
+    ManifestRowLimit reject_selected(0);
+    auto refusal =
+        file->ReadSelectedEntries(meta.FileName(), meta.FileSize(), nullptr, matches_second,
+                                  count_decoded, &selected, &reject_selected);
+    EXPECT_TRUE(refusal.IsCapacityError()) << refusal.ToString();
+    EXPECT_EQ(0, decoded);
+    EXPECT_TRUE(selected.empty());
+
+    ManifestRowLimit admit_selected(1);
+    ASSERT_OK(file->ReadSelectedEntries(meta.FileName(), meta.FileSize(), nullptr, matches_second,
+                                        count_decoded, &selected, &admit_selected));
+    EXPECT_EQ(1, decoded);
+    EXPECT_EQ(std::vector<ManifestEntry>({entries[1]}), selected);
+
+    ASSERT_OK_AND_ASSIGN(std::vector<ManifestFileMeta> later_metas, file->Write(entries));
+    ASSERT_EQ(1, later_metas.size());
+    ASSERT_NE(meta.FileName(), later_metas[0].FileName());
+    std::vector<ManifestEntry> later_entries;
+    const auto& later_meta = later_metas[0];
+    const auto later_refusal =
+        file->ReadSelectedEntries(later_meta.FileName(), later_meta.FileSize(), nullptr,
+                                  matches_second, count_decoded, &later_entries, &admit_selected);
+    EXPECT_TRUE(later_refusal.IsCapacityError()) << later_refusal.ToString();
+    EXPECT_TRUE(later_entries.empty());
+    EXPECT_EQ(1, decoded);
+
+    // Filtering out an already decoded entry cannot restore its admission allowance.
+    std::vector<ManifestEntry> post_filtered;
+    ManifestRowLimit admit_one(1);
+    const auto admit_either = [](const InternalRow&) -> Result<bool> { return true; };
+    const int32_t kept_bucket = entries[1].Bucket();
+    const auto post_filter = [kept_bucket](const ManifestEntry& entry) -> Result<bool> {
+        return entry.Bucket() == kept_bucket;
+    };
+    const auto post_filter_refusal =
+        file->ReadSelectedEntries(meta.FileName(), meta.FileSize(), nullptr, admit_either,
+                                  post_filter, &post_filtered, &admit_one);
+    EXPECT_TRUE(post_filter_refusal.IsCapacityError()) << post_filter_refusal.ToString();
+    EXPECT_TRUE(post_filtered.empty());
+
+    // The row passes selection, but materializing it would reject its file kind.
+    ManifestEntry invalid(FileKind(static_cast<int8_t>(2)), entries[1].Partition(),
+                          entries[1].Bucket(), entries[1].TotalBuckets(), entries[1].File());
+    using WrittenFile = std::pair<std::string, int64_t>;
+    ASSERT_OK_AND_ASSIGN(WrittenFile malformed, file->WriteWithoutRolling({invalid}));
+    ManifestRowLimit reject_before_decode(0);
+    auto rejected =
+        file->ReadSelectedEntries(malformed.first, malformed.second, nullptr, matches_second,
+                                  count_decoded, &selected, &reject_before_decode);
+    EXPECT_TRUE(rejected.IsCapacityError()) << rejected.ToString();
+    ManifestRowLimit allow_decode(1);
+    ASSERT_NOK_WITH_MSG(
+        file->ReadSelectedEntries(malformed.first, malformed.second, nullptr, matches_second,
+                                  count_decoded, &selected, &allow_decode),
+        "Unsupported byte value 2 for file kind.");
+    EXPECT_EQ(std::vector<ManifestEntry>({entries[1]}), selected);
+}
+
 // A scan reads manifests whose length the manifest list already recorded. Handing that length over
 // is what lets the store skip the metadata request a bare open issues, which on a remote store is
 // a round trip paid before any of the file is read.

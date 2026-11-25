@@ -36,6 +36,7 @@
 #include "paimon/core/snapshot.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/plan_impl.h"
+#include "paimon/core/table/source/planning_control.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 
 namespace paimon {
@@ -55,6 +56,7 @@ Result<std::vector<std::shared_ptr<Split>>> SnapshotReader::GenerateSplits(
     const std::unique_ptr<SplitGenerator>& split_generator,
     FileStoreScan::RawPlan::GroupFiles&& grouped_manifest_entries) const {
     std::vector<std::shared_ptr<Split>> splits;
+    const auto& control = GetPlanningControl();
     // Read deletion indexes at once to reduce file IO
     std::unordered_map<std::pair<BinaryRow, int32_t>, std::vector<std::shared_ptr<IndexFileMeta>>>
         deletion_index_files_map;
@@ -85,6 +87,9 @@ Result<std::vector<std::shared_ptr<Split>>> SnapshotReader::GenerateSplits(
             } else {
                 PAIMON_ASSIGN_OR_RAISE(split_groups,
                                        split_generator->SplitForBatch(std::move(files)));
+            }
+            if (control && split_groups.size() > control->split_count - splits.size()) {
+                return Status::CapacityError("split limit exceeded");
             }
             for (auto& split_group : split_groups) {
                 std::vector<std::shared_ptr<DataFileMeta>>& data_files = split_group.files;

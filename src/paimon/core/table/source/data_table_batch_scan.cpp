@@ -28,6 +28,7 @@
 #include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/table/source/plan_impl.h"
+#include "paimon/core/table/source/planning_control.h"
 #include "paimon/core/table/source/snapshot/snapshot_reader.h"
 #include "paimon/status.h"
 
@@ -62,6 +63,11 @@ DataTableBatchScan::DataTableBatchScan(bool pk_table, const CoreOptions& core_op
     if (core_options.GetBucket() == BucketModeDefine::POSTPONE_BUCKET) {
         snapshot_reader_->OnlyReadRealBuckets();
     }
+}
+
+Status DataTableBatchScan::SetPlanningLimits(const PlanningLimits& limits) {
+    return snapshot_reader_->SetPlanningControl(std::make_shared<PlanningControl>(
+        limits.max_manifest_list_rows, limits.max_manifest_entry_rows, limits.max_splits));
 }
 
 Result<std::shared_ptr<Plan>> DataTableBatchScan::CreatePlan() {

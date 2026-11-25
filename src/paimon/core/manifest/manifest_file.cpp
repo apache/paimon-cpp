@@ -138,14 +138,14 @@ Status ManifestFile::ReadSelectedEntries(
     const std::string& file_name, std::optional<int64_t> file_size, const RowRangeIndex* row_ranges,
     const std::function<Result<bool>(const InternalRow&)>& row_filter,
     const std::function<Result<bool>(const ManifestEntry&)>& entry_filter,
-    std::vector<ManifestEntry>* entries) const {
+    std::vector<ManifestEntry>* entries, ManifestRowLimit* row_limit) const {
     if (!row_ranges && !row_filter) {
-        return Read(file_name, entry_filter, file_size, entries);
+        return Read(file_name, entry_filter, file_size, entries, row_limit);
     }
     return ReadArrowBatches(
         file_name, file_size,
-        [this, row_ranges, &row_filter, &entry_filter,
-         entries](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
+        [this, row_ranges, &row_filter, &entry_filter, entries,
+         row_limit](const std::shared_ptr<arrow::StructArray>& batch) -> Status {
             // ManifestMetaReader has aligned both the entry and its nested file schema.
             // Only row-range scans need to probe the file columns before entry decoding.
             std::shared_ptr<arrow::StructArray> files;
@@ -194,6 +194,9 @@ Status ManifestFile::ReadSelectedEntries(
                         continue;
                     }
                 }
+                if (row_limit) {
+                    PAIMON_RETURN_NOT_OK(row_limit->Admit(1));
+                }
                 PAIMON_ASSIGN_OR_RAISE(ManifestEntry entry, serializer_->FromRow(row));
                 if (entry_filter) {
                     PAIMON_ASSIGN_OR_RAISE(bool keep, entry_filter(entry));
@@ -205,7 +208,7 @@ Status ManifestFile::ReadSelectedEntries(
             }
             return Status::OK();
         },
-        /*prepare_reader=*/nullptr);
+        /*prepare_reader=*/nullptr, /*allow_cache=*/!row_limit);
 }
 
 Status ManifestFile::PrepareBucketRead(int32_t bucket,

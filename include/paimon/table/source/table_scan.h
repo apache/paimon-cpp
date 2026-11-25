@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include <cstddef>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -33,6 +35,25 @@
 namespace paimon {
 class ScanContext;
 
+/// Per-plan limits for an uncached managed append-only batch scan of a full snapshot with Avro
+/// manifests. Row ranges are unsupported. A default limit imposes no count restriction.
+/// Set explicit finite limits to bound objects. Each zero allows no such objects.
+///
+/// These counts exclude table and snapshot discovery, schema and index/statistics buffers,
+/// decoding buffers (including Arrow and Avro), variable-length field bytes, and container
+/// capacity.
+struct PlanningLimits {
+    /// Total rows in the base and delta manifest lists, charged before conversion to objects.
+    std::size_t max_manifest_list_rows = std::numeric_limits<std::size_t>::max();
+    /// Rows charged across all selected manifests. With lazy entry decoding, only rows that
+    /// pass the early partition row filter are charged. Otherwise each decoded Arrow batch
+    /// is charged in full. Data-column predicates run after these charges.
+    std::size_t max_manifest_entry_rows = std::numeric_limits<std::size_t>::max();
+    /// Actual split count before applying the row limit, checked after a bucket is packed and
+    /// before creating its split objects. Packing groups are bounded by the admitted entries.
+    std::size_t max_splits = std::numeric_limits<std::size_t>::max();
+};
+
 /// A scanner interface for reading table's meta and create a plan.
 class PAIMON_EXPORT TableScan {
  public:
@@ -41,6 +62,11 @@ class PAIMON_EXPORT TableScan {
     /// @param context A unique pointer to the `ScanContext` used for scan operations.
     /// @return A Result containing a unique pointer to the `TableScan` instance.
     static Result<std::unique_ptr<TableScan>> Create(std::unique_ptr<ScanContext> context);
+
+    /// Opt in to planning object limits using the existing executor.
+    /// Unsupported routes return `NotImplemented`. A limit refusal returns `CapacityError`.
+    static Result<std::unique_ptr<TableScan>> Create(std::unique_ptr<ScanContext> context,
+                                                     const PlanningLimits& limits);
 
     virtual ~TableScan() = default;
 
