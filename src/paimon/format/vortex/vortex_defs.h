@@ -21,7 +21,12 @@
 
 #include <cstdint>
 
+#include "paimon/format/vortex/vortex_ffi.h"
+
 namespace paimon::vortex {
+
+inline constexpr char kVortexWriteEdition[] = "vortex.write.edition";
+inline constexpr char kDefaultVortexWriteEdition[] = VX_EDITION_CORE_2025_10_0;
 
 inline constexpr char kVortexReadInPushdownMaxValues[] = "vortex.read.in-pushdown.max-values";
 inline constexpr uint32_t kDefaultVortexReadInPushdownMaxValues = 32;

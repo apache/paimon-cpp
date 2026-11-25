@@ -20,14 +20,15 @@
 
 #include <cstdint>
 #include <cstring>
-#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "arrow/c/bridge.h"
 #include "arrow/type.h"
 #include "arrow/util/decimal.h"
+#include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
@@ -44,26 +45,10 @@
 namespace paimon::vortex {
 namespace {
 
-Status CheckNativeResult(const std::string& operation, const void* handle,
-                         vx_error* error = nullptr) {
-    PAIMON_RETURN_NOT_OK(VortexFfiError(operation, error));
-    if (handle == nullptr) {
-        return Status::Invalid(operation, ": Vortex returned a null handle");
-    }
-    return Status::OK();
-}
-
-// vx_expression_not returns an owned handle typed const; reclaim it as an owned non-const pointer.
-Result<VxExpressionPtr> MakeNotExpr(const vx_expression* child) {
-    VxExpressionPtr expression(const_cast<vx_expression*>(vx_expression_not(child)));
-    PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex NOT expression", expression.get()));
-    return expression;
-}
-
-// Reject precision loss and overflow before constructing a native timestamp scalar.
+// Reject precision loss; timestamp values are assumed to fit int64 in the target unit.
 bool GetTimestampValue(const Literal& literal, const std::shared_ptr<arrow::DataType>& arrow_type,
-                       int64_t* result, vx_time_unit* result_unit) {
-    if (arrow_type == nullptr || arrow_type->id() != arrow::Type::TIMESTAMP) {
+                       int64_t* result) {
+    if (arrow_type->id() != arrow::Type::TIMESTAMP) {
         return false;
     }
     const auto timestamp_type = checked_pointer_cast<arrow::TimestampType>(arrow_type);
@@ -71,50 +56,15 @@ bool GetTimestampValue(const Literal& literal, const std::shared_ptr<arrow::Data
         return false;
     }
     const auto timestamp = literal.GetValue<Timestamp>();
-    int64_t value = timestamp.GetMillisecond();
-    const int32_t nanos = timestamp.GetNanoOfMillisecond();
-    vx_time_unit unit = VX_TIME_UNIT_MILLISECOND;
-    int64_t factor = 1;
-    int64_t fraction = 0;
-    switch (timestamp_type->unit()) {
-        case arrow::TimeUnit::SECOND:
-            if (value % 1000 != 0 || nanos != 0) {
-                return false;
-            }
-            unit = VX_TIME_UNIT_SECOND;
-            break;
-        case arrow::TimeUnit::MILLI:
-            if (nanos != 0) {
-                return false;
-            }
-            break;
-        case arrow::TimeUnit::MICRO:
-            if (nanos % 1000 != 0) {
-                return false;
-            }
-            factor = 1000;
-            fraction = nanos / 1000;
-            unit = VX_TIME_UNIT_MICROSECOND;
-            break;
-        case arrow::TimeUnit::NANO:
-            factor = 1000000;
-            fraction = nanos;
-            unit = VX_TIME_UNIT_NANOSECOND;
-            break;
-        default:
-            return false;
-    }
-    if (value < std::numeric_limits<int64_t>::min() / factor ||
-        value > std::numeric_limits<int64_t>::max() / factor) {
+    const DateTimeUtils::TimeType time_type =
+        DateTimeUtils::GetTimeTypeFromArrowType(timestamp_type);
+    const int64_t value = DateTimeUtils::TimestampToInteger(timestamp, time_type);
+    const auto [millis, nanos] = DateTimeUtils::TimestampConverter(
+        value, time_type, DateTimeUtils::MILLISECOND, DateTimeUtils::NANOSECOND);
+    if (Timestamp::FromEpochMillis(millis, static_cast<int32_t>(nanos)) != timestamp) {
         return false;
     }
-    value *= factor;
-    if (value > std::numeric_limits<int64_t>::max() - fraction) {
-        return false;
-    }
-    *result = DateTimeUtils::TimestampToInteger(
-        timestamp, DateTimeUtils::GetTimeTypeFromArrowType(timestamp_type));
-    *result_unit = unit;
+    *result = value;
     return true;
 }
 
@@ -150,8 +100,32 @@ Result<std::optional<Decimal>> NormalizeDecimalLiteral(
     return std::make_optional(normalized);
 }
 
+// Import the actual Arrow type so Vortex owns the extension metadata encoding. Cache the
+// non-nullable literal dtype across an IN list; only the storage scalar varies per value.
+Result<VxScalarPtr> MakeTemporalScalar(const vx_scalar* storage,
+                                       const std::shared_ptr<arrow::DataType>& arrow_type,
+                                       VxDtypePtr* temporal_dtype) {
+    vx_error* error = nullptr;
+    if (*temporal_dtype == nullptr) {
+        VxSessionPtr session(vx_paimon_read_session_new());
+        const auto schema = arrow::schema({arrow::field("value", arrow_type, false)});
+        ::ArrowSchema ffi_schema{};
+        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*schema, &ffi_schema));
+        // Vortex consumes ffi_schema, including on error.
+        VxDtypePtr struct_dtype(vx_dtype_from_arrow_schema(session.get(), &ffi_schema, &error));
+        PAIMON_RETURN_NOT_OK(VortexFfiError("import Vortex temporal dtype", error));
+        VxUniquePtr<const vx_struct_fields, vx_struct_fields_free> fields(
+            vx_dtype_struct_dtype(struct_dtype.get()));
+        temporal_dtype->reset(vx_struct_fields_field_dtype(fields.get(), 0));
+    }
+    VxScalarPtr scalar(vx_scalar_new_extension(temporal_dtype->get(), storage, &error));
+    PAIMON_RETURN_NOT_OK(VortexFfiError("create Vortex temporal scalar", error));
+    return scalar;
+}
+
 Result<VxScalarPtr> MakeLiteralScalar(const Literal& literal,
-                                      const std::shared_ptr<arrow::DataType>& arrow_type) {
+                                      const std::shared_ptr<arrow::DataType>& arrow_type,
+                                      VxDtypePtr* temporal_dtype) {
     VxScalarPtr scalar;
     if (literal.IsNull()) {
         return scalar;
@@ -172,13 +146,11 @@ Result<VxScalarPtr> MakeLiteralScalar(const Literal& literal,
             break;
         // Vortex stores a date column as a date[days] extension and rejects comparing it against a
         // plain int scalar, so build a date-typed scalar.
-        case FieldType::DATE:
-            scalar.reset(vx_scalar_new_date(literal.GetValue<int32_t>(), false, &error));
-            if (scalar == nullptr && error == nullptr) {
-                // A valid Paimon constant can exceed the native civil-date range.
-                return scalar;
-            }
-            break;
+        case FieldType::DATE: {
+            const auto days = literal.GetValue<int32_t>();
+            VxScalarPtr storage(vx_scalar_new_i32(days, false));
+            return MakeTemporalScalar(storage.get(), arrow_type, temporal_dtype);
+        }
         case FieldType::BIGINT:
             scalar.reset(vx_scalar_new_i64(literal.GetValue<int64_t>(), false));
             break;
@@ -188,7 +160,7 @@ Result<VxScalarPtr> MakeLiteralScalar(const Literal& literal,
             return scalar;
         case FieldType::STRING: {
             const auto value = literal.GetValue<std::string>();
-            scalar.reset(vx_scalar_new_utf8(value.data(), value.size(), false, &error));
+            scalar.reset(vx_scalar_new_utf8(vx_view{value.data(), value.size()}, false, &error));
             break;
         }
         case FieldType::DECIMAL: {
@@ -218,36 +190,30 @@ Result<VxScalarPtr> MakeLiteralScalar(const Literal& literal,
         }
         case FieldType::TIMESTAMP: {
             int64_t value = 0;
-            vx_time_unit unit = VX_TIME_UNIT_MILLISECOND;
-            if (!GetTimestampValue(literal, arrow_type, &value, &unit)) {
+            if (!GetTimestampValue(literal, arrow_type, &value)) {
                 return scalar;
             }
-            const auto& timestamp_type = checked_cast<const arrow::TimestampType&>(*arrow_type);
-            const char* zone = timestamp_type.timezone().empty() ? nullptr : "UTC";
-            scalar.reset(vx_scalar_new_timestamp(value, unit, zone, false, &error));
-            if (scalar == nullptr && error == nullptr) {
-                // Preserve residual comparison when native temporal limits are narrower.
-                return scalar;
-            }
-            break;
+            VxScalarPtr storage(vx_scalar_new_i64(value, false));
+            return MakeTemporalScalar(storage.get(), arrow_type, temporal_dtype);
         }
         default:
             return scalar;
     }
-    PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex predicate scalar", scalar.get(), error));
+    PAIMON_RETURN_NOT_OK(VortexFfiError("create Vortex predicate scalar", error));
     return scalar;
 }
 
 Result<VxExpressionPtr> MakeLiteralExpr(const Literal& literal,
                                         const std::shared_ptr<arrow::DataType>& arrow_type) {
-    PAIMON_ASSIGN_OR_RAISE(VxScalarPtr scalar, MakeLiteralScalar(literal, arrow_type));
+    VxDtypePtr temporal_dtype;
+    PAIMON_ASSIGN_OR_RAISE(VxScalarPtr scalar,
+                           MakeLiteralScalar(literal, arrow_type, &temporal_dtype));
     if (scalar == nullptr) {
         return VxExpressionPtr();
     }
     vx_error* error = nullptr;
     VxExpressionPtr expression(vx_expression_literal(scalar.get(), &error));
-    PAIMON_RETURN_NOT_OK(
-        CheckNativeResult("create Vortex literal expression", expression.get(), error));
+    PAIMON_RETURN_NOT_OK(VortexFfiError("create Vortex literal expression", error));
     return expression;
 }
 
@@ -292,10 +258,12 @@ Result<VxExpressionPtr> ConvertInList(const std::vector<Literal>& literals,
                                       const vx_expression* column) {
     std::vector<VxScalarPtr> scalars;
     std::vector<const vx_scalar*> raw;
+    VxDtypePtr temporal_dtype;
     scalars.reserve(literals.size());
     raw.reserve(literals.size());
     for (const Literal& literal : literals) {
-        PAIMON_ASSIGN_OR_RAISE(VxScalarPtr scalar, MakeLiteralScalar(literal, arrow_type));
+        PAIMON_ASSIGN_OR_RAISE(VxScalarPtr scalar,
+                               MakeLiteralScalar(literal, arrow_type, &temporal_dtype));
         if (scalar == nullptr) {
             return VxExpressionPtr();
         }
@@ -303,16 +271,13 @@ Result<VxExpressionPtr> ConvertInList(const std::vector<Literal>& literals,
         scalars.push_back(std::move(scalar));
     }
     vx_error* error = nullptr;
+    VxDtypePtr element_dtype(vx_scalar_dtype(raw[0]));
     VxScalarPtr list(
-        vx_scalar_new_list(vx_scalar_dtype(raw[0]), raw.data(), raw.size(), false, &error));
-    PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex list scalar", list.get(), error));
-    error = nullptr;
+        vx_scalar_new_list(element_dtype.get(), raw.data(), raw.size(), false, &error));
+    PAIMON_RETURN_NOT_OK(VortexFfiError("create Vortex list scalar", error));
     VxExpressionPtr literal_expr(vx_expression_literal(list.get(), &error));
-    PAIMON_RETURN_NOT_OK(
-        CheckNativeResult("create Vortex literal expression", literal_expr.get(), error));
+    PAIMON_RETURN_NOT_OK(VortexFfiError("create Vortex literal expression", error));
     VxExpressionPtr expression(vx_expression_list_contains(literal_expr.get(), column));
-    PAIMON_RETURN_NOT_OK(
-        CheckNativeResult("create Vortex list membership expression", expression.get()));
     return expression;
 }
 
@@ -334,14 +299,12 @@ Result<VxExpressionPtr> ConvertMembership(const std::shared_ptr<LeafPredicate>& 
     if (expression == nullptr || !negate) {
         return expression;
     }
-    PAIMON_ASSIGN_OR_RAISE(expression, MakeNotExpr(expression.get()));
+    expression.reset(vx_expression_not(expression.get()));
     VxExpressionPtr is_null(vx_expression_is_null(column));
-    PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex IS NULL expression", is_null.get()));
-    PAIMON_ASSIGN_OR_RAISE(VxExpressionPtr is_not_null, MakeNotExpr(is_null.get()));
+    VxExpressionPtr is_not_null(vx_expression_not(is_null.get()));
     // Neither IN nor NOT IN may retain null rows. Validation also rejects null/empty lists.
     const vx_expression* children[] = {is_not_null.get(), expression.get()};
     VxExpressionPtr combined(vx_expression_and(children, 2));
-    PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex AND expression", combined.get()));
     return combined;
 }
 
@@ -388,15 +351,14 @@ Result<VxExpressionPtr> ConvertLeaf(const std::shared_ptr<LeafPredicate>& leaf,
         return VxExpressionPtr();
     }
     const std::shared_ptr<arrow::DataType>& arrow_type = file_schema->field(field_index)->type();
-    VxExpressionPtr column(vx_expression_get_item(leaf->FieldName().c_str(), root));
-    PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex field expression", column.get()));
+    VxExpressionPtr column(
+        vx_expression_get_item(vx_view{leaf->FieldName().data(), leaf->FieldName().size()}, root));
     if (type == Function::Type::IS_NULL || type == Function::Type::IS_NOT_NULL) {
         VxExpressionPtr is_null(vx_expression_is_null(column.get()));
-        PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex IS NULL expression", is_null.get()));
         if (type == Function::Type::IS_NULL) {
             return is_null;
         }
-        return MakeNotExpr(is_null.get());
+        return VxExpressionPtr(vx_expression_not(is_null.get()));
     }
     if (type == Function::Type::IN) {
         return ConvertMembership(leaf, arrow_type, column.get(), false, options);
@@ -417,8 +379,6 @@ Result<VxExpressionPtr> ConvertLeaf(const std::shared_ptr<LeafPredicate>& leaf,
         return VxExpressionPtr();
     }
     VxExpressionPtr expression(vx_expression_binary(op, column.get(), literal_expr.get()));
-    PAIMON_RETURN_NOT_OK(
-        CheckNativeResult("create Vortex comparison expression", expression.get()));
     return expression;
 }
 
@@ -426,9 +386,6 @@ Result<VxExpressionPtr> ConvertImpl(const std::shared_ptr<Predicate>& predicate,
                                     const std::shared_ptr<arrow::Schema>& file_schema,
                                     const vx_expression* root,
                                     const VortexPredicateOptions& options) {
-    if (predicate == nullptr) {
-        return VxExpressionPtr();
-    }
     const Function::Type type = predicate->GetFunction().GetType();
     if (type == Function::Type::AND || type == Function::Type::OR) {
         const auto compound = std::dynamic_pointer_cast<CompoundPredicate>(predicate);
@@ -438,7 +395,6 @@ Result<VxExpressionPtr> ConvertImpl(const std::shared_ptr<Predicate>& predicate,
         if (compound->Children().empty()) {
             return Status::Invalid("AND/OR predicate must have at least one child");
         }
-        bool all_children_pushed = true;
         std::vector<VxExpressionPtr> children;
         children.reserve(compound->Children().size());
         for (const std::shared_ptr<Predicate>& child : compound->Children()) {
@@ -449,13 +405,12 @@ Result<VxExpressionPtr> ConvertImpl(const std::shared_ptr<Predicate>& predicate,
                                    ConvertImpl(child, file_schema, root, options));
             if (converted != nullptr) {
                 children.push_back(std::move(converted));
-            } else {
-                all_children_pushed = false;
             }
             // Visit all branches so an unsupported OR child cannot hide a later error.
         }
         // AND can retain supported children; dropping any OR branch could exclude matching rows.
-        if (children.empty() || (type == Function::Type::OR && !all_children_pushed)) {
+        if (children.empty() ||
+            (type == Function::Type::OR && children.size() != compound->Children().size())) {
             return VxExpressionPtr();
         }
         std::vector<const vx_expression*> raw;
@@ -466,8 +421,6 @@ Result<VxExpressionPtr> ConvertImpl(const std::shared_ptr<Predicate>& predicate,
         VxExpressionPtr combined(type == Function::Type::AND
                                      ? vx_expression_and(raw.data(), raw.size())
                                      : vx_expression_or(raw.data(), raw.size()));
-        PAIMON_RETURN_NOT_OK(
-            CheckNativeResult("create Vortex compound expression", combined.get()));
         return combined;
     }
     const auto leaf = std::dynamic_pointer_cast<LeafPredicate>(predicate);
@@ -492,7 +445,6 @@ Result<VxExpressionPtr> VortexPredicateConverter::Convert(
         return VxExpressionPtr();
     }
     VxExpressionPtr root(vx_expression_root());
-    PAIMON_RETURN_NOT_OK(CheckNativeResult("create Vortex root expression", root.get()));
     return ConvertImpl(predicate, file_schema, root.get(), options);
 }
 

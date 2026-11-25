@@ -24,8 +24,6 @@
 //! Sink entry points are adapted from Vortex's `vortex-ffi/src/sink.rs`
 //! (SPDX-License-Identifier: Apache-2.0, Copyright the Vortex contributors).
 
-use std::ffi::CStr;
-use std::ffi::c_char;
 use std::ffi::c_int;
 use std::ffi::c_void;
 use std::io;
@@ -45,21 +43,15 @@ use futures::channel::mpsc::Sender;
 use futures::future::BoxFuture;
 use vortex::array::ArrayRef;
 use vortex::array::VortexSessionExecute;
-use vortex::array::arrow::ArrowSessionExt;
 use vortex::array::buffer::BufferHandle;
 use vortex::array::stream::ArrayStreamAdapter;
 use vortex::buffer::Alignment;
 use vortex::buffer::ByteBufferMut;
 use vortex::dtype::DType;
-use vortex::dtype::Nullability;
 use vortex::error::VortexResult;
 use vortex::error::vortex_bail;
 use vortex::error::vortex_ensure;
 use vortex::error::vortex_err;
-use vortex::extension::datetime::Date;
-use vortex::extension::datetime::TemporalMetadata;
-use vortex::extension::datetime::TimeUnit;
-use vortex::extension::datetime::Timestamp;
 use vortex::file::OpenOptionsSessionExt;
 use vortex::file::WriteOptionsSessionExt;
 use vortex::file::WriteStrategyBuilder;
@@ -73,21 +65,22 @@ use vortex::io::runtime::Handle;
 use vortex::io::runtime::Task;
 use vortex::io::session::RuntimeSessionExt;
 use vortex::layout::scan::arrow::RecordBatchIteratorAdapter;
-use vortex::scalar::PValue;
-use vortex::scalar::Scalar;
-use vortex::scalar::ScalarValue;
+use vortex::layout::scan::multi::MultiLayoutDataSource;
+use vortex_arrow::ArrowSessionExt;
 
-use crate::RUNTIME;
-use crate::array::vx_array;
 use crate::data_source::vx_data_source;
 use crate::dtype::vx_dtype;
 use crate::error::try_or;
 use crate::error::try_or_default;
 use crate::error::vx_error;
-use crate::scalar::vx_scalar;
-use crate::scan::VxPartitionScan;
-use crate::scan::vx_partition;
-use crate::session::vx_session;
+use crate::ffi_runtime;
+use crate::scan::vx_partition_free;
+use crate::vx_array;
+use crate::vx_array_ref;
+use crate::vx_partition;
+use crate::vx_partition_into_array_stream;
+use crate::vx_session;
+use crate::vx_session_ref;
 
 /// Fill `length` bytes starting at `offset` into `dst`.
 ///
@@ -252,7 +245,7 @@ unsafe fn data_source_new_callback(
         release_fn: callbacks.release_fn,
     });
 
-    vortex_ensure!(!session.is_null());
+    let session = unsafe { vx_session_ref(session) }?;
     vortex_ensure!(
         coalesce_config.max_size > 0,
         "coalesced max_size must be positive"
@@ -270,7 +263,6 @@ unsafe fn data_source_new_callback(
         .read_at_fn
         .ok_or_else(|| vortex_err!("vx_input_callbacks.read_at_fn is required"))?;
 
-    let session = vx_session::as_ref(session).clone();
     let reader: Arc<dyn VortexReadAt> = Arc::new(CallbackReadAt {
         target,
         read_at_fn,
@@ -280,8 +272,13 @@ unsafe fn data_source_new_callback(
         coalesce_config,
     });
 
-    let file = RUNTIME.block_on(async { session.open_options().open(reader).await })?;
-    Ok(vx_data_source::new(file.data_source()?))
+    let file = ffi_runtime().block_on(async { session.open_options().open(reader).await })?;
+    Ok(vx_data_source::new(MultiLayoutDataSource::new_with_first(
+        file.layout_reader()?,
+        Vec::new(),
+        vec![Some(size)],
+        session,
+    )))
 }
 
 /// Create a data source that reads through host callbacks with explicit I/O coalescing.
@@ -389,13 +386,12 @@ unsafe fn callback_sink_open(
         release_fn: callbacks.release_fn,
     });
 
-    vortex_ensure!(!session.is_null());
+    let session = unsafe { vx_session_ref(session) }?;
     vortex_ensure!(!dtype.is_null());
     let write_fn = callbacks
         .write_fn
         .ok_or_else(|| vortex_err!("vx_output_callbacks.write_fn is required"))?;
 
-    let session = vx_session::as_ref(session).clone();
     let dtype = vx_dtype::as_ref(dtype).clone();
     let write = CallbackWrite {
         target,
@@ -407,7 +403,7 @@ unsafe fn callback_sink_open(
     let (sink, rx) = mpsc::channel(4);
     let array_stream = ArrayStreamAdapter::new(dtype.clone(), rx.into_stream());
 
-    let strategy = WriteStrategyBuilder::default().build();
+    let strategy = WriteStrategyBuilder::from_session(session).build();
     let writer_session = session.clone();
     let writer = session.handle().spawn(async move {
         writer_session
@@ -463,9 +459,8 @@ pub unsafe extern "C-unwind" fn vx_callback_sink_push(
 ) {
     try_or_default(error_out, || {
         vortex_ensure!(!sink.is_null());
-        vortex_ensure!(!array.is_null());
 
-        let array = vx_array::as_ref(array);
+        let array = unsafe { vx_array_ref(array) }?;
         let sink = unsafe { &mut *sink };
 
         vortex_ensure!(
@@ -474,7 +469,7 @@ pub unsafe extern "C-unwind" fn vx_callback_sink_push(
             array.dtype(),
             sink.dtype
         );
-        RUNTIME
+        ffi_runtime()
             .block_on(sink.sink.send(Ok(array.clone())))
             .map_err(|e| vortex_err!("Send error: {e}"))
     })
@@ -502,7 +497,7 @@ pub unsafe extern "C-unwind" fn vx_callback_sink_close(
         // Dropping the sender signals end of input to the write task.
         drop(sink);
 
-        RUNTIME.block_on(async {
+        ffi_runtime().block_on(async {
             let _summary = writer.await?;
             VortexResult::Ok(())
         })?;
@@ -611,23 +606,22 @@ pub unsafe extern "C-unwind" fn vx_partition_scan_arrow_with_batch_size(
 ) -> c_int {
     try_or(err, 1, || {
         vortex_ensure!(!partition.is_null(), "Vortex partition is null");
-        // Take ownership before validating the other arguments, so callers never need to guess
-        // whether an invalid request has already consumed the partition.
-        let partition = match *vx_partition::into_box(partition) {
-            VxPartitionScan::Pending(partition) => partition,
-            _ => vortex_bail!("Vortex partition is already being consumed"),
-        };
-        vortex_ensure!(batch_size > 0, "Vortex Arrow batch size must be positive");
-        vortex_ensure!(!session.is_null(), "Vortex session is null");
-        vortex_ensure!(!stream.is_null(), "Vortex Arrow stream output is null");
-        let array_stream = partition.execute()?;
+        // Reject invalid arguments before executing the partition, but still consume its handle
+        // on failure, matching the successful stream conversion's ownership contract.
+        let session = (|| {
+            vortex_ensure!(batch_size > 0, "Vortex Arrow batch size must be positive");
+            let session = unsafe { vx_session_ref(session) }?;
+            vortex_ensure!(!stream.is_null(), "Vortex Arrow stream output is null");
+            Ok(session.clone())
+        })()
+        .inspect_err(|_| unsafe { vx_partition_free(partition) })?;
+        let array_stream = unsafe { vx_partition_into_array_stream(partition) }?;
         let schema = Arc::new(normalize_arrow_schema_views(
-            array_stream.dtype().to_arrow_schema()?,
+            session.arrow().to_arrow_schema(array_stream.dtype())?,
         ));
         let target = Field::new_struct("", schema.fields().clone(), false);
-        let session = vx_session::as_ref(session).clone();
         let mut chunks =
-            BoundedArrayIterator::new(RUNTIME.block_on_stream(array_stream), batch_size)?;
+            BoundedArrayIterator::new(ffi_runtime().block_on_stream(array_stream), batch_size)?;
         let mut failed = false;
         let iter = std::iter::from_fn(move || {
             if failed {
@@ -688,127 +682,28 @@ fn normalize_dtype_views(dtype: &arrow_schema::DataType) -> arrow_schema::DataTy
     }
 }
 
-/// Time unit of a timestamp scalar literal. Mirrored in `vortex_ffi.h`; the discriminants are an
-/// ABI contract, so do not reorder or renumber them.
-#[repr(C)]
-#[allow(non_camel_case_types, dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum vx_time_unit {
-    /// Seconds since the Unix epoch.
-    VX_TIME_UNIT_SECOND = 0,
-    /// Milliseconds since the Unix epoch.
-    VX_TIME_UNIT_MILLISECOND = 1,
-    /// Microseconds since the Unix epoch.
-    VX_TIME_UNIT_MICROSECOND = 2,
-    /// Nanoseconds since the Unix epoch.
-    VX_TIME_UNIT_NANOSECOND = 3,
-}
-
-/// Create a timestamp scalar literal: `value` units since the Unix epoch under `unit`.
-///
-/// `timezone` is a null-terminated UTF-8 IANA time-zone name, or null for a local (wall-clock)
-/// timestamp. Vortex's own C ABI has no timestamp/date scalar constructor, so paimon-cpp adds these
-/// two here to push down temporal predicates. Returns null without an error when a valid value
-/// exceeds the native temporal range; other failures return null and populate `err`.
-///
-/// # Safety
-///
-/// `timezone`, when not null, must point to a valid null-terminated UTF-8 string that outlives this
-/// call. `err` must be null or point to a null `*mut vx_error`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn vx_scalar_new_timestamp(
-    value: i64,
-    unit: vx_time_unit,
-    timezone: *const c_char,
-    is_nullable: bool,
-    err: *mut *mut vx_error,
-) -> *mut vx_scalar {
-    try_or(err, std::ptr::null_mut(), || {
-        let time_unit = match unit {
-            vx_time_unit::VX_TIME_UNIT_SECOND => TimeUnit::Seconds,
-            vx_time_unit::VX_TIME_UNIT_MILLISECOND => TimeUnit::Milliseconds,
-            vx_time_unit::VX_TIME_UNIT_MICROSECOND => TimeUnit::Microseconds,
-            vx_time_unit::VX_TIME_UNIT_NANOSECOND => TimeUnit::Nanoseconds,
-        };
-        let tz = if timezone.is_null() {
-            None
-        } else {
-            let name = unsafe { CStr::from_ptr(timezone) }
-                .to_str()
-                .map_err(|e| vortex_err!("timezone is not valid utf8: {e}"))?;
-            Some(Arc::from(name))
-        };
-        // Check timezone errors independently of the value, including values outside the native
-        // range. A malformed timezone must not be mistaken for an unsupported constant.
-        if tz.is_some() {
-            TemporalMetadata::Timestamp(&TimeUnit::Seconds, &tz).to_jiff(0)?;
-        }
-        // Timestamp::unpack_native uses Jiff Timestamp even without a timezone. Check both its
-        // Span setters and epoch range without introducing a timezone-database lookup.
-        let Ok(span) = time_unit.to_jiff_span(value) else {
-            return Ok(std::ptr::null_mut());
-        };
-        if jiff::Timestamp::UNIX_EPOCH.checked_add(span).is_err() {
-            return Ok(std::ptr::null_mut());
-        }
-        let dtype = DType::Extension(
-            Timestamp::new_with_tz(time_unit, tz, Nullability::from(is_nullable)).erased(),
-        );
-        Ok(vx_scalar::new(Scalar::try_new(
-            dtype,
-            Some(ScalarValue::Primitive(PValue::I64(value))),
-        )?))
-    })
-}
-
-/// Create a date scalar literal: `days` days since the Unix epoch (1970-01-01).
-/// Returns null without an error when the value exceeds the native civil-date range; other
-/// failures return null and populate `err`.
-///
-/// # Safety
-///
-/// `err` must be null or point to a null `*mut vx_error`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn vx_scalar_new_date(
-    days: i32,
-    is_nullable: bool,
-    err: *mut *mut vx_error,
-) -> *mut vx_scalar {
-    try_or(err, std::ptr::null_mut(), || {
-        // The fixed Days unit and epoch are valid; only a native range limit can fail here.
-        // Date's storage accepts all i32 values, but formatting needs a representable civil date.
-        if TemporalMetadata::Date(&TimeUnit::Days)
-            .to_jiff(i64::from(days))
-            .is_err()
-        {
-            return Ok(std::ptr::null_mut());
-        }
-        let dtype =
-            DType::Extension(Date::new(TimeUnit::Days, Nullability::from(is_nullable)).erased());
-        Ok(vx_scalar::new(Scalar::try_new(
-            dtype,
-            Some(ScalarValue::Primitive(PValue::I32(days))),
-        )?))
-    })
-}
-
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
+    use std::any::Any;
     use std::fs::File;
     use std::os::unix::fs::FileExt;
     use std::ptr;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
     use tempfile::NamedTempFile;
     use vortex::array::IntoArray;
     use vortex::array::arrays::PrimitiveArray;
+    use vortex::array::stream::SendableArrayStream;
     use vortex::array::validity::Validity;
     use vortex::buffer::buffer;
     use vortex::dtype::DType;
     use vortex::dtype::PType;
+    use vortex::expr::stats::Precision;
+    use vortex::scan::Partition;
 
     use super::*;
     use crate::array::vx_array;
@@ -818,6 +713,8 @@ mod tests {
     use crate::dtype::vx_dtype;
     use crate::dtype::vx_dtype_free;
     use crate::error::vx_error_free;
+    use crate::error::vx_error_message;
+    use crate::scan::VxPartitionScan;
     use crate::scan::vx_estimate;
     use crate::scan::vx_estimate_type;
     use crate::session::vx_session_free;
@@ -825,6 +722,87 @@ mod tests {
     use crate::sink::vx_array_sink_close;
     use crate::sink::vx_array_sink_open_file;
     use crate::sink::vx_array_sink_push;
+
+    #[test]
+    fn test_arrow_export_failures_consume_partition() {
+        struct TrackedPartition {
+            executions: Arc<AtomicUsize>,
+            drops: Arc<AtomicUsize>,
+        }
+
+        impl Drop for TrackedPartition {
+            fn drop(&mut self) {
+                self.drops.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        impl Partition for TrackedPartition {
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+
+            fn index(&self) -> usize {
+                0
+            }
+
+            fn row_count(&self) -> Precision<u64> {
+                Precision::Exact(0)
+            }
+
+            fn byte_size(&self) -> Precision<u64> {
+                Precision::Exact(0)
+            }
+
+            fn execute(self: Box<Self>) -> VortexResult<SendableArrayStream> {
+                self.executions.fetch_add(1, Ordering::SeqCst);
+                vortex_bail!("partition execution failed")
+            }
+        }
+
+        unsafe {
+            let session = vx_session_new();
+            for (batch_size, null_session, null_stream, expected_error, expected_executions) in [
+                (0, false, false, "batch size must be positive", 0),
+                (1, true, false, "null vx_session", 0),
+                (1, false, true, "stream output is null", 0),
+                (1, false, false, "partition execution failed", 1),
+            ] {
+                let executions = Arc::new(AtomicUsize::new(0));
+                let drops = Arc::new(AtomicUsize::new(0));
+                let partition =
+                    vx_partition::new(VxPartitionScan::Pending(Box::new(TrackedPartition {
+                        executions: Arc::clone(&executions),
+                        drops: Arc::clone(&drops),
+                    })));
+                let mut stream = FFI_ArrowArrayStream::empty();
+                let mut error = ptr::null_mut();
+                let status = vx_partition_scan_arrow_with_batch_size(
+                    if null_session { ptr::null() } else { session },
+                    partition,
+                    batch_size,
+                    if null_stream {
+                        ptr::null_mut()
+                    } else {
+                        &raw mut stream
+                    },
+                    &raw mut error,
+                );
+                assert_eq!(status, 1);
+                assert!(!error.is_null());
+                assert!(
+                    vx_error_message(error)
+                        .as_str()
+                        .unwrap()
+                        .contains(expected_error)
+                );
+                vx_error_free(error);
+                assert_eq!(executions.load(Ordering::SeqCst), expected_executions);
+                assert_eq!(drops.load(Ordering::SeqCst), 1);
+                assert!(stream.release.is_none());
+            }
+            vx_session_free(session);
+        }
+    }
 
     struct FileContext {
         file: File,
@@ -862,15 +840,18 @@ mod tests {
 
         unsafe {
             let session = vx_session_new();
-            let vx_dtype_ptr = vx_dtype::new(Arc::new(dtype));
+            let vx_dtype_ptr = vx_dtype::new(dtype);
             let mut error = ptr::null_mut();
 
-            let c_path = std::ffi::CString::new(path.clone()).unwrap();
-            let sink =
-                vx_array_sink_open_file(session, c_path.as_ptr(), vx_dtype_ptr, &raw mut error);
+            let sink = vx_array_sink_open_file(
+                session,
+                crate::string::vx_view::from_str(&path),
+                vx_dtype_ptr,
+                &raw mut error,
+            );
             assert!(error.is_null());
             let array = PrimitiveArray::new(buffer![1i32, 2i32, 3i32], Validity::NonNullable);
-            let vx_array_ptr = vx_array::new(Arc::new(array.into_array()));
+            let vx_array_ptr = vx_array::new(array.into_array());
             vx_array_sink_push(sink, vx_array_ptr, &raw mut error);
             assert!(error.is_null());
             vx_array_sink_close(sink, &raw mut error);
@@ -921,28 +902,58 @@ mod tests {
         unsafe {
             let session = vx_session_new();
             let mut error = ptr::null_mut();
-            let callbacks = vx_input_callbacks {
-                ctx: ptr::null_mut(),
-                read_at_fn: None,
-                release_fn: Some(mark_released),
-            };
-
             let config = CoalesceConfig::object_storage();
-            let data_source = vx_data_source_new_callback_with_coalesce(
-                session,
-                callbacks,
-                0,
-                config.distance,
-                config.max_size,
+            for input_session in [session.cast_const(), ptr::null()] {
+                RELEASED.store(false, Ordering::SeqCst);
+                let data_source = vx_data_source_new_callback_with_coalesce(
+                    input_session,
+                    vx_input_callbacks {
+                        ctx: ptr::null_mut(),
+                        read_at_fn: None,
+                        release_fn: Some(mark_released),
+                    },
+                    0,
+                    config.distance,
+                    config.max_size,
+                    &raw mut error,
+                );
+                assert!(data_source.is_null());
+                assert!(!error.is_null());
+                if input_session.is_null() {
+                    assert!(
+                        vx_error_message(error)
+                            .as_str()
+                            .unwrap()
+                            .contains("null vx_session")
+                    );
+                }
+                vx_error_free(error);
+                error = ptr::null_mut();
+                assert!(RELEASED.load(Ordering::SeqCst));
+            }
+
+            RELEASED.store(false, Ordering::SeqCst);
+            let sink = vx_callback_sink_open(
+                ptr::null(),
+                vx_output_callbacks {
+                    ctx: ptr::null_mut(),
+                    write_fn: None,
+                    flush_fn: None,
+                    release_fn: Some(mark_released),
+                },
+                ptr::null(),
                 &raw mut error,
             );
-            assert!(data_source.is_null());
+            assert!(sink.is_null());
             assert!(!error.is_null());
-            vx_error_free(error);
             assert!(
-                RELEASED.load(Ordering::SeqCst),
-                "release_fn must run when the data source fails to open"
+                vx_error_message(error)
+                    .as_str()
+                    .unwrap()
+                    .contains("null vx_session")
             );
+            vx_error_free(error);
+            assert!(RELEASED.load(Ordering::SeqCst));
 
             vx_session_free(session);
         }
@@ -1000,7 +1011,7 @@ mod tests {
 
         unsafe {
             let session = vx_session_new();
-            let vx_dtype_ptr = vx_dtype::new(Arc::new(dtype));
+            let vx_dtype_ptr = vx_dtype::new(dtype);
             let mut error = ptr::null_mut();
 
             let out_ctx = Box::into_raw(Box::new(Arc::clone(&shared)));
@@ -1018,9 +1029,21 @@ mod tests {
             assert!(error.is_null());
             assert!(!sink.is_null());
 
+            // A rejected null array must leave the sink usable for subsequent writes.
+            vx_callback_sink_push(sink, ptr::null(), &raw mut error);
+            assert!(!error.is_null());
+            assert!(
+                vx_error_message(error)
+                    .as_str()
+                    .unwrap()
+                    .contains("null vx_array")
+            );
+            vx_error_free(error);
+            error = ptr::null_mut();
+
             let array =
                 PrimitiveArray::new(buffer![10i32, 20i32, 30i32, 40i32], Validity::NonNullable);
-            let vx_array_ptr = vx_array::new(Arc::new(array.into_array()));
+            let vx_array_ptr = vx_array::new(array.into_array());
             vx_callback_sink_push(sink, vx_array_ptr, &raw mut error);
             assert!(error.is_null());
             vx_callback_sink_close(sink, &raw mut error);

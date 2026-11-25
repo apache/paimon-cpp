@@ -136,14 +136,10 @@ jobs:
         shell: bash
         run: ci/scripts/setup_rust.sh
 
-      - name: Install flatc and libclang (Vortex)
-        shell: bash
-        run: ci/scripts/setup_flatc.sh
-
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcurl4-openssl-dev libssl-dev patchutils
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev libclang-dev patchutils
 
       - name: Verify, build, test, and install
         shell: bash

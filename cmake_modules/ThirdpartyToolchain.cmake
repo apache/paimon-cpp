@@ -1549,13 +1549,6 @@ endmacro()
 macro(build_vortex)
     message(STATUS "Building Vortex Rust FFI (static) from source")
     find_program(PAIMON_CARGO_EXECUTABLE cargo REQUIRED)
-    # Vortex compiles FlatBuffers schemas at build time; flatc must match the flatbuffers crate
-    # version Vortex uses. Allow a FLATC env override, else require flatc on PATH.
-    if(DEFINED ENV{FLATC})
-        set(VORTEX_FLATC "$ENV{FLATC}")
-    else()
-        find_program(VORTEX_FLATC flatc REQUIRED)
-    endif()
 
     set(VORTEX_PREFIX "${CMAKE_CURRENT_BINARY_DIR}/vortex_ep-install")
     set(VORTEX_INCLUDE_DIR "${VORTEX_PREFIX}/include")
@@ -1572,7 +1565,9 @@ macro(build_vortex)
     # neither of which can go through paimon's filesystem. `callback_io.rs` adds an entry point
     # backed by host callbacks; it is maintained in this repository and injected into the Vortex
     # source tree. The patch declares the module.
-    set(VORTEX_PATCH_FILE "${CMAKE_CURRENT_LIST_DIR}/vortex.diff")
+    # The edition API must be available before applying the Paimon integration patch.
+    set(VORTEX_PATCH_FILES "${CMAKE_CURRENT_LIST_DIR}/vortex-0.93.0-enable-edition.diff"
+                           "${CMAKE_CURRENT_LIST_DIR}/vortex.diff")
     paimon_patch_command(vortex_ep PATCH_COMMAND)
     set(VORTEX_CALLBACK_IO_SRC
         "${CMAKE_SOURCE_DIR}/crates/vortex_callback_io/callback_io.rs")
@@ -1593,8 +1588,7 @@ macro(build_vortex)
                                       "${VORTEX_CALLBACK_IO_SRC}"
                                       "<SOURCE_DIR>/vortex-ffi/src/callback_io.rs"
                         COMMAND ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> ${CMAKE_COMMAND} -E
-                                env "FLATC=${VORTEX_FLATC}" "RUSTUP_TOOLCHAIN=stable"
-                                "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}"
+                                env "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}"
                                 "CARGO_TARGET_DIR=<BINARY_DIR>"
                                 "RUSTFLAGS=-Crelocation-model=pic"
                                 ${PAIMON_CARGO_EXECUTABLE} rustc --locked --package
@@ -1611,7 +1605,7 @@ macro(build_vortex)
                                     VERSION
                                     "${PAIMON_VORTEX_BUILD_VERSION}"
                                     PATCHES
-                                    "${VORTEX_PATCH_FILE}"
+                                    ${VORTEX_PATCH_FILES}
                                     INPUTS
                                     "${VORTEX_CALLBACK_IO_SRC}"
                                     INSTALL_DIR

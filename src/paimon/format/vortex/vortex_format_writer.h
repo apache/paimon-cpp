@@ -45,7 +45,7 @@ class VortexFormatWriter : public FormatWriter {
  public:
     static Result<std::unique_ptr<VortexFormatWriter>> Create(
         const std::shared_ptr<OutputStream>& output, const std::shared_ptr<arrow::Schema>& schema,
-        const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
+        const std::string& edition, const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
 
     ~VortexFormatWriter() override;
 

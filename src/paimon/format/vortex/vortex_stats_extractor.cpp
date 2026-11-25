@@ -55,17 +55,12 @@ VortexStatsExtractor::ExtractWithFileInfo(const std::shared_ptr<FileSystem>& fil
     auto input_context = std::make_shared<VortexInputContext>(input);
 
     VxSessionPtr session(vx_session_new());
-    if (session == nullptr) {
-        return Status::IOError("failed to create Vortex session");
-    }
     vx_error* error = nullptr;
     VxDataSourcePtr data_source(vx_data_source_new_callback_with_coalesce(
         session.get(), VortexInputContext::MakeCallbacks(input_context), length,
         kDefaultVortexReadIoCoalesceMaxGap, kDefaultVortexReadIoCoalesceMaxSize, &error));
-    if (data_source == nullptr) {
-        return VortexCallbackError("open Vortex file for stats", error,
-                                   input_context->GetCallbackStatus());
-    }
+    PAIMON_RETURN_NOT_OK(VortexCallbackError("open Vortex file for stats", error,
+                                             input_context->GetCallbackStatus()));
     vx_estimate row_count{};
     vx_data_source_get_row_count(data_source.get(), &row_count);
     if (row_count.type == VX_ESTIMATE_UNKNOWN) {

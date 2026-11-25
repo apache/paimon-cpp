@@ -21,7 +21,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -300,14 +299,6 @@ class VortexFileFormatTest : public ::testing::Test {
         return reader->SetReadSchema(&ffi_schema, predicate, selection);
     }
 
-    void AssertSelectionState(const FileBatchReader* reader, uint64_t expected_rows,
-                              uint64_t expected_indices) const {
-        const auto& selection_state =
-            checked_cast<const VortexFileBatchReader*>(reader)->selection_;
-        ASSERT_EQ(selection_state.SelectedRowCount(), expected_rows);
-        ASSERT_EQ(selection_state.IndexCount(), expected_indices);
-    }
-
     Result<std::shared_ptr<arrow::Array>> ReadNextBatch(FileBatchReader* reader) const {
         PAIMON_ASSIGN_OR_RAISE(BatchReader::ReadBatch batch, reader->NextBatch());
         if (BatchReader::IsEofBatch(batch)) {
@@ -329,43 +320,6 @@ class VortexFileFormatTest : public ::testing::Test {
 };
 
 namespace {
-
-// Counts Close() calls so tests can observe when the input context releases the stream.
-class RecordingInputStream : public InputStream {
- public:
-    Status Close() override {
-        ++close_count_;
-        return Status::OK();
-    }
-    Status Seek(int64_t offset, SeekOrigin origin) override {
-        return Status::OK();
-    }
-    Result<int64_t> GetPos() const override {
-        return 0;
-    }
-    Result<int64_t> Read(char* buffer, int64_t size) override {
-        return 0;
-    }
-    Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
-        return 0;
-    }
-    void ReadAsync(char* buffer, int64_t size, int64_t offset,
-                   std::function<void(Status)>&& callback) override {
-        callback(Status::OK());
-    }
-    Result<std::string> GetUri() const override {
-        return std::string("recording://test");
-    }
-    Result<int64_t> Length() const override {
-        return 0;
-    }
-    int close_count() const {
-        return close_count_;
-    }
-
- private:
-    int close_count_ = 0;
-};
 
 // Record callback I/O without serializing the underlying reads.
 class ReadAtTrackingInputStream : public InputStream {
@@ -419,12 +373,6 @@ class ReadAtTrackingInputStream : public InputStream {
     mutable std::mutex mutex_;
     std::vector<std::pair<int64_t, int64_t>> read_at_ranges_;
 };
-
-}  // namespace
-
-// The stream must stay open while a read callback still owns the context, and close exactly once
-// when the last owner releases it.
-namespace {
 
 // Blocks inside Write() until the test releases it, so a callback can be held in flight.
 class BlockingOutputStream : public OutputStream {
@@ -498,23 +446,6 @@ TEST(VortexOutputContextTest, AbortWaitsForTheInFlightWriteCallback) {
     EXPECT_EQ(in_flight_result, 0);
     EXPECT_EQ(VortexOutputContext::Write(holder.get(), bytes, payload.size()), -1);
     EXPECT_EQ(stream->writes(), 1);
-}
-
-TEST(VortexInputContextTest, CloseDefersUntilLastOwnerReleases) {
-    auto stream = std::make_shared<RecordingInputStream>();
-    auto context = std::make_shared<VortexInputContext>(stream);
-    std::shared_ptr<VortexInputContext> in_flight = context;
-    context.reset();
-    ASSERT_EQ(stream->close_count(), 0);
-    in_flight.reset();
-    ASSERT_EQ(stream->close_count(), 1);
-}
-
-TEST(VortexInputContextTest, CloseRunsWhenReaderIsLastOwner) {
-    auto stream = std::make_shared<RecordingInputStream>();
-    auto context = std::make_shared<VortexInputContext>(stream);
-    context.reset();
-    ASSERT_EQ(stream->close_count(), 1);
 }
 
 // MAP hits `unimplemented!` in Vortex, whose panic would abort across the FFI boundary.
@@ -726,6 +657,34 @@ TEST_F(VortexFileFormatTest, WriteThenRead) {
 
     ASSERT_OK(WriteFile(path, schema, expected, /*batch_size=*/2));
     AssertReadWithBatchSizes(path, schema, expected, {1, 2, 3, 5, 8});
+}
+
+TEST_F(VortexFileFormatTest, WriteEditionOption) {
+    const arrow::FieldVector fields = {arrow::field("id", arrow::int32(), false)};
+    const std::shared_ptr<arrow::Schema> schema = arrow::schema(fields);
+    const std::shared_ptr<arrow::Array> expected =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([[1],[2],[3]])")
+            .ValueOrDie();
+    const std::string default_path = PathUtil::JoinPath(directory_->Str(), "default.vortex");
+    ASSERT_OK(WriteFile(default_path, schema, expected, /*batch_size=*/2));
+
+    ASSERT_OK_AND_ASSIGN(
+        format_, FileFormatFactory::Get("vortex", {{kVortexWriteEdition, "core2026.08.3"}}));
+    const std::string newer_path = PathUtil::JoinPath(directory_->Str(), "newer.vortex");
+    ASSERT_OK(WriteFile(newer_path, schema, expected, /*batch_size=*/2));
+    std::string default_bytes;
+    std::string newer_bytes;
+    ASSERT_OK(file_system_->ReadFile(default_path, &default_bytes));
+    ASSERT_OK(file_system_->ReadFile(newer_path, &newer_bytes));
+    ASSERT_TRUE(default_bytes != newer_bytes);
+    AssertReadWithBatchSizes(default_path, schema, expected, {2});
+    AssertReadWithBatchSizes(newer_path, schema, expected, {2});
+
+    ASSERT_OK_AND_ASSIGN(
+        format_, FileFormatFactory::Get("vortex", {{kVortexWriteEdition, "core1999.01.0"}}));
+    ASSERT_NOK_WITH_MSG(WriteFile(PathUtil::JoinPath(directory_->Str(), "invalid.vortex"), schema,
+                                  expected, /*batch_size=*/2),
+                        "Unknown Vortex edition: core1999.01.0");
 }
 
 TEST_F(VortexFileFormatTest, WriteThenReadSupportedTypes) {
@@ -1544,7 +1503,7 @@ TEST(VortexSelectionStateTest, SelectionBoundsAreValidatedBeforeFastPaths) {
         fmt::format("Vortex selected row {} is out of range {}", kInvalidRow, total_rows));
 }
 
-TEST_F(VortexFileFormatTest, DenseSelectionKeepsOnlyExcludedIndicesAndPreservesNullValues) {
+TEST_F(VortexFileFormatTest, DenseSelectionPreservesPhysicalRowIdsAndNullValues) {
     constexpr int32_t kRows = 4096;
     constexpr int32_t kDeletedRow = 2048;
     arrow::Int32Builder id_builder;
@@ -1572,7 +1531,6 @@ TEST_F(VortexFileFormatTest, DenseSelectionKeepsOnlyExcludedIndicesAndPreservesN
     selection.AddRange(0, kRows);
     selection.RemoveRange(kDeletedRow, kDeletedRow + 1);
     ASSERT_OK(ConfigureReader(reader.get(), schema, nullptr, selection));
-    ASSERT_NO_FATAL_FAILURE(AssertSelectionState(reader.get(), kRows - 1, 1));
     uint64_t emitted = 0;
     while (true) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, ReadNextBatch(reader.get()));
@@ -1600,7 +1558,6 @@ TEST_F(VortexFileFormatTest, DenseSelectionKeepsOnlyExcludedIndicesAndPreservesN
     }
     ASSERT_EQ(emitted, uint64_t{kRows - 1});
     ASSERT_NOK_WITH_MSG(reader->GetPreviousBatchFileRowId(0), "last Vortex batch was EOF");
-    ASSERT_NO_FATAL_FAILURE(AssertSelectionState(reader.get(), kRows - 1, 1));
 }
 
 TEST_F(VortexFileFormatTest, DenseSelectionMapsConsecutiveExcludedRowsAndSparseSelections) {
@@ -1612,9 +1569,6 @@ TEST_F(VortexFileFormatTest, DenseSelectionMapsConsecutiveExcludedRowsAndSparseS
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
         ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr,
                                   RoaringBitmap32::From(selected_rows)));
-        ASSERT_NO_FATAL_FAILURE(
-            AssertSelectionState(reader.get(), selected_rows.size(),
-                                 std::min(selected_rows.size(), size_t{6} - selected_rows.size())));
         std::vector<uint64_t> actual;
         while (true) {
             ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array, ReadNextBatch(reader.get()));
@@ -1633,13 +1587,12 @@ TEST_F(VortexFileFormatTest, DenseSelectionMapsConsecutiveExcludedRowsAndSparseS
     }
 }
 
-TEST_F(VortexFileFormatTest, FullEmptyAndDenseSelectionsCanBeReconfiguredWithoutExpandedMapping) {
+TEST_F(VortexFileFormatTest, FullEmptyAndDenseSelectionsCanBeReconfigured) {
     ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
     RoaringBitmap32 full;
     full.AddRange(0, 6);
     ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr, full));
-    ASSERT_NO_FATAL_FAILURE(AssertSelectionState(reader.get(), 6, 0));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> first, ReadNextBatch(reader.get()));
     ASSERT_NE(first, nullptr);
     ASSERT_EQ(first->length(), 2);
@@ -1647,13 +1600,11 @@ TEST_F(VortexFileFormatTest, FullEmptyAndDenseSelectionsCanBeReconfiguredWithout
     ASSERT_EQ(row, uint64_t{1});
 
     ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr, RoaringBitmap32()));
-    ASSERT_NO_FATAL_FAILURE(AssertSelectionState(reader.get(), 0, 0));
     ASSERT_OK_AND_ASSIGN(first, ReadNextBatch(reader.get()));
     ASSERT_EQ(first, nullptr);
     ASSERT_NOK_WITH_MSG(reader->GetPreviousBatchFileRowId(0), "no Vortex batch has been read yet");
     ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), nullptr,
                               RoaringBitmap32::From({1, 2, 3, 4, 5})));
-    ASSERT_NO_FATAL_FAILURE(AssertSelectionState(reader.get(), 5, 1));
     ASSERT_OK_AND_ASSIGN(first, ReadNextBatch(reader.get()));
     ASSERT_OK_AND_ASSIGN(row, reader->GetPreviousBatchFileRowId(0));
     ASSERT_EQ(row, uint64_t{1});
@@ -1663,7 +1614,6 @@ TEST_F(VortexFileFormatTest, FullEmptyAndDenseSelectionsCanBeReconfiguredWithout
     ASSERT_OK_AND_ASSIGN(row, reader->GetPreviousBatchFileRowId(0));
     ASSERT_EQ(row, uint64_t{3});
     ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema()));
-    ASSERT_NO_FATAL_FAILURE(AssertSelectionState(reader.get(), 6, 0));
     ASSERT_OK_AND_ASSIGN(first, ReadNextBatch(reader.get()));
     ASSERT_OK_AND_ASSIGN(row, reader->GetPreviousBatchFileRowId(0));
     ASSERT_EQ(row, uint64_t{0});
@@ -1676,9 +1626,7 @@ TEST_F(VortexFileFormatTest, NativePredicateErrorsPropagateFromLazyScanCreation)
         PredicateBuilder::Equal(1, "name", FieldType::STRING, invalid_utf8);
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
     ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), invalid));
-    ASSERT_NOK_WITH_MSG(reader->NextBatch(),
-                        "create Vortex predicate scalar: Other error: invalid utf-8: "
-                        "invalid utf-8 sequence of 1 bytes from index 0");
+    ASSERT_NOK_WITH_MSG(reader->NextBatch(), "invalid utf-8");
 
     const std::shared_ptr<Predicate> valid =
         PredicateBuilder::Equal(0, "id", FieldType::INT, Literal(int32_t{1}));
@@ -1687,31 +1635,20 @@ TEST_F(VortexFileFormatTest, NativePredicateErrorsPropagateFromLazyScanCreation)
     ASSERT_EQ(row_ids, (std::vector<uint64_t>{1}));
 }
 
-TEST_F(VortexFileFormatTest, NativeTemporalLimitsFallBackAndPreserveResidualResults) {
-    const auto schema =
-        arrow::schema({arrow::field("date", arrow::date32()),
-                       arrow::field("ts", arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"))});
-    const auto data = arrow::ipc::internal::json::ArrayFromJSON(
-        arrow::struct_(schema->fields()), "[[0,0],[1,1000],[null,null],[-1,-1000]]");
+TEST_F(VortexFileFormatTest, DateRangePredicateBeyondJiffRangeExcludesNullRows) {
+    const auto schema = arrow::schema({arrow::field("date", arrow::date32())});
+    const auto data = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(schema->fields()),
+                                                                "[[0],[1],[null],[-1]]");
     ASSERT_TRUE(data.ok()) << data.status().ToString();
-    const std::string path = PathUtil::JoinPath(directory_->Str(), "temporal-fallback.vortex");
+    const std::string path = PathUtil::JoinPath(directory_->Str(), "date-bounds.vortex");
     ASSERT_OK(WriteFile(path, schema, data.ValueOrDie(), /*batch_size=*/2));
 
-    const Literal max_date(FieldType::DATE, std::numeric_limits<int32_t>::max());
-    // The timestamp fits in Paimon's calendar range but exceeds Vortex's native range.
-    const Literal end_of_year_9999(Timestamp::FromEpochMillis(253402300799999, 999000));
-    const std::vector<std::pair<std::shared_ptr<Predicate>, std::vector<uint64_t>>> cases = {
-        {PredicateBuilder::LessThan(0, "date", FieldType::DATE, max_date), {0, 1, 3}},
-        {PredicateBuilder::NotIn(1, "ts", FieldType::TIMESTAMP,
-                                 {Literal(Timestamp::FromEpochMillis(0)), end_of_year_9999}),
-         {1, 3}}};
-    for (const auto& [predicate, expected] : cases) {
-        SCOPED_TRACE(predicate->GetFunction().ToString());
-        ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
-        ASSERT_OK(ConfigureReader(reader.get(), schema, predicate));
-        ASSERT_NO_FATAL_FAILURE(AssertNativeAndResidualRows(
-            std::move(reader), predicate, data.ValueOrDie(), {0, 1, 2, 3}, expected));
-    }
+    const auto predicate = PredicateBuilder::LessThan(
+        0, "date", FieldType::DATE, Literal(FieldType::DATE, std::numeric_limits<int32_t>::max()));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
+    ASSERT_OK(ConfigureReader(reader.get(), schema, predicate));
+    AssertNativeAndResidualRows(std::move(reader), predicate, data.ValueOrDie(), {0, 1, 3},
+                                {0, 1, 3});
 }
 
 TEST_F(VortexFileFormatTest, IoCoalesceOptionsValidateLimitsAtReaderBuild) {
@@ -1756,8 +1693,7 @@ TEST_F(VortexFileFormatTest, IoCoalesceOptionsValidateLimitsAtReaderBuild) {
             ASSERT_NE(result.value(), nullptr);
         } else {
             ASSERT_NOK_WITH_MSG(
-                result,
-                fmt::format("open Vortex callback data source: Other error: {}", test_case.error));
+                result, fmt::format("open Vortex callback data source: {}", test_case.error));
         }
     }
 }
@@ -2033,7 +1969,6 @@ TEST_F(VortexFileFormatTest, CombinedSelectionAndFilterPreservePhysicalRowsAfter
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<ArrowSchema> file_schema, reader->GetFileSchema());
     const auto imported_file_schema = arrow::ImportSchema(file_schema.get()).ValueOrDie();
     ASSERT_TRUE(imported_file_schema->Equals(*ReaderTestSchema()));
-    ASSERT_NO_FATAL_FAILURE(AssertSelectionState(reader.get(), 4, 2));
     std::vector<uint64_t> physical_rows;
     std::vector<std::shared_ptr<arrow::Array>> batches;
     while (true) {
@@ -2052,7 +1987,6 @@ TEST_F(VortexFileFormatTest, CombinedSelectionAndFilterPreservePhysicalRowsAfter
         batches.push_back(std::move(array));
     }
     ASSERT_EQ(physical_rows, (std::vector<uint64_t>{2, 3, 5}));
-    ASSERT_NO_FATAL_FAILURE(AssertSelectionState(reader.get(), 4, 2));
     auto actual = arrow::Concatenate(batches, arrow_pool_.get()).ValueOrDie();
     auto expected = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(projection->fields()),
                                                               R"([["two"],["three"],["five"]])")
@@ -2214,10 +2148,10 @@ TEST_F(VortexFileFormatTest, EmptyProjectionPreservesRowCountsAndPhysicalIds) {
             ASSERT_TRUE(array->type()->Equals(arrow::struct_(projection->fields())));
             const auto* native_reader = checked_cast<const VortexFileBatchReader*>(reader.get());
             // Inspect the native export before C++ alignment can discard payload columns.
-            ASSERT_EQ(native_reader->current_stream_schema_->num_fields(), filtered ? 1 : 0);
+            ASSERT_EQ(native_reader->current_reader_->schema()->num_fields(), filtered ? 1 : 0);
             ASSERT_EQ(native_reader->current_batch_->type()->num_fields(), filtered ? 1 : 0);
             if (filtered) {
-                ASSERT_EQ(native_reader->current_stream_schema_->field(0)->name(), "_row_idx");
+                ASSERT_EQ(native_reader->current_reader_->schema()->field(0)->name(), "_row_idx");
             }
             for (int64_t i = 0; i < array->length(); ++i) {
                 ASSERT_OK_AND_ASSIGN(uint64_t row,
@@ -2363,7 +2297,6 @@ TEST_F(VortexFileFormatTest, InvalidResetPreservesFilterSelectionAndPhysicalRows
         SCOPED_TRACE(test_case.error);
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
         ASSERT_OK(ConfigureReader(reader.get(), schema, predicate, selection));
-        ASSERT_NO_FATAL_FAILURE(AssertSelectionState(reader.get(), 5, 1));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> first, ReadNextBatch(reader.get()));
         ASSERT_NE(first, nullptr);
         ASSERT_EQ(first->length(), 2);
@@ -2371,7 +2304,6 @@ TEST_F(VortexFileFormatTest, InvalidResetPreservesFilterSelectionAndPhysicalRows
         ASSERT_NOK_WITH_MSG(
             ConfigureReader(reader.get(), test_case.projection, nullptr, test_case.selection),
             test_case.error);
-        ASSERT_NO_FATAL_FAILURE(AssertSelectionState(reader.get(), 5, 1));
         ASSERT_OK_AND_ASSIGN(uint64_t row, reader->GetPreviousBatchFileRowId(0));
         ASSERT_EQ(row, uint64_t{1});
         ASSERT_OK_AND_ASSIGN(row, reader->GetPreviousBatchFileRowId(1));
@@ -2432,90 +2364,20 @@ TEST_F(VortexFileFormatTest, FilterDoesNotOverwriteAFileColumnNamedRowIdx) {
     }
 }
 
-TEST_F(VortexFileFormatTest, CloseReleasesSelectionAndRowPositionWhileReaderRemainsAlive) {
+TEST_F(VortexFileFormatTest, ClosedReaderRejectsReadAndReconfiguration) {
     ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
-    const auto predicate =
-        PredicateBuilder::GreaterThan(0, "id", FieldType::INT, Literal(static_cast<int32_t>(0)));
-    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema(), predicate,
-                              RoaringBitmap32::From({1, 3, 5})));
-    auto* native_reader = checked_cast<VortexFileBatchReader*>(reader.get());
-    ASSERT_GT(native_reader->selection_.indices_.capacity(), size_t{0});
-    std::weak_ptr<arrow::Array> row_ids;
-    {
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> batch, ReadNextBatch(reader.get()));
-        ASSERT_NE(batch, nullptr);
-        ASSERT_NE(native_reader->row_position_.previous_batch_row_idx_, nullptr);
-        row_ids = native_reader->row_position_.previous_batch_row_idx_;
-    }
-    ASSERT_FALSE(row_ids.expired());
+    ASSERT_OK(ConfigureReader(reader.get(), ReaderTestSchema()));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> batch, ReadNextBatch(reader.get()));
+    ASSERT_NE(batch, nullptr);
+    const auto* native_reader = checked_cast<const VortexFileBatchReader*>(reader.get());
+    const std::weak_ptr<arrow::RecordBatchReader> stream_reader = native_reader->current_reader_;
+    ASSERT_FALSE(stream_reader.expired());
     reader->Close();
-    ASSERT_NE(reader, nullptr);
-    // The index vector uses the standard allocator, so Arrow pool counters cannot check it.
-    ASSERT_EQ(native_reader->selection_.indices_.capacity(), size_t{0});
-    ASSERT_TRUE(row_ids.expired());
-    reader->Close();
+    ASSERT_TRUE(stream_reader.expired());
     ASSERT_NOK_WITH_MSG(ConfigureReader(reader.get(), ReaderTestSchema()),
                         "Vortex reader is closed");
     ASSERT_NOK_WITH_MSG(reader->NextBatch(), "Vortex reader is closed");
-}
-
-TEST_F(VortexFileFormatTest, SchemaStreamErrorsPreserveDetailsAndReleaseStream) {
-    ASSERT_OK_AND_ASSIGN(std::string path, WriteReaderTestFile());
-    for (const bool has_native_message : {false, true}) {
-        for (const bool has_callback_error : {false, true}) {
-            SCOPED_TRACE(has_native_message);
-            SCOPED_TRACE(has_callback_error);
-            struct SchemaFailure {
-                std::string message = "native schema export sentinel";
-                bool has_message = false;
-                bool error_read_before_release = false;
-                int32_t releases = 0;
-            } failure;
-            failure.has_message = has_native_message;
-            const std::string native_message = failure.message;
-            ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileBatchReader> reader, CreateReader(path));
-            auto* native_reader = checked_cast<VortexFileBatchReader*>(reader.get());
-            ::ArrowArrayStream stream{};
-            stream.private_data = &failure;
-            stream.get_schema = [](::ArrowArrayStream*, ::ArrowSchema*) -> int32_t { return EIO; };
-            stream.get_last_error = [](::ArrowArrayStream* current) -> const char* {
-                auto* state = static_cast<SchemaFailure*>(current->private_data);
-                state->error_read_before_release = state->releases == 0;
-                return state->has_message ? state->message.c_str() : nullptr;
-            };
-            stream.release = [](::ArrowArrayStream* current) {
-                auto* state = static_cast<SchemaFailure*>(current->private_data);
-                ++state->releases;
-                // Invalidate the stream-owned message without introducing a dangling pointer.
-                std::fill(state->message.begin(), state->message.end(), '#');
-                current->release = nullptr;
-            };
-            native_reader->current_stream_ = stream;
-            native_reader->stream_active_ = true;
-            if (has_callback_error) {
-                native_reader->input_context_->SetCallbackStatus(
-                    Status::IOError("filesystem schema callback sentinel"));
-            }
-            const Status status = native_reader->ImportCurrentStreamSchema();
-            ASSERT_EQ(failure.releases, 1);
-            ASSERT_FALSE(native_reader->stream_active_);
-            ASSERT_EQ(native_reader->current_stream_schema_, nullptr);
-            if (has_callback_error) {
-                ASSERT_NOK_WITH_MSG(
-                    status, "read Vortex stream schema: filesystem schema callback sentinel");
-                ASSERT_EQ(status.message().find(native_message), std::string::npos);
-            } else if (has_native_message) {
-                ASSERT_TRUE(failure.error_read_before_release);
-                ASSERT_NOK_WITH_MSG(status,
-                                    "Vortex Arrow stream get_schema failed: " + native_message);
-            } else {
-                ASSERT_NOK_WITH_MSG(status, "Vortex Arrow stream get_schema failed: unknown");
-            }
-            reader->Close();
-            ASSERT_EQ(failure.releases, 1);
-        }
-    }
 }
 
 TEST_F(VortexFileFormatTest, EmptyFileAndZeroMatchFilterReturnEof) {

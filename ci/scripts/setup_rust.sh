@@ -26,8 +26,7 @@
 set -eux
 
 RUSTUP_VERSION=${RUSTUP_VERSION:-1.29.0}
-# 1.90.0 is the minimum required by paimon-full-text 0.1.0 (rust-version in its Cargo.toml).
-RUST_VERSION=${RUST_VERSION:-1.90.0}
+RUST_VERSION=1.100.0
 CBINDGEN_VERSION=${CBINDGEN_VERSION:-0.29.2}
 PROTOC_VERSION=27.4
 
@@ -43,7 +42,10 @@ echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH:-/dev/null}" || true
 
 rustup toolchain install "${RUST_VERSION}" --profile minimal
 rustup default "${RUST_VERSION}"
-rustup component add rustfmt clippy
+rustup component add --toolchain "${RUST_VERSION}" rustfmt clippy
+
+export RUSTUP_TOOLCHAIN="${RUST_VERSION}" RUSTUP_AUTO_INSTALL=0
+printf 'RUSTUP_TOOLCHAIN=%s\nRUSTUP_AUTO_INSTALL=0\n' "${RUST_VERSION}" >> "${GITHUB_ENV:-/dev/null}"
 
 # Lance's protobuf definitions use proto3 optional fields, which require protoc >= 3.12.
 if ! command -v protoc >/dev/null 2>&1 || \
@@ -74,11 +76,6 @@ if ! command -v protoc >/dev/null 2>&1 || \
     export PATH="${protoc_home}/bin:${PATH}"
     echo "${protoc_home}/bin" >> "${GITHUB_PATH:-/dev/null}" || true
 fi
-
-# Vortex's FFI build pins rust-version >= 1.95 and is invoked with RUSTUP_TOOLCHAIN=stable (see
-# cmake_modules/ThirdpartyToolchain.cmake). Install the stable channel alongside the pinned default
-# so Vortex builds with it while Lance, Mosaic and tantivy-fts keep using the default toolchain.
-rustup toolchain install stable --profile minimal
 
 # cbindgen is used by the crate's build.rs to emit the C header that the
 # C++ side includes. Corrosion will also run cbindgen at CMake configure

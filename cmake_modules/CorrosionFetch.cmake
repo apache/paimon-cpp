@@ -36,23 +36,11 @@ set(PAIMON_CORROSION_REPO
 # Help Corrosion find rustc/cargo when CMake is invoked without a login shell
 # or when rustup is installed to a non-default location. We try, in order:
 #   1. Existing Rust_COMPILER cache variable (user override)
-#   2. $CARGO_HOME/bin/rustc (when env var set)
-#   3. $HOME/.cargo/bin/rustc (rustup's default install)
-#   4. Fallback: let Corrosion's FindRust.cmake try its own detection
-function(_paimon_find_rustup_bin _var _name)
-    if(DEFINED ENV{CARGO_HOME} AND EXISTS "$ENV{CARGO_HOME}/bin/${_name}")
-        set(${_var}
-            "$ENV{CARGO_HOME}/bin/${_name}"
-            PARENT_SCOPE)
-    elseif(DEFINED ENV{HOME} AND EXISTS "$ENV{HOME}/.cargo/bin/${_name}")
-        set(${_var}
-            "$ENV{HOME}/.cargo/bin/${_name}"
-            PARENT_SCOPE)
-    endif()
-endfunction()
-
+#   2. rustc/cargo on PATH
+#   3. $CARGO_HOME/bin or $HOME/.cargo/bin for non-login shells
 if(NOT DEFINED Rust_COMPILER OR Rust_COMPILER STREQUAL "")
-    _paimon_find_rustup_bin(_rustc_path rustc)
+    find_program(_rustc_path rustc PATHS "$ENV{CARGO_HOME}/bin" "$ENV{HOME}/.cargo/bin"
+                                         NO_CACHE)
     if(_rustc_path)
         set(Rust_COMPILER
             "${_rustc_path}"
@@ -60,7 +48,8 @@ if(NOT DEFINED Rust_COMPILER OR Rust_COMPILER STREQUAL "")
     endif()
 endif()
 if(NOT DEFINED Rust_CARGO OR Rust_CARGO STREQUAL "")
-    _paimon_find_rustup_bin(_cargo_path cargo)
+    find_program(_cargo_path cargo PATHS "$ENV{CARGO_HOME}/bin" "$ENV{HOME}/.cargo/bin"
+                                         NO_CACHE)
     if(_cargo_path)
         set(Rust_CARGO
             "${_cargo_path}"

@@ -178,17 +178,18 @@ several optional system components which you can opt into building by passing
 boolean flags to ``cmake``. ORC and Avro are the exceptions: both already default
 to ``ON``, while every other component below defaults to ``OFF``.
 
+When building Rust components, you need to use a Rust version that meets the
+minimum for each enabled component.
+
 * ``-DPAIMON_ENABLE_ORC=ON``: Paimon integration with Apache ORC
 * ``-DPAIMON_ENABLE_AVRO=ON``: Apache Avro libraries and Paimon integration
-* ``-DPAIMON_ENABLE_LANCE=ON``: Lance 0.39 file format support through a Rust FFI; requires
-  Rust 1.88 or newer, cbindgen, and protoc 3.12 or newer
-* ``-DPAIMON_ENABLE_MOSAIC=ON``: Apache Paimon Mosaic file format support through a Rust FFI;
-  requires cargo on ``PATH``
-* ``-DPAIMON_ENABLE_VORTEX=ON``: Vortex file format support through a Rust FFI; requires cargo,
-  the stable Rust toolchain (Vortex pins ``rust-version`` 1.95 or newer and is built with
-  ``RUSTUP_TOOLCHAIN=stable``), and a ``flatc`` whose version matches the flatbuffers crate that
-  Vortex uses. Distribution ``flatc`` packages are typically too old; set ``FLATC`` to the path of
-  a suitable binary when it is not on ``PATH``.
+* ``-DPAIMON_ENABLE_LANCE=ON``: Lance 0.39 file format support. Requires Rust 1.88
+  or newer, cbindgen, and protoc 3.12 or newer.
+* ``-DPAIMON_ENABLE_MOSAIC=ON``: Apache Paimon Mosaic file format support. Requires
+  Rust 1.85 or newer.
+* ``-DPAIMON_ENABLE_VORTEX=ON``: Vortex file format support. Requires Rust 1.95
+  or newer. The upstream toolchain file defaults rustup builds to Rust 1.99.1.
+  To use another compatible version, set ``RUSTUP_TOOLCHAIN`` before building.
 * ``-DPAIMON_ENABLE_JINDO=ON``: Support for Alibaba Jindo filesystems
 * ``-DPAIMON_ENABLE_OSS=ON``: Support for Alibaba Cloud OSS through OSS SDK V2
 * ``-DPAIMON_ENABLE_S3=ON``: Support for Amazon S3-compatible filesystems

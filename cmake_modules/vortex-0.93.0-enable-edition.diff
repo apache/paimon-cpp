@@ -1,0 +1,433 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Upstream: https://github.com/vortex-data/vortex/pull/11435
+# Merged commit: 26a12a670bccc9ba930d7eb9f5843a155a3f8bb1
+# Base: Vortex 0.93.0.
+# Carries the complete upstream change, including generated C declarations,
+# edition constants, Cargo.lock, documentation and regression tests.
+# Applied before vortex.diff by the shared third-party patch framework.
+# Apply from the Vortex source root with patch -p1.
+# Remove when the pinned release includes this commit and compatibility tests pass.
+
+diff --git a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -12016,6 +12016,7 @@ dependencies = [
+  "vortex",
+  "vortex-array",
+  "vortex-arrow",
++ "vortex-edition",
+ ]
+
+ [[package]]
+diff --git a/docs/specs/versioning/using-editions.md b/docs/specs/versioning/using-editions.md
+--- a/docs/specs/versioning/using-editions.md
++++ b/docs/specs/versioning/using-editions.md
+@@ -35,8 +35,28 @@ currently enables `core2026.08.3`. Calling `enable_edition` replaces the enabled
+ same family. Set the selection before starting the write, because that is when the writer captures
+ the permitted wire IDs.
+
+-The Java and Python bindings select an edition by its name. In Java, enable the edition on the
+-session before you open a writer:
++The C, C++, Java, and Python bindings select an edition by name. The `vortex.h` header provides
++`VX_EDITION_CORE_*` string macros for C and C++. In C, call `vx_session_enable_edition` before
++`vx_array_sink_open_file`.
++
++```c
++int configure_edition(vx_session *session, vx_error **error) {
++    return vx_session_enable_edition(session, vx_view_from_cstr(VX_EDITION_CORE_2025_10_0), error);
++}
++```
++
++A return value of `0` indicates success. On failure, free the error with `vx_error_free` if you
++requested one.
++
++In C++, call `enable_edition` before `Writer::open`. An unknown edition name throws a
++`vortex::VortexException`.
++
++```cpp
++vortex::Session session;
++session.enable_edition(VX_EDITION_CORE_2025_10_0);
++```
++
++In Java, enable the edition on the session before opening a writer.
+
+ ```java
+ Session session = Session.create();
+diff --git a/lang/cpp/include/vortex/session.hpp b/lang/cpp/include/vortex/session.hpp
+--- a/lang/cpp/include/vortex/session.hpp
++++ b/lang/cpp/include/vortex/session.hpp
+@@ -7,6 +7,7 @@
+ #include <vortex.h>
+
+ #include <memory>
++#include <string_view>
+
+ namespace vortex {
+
+@@ -23,6 +24,14 @@ class Session {
+     Session &operator=(const Session &other);
+     Session &operator=(Session &&) noexcept = default;
+
++    /**
++     * Enable a registered edition by name, for example `VX_EDITION_CORE_2025_10_0`.
++     * This replaces the enabled edition of the same family on the shared session.
++     * Call before opening a Writer. Use separate sessions for overlapping writes with different editions.
++     * Throws VortexException for an unknown edition name.
++     */
++    void enable_edition(std::string_view name);
++
+ private:
+     friend struct detail::Access;
+
+diff --git a/lang/cpp/src/session.cpp b/lang/cpp/src/session.cpp
+--- a/lang/cpp/src/session.cpp
++++ b/lang/cpp/src/session.cpp
+@@ -3,6 +3,8 @@
+
+ #include "vortex/session.hpp"
+
++#include "vortex/error.hpp"
++
+ #include <vortex.h>
+
+ namespace vortex {
+@@ -24,4 +26,10 @@ Session &Session::operator=(const Session &other) {
+     return *this;
+ }
+
++void Session::enable_edition(std::string_view name) {
++    vx_error *error = nullptr;
++    vx_session_enable_edition(handle_.get(), detail::to_view(name), &error);
++    detail::throw_on_error(error);
++}
++
+ } // namespace vortex
+diff --git a/lang/cpp/tests/session.cpp b/lang/cpp/tests/session.cpp
+--- a/lang/cpp/tests/session.cpp
++++ b/lang/cpp/tests/session.cpp
+@@ -2,7 +2,10 @@
+ // SPDX-FileCopyrightText: Copyright the Vortex contributors
+ #include <catch2/catch_test_macros.hpp>
+ #include <array>
++#include <string_view>
+ #include <vortex/array.hpp>
++#include <vortex/error.hpp>
++#include <vortex/session.hpp>
+
+ using namespace vortex;
+
+@@ -21,4 +24,11 @@ TEST_CASE("Session copy and move", "[session]") {
+         REQUIRE(view.values()[i] == expected[i]);
+     }
+ }
++
++TEST_CASE("Session enables a named edition", "[session]") {
++    Session session;
++    const std::string_view text = VX_EDITION_CORE_2025_10_0 " suffix";
++    REQUIRE_NOTHROW(session.enable_edition(text.substr(0, text.find(' '))));
++    REQUIRE_THROWS_AS(session.enable_edition("unknown-edition"), VortexException);
++}
+ } // namespace
+diff --git a/vortex-ffi/Cargo.toml b/vortex-ffi/Cargo.toml
+--- a/vortex-ffi/Cargo.toml
++++ b/vortex-ffi/Cargo.toml
+@@ -42,6 +42,7 @@ vortex-array = { workspace = true, features = ["_test-harness"] }
+
+ [build-dependencies]
+ cbindgen = { workspace = true }
++vortex-edition = { workspace = true }
+
+ [features]
+ mimalloc = ["dep:mimalloc"]
+diff --git a/vortex-ffi/build.rs b/vortex-ffi/build.rs
+--- a/vortex-ffi/build.rs
++++ b/vortex-ffi/build.rs
+@@ -3,10 +3,14 @@
+
+ #![expect(clippy::unwrap_used)]
+ use std::env;
++use std::fmt::Write;
+ use std::path::PathBuf;
+ use std::process::Command;
+ use std::process::exit;
+
++use vortex_edition::EDITION_DECLARATIONS;
++use vortex_edition::declarations::core;
++
+ fn main() {
+     println!("cargo:rustc-check-cfg=cfg(vortex_asan)");
+     println!("cargo:rerun-if-changed=src");
+@@ -55,8 +59,20 @@ fn main() {
+     // Create output directory
+     std::fs::create_dir_all(output_file.parent().unwrap()).unwrap();
+
+-    // Load config
+-    let config = cbindgen::Config::from_file("cbindgen.toml").unwrap();
++    let mut config = cbindgen::Config::from_file("cbindgen.toml").unwrap();
++    let header = config.header.get_or_insert_default();
++    header.push_str("\n// Core edition names accepted by vx_session_enable_edition.\n");
++    for declaration in EDITION_DECLARATIONS {
++        let id = declaration.edition.id;
++        if id.family == core::FAMILY.name {
++            writeln!(
++                header,
++                "#define VX_EDITION_CORE_{:04}_{:02}_{} \"{id}\"",
++                id.year, id.month, id.version
++            )
++            .unwrap();
++        }
++    }
+
+     // Generate and write header
+     let result = cbindgen::Builder::new()
+diff --git a/vortex-ffi/cinclude/vortex.h b/vortex-ffi/cinclude/vortex.h
+--- a/vortex-ffi/cinclude/vortex.h
++++ b/vortex-ffi/cinclude/vortex.h
+@@ -66,6 +66,15 @@ typedef struct ArrowArrayStream FFI_ArrowArrayStream;
+ #define vx_bool_view_nth(X, I)                                                                               \
+     ((((X).ptr[((I) + (X).bit_offset) / 8] & (1 << (((I) + (X).bit_offset) % 8))) != 0))
+
++// Core edition names accepted by vx_session_enable_edition.
++#define VX_EDITION_CORE_2025_05_0 "core2025.05.0"
++#define VX_EDITION_CORE_2025_06_0 "core2025.06.0"
++#define VX_EDITION_CORE_2025_10_0 "core2025.10.0"
++#define VX_EDITION_CORE_2026_08_0 "core2026.08.0"
++#define VX_EDITION_CORE_2026_08_1 "core2026.08.1"
++#define VX_EDITION_CORE_2026_08_2 "core2026.08.2"
++#define VX_EDITION_CORE_2026_08_3 "core2026.08.3"
++
+ #include <stdarg.h>
+ #include <stdbool.h>
+ #include <stddef.h>
+@@ -1632,6 +1641,24 @@ vx_session *vx_session_new(void);
+  */
+ vx_session *vx_session_clone(const vx_session *session);
+
++/**
++ * Enable a registered edition by its UTF-8 name. For core editions, use a `VX_EDITION_CORE_*`
++ * macro with `vx_view_from_cstr`.
++ *
++ * This replaces the enabled edition of the same family on the shared session. Call this
++ * before opening a file sink. Use separate sessions for overlapping writes with different editions.
++ *
++ * Returns 0 on success and 1 on failure. If `error_out` is non-NULL, `*error_out` is cleared on
++ * success and set to an error on failure. Free that error with `vx_error_free`.
++ *
++ * # Safety
++ *
++ * `session` must be NULL or a live session handle created by this library. `name.ptr` must be
++ * readable for `name.len` bytes, or NULL when `name.len` is zero. If non-NULL, `error_out` must be
++ * writable.
++ */
++int vx_session_enable_edition(const vx_session *session, vx_view name, vx_error **error_out);
++
+ /**
+  * Opens a writable array stream, where sink is used to push values into the stream.
+  * To close the stream close the sink with `vx_array_sink_close`.
+diff --git a/vortex-ffi/src/session.rs b/vortex-ffi/src/session.rs
+--- a/vortex-ffi/src/session.rs
++++ b/vortex-ffi/src/session.rs
+@@ -1,15 +1,22 @@
+ // SPDX-License-Identifier: Apache-2.0
+ // SPDX-FileCopyrightText: Copyright the Vortex contributors
+
++use std::ffi::c_int;
++
+ use vortex::VortexSessionDefault;
++use vortex::editions::EditionSessionExt;
+ use vortex::error::VortexResult;
+ use vortex::error::vortex_ensure;
++use vortex::error::vortex_err;
+ use vortex::io::runtime::BlockingRuntime;
+ use vortex::io::session::RuntimeSessionExt;
+ use vortex::session::VortexSession;
+
+ use crate::RUNTIME;
+ use crate::box_wrapper;
++use crate::error::try_or;
++use crate::error::vx_error;
++use crate::string::vx_view;
+
+ box_wrapper!(
+     /// A handle to a Vortex session.
+@@ -41,6 +48,40 @@ pub unsafe extern "C-unwind" fn vx_session_clone(session: *const vx_session) ->
+     vx_session::new(session.clone())
+ }
+
++/// Enable a registered edition by its UTF-8 name. For core editions, use a `VX_EDITION_CORE_*`
++/// macro with `vx_view_from_cstr`.
++///
++/// This replaces the enabled edition of the same family on the shared session. Call this
++/// before opening a file sink. Use separate sessions for overlapping writes with different editions.
++///
++/// Returns 0 on success and 1 on failure. If `error_out` is non-NULL, `*error_out` is cleared on
++/// success and set to an error on failure. Free that error with `vx_error_free`.
++///
++/// # Safety
++///
++/// `session` must be NULL or a live session handle created by this library. `name.ptr` must be
++/// readable for `name.len` bytes, or NULL when `name.len` is zero. If non-NULL, `error_out` must be
++/// writable.
++#[unsafe(no_mangle)]
++pub unsafe extern "C-unwind" fn vx_session_enable_edition(
++    session: *const vx_session,
++    name: vx_view,
++    error_out: *mut *mut vx_error,
++) -> c_int {
++    try_or(error_out, 1, || {
++        // SAFETY: The caller provides a live session handle or a null pointer.
++        let session = unsafe { vx_session_ref(session) }?;
++        // SAFETY: The caller provides a readable byte range for the duration of this call.
++        let name = unsafe { name.as_str() }?;
++        let edition = session
++            .editions()
++            .find_by_name(name)
++            .ok_or_else(|| vortex_err!("Unknown Vortex edition: {name}"))?;
++        session.enable_edition(edition.id)?;
++        Ok(0)
++    })
++}
++
+ /// Borrow the [`VortexSession`] behind a [`vx_session`] handle, erroring on a null pointer.
+ ///
+ /// A building block for FFI crates layered on top of the base Vortex C API.
+@@ -56,9 +97,13 @@ pub unsafe fn vx_session_ref<'a>(session: *const vx_session) -> VortexResult<&'a
+
+ #[cfg(test)]
+ mod tests {
+-    use crate::session::vx_session_clone;
+-    use crate::session::vx_session_free;
+-    use crate::session::vx_session_new;
++    use std::ptr;
++
++    use vortex::editions::CORE_2025_10_0;
++
++    use super::*;
++    use crate::error::vx_error_free;
++    use crate::error::vx_error_message;
+
+     #[test]
+     #[cfg_attr(miri, ignore)]
+@@ -84,4 +129,42 @@ mod tests {
+             vx_session_free(copy);
+         }
+     }
++
++    #[test]
++    #[cfg_attr(miri, ignore)]
++    fn test_enable_edition() -> VortexResult<()> {
++        let session = unsafe { vx_session_new() };
++        let copy = unsafe { vx_session_clone(session) };
++        let mut error = ptr::null_mut();
++
++        let name = vx_view::from_str("core2025.10.0");
++        assert_eq!(
++            unsafe { vx_session_enable_edition(session, name, &raw mut error) },
++            0
++        );
++        assert!(error.is_null());
++
++        let unknown_name = vx_view::from_str("unknown-edition");
++        assert_eq!(
++            unsafe { vx_session_enable_edition(session, unknown_name, &raw mut error) },
++            1
++        );
++        assert!(!error.is_null());
++        let message = unsafe { vx_error_message(error).as_str() }?;
++        assert!(message.contains("Unknown Vortex edition: unknown-edition"));
++        unsafe { vx_error_free(error) };
++
++        let core_editions: Vec<_> = unsafe { vx_session_ref(copy) }?
++            .enabled_editions()
++            .editions()
++            .into_iter()
++            .filter(|edition| edition.family == CORE_2025_10_0.family)
++            .collect();
++        assert_eq!(core_editions, [CORE_2025_10_0]);
++        unsafe {
++            vx_session_free(copy);
++            vx_session_free(session);
++        }
++        Ok(())
++    }
+ }
+diff --git a/vortex-ffi/src/sink.rs b/vortex-ffi/src/sink.rs
+--- a/vortex-ffi/src/sink.rs
++++ b/vortex-ffi/src/sink.rs
+@@ -194,6 +194,7 @@ mod tests {
+     use crate::dtype::vx_dtype;
+     use crate::dtype::vx_dtype_free;
+     use crate::error::vx_error_free;
++    use crate::session::vx_session_enable_edition;
+     use crate::session::vx_session_free;
+     use crate::session::vx_session_new;
+
+@@ -244,6 +245,52 @@ mod tests {
+         }
+     }
+
++    #[test]
++    #[cfg_attr(miri, ignore)]
++    fn test_sink_writes_legacy_zone_map_for_older_edition() -> VortexResult<()> {
++        let temp_file = NamedTempFile::new()?;
++        let path = temp_file
++            .path()
++            .to_str()
++            .ok_or_else(|| vortex_err!("temporary file path is not UTF-8"))?;
++        let path = vx_view::from_str(path);
++        let array = buffer![1i32, 2, 3].into_array();
++        let dtype = vx_dtype::new(array.dtype().clone());
++        let array = vx_array::new(array);
++        let session = unsafe { vx_session_new() };
++        let mut error = std::ptr::null_mut();
++
++        let edition = vx_view::from_str("core2025.10.0");
++        assert_eq!(
++            unsafe { vx_session_enable_edition(session, edition, &raw mut error) },
++            0
++        );
++        assert!(error.is_null());
++
++        let sink = unsafe { vx_array_sink_open_file(session, path, dtype, &raw mut error) };
++        assert!(error.is_null());
++        assert!(!sink.is_null());
++
++        unsafe { vx_array_sink_push(sink, array, &raw mut error) };
++        assert!(error.is_null());
++        unsafe { vx_array_sink_close(sink, &raw mut error) };
++        assert!(error.is_null());
++
++        let reader_session = vx_session::as_ref(session).clone();
++        unsafe {
++            vx_array_free(array);
++            vx_dtype_free(dtype);
++            vx_session_free(session);
++        }
++        let bytes = ByteBuffer::from(std::fs::read(temp_file.path())?);
++        let file = reader_session.open_options().open_buffer(bytes)?;
++        assert_eq!(
++            file.footer().layout().encoding_id().as_str(),
++            "vortex.stats"
++        );
++        Ok(())
++    }
++
+     #[test]
+     #[cfg_attr(miri, ignore)]
+     fn test_sink_multiple_arrays() {
