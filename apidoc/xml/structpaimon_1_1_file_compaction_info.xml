@@ -1,0 +1,143 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structpaimon_1_1_file_compaction_info" kind="struct" language="C++" prot="public">
+    <compoundname>paimon::FileCompactionInfo</compoundname>
+    <includes refid="append__file__compaction__planner_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structpaimon_1_1_file_compaction_info_1a1c2b01e7753e1e2cf78cd75adaa0c163" prot="public" static="no" mutable="no">
+        <type>std::string</type>
+        <definition>std::string paimon::FileCompactionInfo::file_name</definition>
+        <argsstring></argsstring>
+        <name>file_name</name>
+        <qualifiedname>paimon::FileCompactionInfo::file_name</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="64" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="64" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_file_compaction_info_1aec2e110acd6e90dc45e979a0067a609b" prot="public" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::FileCompactionInfo::schema_id</definition>
+        <argsstring></argsstring>
+        <name>schema_id</name>
+        <qualifiedname>paimon::FileCompactionInfo::schema_id</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="65" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="65" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_file_compaction_info_1a6caffba2b57febfcad96208608559c05" prot="public" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::FileCompactionInfo::source_row_count</definition>
+        <argsstring></argsstring>
+        <name>source_row_count</name>
+        <qualifiedname>paimon::FileCompactionInfo::source_row_count</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="66" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="66" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_file_compaction_info_1a330b062cc35898a46552156ef288ac11" prot="public" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::FileCompactionInfo::live_row_count</definition>
+        <argsstring></argsstring>
+        <name>live_row_count</name>
+        <qualifiedname>paimon::FileCompactionInfo::live_row_count</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="67" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="67" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_file_compaction_info_1a24b5019198031ed011b9c8437753692b" prot="public" static="no" mutable="no">
+        <type>std::optional&lt; <ref refid="structpaimon_1_1_file_index_meta" kindref="compound">FileIndexMeta</ref> &gt;</type>
+        <definition>std::optional&lt;FileIndexMeta&gt; paimon::FileCompactionInfo::index_meta</definition>
+        <argsstring></argsstring>
+        <name>index_meta</name>
+        <qualifiedname>paimon::FileCompactionInfo::index_meta</qualifiedname>
+        <briefdescription>
+<para>Absent if the file has no index container. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="69" column="19" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="69" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_file_compaction_info_1ab49a46d13c80207f19aa93dda26b07a1" prot="public" static="no" mutable="no">
+        <type>std::vector&lt; <ref refid="structpaimon_1_1_row_id_mapping_range" kindref="compound">RowIdMappingRange</ref> &gt;</type>
+        <definition>std::vector&lt;RowIdMappingRange&gt; paimon::FileCompactionInfo::row_id_mapping</definition>
+        <argsstring></argsstring>
+        <name>row_id_mapping</name>
+        <qualifiedname>paimon::FileCompactionInfo::row_id_mapping</qualifiedname>
+        <briefdescription>
+<para>Sorted surviving source ranges mapped into the single output file. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="71" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="71" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="structpaimon_1_1_file_compaction_info_1aecee38ede6cc1ee99043c965cc3cd2a9" prot="public" static="no" const="yes" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; int64_t &gt; &gt; paimon::FileCompactionInfo::MapRowId</definition>
+        <argsstring>(int64_t source_row_id) const</argsstring>
+        <name>MapRowId</name>
+        <qualifiedname>paimon::FileCompactionInfo::MapRowId</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>source_row_id</declname>
+        </param>
+        <briefdescription>
+<para>Looks up a source row in the planned output. </para>
+        </briefdescription>
+        <detaileddescription>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>source_row_id</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Zero-based physical position in the original file. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+<simplesect kind="return"><para>Output row id, nullopt if deleted, or Invalid if out of range. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="76" column="12"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Index metadata and surviving row positions of one input file. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="63" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="63" bodyend="77"/>
+    <listofallmembers>
+      <member refid="structpaimon_1_1_file_compaction_info_1a1c2b01e7753e1e2cf78cd75adaa0c163" prot="public" virt="non-virtual"><scope>paimon::FileCompactionInfo</scope><name>file_name</name></member>
+      <member refid="structpaimon_1_1_file_compaction_info_1a24b5019198031ed011b9c8437753692b" prot="public" virt="non-virtual"><scope>paimon::FileCompactionInfo</scope><name>index_meta</name></member>
+      <member refid="structpaimon_1_1_file_compaction_info_1a330b062cc35898a46552156ef288ac11" prot="public" virt="non-virtual"><scope>paimon::FileCompactionInfo</scope><name>live_row_count</name></member>
+      <member refid="structpaimon_1_1_file_compaction_info_1aecee38ede6cc1ee99043c965cc3cd2a9" prot="public" virt="non-virtual"><scope>paimon::FileCompactionInfo</scope><name>MapRowId</name></member>
+      <member refid="structpaimon_1_1_file_compaction_info_1ab49a46d13c80207f19aa93dda26b07a1" prot="public" virt="non-virtual"><scope>paimon::FileCompactionInfo</scope><name>row_id_mapping</name></member>
+      <member refid="structpaimon_1_1_file_compaction_info_1aec2e110acd6e90dc45e979a0067a609b" prot="public" virt="non-virtual"><scope>paimon::FileCompactionInfo</scope><name>schema_id</name></member>
+      <member refid="structpaimon_1_1_file_compaction_info_1a6caffba2b57febfcad96208608559c05" prot="public" virt="non-virtual"><scope>paimon::FileCompactionInfo</scope><name>source_row_count</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

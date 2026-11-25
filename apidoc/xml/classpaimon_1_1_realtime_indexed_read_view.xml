@@ -1,0 +1,90 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_realtime_indexed_read_view" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::RealtimeIndexedReadView</compoundname>
+    <basecompoundref refid="classpaimon_1_1_realtime_read_view" prot="public" virt="non-virtual">paimon::RealtimeReadView</basecompoundref>
+    <includes refid="realtime__index__read__source_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_read_source.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_indexed_read_view_1a351ae0a131bde2c2367ec73b1f3eac86" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::RealtimeIndexedReadView::~RealtimeIndexedReadView</definition>
+        <argsstring>() override=default</argsstring>
+        <name>~RealtimeIndexedReadView</name>
+        <qualifiedname>paimon::RealtimeIndexedReadView::~RealtimeIndexedReadView</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_read_source.h" line="55" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_indexed_read_view_1ada9aec0d4880d618608d3b97949225e8" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::vector&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_index_read_source" kindref="compound">RealtimeIndexReadSource</ref> &gt; &gt; &gt;</type>
+        <definition>virtual Result&lt; std::vector&lt; std::shared_ptr&lt; RealtimeIndexReadSource &gt; &gt; &gt; paimon::RealtimeIndexedReadView::CreateIndexReadSources</definition>
+        <argsstring>(const OffsetRange &amp;offset_range) const =0</argsstring>
+        <name>CreateIndexReadSources</name>
+        <qualifiedname>paimon::RealtimeIndexedReadView::CreateIndexReadSources</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="structpaimon_1_1_offset_range" kindref="compound">OffsetRange</ref> &amp;</type>
+          <declname>offset_range</declname>
+        </param>
+        <briefdescription>
+<para>Creates sources restricted to the intersection of each segment&apos;s range and the query range. </para>
+        </briefdescription>
+        <detaileddescription>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>offset_range</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Query bounds, which may be narrower than <ref refid="classpaimon_1_1_realtime_read_view_1a4c9a3c32aaad003499f0a0e8fd80e29d" kindref="member">GetOffsetRange()</ref> to exclude offsets already covered by the disk snapshot selected after this view was pinned. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_read_source.h" line="60" column="20"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Optional capability for precise real-time filtering and search. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>Ordinary query reads do not require it. Each visible row in the requested range of the pinned snapshot must belong to exactly one source. Source offset ranges must not overlap, so data readers can use the same pinned view with source-local offset bounds. </para>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="1">
+        <label>paimon::RealtimeIndexedReadView</label>
+        <link refid="classpaimon_1_1_realtime_indexed_read_view"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="2">
+        <label>paimon::RealtimeReadView</label>
+        <link refid="classpaimon_1_1_realtime_read_view"/>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="1">
+        <label>paimon::RealtimeIndexedReadView</label>
+        <link refid="classpaimon_1_1_realtime_indexed_read_view"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="2">
+        <label>paimon::RealtimeReadView</label>
+        <link refid="classpaimon_1_1_realtime_read_view"/>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_read_source.h" line="53" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_read_source.h" bodystart="53" bodyend="62"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_realtime_indexed_read_view_1ada9aec0d4880d618608d3b97949225e8" prot="public" virt="pure-virtual"><scope>paimon::RealtimeIndexedReadView</scope><name>CreateIndexReadSources</name></member>
+      <member refid="classpaimon_1_1_realtime_read_view_1a4c9a3c32aaad003499f0a0e8fd80e29d" prot="public" virt="pure-virtual"><scope>paimon::RealtimeIndexedReadView</scope><name>GetOffsetRange</name></member>
+      <member refid="classpaimon_1_1_realtime_indexed_read_view_1a351ae0a131bde2c2367ec73b1f3eac86" prot="public" virt="non-virtual"><scope>paimon::RealtimeIndexedReadView</scope><name>~RealtimeIndexedReadView</name></member>
+      <member refid="classpaimon_1_1_realtime_read_view_1a1cfbd916f891a5f0487cc1ef58653e03" prot="public" virt="virtual"><scope>paimon::RealtimeIndexedReadView</scope><name>~RealtimeReadView</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

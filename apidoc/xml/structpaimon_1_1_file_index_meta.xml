@@ -1,0 +1,65 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structpaimon_1_1_file_index_meta" kind="struct" language="C++" prot="public">
+    <compoundname>paimon::FileIndexMeta</compoundname>
+    <includes refid="append__file__compaction__planner_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structpaimon_1_1_file_index_meta_1a8a502e001c9a9e0641455bc339cb6aa2" prot="public" static="no" mutable="no">
+        <type>std::optional&lt; std::string &gt;</type>
+        <definition>std::optional&lt;std::string&gt; paimon::FileIndexMeta::index_file_path</definition>
+        <argsstring></argsstring>
+        <name>index_file_path</name>
+        <qualifiedname>paimon::FileIndexMeta::index_file_path</qualifiedname>
+        <briefdescription>
+<para>External container path, absent for embedded indexes. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="47" column="19" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="47" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_file_index_meta_1aa1f81bd7108b8ed1a9bea6c9eb583d52" prot="public" static="no" mutable="no">
+        <type>std::shared_ptr&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_bytes" kindref="compound">Bytes</ref> &gt;</type>
+        <definition>std::shared_ptr&lt;const Bytes&gt; paimon::FileIndexMeta::embedded_index</definition>
+        <argsstring></argsstring>
+        <name>embedded_index</name>
+        <qualifiedname>paimon::FileIndexMeta::embedded_index</qualifiedname>
+        <briefdescription>
+<para>Embedded container bytes, retaining their memory pool. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="49" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="49" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_file_index_meta_1a8fcd662b970a2d1c4dbe9fbcd89f79cc" prot="public" static="no" mutable="no">
+        <type>std::map&lt; std::string, std::map&lt; std::string, <ref refid="structpaimon_1_1_file_index_range" kindref="compound">FileIndexRange</ref> &gt; &gt;</type>
+        <definition>std::map&lt;std::string, std::map&lt;std::string, FileIndexRange&gt; &gt; paimon::FileIndexMeta::indexes</definition>
+        <argsstring></argsstring>
+        <name>indexes</name>
+        <qualifiedname>paimon::FileIndexMeta::indexes</qualifiedname>
+        <briefdescription>
+<para>Original field name -&gt; index type -&gt; range, including empty and unregistered indexes. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="51" column="14" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="51" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>File index metadata with exactly one container source. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="45" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="45" bodyend="52"/>
+    <listofallmembers>
+      <member refid="structpaimon_1_1_file_index_meta_1aa1f81bd7108b8ed1a9bea6c9eb583d52" prot="public" virt="non-virtual"><scope>paimon::FileIndexMeta</scope><name>embedded_index</name></member>
+      <member refid="structpaimon_1_1_file_index_meta_1a8a502e001c9a9e0641455bc339cb6aa2" prot="public" virt="non-virtual"><scope>paimon::FileIndexMeta</scope><name>index_file_path</name></member>
+      <member refid="structpaimon_1_1_file_index_meta_1a8fcd662b970a2d1c4dbe9fbcd89f79cc" prot="public" virt="non-virtual"><scope>paimon::FileIndexMeta</scope><name>indexes</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

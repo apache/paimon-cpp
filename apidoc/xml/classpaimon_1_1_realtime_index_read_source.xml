@@ -1,0 +1,89 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_realtime_index_read_source" kind="class" language="C++" prot="public" abstract="yes">
+    <compoundname>paimon::RealtimeIndexReadSource</compoundname>
+    <includes refid="realtime__index__read__source_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_read_source.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_read_source_1a2cce72002861de28c4751669382f95a9" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::RealtimeIndexReadSource::~RealtimeIndexReadSource</definition>
+        <argsstring>()=default</argsstring>
+        <name>~RealtimeIndexReadSource</name>
+        <qualifiedname>paimon::RealtimeIndexReadSource::~RealtimeIndexReadSource</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_read_source.h" line="33" column="13"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_read_source_1a37c75ab587ea15489ea7363701568999" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="structpaimon_1_1_offset_range" kindref="compound">OffsetRange</ref></type>
+        <definition>virtual OffsetRange paimon::RealtimeIndexReadSource::GetOffsetRange</definition>
+        <argsstring>() const =0</argsstring>
+        <name>GetOffsetRange</name>
+        <qualifiedname>paimon::RealtimeIndexReadSource::GetOffsetRange</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_read_source.h" line="35" column="25"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_read_source_1a09fe94ee14cd776a963bad79c25e6379" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt;</type>
+        <definition>virtual Result&lt; RoaringBitmap64 &gt; paimon::RealtimeIndexReadSource::CreateCandidates</definition>
+        <argsstring>() const =0</argsstring>
+        <name>CreateCandidates</name>
+        <qualifiedname>paimon::RealtimeIndexReadSource::CreateCandidates</qualifiedname>
+        <briefdescription>
+<para>Builds a candidate superset from offset bounds and pinned deletion metadata without reading data. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Gaps may be included; index and data readers only return existing rows. Deleted offsets must be excluded before full-text or vector TopK executes. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_read_source.h" line="40" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_read_source_1af24a3f304071899a634e99b143968d88" prot="public" static="no" const="yes" explicit="no" inline="no" virt="pure-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::vector&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_index_reader" kindref="compound">RealtimeIndexReader</ref> &gt; &gt; &gt;</type>
+        <definition>virtual Result&lt; std::vector&lt; std::shared_ptr&lt; RealtimeIndexReader &gt; &gt; &gt; paimon::RealtimeIndexReadSource::CreateIndexReaders</definition>
+        <argsstring>(const std::string &amp;field_name, const std::shared_ptr&lt; MemoryPool &gt; &amp;pool) const =0</argsstring>
+        <name>CreateIndexReaders</name>
+        <qualifiedname>paimon::RealtimeIndexReadSource::CreateIndexReaders</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>field_name</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_memory_pool" kindref="compound">MemoryPool</ref> &gt; &amp;</type>
+          <declname>pool</declname>
+        </param>
+        <briefdescription>
+<para>Returns readers bound to this source&apos;s offset range. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>A missing field has no readers. Readers must not expose writes published after the pinned snapshot. The pool belongs to the query, rather than the retained index. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_read_source.h" line="45" column="20"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>One immutable query source. Readers and index readers must share its pinned data snapshot. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_read_source.h" line="31" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_read_source.h" bodystart="31" bodyend="47"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_realtime_index_read_source_1a09fe94ee14cd776a963bad79c25e6379" prot="public" virt="pure-virtual"><scope>paimon::RealtimeIndexReadSource</scope><name>CreateCandidates</name></member>
+      <member refid="classpaimon_1_1_realtime_index_read_source_1af24a3f304071899a634e99b143968d88" prot="public" virt="pure-virtual"><scope>paimon::RealtimeIndexReadSource</scope><name>CreateIndexReaders</name></member>
+      <member refid="classpaimon_1_1_realtime_index_read_source_1a37c75ab587ea15489ea7363701568999" prot="public" virt="pure-virtual"><scope>paimon::RealtimeIndexReadSource</scope><name>GetOffsetRange</name></member>
+      <member refid="classpaimon_1_1_realtime_index_read_source_1a2cce72002861de28c4751669382f95a9" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReadSource</scope><name>~RealtimeIndexReadSource</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

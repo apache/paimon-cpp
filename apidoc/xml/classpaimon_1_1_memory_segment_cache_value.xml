@@ -1,0 +1,173 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_memory_segment_cache_value" kind="class" language="C++" prot="public" final="yes">
+    <compoundname>paimon::MemorySegmentCacheValue</compoundname>
+    <basecompoundref refid="classpaimon_1_1_typed_cache_value" prot="public" virt="non-virtual">paimon::TypedCacheValue&lt; const MemorySegment &gt;</basecompoundref>
+    <includes refid="cache_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h</includes>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_memory_segment_cache_value_1a8895bc4e418b7afd2cb756749c219805" prot="private" static="no" mutable="no">
+        <type><ref refid="classpaimon_1_1_memory_segment" kindref="compound">MemorySegment</ref></type>
+        <definition>MemorySegment paimon::MemorySegmentCacheValue::segment_</definition>
+        <argsstring></argsstring>
+        <name>segment_</name>
+        <qualifiedname>paimon::MemorySegmentCacheValue::segment_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" line="158" column="19" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" bodystart="158" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_memory_segment_cache_value_1ae0ac536671f954b7eefc0af95cbdc625" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::MemorySegmentCacheValue::MemorySegmentCacheValue</definition>
+        <argsstring>(const MemorySegment &amp;segment, CacheCallback callback)</argsstring>
+        <name>MemorySegmentCacheValue</name>
+        <qualifiedname>paimon::MemorySegmentCacheValue::MemorySegmentCacheValue</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_memory_segment" kindref="compound">MemorySegment</ref> &amp;</type>
+          <declname>segment</declname>
+        </param>
+        <param>
+          <type><ref refid="namespacepaimon_1a9964a294431d6d8c0d6ac26a7a8fc7df" kindref="member">CacheCallback</ref></type>
+          <declname>callback</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" line="145" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_memory_segment_cache_value_1a78c6f4d983364b3cf44d12ddee5f92ab" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::MemorySegmentCacheValue::MemorySegmentCacheValue</definition>
+        <argsstring>(const MemorySegment &amp;segment, CacheCallback callback, int64_t memory_usage)</argsstring>
+        <name>MemorySegmentCacheValue</name>
+        <qualifiedname>paimon::MemorySegmentCacheValue::MemorySegmentCacheValue</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_memory_segment" kindref="compound">MemorySegment</ref> &amp;</type>
+          <declname>segment</declname>
+        </param>
+        <param>
+          <type><ref refid="namespacepaimon_1a9964a294431d6d8c0d6ac26a7a8fc7df" kindref="member">CacheCallback</ref></type>
+          <declname>callback</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+          <declname>memory_usage</declname>
+        </param>
+        <briefdescription>
+<para>Charges retained allocation size, at least the segment&apos;s logical size. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" line="148" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_memory_segment_cache_value_1ad48f6a3d8011a3a3e79f09c430d64ef1" prot="public" static="no" const="yes" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>bool paimon::MemorySegmentCacheValue::operator==</definition>
+        <argsstring>(const CacheValue &amp;other) const override</argsstring>
+        <name>operator==</name>
+        <qualifiedname>paimon::MemorySegmentCacheValue::operator==</qualifiedname>
+        <reimplements refid="classpaimon_1_1_cache_value_1ac30d36cdc76e711fae23e2f0dcad60bd">operator==</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_cache_value" kindref="compound">CacheValue</ref> &amp;</type>
+          <declname>other</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" line="151" column="10"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="private-func">
+      <memberdef kind="function" id="classpaimon_1_1_memory_segment_cache_value_1abbe383f95725dab5772ff605b0240c01" prot="private" static="no" const="no" explicit="no" inline="yes" virt="virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_memory_segment" kindref="compound">MemorySegment</ref> *</type>
+        <definition>const MemorySegment * paimon::MemorySegmentCacheValue::GetValuePointer</definition>
+        <argsstring>() override</argsstring>
+        <name>GetValuePointer</name>
+        <qualifiedname>paimon::MemorySegmentCacheValue::GetValuePointer</qualifiedname>
+        <reimplements refid="classpaimon_1_1_typed_cache_value_1aeb34f962bcbfc730ca7e6a8704a64a25">GetValuePointer</reimplements>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" line="154" column="25" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" bodystart="154" bodyend="156"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="2">
+        <label>paimon::TypedCacheValue&lt; const MemorySegment &gt;</label>
+        <link refid="classpaimon_1_1_typed_cache_value"/>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="3">
+        <label>paimon::CacheValue</label>
+        <link refid="classpaimon_1_1_cache_value"/>
+      </node>
+      <node id="1">
+        <label>paimon::MemorySegmentCacheValue</label>
+        <link refid="classpaimon_1_1_memory_segment_cache_value"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="2">
+        <label>paimon::TypedCacheValue&lt; const MemorySegment &gt;</label>
+        <link refid="classpaimon_1_1_typed_cache_value"/>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="3">
+        <label>paimon::CacheValue</label>
+        <link refid="classpaimon_1_1_cache_value"/>
+      </node>
+      <node id="4">
+        <label>paimon::MemorySegment</label>
+        <link refid="classpaimon_1_1_memory_segment"/>
+      </node>
+      <node id="1">
+        <label>paimon::MemorySegmentCacheValue</label>
+        <link refid="classpaimon_1_1_memory_segment_cache_value"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+        <childnode refid="4" relation="usage">
+          <edgelabel>segment_</edgelabel>
+        </childnode>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" line="143" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/cache/cache.h" bodystart="143" bodyend="159"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_typed_cache_value_1a5eb118a0e960ac151491646a382aa6a8" prot="protected" virt="non-virtual"><scope>paimon::MemorySegmentCacheValue</scope><name>CacheValue</name></member>
+      <member refid="classpaimon_1_1_cache_value_1a13a8fbb7000759dd5e3d18fb8e35a62b" prot="private" virt="non-virtual"><scope>paimon::MemorySegmentCacheValue</scope><name>callback_</name></member>
+      <member refid="classpaimon_1_1_cache_value_1a4a7f49afc7c4b1945d6e5e138f7d30d1" prot="public" virt="non-virtual"><scope>paimon::MemorySegmentCacheValue</scope><name>Get</name></member>
+      <member refid="classpaimon_1_1_cache_value_1a73f30d146cf7477c870311fd53ab1ec9" prot="public" virt="non-virtual"><scope>paimon::MemorySegmentCacheValue</scope><name>GetMemoryUsage</name></member>
+      <member refid="classpaimon_1_1_memory_segment_cache_value_1abbe383f95725dab5772ff605b0240c01" prot="private" virt="virtual"><scope>paimon::MemorySegmentCacheValue</scope><name>GetValuePointer</name></member>
+      <member refid="classpaimon_1_1_cache_value_1aba68d9df808f363028017eb93dd8de5e" prot="private" virt="non-virtual"><scope>paimon::MemorySegmentCacheValue</scope><name>memory_usage_</name></member>
+      <member refid="classpaimon_1_1_memory_segment_cache_value_1ae0ac536671f954b7eefc0af95cbdc625" prot="public" virt="non-virtual"><scope>paimon::MemorySegmentCacheValue</scope><name>MemorySegmentCacheValue</name></member>
+      <member refid="classpaimon_1_1_memory_segment_cache_value_1a78c6f4d983364b3cf44d12ddee5f92ab" prot="public" virt="non-virtual"><scope>paimon::MemorySegmentCacheValue</scope><name>MemorySegmentCacheValue</name></member>
+      <member refid="classpaimon_1_1_cache_value_1aa72715705a5cef8c7582ab2ae43d6fc3" prot="public" virt="non-virtual"><scope>paimon::MemorySegmentCacheValue</scope><name>OnEvict</name></member>
+      <member refid="classpaimon_1_1_memory_segment_cache_value_1ad48f6a3d8011a3a3e79f09c430d64ef1" prot="public" virt="virtual"><scope>paimon::MemorySegmentCacheValue</scope><name>operator==</name></member>
+      <member refid="classpaimon_1_1_memory_segment_cache_value_1a8895bc4e418b7afd2cb756749c219805" prot="private" virt="non-virtual"><scope>paimon::MemorySegmentCacheValue</scope><name>segment_</name></member>
+      <member refid="classpaimon_1_1_cache_value_1a1e1a1be6891303894ce0ea0cb4e35e7f" prot="public" virt="virtual"><scope>paimon::MemorySegmentCacheValue</scope><name>~CacheValue</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

@@ -1,0 +1,63 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structpaimon_1_1_append_file_compaction_plan" kind="struct" language="C++" prot="public">
+    <compoundname>paimon::AppendFileCompactionPlan</compoundname>
+    <includes refid="append__file__compaction__planner_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structpaimon_1_1_append_file_compaction_plan_1af9d9b97781cec074a55513b518786122" prot="public" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::AppendFileCompactionPlan::snapshot_id</definition>
+        <argsstring></argsstring>
+        <name>snapshot_id</name>
+        <qualifiedname>paimon::AppendFileCompactionPlan::snapshot_id</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="81" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="81" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_append_file_compaction_plan_1af1febf3f93dc2e71528c4653b34ad42b" prot="public" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::AppendFileCompactionPlan::output_row_count</definition>
+        <argsstring></argsstring>
+        <name>output_row_count</name>
+        <qualifiedname>paimon::AppendFileCompactionPlan::output_row_count</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="82" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="82" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_append_file_compaction_plan_1ae286dbe419ce2819099ce70ed4b6531e" prot="public" static="no" mutable="no">
+        <type>std::vector&lt; <ref refid="structpaimon_1_1_file_compaction_info" kindref="compound">FileCompactionInfo</ref> &gt;</type>
+        <definition>std::vector&lt;FileCompactionInfo&gt; paimon::AppendFileCompactionPlan::files</definition>
+        <argsstring></argsstring>
+        <name>files</name>
+        <qualifiedname>paimon::AppendFileCompactionPlan::files</qualifiedname>
+        <briefdescription>
+<para>File name order (std::set iteration order), including fully deleted files. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="84" column="17" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="84" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Metadata for concatenating surviving input rows into one output file. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="80" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="80" bodyend="85"/>
+    <listofallmembers>
+      <member refid="structpaimon_1_1_append_file_compaction_plan_1ae286dbe419ce2819099ce70ed4b6531e" prot="public" virt="non-virtual"><scope>paimon::AppendFileCompactionPlan</scope><name>files</name></member>
+      <member refid="structpaimon_1_1_append_file_compaction_plan_1af1febf3f93dc2e71528c4653b34ad42b" prot="public" virt="non-virtual"><scope>paimon::AppendFileCompactionPlan</scope><name>output_row_count</name></member>
+      <member refid="structpaimon_1_1_append_file_compaction_plan_1af9d9b97781cec074a55513b518786122" prot="public" virt="non-virtual"><scope>paimon::AppendFileCompactionPlan</scope><name>snapshot_id</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

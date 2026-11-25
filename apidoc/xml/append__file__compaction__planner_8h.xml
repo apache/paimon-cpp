@@ -1,0 +1,246 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="append__file__compaction__planner_8h" kind="file" language="C++">
+    <compoundname>append_file_compaction_planner.h</compoundname>
+    <includes local="no">cstdint</includes>
+    <includes local="no">map</includes>
+    <includes local="no">memory</includes>
+    <includes local="no">optional</includes>
+    <includes local="no">set</includes>
+    <includes local="no">string</includes>
+    <includes local="no">vector</includes>
+    <includes refid="result_8h" local="yes">paimon/result.h</includes>
+    <includes refid="visibility_8h" local="yes">paimon/visibility.h</includes>
+    <incdepgraph>
+      <node id="1">
+        <label>/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h</label>
+        <link refid="append__file__compaction__planner_8h"/>
+        <childnode refid="2" relation="include">
+        </childnode>
+        <childnode refid="3" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="5" relation="include">
+        </childnode>
+        <childnode refid="6" relation="include">
+        </childnode>
+        <childnode refid="7" relation="include">
+        </childnode>
+        <childnode refid="8" relation="include">
+        </childnode>
+        <childnode refid="9" relation="include">
+        </childnode>
+        <childnode refid="21" relation="include">
+        </childnode>
+      </node>
+      <node id="9">
+        <label>paimon/result.h</label>
+        <link refid="result_8h"/>
+        <childnode refid="10" relation="include">
+        </childnode>
+        <childnode refid="11" relation="include">
+        </childnode>
+        <childnode refid="12" relation="include">
+        </childnode>
+        <childnode refid="13" relation="include">
+        </childnode>
+        <childnode refid="22" relation="include">
+        </childnode>
+      </node>
+      <node id="13">
+        <label>paimon/status.h</label>
+        <link refid="status_8h"/>
+        <childnode refid="14" relation="include">
+        </childnode>
+        <childnode refid="15" relation="include">
+        </childnode>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="7" relation="include">
+        </childnode>
+        <childnode refid="12" relation="include">
+        </childnode>
+        <childnode refid="16" relation="include">
+        </childnode>
+        <childnode refid="17" relation="include">
+        </childnode>
+        <childnode refid="18" relation="include">
+        </childnode>
+        <childnode refid="21" relation="include">
+        </childnode>
+      </node>
+      <node id="18">
+        <label>paimon/string_builder.h</label>
+        <link refid="string__builder_8h"/>
+        <childnode refid="4" relation="include">
+        </childnode>
+        <childnode refid="19" relation="include">
+        </childnode>
+        <childnode refid="20" relation="include">
+        </childnode>
+        <childnode refid="7" relation="include">
+        </childnode>
+        <childnode refid="12" relation="include">
+        </childnode>
+        <childnode refid="21" relation="include">
+        </childnode>
+      </node>
+      <node id="21">
+        <label>paimon/visibility.h</label>
+        <link refid="visibility_8h"/>
+      </node>
+      <node id="10">
+        <label>cassert</label>
+      </node>
+      <node id="2">
+        <label>cstdint</label>
+      </node>
+      <node id="14">
+        <label>cstring</label>
+      </node>
+      <node id="15">
+        <label>iosfwd</label>
+      </node>
+      <node id="3">
+        <label>map</label>
+      </node>
+      <node id="4">
+        <label>memory</label>
+      </node>
+      <node id="5">
+        <label>optional</label>
+      </node>
+      <node id="19">
+        <label>ostream</label>
+      </node>
+      <node id="16">
+        <label>paimon/compare.h</label>
+      </node>
+      <node id="17">
+        <label>paimon/macros.h</label>
+      </node>
+      <node id="22">
+        <label>paimon/traits.h</label>
+      </node>
+      <node id="6">
+        <label>set</label>
+      </node>
+      <node id="20">
+        <label>sstream</label>
+      </node>
+      <node id="7">
+        <label>string</label>
+      </node>
+      <node id="11">
+        <label>type_traits</label>
+      </node>
+      <node id="12">
+        <label>utility</label>
+      </node>
+      <node id="8">
+        <label>vector</label>
+      </node>
+    </incdepgraph>
+    <innerclass refid="structpaimon_1_1_file_index_range" prot="public">paimon::FileIndexRange</innerclass>
+    <innerclass refid="structpaimon_1_1_file_index_meta" prot="public">paimon::FileIndexMeta</innerclass>
+    <innerclass refid="structpaimon_1_1_row_id_mapping_range" prot="public">paimon::RowIdMappingRange</innerclass>
+    <innerclass refid="structpaimon_1_1_file_compaction_info" prot="public">paimon::FileCompactionInfo</innerclass>
+    <innerclass refid="structpaimon_1_1_append_file_compaction_plan" prot="public">paimon::AppendFileCompactionPlan</innerclass>
+    <innerclass refid="classpaimon_1_1_append_file_compaction_planner" prot="public">paimon::AppendFileCompactionPlanner</innerclass>
+    <innernamespace refid="namespacepaimon">paimon</innernamespace>
+    <briefdescription>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <programlisting>
+<codeline lineno="1"><highlight class="comment">/*</highlight></codeline>
+<codeline lineno="2"><highlight class="comment"><sp/>*<sp/>Licensed<sp/>to<sp/>the<sp/>Apache<sp/>Software<sp/>Foundation<sp/>(ASF)<sp/>under<sp/>one</highlight></codeline>
+<codeline lineno="3"><highlight class="comment"><sp/>*<sp/>or<sp/>more<sp/>contributor<sp/>license<sp/>agreements.<sp/><sp/>See<sp/>the<sp/>NOTICE<sp/>file</highlight></codeline>
+<codeline lineno="4"><highlight class="comment"><sp/>*<sp/>distributed<sp/>with<sp/>this<sp/>work<sp/>for<sp/>additional<sp/>information</highlight></codeline>
+<codeline lineno="5"><highlight class="comment"><sp/>*<sp/>regarding<sp/>copyright<sp/>ownership.<sp/><sp/>The<sp/>ASF<sp/>licenses<sp/>this<sp/>file</highlight></codeline>
+<codeline lineno="6"><highlight class="comment"><sp/>*<sp/>to<sp/>you<sp/>under<sp/>the<sp/>Apache<sp/>License,<sp/>Version<sp/>2.0<sp/>(the</highlight></codeline>
+<codeline lineno="7"><highlight class="comment"><sp/>*<sp/>&quot;License&quot;);<sp/>you<sp/>may<sp/>not<sp/>use<sp/>this<sp/>file<sp/>except<sp/>in<sp/>compliance</highlight></codeline>
+<codeline lineno="8"><highlight class="comment"><sp/>*<sp/>with<sp/>the<sp/>License.<sp/><sp/>You<sp/>may<sp/>obtain<sp/>a<sp/>copy<sp/>of<sp/>the<sp/>License<sp/>at</highlight></codeline>
+<codeline lineno="9"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="10"><highlight class="comment"><sp/>*<sp/><sp/><sp/><sp/><sp/>http://www.apache.org/licenses/LICENSE-2.0</highlight></codeline>
+<codeline lineno="11"><highlight class="comment"><sp/>*</highlight></codeline>
+<codeline lineno="12"><highlight class="comment"><sp/>*<sp/>Unless<sp/>required<sp/>by<sp/>applicable<sp/>law<sp/>or<sp/>agreed<sp/>to<sp/>in<sp/>writing,<sp/>software</highlight></codeline>
+<codeline lineno="13"><highlight class="comment"><sp/>*<sp/>distributed<sp/>under<sp/>the<sp/>License<sp/>is<sp/>distributed<sp/>on<sp/>an<sp/>&quot;AS<sp/>IS&quot;<sp/>BASIS,</highlight></codeline>
+<codeline lineno="14"><highlight class="comment"><sp/>*<sp/>WITHOUT<sp/>WARRANTIES<sp/>OR<sp/>CONDITIONS<sp/>OF<sp/>ANY<sp/>KIND,<sp/>either<sp/>express<sp/>or<sp/>implied.</highlight></codeline>
+<codeline lineno="15"><highlight class="comment"><sp/>*<sp/>See<sp/>the<sp/>License<sp/>for<sp/>the<sp/>specific<sp/>language<sp/>governing<sp/>permissions<sp/>and</highlight></codeline>
+<codeline lineno="16"><highlight class="comment"><sp/>*<sp/>limitations<sp/>under<sp/>the<sp/>License.</highlight></codeline>
+<codeline lineno="17"><highlight class="comment"><sp/>*/</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="18"><highlight class="normal"></highlight></codeline>
+<codeline lineno="19"><highlight class="normal"></highlight><highlight class="preprocessor">#pragma<sp/>once</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="20"><highlight class="normal"></highlight></codeline>
+<codeline lineno="21"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;cstdint&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="22"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;map&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="23"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;memory&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="24"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;optional&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="25"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;set&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="26"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;string&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="27"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&lt;vector&gt;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="28"><highlight class="normal"></highlight></codeline>
+<codeline lineno="29"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="result_8h" kindref="compound">paimon/result.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="30"><highlight class="normal"></highlight><highlight class="preprocessor">#include<sp/>&quot;<ref refid="visibility_8h" kindref="compound">paimon/visibility.h</ref>&quot;</highlight><highlight class="normal"></highlight></codeline>
+<codeline lineno="31"><highlight class="normal"></highlight></codeline>
+<codeline lineno="32"><highlight class="normal"></highlight><highlight class="keyword">namespace<sp/></highlight><highlight class="normal"><ref refid="namespacepaimon" kindref="compound">paimon</ref><sp/>{</highlight></codeline>
+<codeline lineno="33"><highlight class="normal"></highlight><highlight class="keyword">class<sp/></highlight><highlight class="normal">Bytes;</highlight></codeline>
+<codeline lineno="34"><highlight class="normal"></highlight><highlight class="keyword">class<sp/></highlight><highlight class="normal">Executor;</highlight></codeline>
+<codeline lineno="35"><highlight class="normal"></highlight><highlight class="keyword">class<sp/></highlight><highlight class="normal">FileSystem;</highlight></codeline>
+<codeline lineno="36"><highlight class="normal"></highlight><highlight class="keyword">class<sp/></highlight><highlight class="normal">MemoryPool;</highlight></codeline>
+<codeline lineno="37"><highlight class="normal"></highlight></codeline>
+<codeline lineno="39" refid="structpaimon_1_1_file_index_range" refkind="compound"><highlight class="keyword">struct<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="structpaimon_1_1_file_index_range" kindref="compound">FileIndexRange</ref><sp/>{</highlight></codeline>
+<codeline lineno="40" refid="structpaimon_1_1_file_index_range_1ae5d9e5dc916571bb7b7689256d715dae" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="structpaimon_1_1_file_index_range_1ae5d9e5dc916571bb7b7689256d715dae" kindref="member">offset</ref>;</highlight></codeline>
+<codeline lineno="41" refid="structpaimon_1_1_file_index_range_1a5c4a15d6beb62766de82f2f40aaf2bd1" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="structpaimon_1_1_file_index_range_1a5c4a15d6beb62766de82f2f40aaf2bd1" kindref="member">length</ref>;</highlight></codeline>
+<codeline lineno="42"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="43"><highlight class="normal"></highlight></codeline>
+<codeline lineno="45" refid="structpaimon_1_1_file_index_meta" refkind="compound"><highlight class="keyword">struct<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="structpaimon_1_1_file_index_meta" kindref="compound">FileIndexMeta</ref><sp/>{</highlight></codeline>
+<codeline lineno="47" refid="structpaimon_1_1_file_index_meta_1a8a502e001c9a9e0641455bc339cb6aa2" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/>std::optional&lt;std::string&gt;<sp/><ref refid="structpaimon_1_1_file_index_meta_1a8a502e001c9a9e0641455bc339cb6aa2" kindref="member">index_file_path</ref>;</highlight></codeline>
+<codeline lineno="49" refid="structpaimon_1_1_file_index_meta_1aa1f81bd7108b8ed1a9bea6c9eb583d52" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/>std::shared_ptr&lt;const<sp/>Bytes&gt;<sp/><ref refid="structpaimon_1_1_file_index_meta_1aa1f81bd7108b8ed1a9bea6c9eb583d52" kindref="member">embedded_index</ref>;</highlight></codeline>
+<codeline lineno="51" refid="structpaimon_1_1_file_index_meta_1a8fcd662b970a2d1c4dbe9fbcd89f79cc" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/>std::map&lt;std::string,<sp/>std::map&lt;std::string,<sp/>FileIndexRange&gt;&gt;<sp/><ref refid="structpaimon_1_1_file_index_meta_1a8fcd662b970a2d1c4dbe9fbcd89f79cc" kindref="member">indexes</ref>;</highlight></codeline>
+<codeline lineno="52"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="53"><highlight class="normal"></highlight></codeline>
+<codeline lineno="56" refid="structpaimon_1_1_row_id_mapping_range" refkind="compound"><highlight class="keyword">struct<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="structpaimon_1_1_row_id_mapping_range" kindref="compound">RowIdMappingRange</ref><sp/>{</highlight></codeline>
+<codeline lineno="57" refid="structpaimon_1_1_row_id_mapping_range_1af629ff61adc556ab634c5d286ca6edaf" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="structpaimon_1_1_row_id_mapping_range_1af629ff61adc556ab634c5d286ca6edaf" kindref="member">source_start</ref>;</highlight></codeline>
+<codeline lineno="58" refid="structpaimon_1_1_row_id_mapping_range_1aac1e2633e846e9491abec8351ff0ded3" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="structpaimon_1_1_row_id_mapping_range_1aac1e2633e846e9491abec8351ff0ded3" kindref="member">target_start</ref>;</highlight></codeline>
+<codeline lineno="59" refid="structpaimon_1_1_row_id_mapping_range_1a1eecb3b09e6b33264c44a18214815863" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="structpaimon_1_1_row_id_mapping_range_1a1eecb3b09e6b33264c44a18214815863" kindref="member">length</ref>;</highlight></codeline>
+<codeline lineno="60"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="61"><highlight class="normal"></highlight></codeline>
+<codeline lineno="63" refid="structpaimon_1_1_file_compaction_info" refkind="compound"><highlight class="keyword">struct<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="structpaimon_1_1_file_compaction_info" kindref="compound">FileCompactionInfo</ref><sp/>{</highlight></codeline>
+<codeline lineno="64" refid="structpaimon_1_1_file_compaction_info_1a1c2b01e7753e1e2cf78cd75adaa0c163" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/>std::string<sp/><ref refid="structpaimon_1_1_file_compaction_info_1a1c2b01e7753e1e2cf78cd75adaa0c163" kindref="member">file_name</ref>;</highlight></codeline>
+<codeline lineno="65" refid="structpaimon_1_1_file_compaction_info_1aec2e110acd6e90dc45e979a0067a609b" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="structpaimon_1_1_file_compaction_info_1aec2e110acd6e90dc45e979a0067a609b" kindref="member">schema_id</ref>;</highlight></codeline>
+<codeline lineno="66" refid="structpaimon_1_1_file_compaction_info_1a6caffba2b57febfcad96208608559c05" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="structpaimon_1_1_file_compaction_info_1a6caffba2b57febfcad96208608559c05" kindref="member">source_row_count</ref>;</highlight></codeline>
+<codeline lineno="67" refid="structpaimon_1_1_file_compaction_info_1a330b062cc35898a46552156ef288ac11" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="structpaimon_1_1_file_compaction_info_1a330b062cc35898a46552156ef288ac11" kindref="member">live_row_count</ref>;</highlight></codeline>
+<codeline lineno="69" refid="structpaimon_1_1_file_compaction_info_1a24b5019198031ed011b9c8437753692b" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/>std::optional&lt;FileIndexMeta&gt;<sp/><ref refid="structpaimon_1_1_file_compaction_info_1a24b5019198031ed011b9c8437753692b" kindref="member">index_meta</ref>;</highlight></codeline>
+<codeline lineno="71" refid="structpaimon_1_1_file_compaction_info_1ab49a46d13c80207f19aa93dda26b07a1" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/>std::vector&lt;RowIdMappingRange&gt;<sp/><ref refid="structpaimon_1_1_file_compaction_info_1ab49a46d13c80207f19aa93dda26b07a1" kindref="member">row_id_mapping</ref>;</highlight></codeline>
+<codeline lineno="72"><highlight class="normal"></highlight></codeline>
+<codeline lineno="76" refid="structpaimon_1_1_file_compaction_info_1aecee38ede6cc1ee99043c965cc3cd2a9" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;std::optional&lt;int64_t&gt;</ref>&gt;<sp/><ref refid="structpaimon_1_1_file_compaction_info_1aecee38ede6cc1ee99043c965cc3cd2a9" kindref="member">MapRowId</ref>(<ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">source_row_id</ref>)<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="77"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="78"><highlight class="normal"></highlight></codeline>
+<codeline lineno="80" refid="structpaimon_1_1_append_file_compaction_plan" refkind="compound"><highlight class="keyword">struct<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="structpaimon_1_1_append_file_compaction_plan" kindref="compound">AppendFileCompactionPlan</ref><sp/>{</highlight></codeline>
+<codeline lineno="81" refid="structpaimon_1_1_append_file_compaction_plan_1af9d9b97781cec074a55513b518786122" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="structpaimon_1_1_append_file_compaction_plan_1af9d9b97781cec074a55513b518786122" kindref="member">snapshot_id</ref>;</highlight></codeline>
+<codeline lineno="82" refid="structpaimon_1_1_append_file_compaction_plan_1af1febf3f93dc2e71528c4653b34ad42b" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref><sp/><ref refid="structpaimon_1_1_append_file_compaction_plan_1af1febf3f93dc2e71528c4653b34ad42b" kindref="member">output_row_count</ref>;</highlight></codeline>
+<codeline lineno="84" refid="structpaimon_1_1_append_file_compaction_plan_1ae286dbe419ce2819099ce70ed4b6531e" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/>std::vector&lt;FileCompactionInfo&gt;<sp/><ref refid="structpaimon_1_1_append_file_compaction_plan_1ae286dbe419ce2819099ce70ed4b6531e" kindref="member">files</ref>;</highlight></codeline>
+<codeline lineno="85"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="86"><highlight class="normal"></highlight></codeline>
+<codeline lineno="88" refid="classpaimon_1_1_append_file_compaction_planner" refkind="compound"><highlight class="keyword">class<sp/></highlight><highlight class="normal"><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">PAIMON_EXPORT</ref><sp/><ref refid="classpaimon_1_1_append_file_compaction_planner" kindref="compound">AppendFileCompactionPlanner</ref><sp/>{</highlight></codeline>
+<codeline lineno="89"><highlight class="normal"><sp/></highlight><highlight class="keyword">public</highlight><highlight class="normal">:</highlight></codeline>
+<codeline lineno="90" refid="classpaimon_1_1_append_file_compaction_planner_1a0f1fde0b1d2a7c542879a7a7fb65c02c" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_append_file_compaction_planner_1a0f1fde0b1d2a7c542879a7a7fb65c02c" kindref="member">AppendFileCompactionPlanner</ref>()<sp/>=<sp/></highlight><highlight class="keyword">delete</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="91" refid="classpaimon_1_1_append_file_compaction_planner_1aa2c476cbda76a5155617e718699b3d1f" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/><ref refid="classpaimon_1_1_append_file_compaction_planner_1aa2c476cbda76a5155617e718699b3d1f" kindref="member">~AppendFileCompactionPlanner</ref>()<sp/>=<sp/></highlight><highlight class="keyword">delete</highlight><highlight class="normal">;</highlight></codeline>
+<codeline lineno="92"><highlight class="normal"></highlight></codeline>
+<codeline lineno="113" refid="classpaimon_1_1_append_file_compaction_planner_1a757927d6a069bec88a6d9e269c1d07e5" refkind="member"><highlight class="normal"><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">static</highlight><highlight class="normal"><sp/><ref refid="classpaimon_1_1_result" kindref="compound">Result&lt;AppendFileCompactionPlan&gt;</ref><sp/><ref refid="classpaimon_1_1_append_file_compaction_planner_1a757927d6a069bec88a6d9e269c1d07e5" kindref="member">CreatePlan</ref>(</highlight></codeline>
+<codeline lineno="114"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">table_path</ref>,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::string&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">branch</ref>,</highlight></codeline>
+<codeline lineno="115"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::map&lt;std::string,<sp/>std::string&gt;&amp;<sp/>partition,<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref><sp/>bucket,</highlight></codeline>
+<codeline lineno="116"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::set&lt;std::string&gt;&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">file_names</ref>,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::optional&lt;int64_t&gt;&amp;<sp/>snapshot_id,</highlight></codeline>
+<codeline lineno="117"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::map&lt;std::string,<sp/>std::string&gt;&amp;<sp/>options,</highlight></codeline>
+<codeline lineno="118"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::shared_ptr&lt;FileSystem&gt;&amp;<sp/>file_system,<sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::shared_ptr&lt;MemoryPool&gt;&amp;<sp/>pool,</highlight></codeline>
+<codeline lineno="119"><highlight class="normal"><sp/><sp/><sp/><sp/><sp/><sp/><sp/><sp/></highlight><highlight class="keyword">const</highlight><highlight class="normal"><sp/>std::shared_ptr&lt;Executor&gt;&amp;<sp/><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">executor</ref>);</highlight></codeline>
+<codeline lineno="120"><highlight class="normal">};</highlight></codeline>
+<codeline lineno="121"><highlight class="normal"></highlight></codeline>
+<codeline lineno="122"><highlight class="normal">}<sp/><sp/></highlight><highlight class="comment">//<sp/>namespace<sp/>paimon</highlight><highlight class="normal"></highlight></codeline>
+    </programlisting>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h"/>
+  </compounddef>
+</doxygen>

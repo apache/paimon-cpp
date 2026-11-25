@@ -1,0 +1,47 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="structpaimon_1_1_file_index_range" kind="struct" language="C++" prot="public">
+    <compoundname>paimon::FileIndexRange</compoundname>
+    <includes refid="append__file__compaction__planner_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h</includes>
+    <sectiondef kind="public-attrib">
+      <memberdef kind="variable" id="structpaimon_1_1_file_index_range_1ae5d9e5dc916571bb7b7689256d715dae" prot="public" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::FileIndexRange::offset</definition>
+        <argsstring></argsstring>
+        <name>offset</name>
+        <qualifiedname>paimon::FileIndexRange::offset</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="40" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="40" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="structpaimon_1_1_file_index_range_1a5c4a15d6beb62766de82f2f40aaf2bd1" prot="public" static="no" mutable="no">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref></type>
+        <definition>int64_t paimon::FileIndexRange::length</definition>
+        <argsstring></argsstring>
+        <name>length</name>
+        <qualifiedname>paimon::FileIndexRange::length</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="41" column="13" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="41" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Payload byte range relative to the index container; (-1, 0) denotes an empty index. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" line="39" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction_planner.h" bodystart="39" bodyend="42"/>
+    <listofallmembers>
+      <member refid="structpaimon_1_1_file_index_range_1a5c4a15d6beb62766de82f2f40aaf2bd1" prot="public" virt="non-virtual"><scope>paimon::FileIndexRange</scope><name>length</name></member>
+      <member refid="structpaimon_1_1_file_index_range_1ae5d9e5dc916571bb7b7689256d715dae" prot="public" virt="non-virtual"><scope>paimon::FileIndexRange</scope><name>offset</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

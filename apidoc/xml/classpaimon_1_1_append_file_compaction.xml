@@ -1,0 +1,176 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_append_file_compaction" kind="class" language="C++" prot="public">
+    <compoundname>paimon::AppendFileCompaction</compoundname>
+    <includes refid="append__file__compaction_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_append_file_compaction_1a51ce7087033d3befe2015c5866f1bcd9" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::AppendFileCompaction::AppendFileCompaction</definition>
+        <argsstring>()=delete</argsstring>
+        <name>AppendFileCompaction</name>
+        <qualifiedname>paimon::AppendFileCompaction::AppendFileCompaction</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction.h" line="41" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_append_file_compaction_1a08825d9f6439e1c709424b19406c3f5b" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::AppendFileCompaction::~AppendFileCompaction</definition>
+        <argsstring>()=delete</argsstring>
+        <name>~AppendFileCompaction</name>
+        <qualifiedname>paimon::AppendFileCompaction::~AppendFileCompaction</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction.h" line="42" column="5"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-static-func">
+      <memberdef kind="function" id="classpaimon_1_1_append_file_compaction_1ab216df5f7e54bd24a060fb4c7618585a" prot="public" static="yes" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::vector&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_commit_message" kindref="compound">CommitMessage</ref> &gt; &gt; &gt;</type>
+        <definition>static Result&lt; std::vector&lt; std::shared_ptr&lt; CommitMessage &gt; &gt; &gt; paimon::AppendFileCompaction::Execute</definition>
+        <argsstring>(const std::string &amp;table_path, const std::string &amp;branch, const std::map&lt; std::string, std::string &gt; &amp;partition, int32_t bucket, const std::set&lt; std::string &gt; &amp;file_names, const std::map&lt; std::string, std::string &gt; &amp;options, const std::shared_ptr&lt; FileSystem &gt; &amp;file_system, const std::shared_ptr&lt; MemoryPool &gt; &amp;pool, const std::shared_ptr&lt; Executor &gt; &amp;executor)</argsstring>
+        <name>Execute</name>
+        <qualifiedname>paimon::AppendFileCompaction::Execute</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>table_path</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::string &amp;</type>
+          <declname>branch</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::map&lt; std::string, std::string &gt; &amp;</type>
+          <declname>partition</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int32_t</ref></type>
+          <declname>bucket</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::set&lt; std::string &gt; &amp;</type>
+          <declname>file_names</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::map&lt; std::string, std::string &gt; &amp;</type>
+          <declname>options</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_file_system" kindref="compound">FileSystem</ref> &gt; &amp;</type>
+          <declname>file_system</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_memory_pool" kindref="compound">MemoryPool</ref> &gt; &amp;</type>
+          <declname>pool</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_executor" kindref="compound">Executor</ref> &gt; &amp;</type>
+          <declname>executor</declname>
+        </param>
+        <briefdescription>
+<para>Synchronously compacts files and returns messages for <ref refid="classpaimon_1_1_file_store_commit_1af7d78ade944ce09c77fc5c5fa4668881" kindref="member">FileStoreCommit::Commit</ref> or Abort. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Each call creates a dedicated batch writer and restores the latest snapshot for the bucket. Writes one file in file name order, preserving surviving physical row order within each input. Ignores target-file-size; produces no file when all input rows are deleted. Supports deletion vectors; real-time mode and data evolution are unsupported. Requires bucket-append-ordered=false and write-only=false. With deletion vectors enabled, callers must serialize compactions within each partition/bucket, even for disjoint inputs. Do not start another compaction, update deletion vectors or overwrite this partition/bucket until the messages are committed or discarded. Without deletion vectors, compactions of disjoint input files may run concurrently in the same partition/bucket. Overlapping compaction or overwrite may cause commit conflicts. Failures may leave orphan files for later cleanup.</para>
+<para><parameterlist kind="param"><parameteritem>
+<parameternamelist>
+<parametername>table_path</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>The root path of the table. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>branch</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>The branch to use; an empty string selects main. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>partition</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Complete partition values; empty for an unpartitioned table. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>bucket</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>The bucket containing the input files. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>file_names</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>Nonempty set of data file basenames. Files need not be contiguous. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>options</parametername>
+</parameternamelist>
+<parameterdescription>
+<para><ref refid="structpaimon_1_1_options" kindref="compound">Options</ref> overriding the table options. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>file_system</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>The file system; nullptr selects one from options. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>pool</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>The memory pool; nullptr uses the default pool. </para>
+</parameterdescription>
+</parameteritem>
+<parameteritem>
+<parameternamelist>
+<parametername>executor</parametername>
+</parameternamelist>
+<parameterdescription>
+<para>The executor; nullptr uses the default executor. </para>
+</parameterdescription>
+</parameteritem>
+</parameterlist>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction.h" line="66" column="19"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Rewrites explicitly selected files in a fixed-bucket append table. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction.h" line="39" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/append/append_file_compaction.h" bodystart="39" bodyend="72"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_append_file_compaction_1a51ce7087033d3befe2015c5866f1bcd9" prot="public" virt="non-virtual"><scope>paimon::AppendFileCompaction</scope><name>AppendFileCompaction</name></member>
+      <member refid="classpaimon_1_1_append_file_compaction_1ab216df5f7e54bd24a060fb4c7618585a" prot="public" virt="non-virtual"><scope>paimon::AppendFileCompaction</scope><name>Execute</name></member>
+      <member refid="classpaimon_1_1_append_file_compaction_1a08825d9f6439e1c709424b19406c3f5b" prot="public" virt="non-virtual"><scope>paimon::AppendFileCompaction</scope><name>~AppendFileCompaction</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

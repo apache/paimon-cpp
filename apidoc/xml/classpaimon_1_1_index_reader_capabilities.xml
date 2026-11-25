@@ -1,0 +1,130 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_index_reader_capabilities" kind="class" language="C++" prot="public">
+    <compoundname>paimon::IndexReaderCapabilities</compoundname>
+    <derivedcompoundref refid="classpaimon_1_1_file_index_reader" prot="public" virt="non-virtual">paimon::FileIndexReader</derivedcompoundref>
+    <derivedcompoundref refid="classpaimon_1_1_realtime_index_reader" prot="public" virt="non-virtual">paimon::RealtimeIndexReader</derivedcompoundref>
+    <includes refid="index__reader__capabilities_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/index/index_reader_capabilities.h</includes>
+    <sectiondef kind="public-type">
+      <memberdef kind="enum" id="classpaimon_1_1_index_reader_capabilities_1afd55141e3295a2d262a0d22e8014a9b9" prot="public" static="no" strong="yes">
+        <type></type>
+        <name>SearchType</name>
+        <qualifiedname>paimon::IndexReaderCapabilities::SearchType</qualifiedname>
+        <enumvalue id="classpaimon_1_1_index_reader_capabilities_1afd55141e3295a2d262a0d22e8014a9b9a2ea4987c32cf69eaa5e5a6cfbd9e8ae5" prot="public">
+          <name>FULL_TEXT_MATCH</name>
+          <briefdescription>
+          </briefdescription>
+          <detaileddescription>
+          </detaileddescription>
+        </enumvalue>
+        <enumvalue id="classpaimon_1_1_index_reader_capabilities_1afd55141e3295a2d262a0d22e8014a9b9a3aed36906c8f5fed09d6f3b2fcb930b7" prot="public">
+          <name>FULL_TEXT_SEARCH</name>
+          <briefdescription>
+          </briefdescription>
+          <detaileddescription>
+          </detaileddescription>
+        </enumvalue>
+        <enumvalue id="classpaimon_1_1_index_reader_capabilities_1afd55141e3295a2d262a0d22e8014a9b9a4939a0c5f946aa98a33244d2f3cfef58" prot="public">
+          <name>VECTOR_SEARCH</name>
+          <briefdescription>
+          </briefdescription>
+          <detaileddescription>
+          </detaileddescription>
+        </enumvalue>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/index/index_reader_capabilities.h" line="33" column="5" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/index/index_reader_capabilities.h" bodystart="33" bodyend="33"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_index_reader_capabilities_1ae50fd185e3132213583c981ee6c30b1e" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type></type>
+        <definition>virtual paimon::IndexReaderCapabilities::~IndexReaderCapabilities</definition>
+        <argsstring>()=default</argsstring>
+        <name>~IndexReaderCapabilities</name>
+        <qualifiedname>paimon::IndexReaderCapabilities::~IndexReaderCapabilities</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/index/index_reader_capabilities.h" line="35" column="13"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_index_reader_capabilities_1aa46471a5735b92aea2aadfe40b3a348a" prot="public" static="no" const="yes" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+        <definition>virtual bool paimon::IndexReaderCapabilities::SupportsSearch</definition>
+        <argsstring>(SearchType search_type) const</argsstring>
+        <name>SupportsSearch</name>
+        <qualifiedname>paimon::IndexReaderCapabilities::SupportsSearch</qualifiedname>
+        <param>
+          <type><ref refid="classpaimon_1_1_index_reader_capabilities_1afd55141e3295a2d262a0d22e8014a9b9" kindref="member">SearchType</ref></type>
+          <declname>search_type</declname>
+        </param>
+        <briefdescription>
+<para>Whether this reader can execute the requested search without probing it with a query. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>The default implementation returns false. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/index/index_reader_capabilities.h" line="39" column="18"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_index_reader_capabilities_1a442e485468c9293ce9bb52203d8be374" prot="public" static="no" const="yes" explicit="no" inline="no" virt="virtual">
+        <type>std::optional&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">double</ref> &gt;</type>
+        <definition>virtual std::optional&lt; double &gt; paimon::IndexReaderCapabilities::EstimateSelectivity</definition>
+        <argsstring>(const std::shared_ptr&lt; LeafPredicate &gt; &amp;predicate) const</argsstring>
+        <name>EstimateSelectivity</name>
+        <qualifiedname>paimon::IndexReaderCapabilities::EstimateSelectivity</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="classpaimon_1_1_leaf_predicate" kindref="compound">LeafPredicate</ref> &gt; &amp;</type>
+          <declname>predicate</declname>
+        </param>
+        <briefdescription>
+<para>Estimates the fraction of this reader&apos;s indexed rows expected to match the predicate. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Returns a value in [0, 1], or std::nullopt if no estimate is available. Values outside [0, 1] are also treated as unknown by evaluators. Estimates only guide predicate execution order and must never exclude rows. The default implementation returns std::nullopt. TODO(lisizhuo.lsz): Add selectivity estimates for scalar indexes such as bitmap indexes. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/index/index_reader_capabilities.h" line="47" column="27"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Search capabilities and predicate scheduling hints shared by index readers, independently of their result types and row ID domains. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="2">
+        <label>paimon::FileIndexReader</label>
+        <link refid="classpaimon_1_1_file_index_reader"/>
+        <childnode refid="1" relation="public-inheritance">
+        </childnode>
+      </node>
+      <node id="1">
+        <label>paimon::IndexReaderCapabilities</label>
+        <link refid="classpaimon_1_1_index_reader_capabilities"/>
+      </node>
+      <node id="3">
+        <label>paimon::RealtimeIndexReader</label>
+        <link refid="classpaimon_1_1_realtime_index_reader"/>
+        <childnode refid="1" relation="public-inheritance">
+        </childnode>
+      </node>
+    </inheritancegraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/index/index_reader_capabilities.h" line="31" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/index/index_reader_capabilities.h" bodystart="31" bodyend="49"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_index_reader_capabilities_1a442e485468c9293ce9bb52203d8be374" prot="public" virt="virtual"><scope>paimon::IndexReaderCapabilities</scope><name>EstimateSelectivity</name></member>
+      <member refid="classpaimon_1_1_index_reader_capabilities_1afd55141e3295a2d262a0d22e8014a9b9" prot="public" virt="non-virtual"><scope>paimon::IndexReaderCapabilities</scope><name>SearchType</name></member>
+      <member refid="classpaimon_1_1_index_reader_capabilities_1aa46471a5735b92aea2aadfe40b3a348a" prot="public" virt="virtual"><scope>paimon::IndexReaderCapabilities</scope><name>SupportsSearch</name></member>
+      <member refid="classpaimon_1_1_index_reader_capabilities_1ae50fd185e3132213583c981ee6c30b1e" prot="public" virt="virtual"><scope>paimon::IndexReaderCapabilities</scope><name>~IndexReaderCapabilities</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

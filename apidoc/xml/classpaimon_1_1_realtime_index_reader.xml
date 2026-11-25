@@ -1,0 +1,427 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_realtime_index_reader" kind="class" language="C++" prot="public">
+    <compoundname>paimon::RealtimeIndexReader</compoundname>
+    <basecompoundref refid="classpaimon_1_1_index_reader_capabilities" prot="public" virt="non-virtual">paimon::IndexReaderCapabilities</basecompoundref>
+    <basecompoundref refid="classpaimon_1_1_function_visitor" prot="public" virt="non-virtual">paimon::FunctionVisitor&lt; std::optional&lt; RoaringBitmap64 &gt; &gt;</basecompoundref>
+    <includes refid="realtime__index__reader_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h</includes>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1a860310a083f4641270c368e3051d1b8f" prot="public" static="no" const="no" explicit="no" inline="no" virt="non-virtual">
+        <type></type>
+        <definition>paimon::RealtimeIndexReader::~RealtimeIndexReader</definition>
+        <argsstring>() override=default</argsstring>
+        <name>~RealtimeIndexReader</name>
+        <qualifiedname>paimon::RealtimeIndexReader::~RealtimeIndexReader</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="45" column="5"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1a0d3a8fa006bf4a9c79c632881c5524cc" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_scored_realtime_index_result" kindref="compound">ScoredRealtimeIndexResult</ref> &gt; &gt;</type>
+        <definition>virtual Result&lt; std::shared_ptr&lt; ScoredRealtimeIndexResult &gt; &gt; paimon::RealtimeIndexReader::VisitVectorSearch</definition>
+        <argsstring>(const std::shared_ptr&lt; VectorSearch &gt; &amp;search)</argsstring>
+        <name>VisitVectorSearch</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitVectorSearch</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="structpaimon_1_1_vector_search" kindref="compound">VectorSearch</ref> &gt; &amp;</type>
+          <declname>search</declname>
+        </param>
+        <briefdescription>
+<para>Search pre-filters and result IDs use real-time offsets, not file-local row positions. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>Apply filters and pinned visibility before TopK; filtering a truncated result is insufficient. Search results must be stable for the pinned snapshot even while later writes proceed. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="51" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1a45b4301f8cbe49b92dfc1fca6cc1a8ab" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_scored_realtime_index_result" kindref="compound">ScoredRealtimeIndexResult</ref> &gt; &gt;</type>
+        <definition>virtual Result&lt; std::shared_ptr&lt; ScoredRealtimeIndexResult &gt; &gt; paimon::RealtimeIndexReader::VisitFullTextSearch</definition>
+        <argsstring>(const std::shared_ptr&lt; FullTextSearch &gt; &amp;search)</argsstring>
+        <name>VisitFullTextSearch</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitFullTextSearch</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="structpaimon_1_1_full_text_search" kindref="compound">FullTextSearch</ref> &gt; &amp;</type>
+          <declname>search</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="54" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1a2d3dee6f234b095c60afb7aa6f316eaf" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_realtime_index_result" kindref="compound">RealtimeIndexResult</ref> &gt; &gt;</type>
+        <definition>virtual Result&lt; std::shared_ptr&lt; RealtimeIndexResult &gt; &gt; paimon::RealtimeIndexReader::VisitFullTextMatch</definition>
+        <argsstring>(const std::shared_ptr&lt; FullTextMatch &gt; &amp;match, bool needs_scores)</argsstring>
+        <name>VisitFullTextMatch</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitFullTextMatch</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::shared_ptr&lt; <ref refid="structpaimon_1_1_full_text_match" kindref="compound">FullTextMatch</ref> &gt; &amp;</type>
+          <declname>match</declname>
+        </param>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">bool</ref></type>
+          <declname>needs_scores</declname>
+        </param>
+        <briefdescription>
+<para>Returns all matching offsets without TopK truncation. </para>
+        </briefdescription>
+        <detaileddescription>
+<para>When needs_scores is true, returns <ref refid="classpaimon_1_1_scored_realtime_index_result" kindref="compound">ScoredRealtimeIndexResult</ref>, including for an empty result; otherwise scores need not be computed. </para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="60" column="20"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1a9756fe46647ce19a652c521b16c3e3a0" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitIsNotNull</definition>
+        <argsstring>() override</argsstring>
+        <name>VisitIsNotNull</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitIsNotNull</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1a1b5cb370e21f4e498d921036ceead405">VisitIsNotNull</reimplements>
+        <briefdescription>
+<para>Evaluates the IS NOT NULL predicate on the indexed column. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="63" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1a13f7c9c41bfc2eb63d37d5e7cf99d79e" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitIsNull</definition>
+        <argsstring>() override</argsstring>
+        <name>VisitIsNull</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitIsNull</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1a8afe8c5ada434c3134f0cad4e5af38bc">VisitIsNull</reimplements>
+        <briefdescription>
+<para>Evaluates the IS NULL predicate on the indexed column. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="64" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1a9e18ae4b7fc8b2861b237fe20c343f14" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitEqual</definition>
+        <argsstring>(const Literal &amp;literal) override</argsstring>
+        <name>VisitEqual</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitEqual</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1af745a4e85ca02dd9693ccf513bf01dae">VisitEqual</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_literal" kindref="compound">Literal</ref> &amp;</type>
+          <declname>literal</declname>
+        </param>
+        <briefdescription>
+<para>Evaluates the equality (==) predicate against the given literal. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="65" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1ac8fc585a600809719ac004dac82b323d" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitNotEqual</definition>
+        <argsstring>(const Literal &amp;literal) override</argsstring>
+        <name>VisitNotEqual</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitNotEqual</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1a1af81d98d01c2e87a7814fe906fea0f7">VisitNotEqual</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_literal" kindref="compound">Literal</ref> &amp;</type>
+          <declname>literal</declname>
+        </param>
+        <briefdescription>
+<para>Evaluates the inequality (!=) predicate against the given literal. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="66" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1aae452acf315ebe144d584f0980a9e273" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitLessThan</definition>
+        <argsstring>(const Literal &amp;literal) override</argsstring>
+        <name>VisitLessThan</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitLessThan</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1ae9b18b37aa036bb5ae3ac7299cbf4a74">VisitLessThan</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_literal" kindref="compound">Literal</ref> &amp;</type>
+          <declname>literal</declname>
+        </param>
+        <briefdescription>
+<para>Evaluates the less-than (&lt;) predicate against the given literal. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="67" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1a3ec61d3f2e320cc71fca84b7e1748f6d" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitLessOrEqual</definition>
+        <argsstring>(const Literal &amp;literal) override</argsstring>
+        <name>VisitLessOrEqual</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitLessOrEqual</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1a31e6d052bd6aa26dc85fd375aefd402d">VisitLessOrEqual</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_literal" kindref="compound">Literal</ref> &amp;</type>
+          <declname>literal</declname>
+        </param>
+        <briefdescription>
+<para>Evaluates the less-than-or-equal (&lt;=) predicate against the given literal. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="68" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1afba478bac82dc2925d900d68faabdf0c" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitGreaterThan</definition>
+        <argsstring>(const Literal &amp;literal) override</argsstring>
+        <name>VisitGreaterThan</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitGreaterThan</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1a476cbf57433a84b9e06b81f8a9967e86">VisitGreaterThan</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_literal" kindref="compound">Literal</ref> &amp;</type>
+          <declname>literal</declname>
+        </param>
+        <briefdescription>
+<para>Evaluates the greater-than (&gt;) predicate against the given literal. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="69" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1a20a6ea054e8f7b68e9ec67c00932ea1d" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitGreaterOrEqual</definition>
+        <argsstring>(const Literal &amp;literal) override</argsstring>
+        <name>VisitGreaterOrEqual</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitGreaterOrEqual</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1ab69382b764629572d66d879b8704ebf1">VisitGreaterOrEqual</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_literal" kindref="compound">Literal</ref> &amp;</type>
+          <declname>literal</declname>
+        </param>
+        <briefdescription>
+<para>Evaluates the greater-than-or-equal (&gt;=) predicate against the given literal. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="70" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1a4848868148e131230bff06637f7fa868" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitIn</definition>
+        <argsstring>(const std::vector&lt; Literal &gt; &amp;literals) override</argsstring>
+        <name>VisitIn</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitIn</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1af084765e656e7989a390c793ca48507a">VisitIn</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::vector&lt; <ref refid="classpaimon_1_1_literal" kindref="compound">Literal</ref> &gt; &amp;</type>
+          <declname>literals</declname>
+        </param>
+        <briefdescription>
+<para>Evaluates the IN predicate against a list of literals. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="71" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1ad7a3bcae80e61637cfa8137c823784b0" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitNotIn</definition>
+        <argsstring>(const std::vector&lt; Literal &gt; &amp;literals) override</argsstring>
+        <name>VisitNotIn</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitNotIn</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1aa39876a5c1f4d2a8f423403ba840cc90">VisitNotIn</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::vector&lt; <ref refid="classpaimon_1_1_literal" kindref="compound">Literal</ref> &gt; &amp;</type>
+          <declname>literals</declname>
+        </param>
+        <briefdescription>
+<para>Evaluates the NOT IN predicate against a list of literals. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="72" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1a52ce2db498e50e48390e25927c64dacc" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitStartsWith</definition>
+        <argsstring>(const Literal &amp;literal) override</argsstring>
+        <name>VisitStartsWith</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitStartsWith</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1adce72b1f0226f7415d907c2f37275261">VisitStartsWith</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_literal" kindref="compound">Literal</ref> &amp;</type>
+          <declname>prefix</declname>
+        </param>
+        <briefdescription>
+<para>Evaluates whether string values start with the given prefix. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="74" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1abce28e8a9eb1a3128b2007bae50db791" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitEndsWith</definition>
+        <argsstring>(const Literal &amp;literal) override</argsstring>
+        <name>VisitEndsWith</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitEndsWith</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1a0912a7c916bc37d64508e96447be76fe">VisitEndsWith</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_literal" kindref="compound">Literal</ref> &amp;</type>
+          <declname>suffix</declname>
+        </param>
+        <briefdescription>
+<para>Evaluates whether string values end with the given prefix. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="75" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1a60e5dcad88fcfbc9aa2ab6393b17b434" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitContains</definition>
+        <argsstring>(const Literal &amp;literal) override</argsstring>
+        <name>VisitContains</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitContains</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1a9bf050077573e5a8633b64dfe28c02cd">VisitContains</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_literal" kindref="compound">Literal</ref> &amp;</type>
+          <declname>literal</declname>
+        </param>
+        <briefdescription>
+<para>Evaluates whether string values contain the given substring. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="76" column="12"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_realtime_index_reader_1a6ba9f8976bfe68058c1bc926f1904ae3" prot="public" static="no" const="no" explicit="no" inline="no" virt="virtual">
+        <type><ref refid="classpaimon_1_1_result" kindref="compound">Result</ref>&lt; std::optional&lt; <ref refid="classpaimon_1_1_roaring_bitmap64" kindref="compound">RoaringBitmap64</ref> &gt; &gt;</type>
+        <definition>Result&lt; std::optional&lt; RoaringBitmap64 &gt; &gt; paimon::RealtimeIndexReader::VisitLike</definition>
+        <argsstring>(const Literal &amp;literal) override</argsstring>
+        <name>VisitLike</name>
+        <qualifiedname>paimon::RealtimeIndexReader::VisitLike</qualifiedname>
+        <reimplements refid="classpaimon_1_1_function_visitor_1afa1f06188b1a790fb2d5ce587a38a19e">VisitLike</reimplements>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> <ref refid="classpaimon_1_1_literal" kindref="compound">Literal</ref> &amp;</type>
+          <declname>literal</declname>
+        </param>
+        <briefdescription>
+<para>Evaluates whether string values like the given string. </para>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="77" column="12"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>Visits predicates on one indexed field, returning realtime offsets. </para>
+    </briefdescription>
+    <detaileddescription>
+<para>nullopt means no pruning; an empty bitmap means no candidates. False negatives are not allowed. Unsupported predicates default to no pruning. Plugins override only the supported visits. </para>
+    </detaileddescription>
+    <inheritancegraph>
+      <node id="3">
+        <label>paimon::FunctionVisitor&lt; std::optional&lt; RoaringBitmap64 &gt; &gt;</label>
+        <link refid="classpaimon_1_1_function_visitor"/>
+      </node>
+      <node id="2">
+        <label>paimon::IndexReaderCapabilities</label>
+        <link refid="classpaimon_1_1_index_reader_capabilities"/>
+      </node>
+      <node id="1">
+        <label>paimon::RealtimeIndexReader</label>
+        <link refid="classpaimon_1_1_realtime_index_reader"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+    </inheritancegraph>
+    <collaborationgraph>
+      <node id="3">
+        <label>paimon::FunctionVisitor&lt; std::optional&lt; RoaringBitmap64 &gt; &gt;</label>
+        <link refid="classpaimon_1_1_function_visitor"/>
+      </node>
+      <node id="2">
+        <label>paimon::IndexReaderCapabilities</label>
+        <link refid="classpaimon_1_1_index_reader_capabilities"/>
+      </node>
+      <node id="1">
+        <label>paimon::RealtimeIndexReader</label>
+        <link refid="classpaimon_1_1_realtime_index_reader"/>
+        <childnode refid="2" relation="public-inheritance">
+        </childnode>
+        <childnode refid="3" relation="public-inheritance">
+        </childnode>
+      </node>
+    </collaborationgraph>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" line="42" column="1" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/realtime/index/realtime_index_reader.h" bodystart="43" bodyend="78"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_index_reader_capabilities_1a442e485468c9293ce9bb52203d8be374" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>EstimateSelectivity</name></member>
+      <member refid="classpaimon_1_1_index_reader_capabilities_1afd55141e3295a2d262a0d22e8014a9b9" prot="public" virt="non-virtual"><scope>paimon::RealtimeIndexReader</scope><name>SearchType</name></member>
+      <member refid="classpaimon_1_1_index_reader_capabilities_1aa46471a5735b92aea2aadfe40b3a348a" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>SupportsSearch</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1a60e5dcad88fcfbc9aa2ab6393b17b434" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitContains</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1abce28e8a9eb1a3128b2007bae50db791" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitEndsWith</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1a9e18ae4b7fc8b2861b237fe20c343f14" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitEqual</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1a2d3dee6f234b095c60afb7aa6f316eaf" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitFullTextMatch</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1a45b4301f8cbe49b92dfc1fca6cc1a8ab" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitFullTextSearch</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1a20a6ea054e8f7b68e9ec67c00932ea1d" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitGreaterOrEqual</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1afba478bac82dc2925d900d68faabdf0c" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitGreaterThan</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1a4848868148e131230bff06637f7fa868" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitIn</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1a9756fe46647ce19a652c521b16c3e3a0" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitIsNotNull</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1a13f7c9c41bfc2eb63d37d5e7cf99d79e" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitIsNull</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1a3ec61d3f2e320cc71fca84b7e1748f6d" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitLessOrEqual</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1aae452acf315ebe144d584f0980a9e273" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitLessThan</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1a6ba9f8976bfe68058c1bc926f1904ae3" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitLike</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1ac8fc585a600809719ac004dac82b323d" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitNotEqual</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1ad7a3bcae80e61637cfa8137c823784b0" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitNotIn</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1a52ce2db498e50e48390e25927c64dacc" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitStartsWith</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1a0d3a8fa006bf4a9c79c632881c5524cc" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>VisitVectorSearch</name></member>
+      <member refid="classpaimon_1_1_function_visitor_1af9314ce379e89077c46cd3fcfaca76ae" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>~FunctionVisitor</name></member>
+      <member refid="classpaimon_1_1_index_reader_capabilities_1ae50fd185e3132213583c981ee6c30b1e" prot="public" virt="virtual"><scope>paimon::RealtimeIndexReader</scope><name>~IndexReaderCapabilities</name></member>
+      <member refid="classpaimon_1_1_realtime_index_reader_1a860310a083f4641270c368e3051d1b8f" prot="public" virt="non-virtual"><scope>paimon::RealtimeIndexReader</scope><name>~RealtimeIndexReader</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>

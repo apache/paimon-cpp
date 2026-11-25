@@ -1,0 +1,108 @@
+<?xml version='1.0' encoding='UTF-8' standalone='no'?>
+<doxygen xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="compound.xsd" version="1.9.8" xml:lang="en-US">
+  <compounddef id="classpaimon_1_1_full_text_scan_1_1_plan" kind="class" language="C++" prot="public">
+    <compoundname>paimon::FullTextScan::Plan</compoundname>
+    <includes refid="full__text__scan_8h" local="no">/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h</includes>
+    <sectiondef kind="private-attrib">
+      <memberdef kind="variable" id="classpaimon_1_1_full_text_scan_1_1_plan_1a8dd1b6db7fd3fc6b0eefd5f75321e2b7" prot="private" static="no" mutable="no">
+        <type>std::optional&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref> &gt;</type>
+        <definition>std::optional&lt;int64_t&gt; paimon::FullTextScan::Plan::snapshot_id_</definition>
+        <argsstring></argsstring>
+        <name>snapshot_id_</name>
+        <qualifiedname>paimon::FullTextScan::Plan::snapshot_id_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" line="57" column="23" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" bodystart="57" bodyend="-1"/>
+      </memberdef>
+      <memberdef kind="variable" id="classpaimon_1_1_full_text_scan_1_1_plan_1a48756ac8e51d3ab1191b6336bac184b6" prot="private" static="no" mutable="no">
+        <type>std::vector&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_full_text_search_split" kindref="compound">FullTextSearchSplit</ref> &gt; &gt;</type>
+        <definition>std::vector&lt;std::shared_ptr&lt;FullTextSearchSplit&gt; &gt; paimon::FullTextScan::Plan::splits_</definition>
+        <argsstring></argsstring>
+        <name>splits_</name>
+        <qualifiedname>paimon::FullTextScan::Plan::splits_</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" line="58" column="21" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" bodystart="58" bodyend="-1"/>
+      </memberdef>
+    </sectiondef>
+    <sectiondef kind="public-func">
+      <memberdef kind="function" id="classpaimon_1_1_full_text_scan_1_1_plan_1a154ed49d1db06332f4a3fb1b6e506bcb" prot="public" static="no" const="no" explicit="no" inline="yes" virt="non-virtual">
+        <type></type>
+        <definition>paimon::FullTextScan::Plan::Plan</definition>
+        <argsstring>(const std::optional&lt; int64_t &gt; &amp;snapshot_id, std::vector&lt; std::shared_ptr&lt; FullTextSearchSplit &gt; &gt; splits)</argsstring>
+        <name>Plan</name>
+        <qualifiedname>paimon::FullTextScan::Plan::Plan</qualifiedname>
+        <param>
+          <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::optional&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref> &gt; &amp;</type>
+          <declname>snapshot_id</declname>
+        </param>
+        <param>
+          <type>std::vector&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_full_text_search_split" kindref="compound">FullTextSearchSplit</ref> &gt; &gt;</type>
+          <declname>splits</declname>
+        </param>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" line="40" column="9" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" bodystart="40" bodyend="42"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_full_text_scan_1_1_plan_1a18c2cef9082b6a497c447a53706805e6" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::vector&lt; std::shared_ptr&lt; <ref refid="classpaimon_1_1_full_text_search_split" kindref="compound">FullTextSearchSplit</ref> &gt; &gt; &amp;</type>
+        <definition>const std::vector&lt; std::shared_ptr&lt; FullTextSearchSplit &gt; &gt; &amp; paimon::FullTextScan::Plan::Splits</definition>
+        <argsstring>() const</argsstring>
+        <name>Splits</name>
+        <qualifiedname>paimon::FullTextScan::Plan::Splits</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para><simplesect kind="return"><para>The splits to search. They can be read in this process or serialized and read in others. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" line="46" column="27" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" bodystart="46" bodyend="48"/>
+      </memberdef>
+      <memberdef kind="function" id="classpaimon_1_1_full_text_scan_1_1_plan_1a0c100e5d3d045b0e175d70e7a350b1fd" prot="public" static="no" const="yes" explicit="no" inline="yes" virt="non-virtual">
+        <type><ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">const</ref> std::optional&lt; <ref refid="memory__pool_8h_1a147ba4ba34a215b3a4f3a95c1ee11704" kindref="member">int64_t</ref> &gt; &amp;</type>
+        <definition>const std::optional&lt; int64_t &gt; &amp; paimon::FullTextScan::Plan::SnapshotId</definition>
+        <argsstring>() const</argsstring>
+        <name>SnapshotId</name>
+        <qualifiedname>paimon::FullTextScan::Plan::SnapshotId</qualifiedname>
+        <briefdescription>
+        </briefdescription>
+        <detaileddescription>
+<para><simplesect kind="return"><para>The id of the snapshot the plan was built from, or nullopt if the table has no snapshot. </para>
+</simplesect>
+</para>
+        </detaileddescription>
+        <inbodydescription>
+        </inbodydescription>
+        <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" line="52" column="29" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" bodystart="52" bodyend="54"/>
+      </memberdef>
+    </sectiondef>
+    <briefdescription>
+<para>The splits of a full-text search and the snapshot they were planned from. </para>
+    </briefdescription>
+    <detaileddescription>
+    </detaileddescription>
+    <location file="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" line="38" column="5" bodyfile="/home/runner/work/paimon-cpp/paimon-cpp/include/paimon/table/source/full_text_scan.h" bodystart="38" bodyend="59"/>
+    <listofallmembers>
+      <member refid="classpaimon_1_1_full_text_scan_1_1_plan_1a154ed49d1db06332f4a3fb1b6e506bcb" prot="public" virt="non-virtual"><scope>paimon::FullTextScan::Plan</scope><name>Plan</name></member>
+      <member refid="classpaimon_1_1_full_text_scan_1_1_plan_1a8dd1b6db7fd3fc6b0eefd5f75321e2b7" prot="private" virt="non-virtual"><scope>paimon::FullTextScan::Plan</scope><name>snapshot_id_</name></member>
+      <member refid="classpaimon_1_1_full_text_scan_1_1_plan_1a0c100e5d3d045b0e175d70e7a350b1fd" prot="public" virt="non-virtual"><scope>paimon::FullTextScan::Plan</scope><name>SnapshotId</name></member>
+      <member refid="classpaimon_1_1_full_text_scan_1_1_plan_1a18c2cef9082b6a497c447a53706805e6" prot="public" virt="non-virtual"><scope>paimon::FullTextScan::Plan</scope><name>Splits</name></member>
+      <member refid="classpaimon_1_1_full_text_scan_1_1_plan_1a48756ac8e51d3ab1191b6336bac184b6" prot="private" virt="non-virtual"><scope>paimon::FullTextScan::Plan</scope><name>splits_</name></member>
+    </listofallmembers>
+  </compounddef>
+</doxygen>
