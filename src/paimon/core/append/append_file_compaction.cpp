@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-#include "paimon/append_file_compaction.h"
+#include "paimon/append/append_file_compaction.h"
 
 #include <utility>
 
@@ -30,7 +30,7 @@ namespace paimon {
 Result<std::vector<std::shared_ptr<CommitMessage>>> AppendFileCompaction::Execute(
     const std::string& table_path, const std::string& branch,
     const std::map<std::string, std::string>& partition, int32_t bucket,
-    const std::vector<std::string>& file_names, const std::map<std::string, std::string>& options,
+    const std::set<std::string>& file_names, const std::map<std::string, std::string>& options,
     const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<MemoryPool>& pool,
     const std::shared_ptr<Executor>& executor) {
     WriteContextBuilder builder(table_path, "append-file-compaction");

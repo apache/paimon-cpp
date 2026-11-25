@@ -27,6 +27,24 @@ Interface
 .. doxygenclass:: paimon::AppendFileCompaction
    :members:
 
+.. doxygenclass:: paimon::AppendFileCompactionPlanner
+   :members:
+
+.. doxygenstruct:: paimon::AppendFileCompactionPlan
+   :members:
+
+.. doxygenstruct:: paimon::FileCompactionInfo
+   :members:
+
+.. doxygenstruct:: paimon::RowIdMappingRange
+   :members:
+
+.. doxygenstruct:: paimon::FileIndexMeta
+   :members:
+
+.. doxygenstruct:: paimon::FileIndexRange
+   :members:
+
 .. doxygenclass:: paimon::FileStoreWrite
    :members:
    :undoc-members:

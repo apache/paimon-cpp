@@ -19,7 +19,7 @@
 #include "paimon/core/append/bucketed_append_compact_manager.h"
 
 #include <cassert>
-#include <unordered_set>
+#include <map>
 
 #include "paimon/common/executor/future.h"
 
@@ -69,7 +69,7 @@ Status BucketedAppendCompactManager::TriggerCompaction(bool full_compaction) {
     return Status::OK();
 }
 
-Status BucketedAppendCompactManager::CompactFiles(const std::vector<std::string>& file_names) {
+Status BucketedAppendCompactManager::CompactFiles(const std::set<std::string>& file_names) {
     if (task_future_.valid()) {
         return Status::Invalid("a compaction task is still running");
     }
@@ -77,18 +77,15 @@ Status BucketedAppendCompactManager::CompactFiles(const std::vector<std::string>
     if (file_names.empty()) {
         return Status::Invalid("custom compaction requires at least one input file");
     }
-    std::unordered_set<std::string> names(file_names.begin(), file_names.end());
-    if (names.size() != file_names.size()) {
-        return Status::Invalid("custom compaction requires distinct file names");
-    }
+    std::set<std::string> names = file_names;
     auto candidates = to_compact_;
-    std::vector<std::shared_ptr<DataFileMeta>> selected;
+    std::map<std::string, std::shared_ptr<DataFileMeta>> selected_by_name;
     std::vector<std::shared_ptr<DataFileMeta>> retained;
     while (!candidates.empty()) {
         std::shared_ptr<DataFileMeta> file = candidates.top();
         candidates.pop();
         if (names.erase(file->file_name) > 0) {
-            selected.push_back(file);
+            selected_by_name.emplace(file->file_name, file);
         } else {
             retained.push_back(file);
         }
@@ -96,6 +93,11 @@ Status BucketedAppendCompactManager::CompactFiles(const std::vector<std::string>
     if (!names.empty()) {
         return Status::Invalid("custom compaction input file is not active in this writer: ",
                                *names.begin());
+    }
+    std::vector<std::shared_ptr<DataFileMeta>> selected;
+    selected.reserve(selected_by_name.size());
+    for (const auto& [name, file] : selected_by_name) {
+        selected.push_back(file);
     }
     to_compact_.swap(candidates);
     for (const auto& file : retained) {

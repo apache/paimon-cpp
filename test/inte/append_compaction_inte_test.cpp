@@ -19,13 +19,16 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "arrow/api.h"
+#include "arrow/array/concatenate.h"
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
-#include "paimon/append_file_compaction.h"
+#include "paimon/append/append_file_compaction.h"
+#include "paimon/append/append_file_compaction_planner.h"
 #include "paimon/commit_context.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/shredding/map_shared_shredding_utils.h"
@@ -50,6 +53,7 @@
 #include "paimon/table/source/table_read.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/data_generator.h"
+#include "paimon/testing/utils/deletion_vector_test_helper.h"
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/read_result_collector.h"
 #include "paimon/testing/utils/test_helper.h"
@@ -238,8 +242,7 @@ TEST_P(AppendCompactionInteTest, TestCompactFilesWithGap) {
         auto files = restored->DataFiles();
         std::sort(files.begin(), files.end(), BucketedAppendCompactManager::FileComparator(true));
         ASSERT_EQ(3, files.size());
-        // Reverse the inputs and leave the middle file untouched. Neither order nor adjacency
-        // of the supplied names determines eligibility.
+        // Select nonadjacent files, leaving the middle file untouched.
         ASSERT_OK_AND_ASSIGN(
             auto messages, AppendFileCompaction::Execute(helper->table_path_, "", {{"f1", "10"}}, 1,
                                                          {files[2]->file_name, files[0]->file_name},
@@ -251,8 +254,10 @@ TEST_P(AppendCompactionInteTest, TestCompactFilesWithGap) {
         ASSERT_TRUE(impl->GetNewFilesIncrement().IsEmpty());
         const auto& increment = impl->GetCompactIncrement();
         ASSERT_EQ(2, increment.CompactBefore().size());
-        ASSERT_EQ(files[0]->file_name, increment.CompactBefore()[0]->file_name);
-        ASSERT_EQ(files[2]->file_name, increment.CompactBefore()[1]->file_name);
+        ASSERT_EQ(std::min(files[0]->file_name, files[2]->file_name),
+                  increment.CompactBefore()[0]->file_name);
+        ASSERT_EQ(std::max(files[0]->file_name, files[2]->file_name),
+                  increment.CompactBefore()[1]->file_name);
         ASSERT_EQ(1, increment.CompactAfter().size());
         ASSERT_EQ(with_dv ? 2 : 4, increment.CompactAfter()[0]->row_count);
         ASSERT_EQ(with_dv ? 1 : 0, increment.NewIndexFiles().size());
@@ -299,6 +304,152 @@ TEST_P(AppendCompactionInteTest, TestCompactFilesWithGap) {
     }
 }
 
+TEST_P(AppendCompactionInteTest, PlannedRowIdsMatchSingleCompactedFile) {
+    constexpr int32_t kRowsPerFile = 1100;
+    for (bool with_dv : {false, true}) {
+        SCOPED_TRACE(with_dv);
+        auto dir = UniqueTestDirectory::Create();
+        ASSERT_TRUE(dir);
+        auto schema = arrow::schema(
+            {arrow::field("id", arrow::int32()), arrow::field("value", arrow::utf8())});
+        std::map<std::string, std::string> options = {
+            {Options::FILE_FORMAT, GetParam()},
+            {Options::BUCKET, "1"},
+            {Options::BUCKET_KEY, "id"},
+            {Options::BUCKET_APPEND_ORDERED, "false"},
+            {Options::COMPACTION_MIN_FILE_NUM, "100"},
+            {Options::DELETION_VECTORS_ENABLED, with_dv ? "true" : "false"}};
+        ASSERT_OK_AND_ASSIGN(auto helper, TestHelper::Create(dir->Str(), schema, {}, {}, options,
+                                                             /*is_streaming_mode=*/true));
+        const std::string bucket_path = PathUtil::JoinPath(helper->table_path_, "bucket-0");
+        const std::vector<std::string> names = {"z-first." + GetParam(), "a-second." + GetParam()};
+        std::map<std::string, int32_t> source_id_bases;
+        std::vector<std::shared_ptr<DataFileMeta>> input_files;
+        std::shared_ptr<CommitMessage> base_commit_message;
+        int64_t identifier = 0;
+        for (int32_t file_index = 0; file_index < 2; ++file_index) {
+            int32_t base = (file_index + 1) * 10000;
+            std::string json = "[";
+            for (int32_t row = 0; row < kRowsPerFile; ++row) {
+                if (row != 0) {
+                    json += ",";
+                }
+                json +=
+                    "[" + std::to_string(base + row) + ",\"payload-for-compaction-order-check\"]";
+            }
+            json += "]";
+            ASSERT_OK_AND_ASSIGN(
+                auto batch,
+                TestHelper::MakeRecordBatch(arrow::struct_(schema->fields()), json, {}, 0, {}));
+            ASSERT_OK(helper->write_->Write(std::move(batch)));
+            ASSERT_OK_AND_ASSIGN(auto messages, helper->write_->PrepareCommit(false, identifier));
+            ASSERT_EQ(1, messages.size());
+            auto message = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+            ASSERT_TRUE(message);
+            ASSERT_EQ(1, message->GetNewFilesIncrement().NewFiles().size());
+            auto file = message->GetNewFilesIncrement().NewFiles()[0];
+            ASSERT_EQ(kRowsPerFile, file->row_count);
+            ASSERT_OK(helper->fs_->Rename(PathUtil::JoinPath(bucket_path, file->file_name),
+                                          PathUtil::JoinPath(bucket_path, names[file_index])));
+            file->file_name = names[file_index];
+            ASSERT_OK(helper->commit_->Commit(messages, identifier++));
+            base_commit_message = message;
+            input_files.push_back(file);
+            source_id_bases.emplace(file->file_name, base);
+        }
+        ASSERT_LT(input_files[0]->min_sequence_number, input_files[1]->min_sequence_number);
+        ASSERT_GT(input_files[0]->file_name, input_files[1]->file_name);
+
+        std::map<std::string, std::vector<int64_t>> deleted_rows;
+        if (with_dv) {
+            deleted_rows = {{names[0], {0, 550, kRowsPerFile - 1}},
+                            {names[1], {1, kRowsPerFile - 2}}};
+            ASSERT_OK_AND_ASSIGN(
+                auto message, DeletionVectorTestHelper::CreateDeletionVectorCommitMessage(
+                                  helper->fs_, helper->table_path_, GetParam(), base_commit_message,
+                                  deleted_rows, pool_));
+            ASSERT_OK(helper->commit_->Commit({message}, identifier++));
+        }
+        ASSERT_OK(helper->write_->Close());
+
+        std::set<std::string> file_names(names.begin(), names.end());
+        ASSERT_OK_AND_ASSIGN(auto plan, AppendFileCompactionPlanner::CreatePlan(
+                                            helper->table_path_, "", {}, 0, file_names,
+                                            std::nullopt, options, helper->fs_, pool_, nullptr));
+        ASSERT_EQ(2, plan.files.size());
+        ASSERT_EQ(names[1], plan.files[0].file_name);
+        ASSERT_EQ(names[0], plan.files[1].file_name);
+        ASSERT_EQ(2 * kRowsPerFile - (with_dv ? 5 : 0), plan.output_row_count);
+
+        auto compact_options = options;
+        compact_options[Options::TARGET_FILE_SIZE] = "1b";
+        compact_options[Options::READ_BATCH_SIZE] = "64";
+        ASSERT_OK_AND_ASSIGN(auto messages, AppendFileCompaction::Execute(
+                                                helper->table_path_, "", {}, 0, file_names,
+                                                compact_options, helper->fs_, pool_, nullptr));
+        ASSERT_EQ(1, messages.size());
+        auto message = std::dynamic_pointer_cast<CommitMessageImpl>(messages[0]);
+        ASSERT_TRUE(message);
+        const auto& increment = message->GetCompactIncrement();
+        ASSERT_EQ(2, increment.CompactBefore().size());
+        ASSERT_EQ(names[1], increment.CompactBefore()[0]->file_name);
+        ASSERT_EQ(names[0], increment.CompactBefore()[1]->file_name);
+        ASSERT_EQ(1, increment.CompactAfter().size());
+        const auto& output = increment.CompactAfter()[0];
+        ASSERT_EQ(plan.output_row_count, output->row_count);
+        ASSERT_GT(output->file_size, 1);
+
+        ASSERT_OK(helper->commit_->Commit(messages, identifier++));
+        ASSERT_OK_AND_ASSIGN(auto splits, helper->NewScan(StartupMode::LatestFull(), std::nullopt,
+                                                          /*is_streaming=*/false));
+        ASSERT_EQ(1, splits.size());
+        auto split = std::dynamic_pointer_cast<DataSplitImpl>(splits[0]);
+        ASSERT_TRUE(split);
+        ASSERT_EQ(1, split->DataFiles().size());
+        ASSERT_EQ(output->file_name, split->DataFiles()[0]->file_name);
+
+        ReadContextBuilder read_builder(helper->table_path_);
+        ASSERT_OK_AND_ASSIGN(
+            auto read_context,
+            read_builder.SetOptions(options).AddOption(Options::READ_BATCH_SIZE, "64").Finish());
+        ASSERT_OK_AND_ASSIGN(auto table_read, TableRead::Create(std::move(read_context)));
+        ASSERT_OK_AND_ASSIGN(auto reader, table_read->CreateReader(splits));
+        ASSERT_OK_AND_ASSIGN(auto chunks, ReadResultCollector::CollectResult(std::move(reader)));
+        ASSERT_TRUE(chunks);
+        ASSERT_EQ(plan.output_row_count, chunks->length());
+        auto combined = arrow::Concatenate(chunks->chunks(), arrow::default_memory_pool());
+        ASSERT_TRUE(combined.ok()) << combined.status().ToString();
+        auto rows = std::dynamic_pointer_cast<arrow::StructArray>(combined.ValueOrDie());
+        ASSERT_TRUE(rows);
+        auto ids = std::dynamic_pointer_cast<arrow::Int32Array>(rows->GetFieldByName("id"));
+        ASSERT_TRUE(ids);
+        auto values = std::dynamic_pointer_cast<arrow::StringArray>(rows->GetFieldByName("value"));
+        ASSERT_TRUE(values);
+        int64_t next_output_row = 0;
+        for (const auto& file : plan.files) {
+            ASSERT_EQ(kRowsPerFile, file.source_row_count);
+            const auto& deleted = deleted_rows[file.file_name];
+            ASSERT_EQ(kRowsPerFile - static_cast<int64_t>(deleted.size()), file.live_row_count);
+            for (int64_t source_row = 0; source_row < file.source_row_count; ++source_row) {
+                ASSERT_OK_AND_ASSIGN(auto mapped, file.MapRowId(source_row));
+                if (std::find(deleted.begin(), deleted.end(), source_row) != deleted.end()) {
+                    ASSERT_FALSE(mapped);
+                } else {
+                    ASSERT_TRUE(mapped);
+                    ASSERT_EQ(next_output_row++, mapped.value());
+                    ASSERT_FALSE(ids->IsNull(mapped.value()));
+                    ASSERT_EQ(source_id_bases.at(file.file_name) + source_row,
+                              ids->Value(mapped.value()));
+                    ASSERT_FALSE(values->IsNull(mapped.value()));
+                    ASSERT_EQ("payload-for-compaction-order-check",
+                              values->GetString(mapped.value()));
+                }
+            }
+        }
+        ASSERT_EQ(plan.output_row_count, next_output_row);
+    }
+}
+
 TEST_P(AppendCompactionInteTest, TestCompactFilesSingleFullyDeletedFile) {
     auto dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
@@ -326,6 +477,16 @@ TEST_P(AppendCompactionInteTest, TestCompactFilesSingleFullyDeletedFile) {
     std::sort(files.begin(), files.end(), BucketedAppendCompactManager::FileComparator(true));
     ASSERT_EQ(3, files.size());
     ASSERT_EQ(1, files.back()->row_count);
+    ASSERT_OK_AND_ASSIGN(auto plan,
+                         AppendFileCompactionPlanner::CreatePlan(
+                             helper->table_path_, "", {{"f1", "10"}}, 1, {files.back()->file_name},
+                             std::nullopt, options, helper->fs_, pool_, nullptr));
+    ASSERT_EQ(0, plan.output_row_count);
+    ASSERT_EQ(1, plan.files.size());
+    ASSERT_EQ(files.back()->file_name, plan.files[0].file_name);
+    ASSERT_TRUE(plan.files[0].row_id_mapping.empty());
+    ASSERT_OK_AND_ASSIGN(auto mapped, plan.files[0].MapRowId(0));
+    ASSERT_FALSE(mapped);
     ASSERT_OK_AND_ASSIGN(
         auto messages,
         AppendFileCompaction::Execute(helper->table_path_, "", {{"f1", "10"}}, 1,

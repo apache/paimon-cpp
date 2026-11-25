@@ -23,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <queue>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -90,7 +91,7 @@ class BucketedAppendCompactManager : public CompactFutureManager {
 
     Status TriggerCompaction(bool full_compaction) override;
 
-    Status CompactFiles(const std::vector<std::string>& file_names);
+    Status CompactFiles(const std::set<std::string>& file_names);
 
     bool ShouldWaitForLatestCompaction() const override {
         return false;
