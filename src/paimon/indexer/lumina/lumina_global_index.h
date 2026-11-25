@@ -71,6 +71,10 @@ class LuminaGlobalIndex : public GlobalIndexer {
     explicit LuminaGlobalIndex(const std::map<std::string, std::string>& options)
         : options_(options) {}
 
+    bool SupportsVectorSearch() const override {
+        return true;
+    }
+
     bool SupportsCheckpoint() const override {
         return true;
     }

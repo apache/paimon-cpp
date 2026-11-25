@@ -64,9 +64,11 @@
 #include "paimon/record_batch.h"
 #include "paimon/scan_context.h"
 #include "paimon/status.h"
+#include "paimon/table/source/hybrid_search_builder.h"
 #include "paimon/table/source/split.h"
 #include "paimon/table/source/table_read.h"
 #include "paimon/table/source/table_scan.h"
+#include "paimon/table/source/vector_search_builder.h"
 #include "paimon/testing/mock/mock_catalog.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/write_context.h"
@@ -652,6 +654,14 @@ TEST(FormatTableTest, TestReadRejectsSearchForDirectAndStaticEntrypoints) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
                          CreateTable(dir->GetFileSystem(), dir->Str(), {}));
     const std::shared_ptr<Table> loaded_table = table;
+    ASSERT_TRUE(loaded_table->NewVectorSearchBuilder().status().IsNotImplemented());
+    ASSERT_TRUE(loaded_table->NewHybridSearchBuilder().status().IsNotImplemented());
+    VectorSearchBuilder vector(dir->Str());
+    vector.SetQuery("id", {1}).SetLimit(1);
+    ASSERT_TRUE(vector.ExecuteLocal().status().IsNotImplemented());
+    HybridSearchBuilder hybrid(dir->Str());
+    hybrid.SetOptions({{Options::TYPE, "table"}}).AddFullTextRoute("name", "paimon", 1).SetLimit(1);
+    ASSERT_TRUE(hybrid.ExecuteLocal().status().IsNotImplemented());
     for (bool vector_search : {false, true}) {
         for (int32_t entrypoint : {0, 1, 2}) {
             SCOPED_TRACE(vector_search);

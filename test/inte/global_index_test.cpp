@@ -70,6 +70,8 @@
 #include "paimon/status.h"
 #include "paimon/table/source/full_text_search_builder.h"
 #include "paimon/table/source/full_text_search_split.h"
+#include "paimon/table/source/hybrid_search_builder.h"
+#include "paimon/table/source/vector_search_builder.h"
 #include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/counting_cache_test_utils.h"
 #include "paimon/testing/utils/deletion_vector_test_helper.h"
@@ -2110,7 +2112,7 @@ TEST_P(GlobalIndexTest, TestWriteLuminaIndexWithCheckpoint) {
     }
 }
 
-TEST_P(GlobalIndexTest, TestWriteLuminaIndexWithMismatchedDimension) {
+TEST_P(GlobalIndexTest, TestLuminaIndexValidatesVectorDimensions) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::utf8()),
                                  arrow::field("f1", arrow::list(arrow::float32()))};
     auto schema = arrow::schema(fields);
@@ -2120,11 +2122,10 @@ TEST_P(GlobalIndexTest, TestWriteLuminaIndexWithMismatchedDimension) {
                                                          {"lumina.encoding.type", "rawf32"},
                                                          {"lumina.search.parallel_number", "10"}};
 
-    std::map<std::string, std::string> options = {{Options::FILE_FORMAT, file_format_},
-                                                  {Options::FILE_SYSTEM, "local"},
-                                                  {Options::ROW_TRACKING_ENABLED, "true"},
-                                                  {Options::DATA_EVOLUTION_ENABLED, "true"},
-                                                  {Options::READ_BATCH_SIZE, "1"}};
+    std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, file_format_},    {Options::FILE_SYSTEM, "local"},
+        {Options::ROW_TRACKING_ENABLED, "true"}, {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {Options::GLOBAL_INDEX_THREAD_NUM, "2"}, {Options::READ_BATCH_SIZE, "1"}};
 
     CreateTable(/*partition_keys=*/{}, schema, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
@@ -2144,6 +2145,46 @@ TEST_P(GlobalIndexTest, TestWriteLuminaIndexWithMismatchedDimension) {
                    /*options=*/lumina_options, Range(0, 1)),
         "invalid input array in LuminaIndexWriter, vector at row [0] has length [4], "
         "expected dimension [3]");
+
+    ASSERT_OK(WriteIndex(table_path, {}, "f1", "lumina", lumina_options, Range(0, 0)));
+    lumina_options["lumina.index.dimension"] = "4";
+    ASSERT_OK(WriteIndex(table_path, {}, "f1", "lumina", lumina_options, Range(1, 1)));
+    VectorSearchBuilder search(table_path);
+    search.WithFileSystem(fs_).SetQuery("f1", {0, 0, 0}).SetLimit(1);
+    ASSERT_NOK_WITH_MSG(search.ExecuteLocal(),
+                        "over rows [1, 1]: dimension for index and search not match");
+
+    ASSERT_OK(WriteIndex(table_path, {}, "f0", "bitmap", {}, Range(0, 1)));
+    auto filter =
+        PredicateBuilder::Equal(0, "f0", FieldType::STRING, Literal(FieldType::STRING, "a", 1));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredGlobalIndexResult> result,
+                         search.WithFilter(filter).ExecuteLocal());
+    ASSERT_OK_AND_ASSIGN(ScoredRows hits, ToScoredRows(result));
+    ASSERT_EQ(hits, ScoredRows({{0, 1.0f}}));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<GlobalIndexScan> scan,
+        GlobalIndexScan::Create(table_path, std::nullopt, std::nullopt, {}, fs_, nullptr, pool_));
+    auto index_scan = std::dynamic_pointer_cast<GlobalIndexScanImpl>(scan);
+    ASSERT_TRUE(index_scan);
+    const auto& shard_files = index_scan->index_metas_.at(1).at("lumina").at(Range(1, 1));
+    ASSERT_EQ(shard_files.size(), 1u);
+    const std::string missing_shard = index_scan->index_file_manager_->ToPath(shard_files.front());
+    ASSERT_OK(dir_->GetFileSystem()->Delete(missing_shard));
+
+    VectorSearchBuilder unfiltered(table_path);
+    unfiltered.WithFileSystem(fs_).SetQuery("f1", {0, 0, 0}).SetLimit(1);
+    ASSERT_NOK_WITH_MSG(unfiltered.ExecuteLocal(), PathUtil::GetName(missing_shard));
+    ASSERT_OK_AND_ASSIGN(result, search.ExecuteLocal());
+    ASSERT_OK_AND_ASSIGN(hits, ToScoredRows(result));
+    ASSERT_EQ(hits, ScoredRows({{0, 1.0f}}));
+    ASSERT_OK_AND_ASSIGN(
+        result, unfiltered
+                    .WithFilter(PredicateBuilder::Equal(0, "f0", FieldType::STRING,
+                                                        Literal(FieldType::STRING, "z", 1)))
+                    .ExecuteLocal());
+    ASSERT_OK_AND_ASSIGN(hits, ToScoredRows(result));
+    ASSERT_TRUE(hits.empty());
 }
 
 TEST_P(GlobalIndexTest, TestWriteAndQueryLuminaIndexWithOrcDictionaryStringTags) {
@@ -4143,6 +4184,106 @@ TEST_P(GlobalIndexTest, TestScanIndexWithTwoIndexes) {
     ASSERT_EQ(index_readers.size(), 0);
 }
 
+#ifdef PAIMON_ENABLE_FULL_TEXT
+TEST_P(GlobalIndexTest, TestHybridSearchWithLuminaAndFullText) {
+    arrow::FieldVector fields = {arrow::field("vec", arrow::list(arrow::float32())),
+                                 arrow::field("body", arrow::utf8())};
+    CreateTable({}, arrow::schema(fields),
+                {{Options::FILE_FORMAT, file_format_},
+                 {Options::DATA_EVOLUTION_ENABLED, "true"},
+                 {Options::ROW_TRACKING_ENABLED, "true"},
+                 {Options::GLOBAL_INDEX_THREAD_NUM, "2"}});
+    std::string path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto rows = arrow::ipc::internal::json::ArrayFromJSON(
+        arrow::struct_(fields),
+        R"([[[1, 0], "stone"], [[8, 0], "lake"], [[2, 0], "lake"], [[7, 0], "tree"]])");
+    ASSERT_TRUE(rows.ok()) << rows.status();
+    ASSERT_OK_AND_ASSIGN(std::vector<std::shared_ptr<CommitMessage>> messages,
+                         WriteArray(path, {"vec", "body"}, *rows));
+    ASSERT_OK(Commit(path, messages));
+    const std::map<std::string, std::string> options = {{"lumina.index.type", "bruteforce"},
+                                                        {"lumina.index.dimension", "2"},
+                                                        {"lumina.encoding.type", "rawf32"},
+                                                        {"lumina.distance.metric", "l2"}};
+    ASSERT_OK(WriteIndex(path, {}, "vec", "lumina", options, Range(0, 1)));
+    ASSERT_OK(WriteIndex(path, {}, "vec", "lumina", options, Range(2, 3)));
+    ASSERT_OK(WriteIndex(path, {}, "body", "full-text", {{"full-text.tokenizer", "default"}},
+                         Range(1, 3)));
+
+    VectorSearchBuilder vector(path);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<ScoredGlobalIndexResult> nearest,
+        vector.WithFileSystem(fs_).SetQuery("vec", {0, 0}).SetLimit(2).ExecuteLocal());
+    ASSERT_OK_AND_ASSIGN(ScoredRows vector_rows, ToScoredRows(nearest));
+    ASSERT_EQ(vector_rows, ScoredRows({{0, 0.5f}, {2, 0.2f}}));
+    ASSERT_OK_AND_ASSIGN(
+        nearest, vector
+                     .WithFilter(PredicateBuilder::Equal(1, "body", FieldType::STRING,
+                                                         Literal(FieldType::STRING, "lake", 4)))
+                     .ExecuteLocal());
+    ASSERT_OK_AND_ASSIGN(vector_rows, ToScoredRows(nearest));
+    ASSERT_EQ(vector_rows, ScoredRows({{1, 1.0f / 65}, {2, 0.2f}}));
+
+    HybridSearchBuilder hybrid(path);
+    hybrid.WithFileSystem(fs_)
+        .AddVectorRoute("vec", {0, 0}, 2)
+        .AddFullTextRoute("body", R"({"match":{"query":"ocean"}})", 2, 9)
+        .AddFullTextRoute("body", R"({"match":{"query":"lake"}})", 2, 2);
+    auto read_type = arrow::struct_({SpecialFields::ValueKind().ArrowField(), fields[1],
+                                     SpecialFields::RowId().ArrowField(),
+                                     SpecialFields::IndexScore().ArrowField()});
+    for (const auto& [ranker, expected_rows] :
+         std::map<std::string, ScoredRows>{{"rrf", {{2, 1.0f / 62 + 2.0f / 62}}},
+                                           {"mrr", {{1, 2}, {2, 1.5f}}},
+                                           {"weighted_score", {{1, 2}, {2, 2}}}}) {
+        SCOPED_TRACE(ranker);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredGlobalIndexResult> fused,
+                             hybrid.WithRanker(ranker)
+                                 .SetLimit(static_cast<int32_t>(expected_rows.size()))
+                                 .ExecuteLocal());
+        ASSERT_OK_AND_ASSIGN(ScoredRows fused_rows, ToScoredRows(fused));
+        ASSERT_EQ(fused_rows, expected_rows);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> data_plan,
+                             ScanGlobalIndexAndData(path, nullptr, {}, fused));
+        std::vector<std::string> expected_data;
+        for (const auto& [row_id, score] : expected_rows) {
+            expected_data.push_back(fmt::format(R"([0, "lake", {}, {}])", row_id, score));
+        }
+        auto expected = arrow::ipc::internal::json::ArrayFromJSON(
+            read_type, fmt::format("[{}]", fmt::join(expected_data, ", ")));
+        ASSERT_TRUE(expected.ok()) << expected.status();
+        ASSERT_OK(
+            ReadData(path, {"body", "_ROW_ID", "_INDEX_SCORE"}, *expected, nullptr, data_plan));
+    }
+
+    HybridSearchBuilder partial_index(path);
+    partial_index.WithFileSystem(fs_)
+        .AddVectorRoute("vec", {2, 0}, 1)
+        .AddFullTextRoute("body", R"({"match":{"query":"stone"}})", 1, 2)
+        .WithRanker("mrr")
+        .SetLimit(2);
+    for (const auto& [mode, expected] : std::map<std::string, ScoredRows>{
+             {"fast", {{2, 1}}}, {"full", {{0, 2}, {2, 1}}}, {"detail", {{0, 2}, {2, 1}}}}) {
+        SCOPED_TRACE(mode);
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<ScoredGlobalIndexResult> fused,
+            partial_index.SetOptions({{Options::FULL_TEXT_INDEX_SEARCH_MODE, mode}})
+                .ExecuteLocal());
+        ASSERT_OK_AND_ASSIGN(ScoredRows fused_rows, ToScoredRows(fused));
+        ASSERT_EQ(fused_rows, expected);
+    }
+
+    ASSERT_OK(WriteIndex(path, {}, "body", "bitmap", {}, Range(0, 0)));
+    ASSERT_OK(WriteIndex(path, {}, "body", "bitmap", {}, Range(1, 3)));
+    auto filter = PredicateBuilder::NotEqual(1, "body", FieldType::STRING,
+                                             Literal(FieldType::STRING, "lake", 4));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredGlobalIndexResult> filtered,
+                         hybrid.WithFilter(filter).WithRanker("mrr").SetLimit(2).ExecuteLocal());
+    ASSERT_OK_AND_ASSIGN(ScoredRows filtered_rows, ToScoredRows(filtered));
+    ASSERT_EQ(filtered_rows, ScoredRows({{0, 1}, {3, 0.5f}}));
+}
+#endif
+
 TEST_P(GlobalIndexTest, TestLuminaSearchSkipsRowsDeletedByDeletionVectors) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::list(arrow::float32()))};
@@ -4199,6 +4340,7 @@ TEST_P(GlobalIndexTest, TestLuminaSearchSkipsRowsDeletedByDeletionVectors) {
                          Range(6, 9)));
     ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f1", "lumina", lumina_options,
                          Range(10, 11)));
+    ASSERT_OK(WriteIndex(table_path, {}, "f0", "bitmap", {}, Range(0, 5)));
 
     auto create_scan = [&]() {
         return GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
@@ -4222,6 +4364,12 @@ TEST_P(GlobalIndexTest, TestLuminaSearchSkipsRowsDeletedByDeletionVectors) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> scan, create_scan());
 
     std::vector<float> query = {0.0f, 0.0f, 0.0f, 0.0f};
+    VectorSearchBuilder vector(table_path);
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<ScoredGlobalIndexResult> nearest,
+        vector.WithFileSystem(fs_).SetQuery("f1", query).SetLimit(3).ExecuteLocal());
+    ASSERT_OK_AND_ASSIGN(ScoredRows live_rows, ToScoredRows(nearest));
+    ASSERT_EQ(live_rows, ScoredRows({{3, 1.0f / 37}, {4, 1.0f / 65}, {5, 1.0f / 101}}));
     auto search = [&](const std::shared_ptr<GlobalIndexScan>& index_scan,
                       const std::optional<RowRangeIndex>& row_range_index,
                       VectorSearch::PreFilter pre_filter,
@@ -4281,9 +4429,28 @@ TEST_P(GlobalIndexTest, TestLuminaSearchSkipsRowsDeletedByDeletionVectors) {
     ])")
             .ValueOrDie();
     ASSERT_OK(ReadData(table_path, {"f0"}, expected_array, /*predicate=*/nullptr, plan));
+
+    auto index_scan = std::dynamic_pointer_cast<GlobalIndexScanImpl>(scan);
+    ASSERT_TRUE(index_scan);
+    const auto& shards = index_scan->index_metas_.at(1).at("lumina");
+    auto delete_shard = [&](const Range& range) {
+        const auto& files = shards.at(range);
+        ASSERT_EQ(files.size(), 1u);
+        ASSERT_OK(dir_->GetFileSystem()->Delete(index_scan->index_file_manager_->ToPath(files[0])));
+    };
+    ASSERT_NO_FATAL_FAILURE(delete_shard(Range(10, 11)));
+    ASSERT_OK_AND_ASSIGN(nearest, vector.ExecuteLocal());
+    ASSERT_OK_AND_ASSIGN(ScoredRows retained_rows, ToScoredRows(nearest));
+    ASSERT_EQ(retained_rows, live_rows);
+
+    ASSERT_NO_FATAL_FAILURE(delete_shard(Range(0, 5)));
+    auto deleted_rows = PredicateBuilder::LessThan(0, "f0", FieldType::INT, Literal(3));
+    ASSERT_OK_AND_ASSIGN(nearest, vector.WithFilter(deleted_rows).ExecuteLocal());
+    ASSERT_OK_AND_ASSIGN(retained_rows, ToScoredRows(nearest));
+    ASSERT_TRUE(retained_rows.empty());
 }
 
-TEST_P(GlobalIndexTest, TestLuminaSearchSkipsUnindexedDeletionVectors) {
+TEST_P(GlobalIndexTest, TestLuminaSearchSkipsUnusedDeletionVectors) {
     arrow::FieldVector fields = {arrow::field("f0", arrow::int32()),
                                  arrow::field("f1", arrow::list(arrow::float32()))};
     std::map<std::string, std::string> lumina_options = {{"lumina.index.dimension", "4"},
@@ -4300,22 +4467,22 @@ TEST_P(GlobalIndexTest, TestLuminaSearchSkipsUnindexedDeletionVectors) {
     CreateTable(/*partition_keys=*/{}, schema, options);
     std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
 
-    auto indexed_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+    auto first_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
 [0, [0.0, 0.0, 0.0, 0.0]],
 [1, [1.0, 1.0, 1.0, 1.0]]
     ])")
-                             .ValueOrDie();
-    auto unindexed_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
+                           .ValueOrDie();
+    auto second_array = arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(fields), R"([
 [2, [2.0, 2.0, 2.0, 2.0]],
 [3, [3.0, 3.0, 3.0, 3.0]]
     ])")
-                               .ValueOrDie();
-    ASSERT_OK_AND_ASSIGN(auto indexed_commit_msgs,
-                         WriteArray(table_path, schema->field_names(), indexed_array));
-    ASSERT_OK(Commit(table_path, indexed_commit_msgs));
-    ASSERT_OK_AND_ASSIGN(auto unindexed_commit_msgs,
-                         WriteArray(table_path, schema->field_names(), unindexed_array));
-    ASSERT_OK(Commit(table_path, unindexed_commit_msgs));
+                            .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(auto first_commit_msgs,
+                         WriteArray(table_path, schema->field_names(), first_array));
+    ASSERT_OK(Commit(table_path, first_commit_msgs));
+    ASSERT_OK_AND_ASSIGN(auto second_commit_msgs,
+                         WriteArray(table_path, schema->field_names(), second_array));
+    ASSERT_OK(Commit(table_path, second_commit_msgs));
     ASSERT_OK(WriteIndex(table_path, /*partition_filters=*/{}, "f1", "lumina", lumina_options,
                          Range(0, 1)));
 
@@ -4323,12 +4490,17 @@ TEST_P(GlobalIndexTest, TestLuminaSearchSkipsUnindexedDeletionVectors) {
     ASSERT_OK_AND_ASSIGN(std::vector<std::string> anchor_file_names,
                          DeletionVectorTestHelper::RetrieveAnchorFileNames(split->DataFiles()));
     ASSERT_EQ(anchor_file_names.size(), 2u);
-    ASSERT_OK_AND_ASSIGN(
-        std::shared_ptr<CommitMessage> dv_commit_msg,
-        DeletionVectorTestHelper::CreateDeletionVectorCommitMessage(
-            dir_->GetFileSystem(), table_path, file_format_, unindexed_commit_msgs[0],
-            {{anchor_file_names[1], /*deleted_positions=*/{1}}}, pool_));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<CommitMessage> dv_commit_msg,
+                         DeletionVectorTestHelper::CreateDeletionVectorCommitMessage(
+                             dir_->GetFileSystem(), table_path, file_format_, second_commit_msgs[0],
+                             {{anchor_file_names[1], {1}}}, pool_));
     ASSERT_OK(Commit(table_path, {dv_commit_msg}));
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> scan,
+                         GlobalIndexScan::Create(table_path, std::nullopt, std::nullopt,
+                                                 lumina_options, fs_, nullptr, pool_));
+    ASSERT_OK(WriteIndex(table_path, {}, "f1", "lumina", lumina_options, Range(2, 3)));
+    ASSERT_OK(WriteIndex(table_path, {}, "f0", "bitmap", {}, Range(0, 3)));
 
     ASSERT_OK_AND_ASSIGN(split, ScanData(table_path, /*partition_filters=*/{}));
     std::vector<std::string> deletion_file_paths;
@@ -4338,12 +4510,9 @@ TEST_P(GlobalIndexTest, TestLuminaSearchSkipsUnindexedDeletionVectors) {
         }
     }
     ASSERT_EQ(deletion_file_paths.size(), 1u);
-    ASSERT_OK(dir_->GetFileSystem()->Delete(deletion_file_paths[0]));
+    const std::string& missing_deletion_file = deletion_file_paths.front();
+    ASSERT_OK(dir_->GetFileSystem()->Delete(missing_deletion_file));
 
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexScan> scan,
-                         GlobalIndexScan::Create(table_path, /*snapshot_id=*/std::nullopt,
-                                                 /*partitions=*/std::nullopt, lumina_options, fs_,
-                                                 /*executor=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<GlobalIndexReader> reader,
                          scan->CreateReader("f1", "lumina", /*row_range_index=*/std::nullopt));
     ASSERT_TRUE(reader);
@@ -4354,6 +4523,15 @@ TEST_P(GlobalIndexTest, TestLuminaSearchSkipsUnindexedDeletionVectors) {
             "f1", /*limit=*/2, query, /*pre_filter=*/nullptr,
             /*predicate=*/nullptr, /*distance_type=*/std::nullopt, lumina_options)));
     ASSERT_EQ(index_result->ToString(), "row ids: {0,1}, scores: {0.00,4.00}");
+
+    VectorSearchBuilder vector(table_path);
+    vector.WithFileSystem(fs_).SetQuery("f1", query).SetLimit(2);
+    ASSERT_NOK_WITH_MSG(vector.ExecuteLocal(), PathUtil::GetName(missing_deletion_file));
+    auto filter = PredicateBuilder::In(0, "f0", FieldType::INT, {Literal(0), Literal(1)});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<ScoredGlobalIndexResult> result,
+                         vector.WithFilter(filter).ExecuteLocal());
+    ASSERT_OK_AND_ASSIGN(ScoredRows rows, ToScoredRows(result));
+    ASSERT_EQ(rows, ScoredRows({{0, 1.0f}, {1, 0.2f}}));
 }
 #endif
 

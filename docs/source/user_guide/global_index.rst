@@ -441,7 +441,7 @@ satisfy the filter before ranking. It falls back to ``global-index.search-mode``
 A raw split always evaluates the filter on its data. All its live, non-null text contributes to
 the temporary index's scores, even when the filter excludes a row from the results.
 
-Only single-field indexes that do not support full-text search evaluate a filter. A filter with a
+Only single-field scalar indexes evaluate a filter. A filter with a
 ``PredicateBuilder::FullTextMatch`` predicate fails with ``NotImplemented``.
 
 Pinning the Data Read
@@ -528,5 +528,121 @@ combined with the ``pre_filter`` of the ``VectorSearch``. In Data Evolution tabl
 deletion vectors of the data files the index covers are read. As for full-text search, pass one
 snapshot id to both the index scan and the data scan.
 
-A search across multiple index shards returns up to ``limit`` rows from each shard, and the merged
-result is not truncated to ``limit``.
+A low-level ``GlobalIndexReader`` returns up to ``limit`` rows from each shard. Its merged
+result can therefore contain more than ``limit`` rows.
+
+For table-level top-k on a Data Evolution table, use ``VectorSearchBuilder`` from
+``paimon/table/source/vector_search_builder.h``. Set the column and vector with
+``SetQuery("embedding", vector)``, then call ``SetLimit(k)`` and ``ExecuteLocal()``.
+Higher scores indicate more similar vectors. For Lumina, the table-level score is
+``1 / (1 + squared_distance)`` for L2, cosine similarity for cosine, and the dot
+product for inner product. Pass the returned row ids and scores to
+``ScanContextBuilder::SetGlobalIndexResult()`` to read the matching rows.
+To reuse a snapshot and its filters, create a plan with ``VectorScan::CreatePlan()``
+and pass it to ``VectorRead::Read()`` in the same process. Each read can use a different
+query vector, limit, candidate multiplier and ``global-index.filter.refine-from-data`` setting.
+Creating another plan resolves the snapshot selector again. An existing plan retains the
+snapshot metadata and can still be read after the snapshot file expires, provided its index
+and data files remain available.
+Vector queries across multiple shards use the executor supplied by ``WithExecutor()`` or an
+executor sized by ``global-index.thread-num``. A reused plan keeps the executor it was created
+with. When the search must verify candidates against table data, it does so after each group of
+shard queries completes.
+Scalar index results narrow the shards before deletion vectors are read. The search reads
+deletion vectors for data files overlapping those shards and opens only shards that can
+still contain matching live rows.
+If a searched shard declines the query, the other shards can still contribute hits.
+An error while opening or querying a searched shard fails the search.
+
+Hybrid Search
+-------------
+
+``HybridSearchBuilder`` combines vector and full-text routes on a data-evolution table.
+Each route ranks live rows in the same snapshot, applies the partition and row filters,
+and contributes up to its own limit of candidates. A route's weight defaults to 1 and
+must be finite and positive. An empty route contributes no scores. The final limit controls
+how many distinct rows survive fusion. Vector routes support the ``fast`` index search mode.
+Full-text routes use the builder's full-text and scalar options as described in `Search Modes`_
+and `Row Filters`_.
+Set ``PAIMON_ENABLE_LUMINA=ON`` when building with Lumina. Enable the backend that matches
+the table's full-text indexes with ``PAIMON_ENABLE_FULL_TEXT=ON`` for ``full-text`` or
+``PAIMON_ENABLE_LUCENE=ON`` for ``lucene-fts``.
+
+Each call to ``WithPartitionFilter()`` on a vector or hybrid builder intersects the current
+partition selection with the union of the supplied specs. An empty list adds no restriction.
+Each call to ``WithFilter()`` adds a conjunct to the search filter. If a conjunct uses
+only partition keys, the search intersects it with the selection from ``WithPartitionFilter()``.
+
+Builders created by a ``Table`` inherit its branch. To search a different branch, load the
+table on that branch or construct the builder from its path and set the ``branch`` option.
+Use ``SetOptions()`` to select a snapshot, tag or timestamp. The options passed to
+``AddVectorRoute()`` or ``VectorSearchBuilder::SetQuery()`` tune the backend
+and can override the vector and scalar search modes, the candidate multiplier and filter
+refinement for that query. Full-text routes require an empty route options map.
+
+In ``fast`` mode, if scalar indexes can evaluate a vector route's filter, only rows
+identified by those indexes are eligible. Scalar index candidates that require verification
+are excluded with a warning by default. Set ``global-index.filter.refine-from-data=true``
+to check them against table data.
+When no scalar index can evaluate the filter, a vector route fetches up to
+``limit × vector-index.post-filter.candidates-factor`` candidates from each shard and
+checks them against the pinned data. The factor defaults to 10 and can be set per vector
+route. A selective predicate may leave fewer than ``limit`` matches. Full-text routes
+apply the rules in `Row Filters`_.
+
+To read the matching rows while the table is changing, choose a snapshot before searching.
+Set ``scan.mode=from-snapshot`` and the same ``scan.snapshot-id`` on both the search and
+the data scan. A ``scan.tag-name`` also works if the tag points to the same snapshot for
+both operations. The search resolves columns using the selected snapshot's field IDs.
+Pass the fused result to ``ScanContextBuilder::SetGlobalIndexResult()`` to read those rows
+and their ``_INDEX_SCORE``.
+
+.. code-block:: cpp
+
+   #include "paimon/catalog/table.h"
+   #include "paimon/defs.h"
+   #include "paimon/read_context.h"
+   #include "paimon/reader/batch_reader.h"
+   #include "paimon/scan_context.h"
+   #include "paimon/table/source/hybrid_search_builder.h"
+   #include "paimon/table/source/table_read.h"
+   #include "paimon/table/source/table_scan.h"
+
+   const std::map<std::string, std::string> options = {
+       {paimon::Options::SCAN_MODE, "from-snapshot"},
+       {paimon::Options::SCAN_SNAPSHOT_ID, std::to_string(snapshot_id)},
+   };
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::HybridSearchBuilder> search,
+                          table->NewHybridSearchBuilder());
+   search->SetOptions(options)
+       .AddVectorRoute("embedding", {0.1f, 0.9f}, 20)
+       .AddFullTextRoute("content", R"({"match":{"query":"paimon lake"}})", 30, 2.0f)
+       .WithWeightedScoreRanker()
+       .SetLimit(10);
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::ScoredGlobalIndexResult> hits,
+                          search->ExecuteLocal());
+   paimon::ScanContextBuilder scan_builder(table->GetRootPath());
+   scan_builder.SetOptions(options).SetGlobalIndexResult(hits);
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ScanContext> context, scan_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableScan> scan,
+                          table->NewScan(std::move(context)));
+   PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<paimon::Plan> plan, scan->CreatePlan());
+
+   paimon::ReadContextBuilder read_builder(table->GetRootPath());
+   read_builder.SetReadFieldNames({"content", "_INDEX_SCORE"});
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::ReadContext> read_context, read_builder.Finish());
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::TableRead> read,
+                          table->NewRead(std::move(read_context)));
+   PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<paimon::BatchReader> reader,
+                          read->CreateReader(plan->Splits()));
+
+The default ranker, ``rrf``, sums ``weight / (60 + rank)``. ``mrr`` sums
+``weight / rank``. Both count ranks from one and order tied route scores by ascending
+row id. For a route with finite scores, ``weighted_score`` rescales them to [0, 1] and
+multiplies them by the route weight. If all scores are equal or any score is NaN, every
+hit receives the route weight. The ranker sums these contributions by row id. Final ties
+favor the smaller row id. The result iterates in ascending row-id order.
+
+Source-backed primary-key indexes use file-local physical positions and currently return
+``NotImplemented`` for table-level hybrid search. Format tables also return ``NotImplemented``
+when accessed through the catalog or a path containing their schema.

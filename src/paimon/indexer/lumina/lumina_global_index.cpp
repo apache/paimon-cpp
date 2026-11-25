@@ -261,7 +261,8 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> LuminaIndexReader::VisitVectorS
     // prepare BitmapScoredGlobalIndexResult
     std::map<int64_t, float> id_to_score;
     for (const auto& [id, score] : search_result.topk) {
-        id_to_score[id] = score;
+        id_to_score[id] =
+            vector_search->return_similarity_score ? searcher_->ToSimilarityScore(score) : score;
     }
 
     RoaringBitmap64 bitmap;

@@ -40,6 +40,8 @@
 #include "paimon/global_index/global_index_scan.h"
 
 namespace paimon {
+class GlobalIndexer;
+
 class GlobalIndexScanImpl : public GlobalIndexScan {
  public:
     static Result<std::unique_ptr<GlobalIndexScanImpl>> Create(
@@ -64,13 +66,29 @@ class GlobalIndexScanImpl : public GlobalIndexScan {
 
     Result<std::shared_ptr<GlobalIndexResult>> Scan(const std::shared_ptr<Predicate>& predicate);
 
+    struct VectorIndexShard {
+        Range range;
+        std::vector<GlobalIndexIOMeta> files;
+        std::shared_ptr<const GlobalIndexer> indexer;
+    };
+    /// Plans vector shards from the manifest so filtering can happen before index files are opened.
+    Result<std::vector<VectorIndexShard>> PlanVectorShards(const DataField& field) const;
+    Result<std::shared_ptr<GlobalIndexReader>> OpenVectorReader(
+        const DataField& field, const VectorIndexShard& shard,
+        const LiveRowGlobalIndexReader::LiveRowsSupplier& live_rows) const;
+
+    Result<LiveRowGlobalIndexReader::LiveRowsSupplier> CreateLiveRowsSupplier(
+        const std::vector<Range>& shard_ranges) const;
+
     /// Evaluates `predicate` and reports the fields that decided the result, as Java
     /// `DataEvolutionGlobalIndexScanner#scanWithCoverage` does. Unlike `Scan()`, the indexes of a
     /// field are read as one union: indexes of different types may cover different rows, so
     /// intersecting them would drop the rows that only one of them covers.
+    /// When provided, only scalar indexes overlapping the searched row ranges participate.
     /// @return The evaluation, or nullopt if the indexes cannot evaluate the predicate.
     Result<std::optional<GlobalIndexEvaluatorImpl::Evaluation>> ScanWithCoverage(
-        const std::shared_ptr<Predicate>& predicate) const;
+        const std::shared_ptr<Predicate>& predicate,
+        const std::optional<RowRangeIndex>& row_ranges = std::nullopt) const;
 
     Result<std::vector<std::shared_ptr<GlobalIndexReader>>> CreateReaders(
         const std::string& field_name,
@@ -84,6 +102,9 @@ class GlobalIndexScanImpl : public GlobalIndexScan {
         int32_t field_id, const std::optional<RowRangeIndex>& row_range_index) const override;
 
  private:
+    enum class ReaderPurpose { ALL, VECTOR, SCALAR_FILTER };
+    struct ReaderGroup;
+
     /// (id->index_type->row_range) -> index meta list
     using IndexMetaMap =
         std::map<int32_t, std::map<std::string,
@@ -104,12 +125,18 @@ class GlobalIndexScanImpl : public GlobalIndexScan {
 
     Result<std::vector<std::shared_ptr<GlobalIndexReader>>> CreateReaders(
         const DataField& field, const std::optional<std::string>& index_type,
-        const std::optional<RowRangeIndex>& row_range_index) const;
+        const std::optional<RowRangeIndex>& row_range_index,
+        ReaderPurpose purpose = ReaderPurpose::ALL) const;
+    Result<std::vector<ReaderGroup>> PlanReaderGroups(
+        const DataField& field, const std::optional<std::string>& index_type,
+        const std::optional<RowRangeIndex>& row_range_index, ReaderPurpose purpose) const;
+    Result<std::shared_ptr<GlobalIndexReader>> OpenShardReader(
+        const DataField& field, const GlobalIndexer& indexer, const Range& range,
+        const std::vector<GlobalIndexIOMeta>& files,
+        const std::optional<std::vector<Range>>& local_row_ranges) const;
 
     std::vector<GlobalIndexIOMeta> ToGlobalIndexIOMetas(
-        const std::vector<std::shared_ptr<IndexFileMeta>>& metas) const;
-
-    GlobalIndexIOMeta ToGlobalIndexIOMeta(const std::shared_ptr<IndexFileMeta>& index_meta) const;
+        const std::vector<std::shared_ptr<IndexFileMeta>>& metas, ReaderPurpose purpose) const;
 
  private:
     std::shared_ptr<MemoryPool> pool_;

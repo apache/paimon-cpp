@@ -20,7 +20,9 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "paimon/global_index/global_index_result.h"
@@ -33,12 +35,18 @@ class ScoredGlobalIndexResultUtils {
     ScoredGlobalIndexResultUtils() = delete;
     ~ScoredGlobalIndexResultUtils() = delete;
 
-    /// Merges `results` and keeps the `limit` rows that rank first: a higher score first, then a
-    /// lower row id, with scores ordered as -infinity < -0.0 < +0.0 < +infinity < NaN. A row id in
-    /// more than one result keeps its score from the first of those results. This is Java
-    /// `ScoredGlobalIndexResult#merge` followed by `ScoredGlobalIndexResult#topK`.
-    /// @param results The results to merge; none may be null.
-    /// @param limit   The number of rows to keep; must be positive.
+    /// Compares hits by descending score in Java float order, then ascending row id.
+    static bool RanksBefore(const std::pair<int64_t, float>& left,
+                            const std::pair<int64_t, float>& right);
+
+    /// Keeps up to `limit` of the best rows, with scores aligned to ascending row ids. Row ids must
+    /// be unique.
+    static std::shared_ptr<ScoredGlobalIndexResult> FromRows(
+        std::vector<std::pair<int64_t, float>> rows,
+        size_t limit = std::numeric_limits<size_t>::max());
+
+    /// Selects the best `limit` rows, keeping the first score for each row id.
+    /// Requires non-null results and a positive limit.
     static Result<std::shared_ptr<ScoredGlobalIndexResult>> MergeTopK(
         const std::vector<std::shared_ptr<ScoredGlobalIndexResult>>& results, int32_t limit);
 };

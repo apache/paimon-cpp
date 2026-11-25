@@ -52,6 +52,8 @@ class LuminaIndexSearcher {
 
     ~LuminaIndexSearcher();
 
+    float ToSimilarityScore(float value) const;
+
     LuminaIndexSearcher(const LuminaIndexSearcher&) = delete;
     LuminaIndexSearcher& operator=(const LuminaIndexSearcher&) = delete;
 

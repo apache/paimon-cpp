@@ -43,7 +43,9 @@
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/core/utils/tag_manager.h"
+#include "paimon/defs.h"
 #include "paimon/global_index/bitmap_global_index_result.h"
+#include "paimon/logging.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/leaf_predicate.h"
 #include "paimon/predicate/predicate_utils.h"
@@ -71,9 +73,12 @@ bool HasCandidateOnlyLeaf(const std::shared_ptr<Predicate>& predicate) {
 }
 }  // namespace
 
-Result<Snapshot> FilteredRowIdReader::LoadSnapshot(const CoreOptions& options,
-                                                   const std::string& root_path,
-                                                   int64_t snapshot_id) {
+Result<Snapshot> FilteredRowIdReader::LoadSnapshot(
+    const CoreOptions& options, const std::string& root_path, int64_t snapshot_id,
+    const std::optional<Snapshot>& planned_snapshot) {
+    if (planned_snapshot) {
+        return *planned_snapshot;
+    }
     std::string branch = BranchManager::NormalizeBranch(options.GetBranch());
     SnapshotManager snapshot_manager(options.GetFileSystem(), root_path, branch);
     Result<Snapshot> snapshot = snapshot_manager.LoadSnapshot(snapshot_id);
@@ -120,7 +125,8 @@ FilteredRowIdReader::FilteredRowIdReader(
     const std::string& root_path, const std::shared_ptr<TableSchema>& table_schema,
     const CoreOptions& options, const std::shared_ptr<PredicateFilter>& partition_filter,
     const std::shared_ptr<Predicate>& filter, int64_t snapshot_id,
-    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool)
+    const std::shared_ptr<Executor>& executor, const std::shared_ptr<MemoryPool>& pool,
+    std::optional<Snapshot> planned_snapshot)
     : root_path_(root_path),
       table_schema_(table_schema),
       options_(options),
@@ -128,7 +134,8 @@ FilteredRowIdReader::FilteredRowIdReader(
       filter_(filter),
       snapshot_id_(snapshot_id),
       executor_(executor),
-      pool_(pool) {}
+      pool_(pool),
+      planned_snapshot_(std::move(planned_snapshot)) {}
 
 Result<bool> FilteredRowIdReader::IsExact(const TableSchema& table_schema,
                                           const std::shared_ptr<Predicate>& filter,
@@ -140,6 +147,20 @@ Result<bool> FilteredRowIdReader::IsExact(const TableSchema& table_schema,
         return false;
     }
     return !HasCandidateOnlyLeaf(filter);
+}
+
+Result<RoaringBitmap64> FilteredRowIdReader::RefineCandidates(RoaringBitmap64 candidates,
+                                                              bool refine_from_data) const {
+    if (!candidates.IsEmpty() && !refine_from_data) {
+        static auto logger = Logger::GetLogger("FilteredRowIdReader");
+        PAIMON_LOG_WARN(logger,
+                        "Excluding %ld scalar index candidates for filter %s on table %s in "
+                        "snapshot %ld. Set %s=true to verify them against table data.",
+                        candidates.Cardinality(), filter_->ToString().c_str(), root_path_.c_str(),
+                        snapshot_id_, Options::GLOBAL_INDEX_FILTER_REFINE_FROM_DATA);
+        return RoaringBitmap64();
+    }
+    return MatchingRowIds(std::move(candidates));
 }
 
 Result<RoaringBitmap64> FilteredRowIdReader::MatchingRowIds(RoaringBitmap64 rows) const {
@@ -162,7 +183,8 @@ Result<RoaringBitmap64> FilteredRowIdReader::MatchingRowIds(const RowRangeIndex&
             read_fields.push_back(field.Name());
         }
     }
-    PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, LoadSnapshot(options_, root_path_, snapshot_id_));
+    PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot,
+                           LoadSnapshot(options_, root_path_, snapshot_id_, planned_snapshot_));
     PAIMON_RETURN_NOT_OK(
         ReadRows(root_path_, table_schema_, options_, partition_filter_, snapshot, row_ranges,
                  read_fields, filter_, executor_, pool_,

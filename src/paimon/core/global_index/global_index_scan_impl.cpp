@@ -213,16 +213,67 @@ Result<std::shared_ptr<GlobalIndexReader>> GlobalIndexScanImpl::CreateReader(
     return readers[0];
 }
 
+struct GlobalIndexScanImpl::ReaderGroup {
+    struct Shard {
+        Range range;
+        std::optional<Range> search_range;
+        std::vector<GlobalIndexIOMeta> files;
+        std::optional<std::vector<Range>> local_row_ranges;
+    };
+
+    std::unique_ptr<GlobalIndexer> indexer;
+    std::vector<Shard> shards;
+};
+
 Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::CreateReaders(
     const DataField& field, const std::optional<std::string>& index_type,
-    const std::optional<RowRangeIndex>& row_range_index) const {
+    const std::optional<RowRangeIndex>& row_range_index, ReaderPurpose purpose) const {
+    PAIMON_ASSIGN_OR_RAISE(std::vector<ReaderGroup> groups,
+                           PlanReaderGroups(field, index_type, row_range_index, purpose));
+    std::vector<std::shared_ptr<GlobalIndexReader>> readers;
+    readers.reserve(groups.size());
+    for (const auto& group : groups) {
+        std::vector<std::shared_ptr<GlobalIndexReader>> shard_readers;
+        std::vector<Range> row_ranges;
+        std::vector<std::optional<Range>> search_ranges;
+        shard_readers.reserve(group.shards.size());
+        row_ranges.reserve(group.shards.size());
+        search_ranges.reserve(group.shards.size());
+        for (const auto& shard : group.shards) {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexReader> reader,
+                                   OpenShardReader(field, *group.indexer, shard.range, shard.files,
+                                                   shard.local_row_ranges));
+            shard_readers.push_back(std::move(reader));
+            row_ranges.push_back(shard.range);
+            search_ranges.push_back(shard.search_range);
+        }
+        LiveRowGlobalIndexReader::LiveRowsSupplier live_rows;
+        if (purpose != ReaderPurpose::SCALAR_FILTER) {
+            PAIMON_ASSIGN_OR_RAISE(live_rows, CreateLiveRowsSupplier(row_ranges));
+        }
+        if (live_rows) {
+            readers.push_back(LiveRowGlobalIndexReader::CreateUnion(
+                std::move(shard_readers), std::move(row_ranges), std::move(search_ranges),
+                executor_, live_rows));
+        } else {
+            readers.push_back(std::make_shared<UnionGlobalIndexReader>(
+                std::move(shard_readers), std::move(row_ranges), std::move(search_ranges),
+                executor_));
+        }
+    }
+    return readers;
+}
+
+Result<std::vector<GlobalIndexScanImpl::ReaderGroup>> GlobalIndexScanImpl::PlanReaderGroups(
+    const DataField& field, const std::optional<std::string>& index_type,
+    const std::optional<RowRangeIndex>& row_range_index, ReaderPurpose purpose) const {
+    std::vector<ReaderGroup> groups;
     auto field_iter = index_metas_.find(field.Id());
     if (field_iter == index_metas_.end()) {
-        return std::vector<std::shared_ptr<GlobalIndexReader>>();
+        return groups;
     }
     const auto& index_type_to_metas = field_iter->second;
-    std::vector<std::shared_ptr<GlobalIndexReader>> readers;
-    readers.reserve(index_type ? 1 : index_type_to_metas.size());
+    groups.reserve(index_type ? 1 : index_type_to_metas.size());
     for (const auto& [current_index_type, range_to_metas] : index_type_to_metas) {
         if (index_type && current_index_type != index_type.value()) {
             continue;
@@ -230,14 +281,20 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::Cre
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<GlobalIndexer> indexer,
                                GlobalIndexerFactory::Get(current_index_type, options_.ToMap()));
         if (!indexer) {
+            if (purpose == ReaderPurpose::VECTOR &&
+                (current_index_type == "lumina" || current_index_type == "lumina-vector-ann")) {
+                return Status::NotImplemented(
+                    "cannot search the lumina index without its global indexer");
+            }
             continue;
         }
-        std::vector<std::shared_ptr<GlobalIndexReader>> union_readers;
-        std::vector<Range> row_ranges;
-        std::vector<std::optional<Range>> search_ranges;
-        union_readers.reserve(range_to_metas.size());
-        row_ranges.reserve(range_to_metas.size());
-        search_ranges.reserve(range_to_metas.size());
+        if ((purpose == ReaderPurpose::VECTOR && !indexer->SupportsVectorSearch()) ||
+            (purpose == ReaderPurpose::SCALAR_FILTER &&
+             (indexer->SupportsFullTextSearch() || indexer->SupportsVectorSearch()))) {
+            continue;
+        }
+        std::vector<ReaderGroup::Shard> shards;
+        shards.reserve(range_to_metas.size());
         // Assign each full-text row to one reader before requesting per-reader top-k: a row is
         // ranked by the first range in (from, to) order that covers it, which leaves each range
         // only its rows after the largest `to` of earlier ones.
@@ -251,6 +308,10 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::Cre
             if (row_range_index && !row_range_index->Intersects(range.from, range.to)) {
                 continue;
             }
+            auto index_io_metas = ToGlobalIndexIOMetas(metas, purpose);
+            if (index_io_metas.empty()) {
+                continue;
+            }
             std::optional<std::vector<Range>> local_row_ranges;
             if (row_range_index) {
                 std::vector<Range> intersected_ranges =
@@ -262,64 +323,56 @@ Result<std::vector<std::shared_ptr<GlobalIndexReader>>> GlobalIndexScanImpl::Cre
                                                    intersected_range.to - range.from);
                 }
             }
-            auto arrow_field = DataField::ConvertDataFieldToArrowField(field);
-            auto arrow_schema = arrow::schema({arrow_field});
-
-            ArrowSchema c_arrow_schema;
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*arrow_schema, &c_arrow_schema));
-            auto index_io_metas = ToGlobalIndexIOMetas(metas);
-            ScopeGuard guard([&]() { ArrowSchemaRelease(&c_arrow_schema); });
-            PAIMON_ASSIGN_OR_RAISE(
-                std::shared_ptr<GlobalIndexReader> index_reader,
-                indexer->CreateReader(&c_arrow_schema, index_file_manager_, index_io_metas,
-                                      range.Count(), local_row_ranges, pool_));
-            union_readers.push_back(std::make_shared<OffsetGlobalIndexReader>(
-                std::move(index_reader), range.from, range.to));
-            row_ranges.push_back(range);
-            search_ranges.push_back(search_range);
+            shards.push_back(
+                {range, search_range, std::move(index_io_metas), std::move(local_row_ranges)});
         }
-        if (union_readers.empty()) {
-            continue;
-        }
-        if (load_live_rows_) {
-            // As Java `AbstractDataEvolutionVectorRead#preFilters` does, load only the live rows of
-            // the indexed row ranges, so Data Evolution tables skip the deletion vectors of other
-            // data files.
-            PAIMON_ASSIGN_OR_RAISE(RowRangeIndex indexed_row_ranges,
-                                   RowRangeIndex::Create(row_ranges));
-            LiveRowGlobalIndexReader::LiveRowsSupplier live_rows_supplier =
-                LiveRowGlobalIndexReader::CacheLiveRows(
-                    [load_live_rows = load_live_rows_, indexed_row_ranges]() {
-                        return load_live_rows(indexed_row_ranges);
-                    });
-            readers.push_back(LiveRowGlobalIndexReader::CreateUnion(
-                std::move(union_readers), std::move(row_ranges), std::move(search_ranges),
-                executor_, live_rows_supplier));
-        } else {
-            readers.push_back(std::make_shared<UnionGlobalIndexReader>(
-                std::move(union_readers), std::move(row_ranges), std::move(search_ranges),
-                executor_));
+        if (!shards.empty()) {
+            groups.push_back({std::move(indexer), std::move(shards)});
         }
     }
-    return readers;
+    return groups;
+}
+
+Result<LiveRowGlobalIndexReader::LiveRowsSupplier> GlobalIndexScanImpl::CreateLiveRowsSupplier(
+    const std::vector<Range>& shard_ranges) const {
+    if (!load_live_rows_ || shard_ranges.empty()) {
+        return LiveRowGlobalIndexReader::LiveRowsSupplier();
+    }
+    PAIMON_ASSIGN_OR_RAISE(RowRangeIndex row_range_index, RowRangeIndex::Create(shard_ranges));
+    return LiveRowGlobalIndexReader::CacheLiveRows(
+        [load_live_rows = load_live_rows_, row_range_index = std::move(row_range_index)]() {
+            return load_live_rows(row_range_index);
+        });
+}
+
+Result<std::shared_ptr<GlobalIndexReader>> GlobalIndexScanImpl::OpenShardReader(
+    const DataField& field, const GlobalIndexer& indexer, const Range& range,
+    const std::vector<GlobalIndexIOMeta>& files,
+    const std::optional<std::vector<Range>>& local_row_ranges) const {
+    auto arrow_schema = arrow::schema({DataField::ConvertDataFieldToArrowField(field)});
+    ArrowSchema c_arrow_schema;
+    PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*arrow_schema, &c_arrow_schema));
+    ScopeGuard guard([&]() { ArrowSchemaRelease(&c_arrow_schema); });
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexReader> reader,
+                           indexer.CreateReader(&c_arrow_schema, index_file_manager_, files,
+                                                range.Count(), local_row_ranges, pool_));
+    return std::make_shared<OffsetGlobalIndexReader>(std::move(reader), range.from, range.to);
 }
 
 std::vector<GlobalIndexIOMeta> GlobalIndexScanImpl::ToGlobalIndexIOMetas(
-    const std::vector<std::shared_ptr<IndexFileMeta>>& metas) const {
+    const std::vector<std::shared_ptr<IndexFileMeta>>& metas, ReaderPurpose purpose) const {
     std::vector<GlobalIndexIOMeta> index_io_metas;
     index_io_metas.reserve(metas.size());
     for (const auto& meta : metas) {
-        index_io_metas.push_back(ToGlobalIndexIOMeta(meta));
+        const auto& global = meta->GetGlobalIndexMeta().value();
+        if (purpose == ReaderPurpose::SCALAR_FILTER && global.extra_field_ids &&
+            !global.extra_field_ids->empty()) {
+            continue;
+        }
+        index_io_metas.emplace_back(index_file_manager_->ToPath(meta), meta->FileSize(),
+                                    meta->RowCount(), global.index_meta);
     }
     return index_io_metas;
-}
-
-GlobalIndexIOMeta GlobalIndexScanImpl::ToGlobalIndexIOMeta(
-    const std::shared_ptr<IndexFileMeta>& index_meta) const {
-    assert(index_meta->GetGlobalIndexMeta());
-    const auto& global_index_meta = index_meta->GetGlobalIndexMeta().value();
-    return {index_file_manager_->ToPath(index_meta), index_meta->FileSize(), index_meta->RowCount(),
-            global_index_meta.index_meta};
 }
 
 Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexScanImpl::Scan(
@@ -329,13 +382,45 @@ Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexScanImpl::Scan(
     return evaluator->Evaluate(predicate);
 }
 
+Result<std::vector<GlobalIndexScanImpl::VectorIndexShard>> GlobalIndexScanImpl::PlanVectorShards(
+    const DataField& field) const {
+    PAIMON_ASSIGN_OR_RAISE(
+        std::vector<ReaderGroup> groups,
+        PlanReaderGroups(field, std::nullopt, std::nullopt, ReaderPurpose::VECTOR));
+    std::vector<VectorIndexShard> shards;
+    for (auto& group : groups) {
+        std::shared_ptr<const GlobalIndexer> indexer(std::move(group.indexer));
+        for (auto& shard : group.shards) {
+            shards.push_back({shard.range, std::move(shard.files), indexer});
+        }
+    }
+    return shards;
+}
+
+Result<std::shared_ptr<GlobalIndexReader>> GlobalIndexScanImpl::OpenVectorReader(
+    const DataField& field, const VectorIndexShard& shard,
+    const LiveRowGlobalIndexReader::LiveRowsSupplier& live_rows) const {
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<GlobalIndexReader> reader,
+        OpenShardReader(field, *shard.indexer, shard.range, shard.files, std::nullopt));
+    if (live_rows) {
+        return std::make_shared<LiveRowGlobalIndexReader>(std::move(reader), shard.range,
+                                                          live_rows);
+    }
+    return reader;
+}
+
 Result<std::optional<GlobalIndexEvaluatorImpl::Evaluation>> GlobalIndexScanImpl::ScanWithCoverage(
-    const std::shared_ptr<Predicate>& predicate) const {
+    const std::shared_ptr<Predicate>& predicate,
+    const std::optional<RowRangeIndex>& row_ranges) const {
     GlobalIndexEvaluatorImpl evaluator(
         table_schema_,
-        [this](int32_t field_id) -> Result<std::vector<std::shared_ptr<GlobalIndexReader>>> {
-            PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<GlobalIndexReader>> readers,
-                                   CreateReaders(field_id, /*row_range_index=*/std::nullopt));
+        [this,
+         &row_ranges](int32_t field_id) -> Result<std::vector<std::shared_ptr<GlobalIndexReader>>> {
+            PAIMON_ASSIGN_OR_RAISE(DataField field, table_schema_->GetField(field_id));
+            PAIMON_ASSIGN_OR_RAISE(
+                std::vector<std::shared_ptr<GlobalIndexReader>> readers,
+                CreateReaders(field, std::nullopt, row_ranges, ReaderPurpose::SCALAR_FILTER));
             if (readers.size() <= 1) {
                 return readers;
             }

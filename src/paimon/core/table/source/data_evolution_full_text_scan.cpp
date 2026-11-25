@@ -306,7 +306,7 @@ Result<std::shared_ptr<FullTextScan::Plan>> DataEvolutionFullTextScan::CreatePla
                 full_text_index_files.push_back(entry.index_file);
             }
         }
-        if (indexer &&
+        if (indexer && !indexer->SupportsVectorSearch() &&
             IsScalarPreFilterFile(meta, filter_field_ids, indexer->SupportsFullTextSearch())) {
             scalar_index_files.push_back(entry.index_file);
         }

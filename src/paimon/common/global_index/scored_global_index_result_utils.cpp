@@ -28,17 +28,15 @@
 #include "paimon/utils/roaring_bitmap64.h"
 
 namespace paimon {
-namespace {
-/// Returns whether `left` ranks before `right`: a higher score first, then a lower row id. Scores
-/// are ordered as -infinity < -0.0 < +0.0 < +infinity < NaN.
-bool RanksBefore(const std::pair<int64_t, float>& left, const std::pair<int64_t, float>& right) {
+
+bool ScoredGlobalIndexResultUtils::RanksBefore(const std::pair<int64_t, float>& left,
+                                               const std::pair<int64_t, float>& right) {
     int32_t score_order = FieldsComparator::CompareFloatingPoint(left.second, right.second);
     if (score_order != 0) {
         return score_order > 0;
     }
     return left.first < right.first;
 }
-}  // namespace
 
 Result<std::shared_ptr<ScoredGlobalIndexResult>> ScoredGlobalIndexResultUtils::MergeTopK(
     const std::vector<std::shared_ptr<ScoredGlobalIndexResult>>& results, int32_t limit) {
@@ -57,10 +55,14 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> ScoredGlobalIndexResultUtils::M
             }
         }
     }
-    auto top_k = static_cast<size_t>(limit);
-    if (rows.size() > top_k) {
-        std::nth_element(rows.begin(), rows.begin() + top_k, rows.end(), RanksBefore);
-        rows.resize(top_k);
+    return FromRows(std::move(rows), limit);
+}
+
+std::shared_ptr<ScoredGlobalIndexResult> ScoredGlobalIndexResultUtils::FromRows(
+    std::vector<std::pair<int64_t, float>> rows, size_t limit) {
+    if (rows.size() > limit) {
+        std::nth_element(rows.begin(), rows.begin() + limit, rows.end(), RanksBefore);
+        rows.resize(limit);
     }
     std::sort(rows.begin(), rows.end());
     RoaringBitmap64 bitmap;

@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -50,13 +51,15 @@ class FilteredRowIdReader {
     /// @param snapshot_id      The planned snapshot, which a tag may retain after expiry.
     /// @param executor         Executor to read data on.
     /// @param pool             Memory pool for reading data.
+    /// @param planned_snapshot Snapshot metadata already resolved by the search, if available.
     FilteredRowIdReader(const std::string& root_path,
                         const std::shared_ptr<TableSchema>& table_schema,
                         const CoreOptions& options,
                         const std::shared_ptr<PredicateFilter>& partition_filter,
                         const std::shared_ptr<Predicate>& filter, int64_t snapshot_id,
                         const std::shared_ptr<Executor>& executor,
-                        const std::shared_ptr<MemoryPool>& pool);
+                        const std::shared_ptr<MemoryPool>& pool,
+                        std::optional<Snapshot> planned_snapshot = std::nullopt);
 
     /// Returns whether an evaluation of `filter` that `contributing_field_ids` decided is an exact
     /// match set. The global index contract only promises candidates: an evaluation drops a
@@ -66,13 +69,18 @@ class FilteredRowIdReader {
                                 const std::shared_ptr<Predicate>& filter,
                                 const std::set<int32_t>& contributing_field_ids);
 
+    /// Checks scalar index candidates against table data or excludes them when refinement is off.
+    Result<RoaringBitmap64> RefineCandidates(RoaringBitmap64 candidates,
+                                             bool refine_from_data) const;
+
     /// Returns the subset of `rows` whose data satisfies the filter.
     Result<RoaringBitmap64> MatchingRowIds(RoaringBitmap64 rows) const;
     Result<RoaringBitmap64> MatchingRowIds(const RowRangeIndex& row_ranges) const;
 
-    /// Loads the planned snapshot, including a copy retained by a tag on the same branch.
-    static Result<Snapshot> LoadSnapshot(const CoreOptions& options, const std::string& root_path,
-                                         int64_t snapshot_id);
+    /// Returns the supplied snapshot, or reloads it from the branch or a retaining tag.
+    static Result<Snapshot> LoadSnapshot(
+        const CoreOptions& options, const std::string& root_path, int64_t snapshot_id,
+        const std::optional<Snapshot>& planned_snapshot = std::nullopt);
 
     using BatchConsumer =
         std::function<Status(const arrow::StructArray& batch, const arrow::Int64Array& row_ids)>;
@@ -99,6 +107,7 @@ class FilteredRowIdReader {
     int64_t snapshot_id_;
     std::shared_ptr<Executor> executor_;
     std::shared_ptr<MemoryPool> pool_;
+    std::optional<Snapshot> planned_snapshot_;
 };
 
 }  // namespace paimon
