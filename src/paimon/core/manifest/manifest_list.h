@@ -88,10 +88,10 @@ class ManifestList : public ObjectsFile<ManifestFileMeta> {
     /// @param snapshot The input snapshot.
     /// @param manifests The vector to store the manifest file metadata.
     /// @return Status indicating whether the operation was successful or not.
-    Status ReadBaseManifests(const Snapshot& snapshot,
-                             std::vector<ManifestFileMeta>* manifests) const {
+    Status ReadBaseManifests(const Snapshot& snapshot, std::vector<ManifestFileMeta>* manifests,
+                             ManifestRowLimit* row_limit = nullptr) const {
         return Read(snapshot.BaseManifestList(), /*filter=*/nullptr,
-                    snapshot.BaseManifestListSize(), manifests);
+                    snapshot.BaseManifestListSize(), manifests, row_limit);
     }
 
     /// Return a `ManifestFileMeta` for each delta manifest in this snapshot.
@@ -99,10 +99,10 @@ class ManifestList : public ObjectsFile<ManifestFileMeta> {
     /// @param snapshot The input snapshot.
     /// @param manifests The vector to store the manifest file metadata.
     /// @return Status indicating whether the operation was successful or not.
-    Status ReadDeltaManifests(const Snapshot& snapshot,
-                              std::vector<ManifestFileMeta>* manifests) const {
+    Status ReadDeltaManifests(const Snapshot& snapshot, std::vector<ManifestFileMeta>* manifests,
+                              ManifestRowLimit* row_limit = nullptr) const {
         return Read(snapshot.DeltaManifestList(), /*filter=*/nullptr,
-                    snapshot.DeltaManifestListSize(), manifests);
+                    snapshot.DeltaManifestListSize(), manifests, row_limit);
     }
 
     /// Return a `ManifestFileMeta` for each changelog manifest in this snapshot.

@@ -67,6 +67,34 @@ TEST(TableScanTest, TestNoSnapshot) {
     ASSERT_OK_AND_ASSIGN(auto plan, table_scan->CreatePlan());
     ASSERT_FALSE(plan->SnapshotId());
     ASSERT_TRUE(plan->Splits().empty());
+
+    builder.AddOption("manifest.format", "avro");
+    ASSERT_OK_AND_ASSIGN(context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(table_scan, TableScan::Create(std::move(context), {0, 0, 0}));
+    ASSERT_OK_AND_ASSIGN(plan, table_scan->CreatePlan());
+    EXPECT_FALSE(plan->SnapshotId());
+    EXPECT_TRUE(plan->Splits().empty());
+
+    builder.AddOption("manifest.format", "orc");
+    ASSERT_OK_AND_ASSIGN(context, builder.Finish());
+    auto unsupported = TableScan::Create(std::move(context), {0, 0, 0});
+    EXPECT_TRUE(unsupported.status().IsNotImplemented());
+}
+
+TEST(TableScanTest, ControlledScanRejectsDelegatedSystemTable) {
+    const std::string path =
+        GetDataDir() + "/orc/append_table_with_nested_type.db/append_table_with_nested_type$ro";
+    ScanContextBuilder builder(path);
+    builder.AddOption("manifest.format", "avro");
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> legacy, TableScan::Create(std::move(context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, legacy->CreatePlan());
+    EXPECT_TRUE(plan->Splits().empty());
+
+    builder.AddOption("manifest.format", "avro");
+    ASSERT_OK_AND_ASSIGN(context, builder.Finish());
+    auto controlled = TableScan::Create(std::move(context), {32, 32, 32});
+    EXPECT_TRUE(controlled.status().IsNotImplemented());
 }
 
 TEST(TableScanTest, TestNonExistTable) {

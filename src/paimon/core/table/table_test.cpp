@@ -1152,6 +1152,12 @@ TEST(TableTest, TestQueryAuthScanPushesTheLimitPastARowFilterOnPartitionKeys) {
     ASSERT_EQ(2u, plan->Splits().size());
     ASSERT_OK_AND_ASSIGN(plan, PlanQueryAuth(path, catalog, /*predicate=*/nullptr, /*limit=*/1));
     ASSERT_EQ(1u, plan->Splits().size());
+
+    ScanContextBuilder builder(path);
+    builder.WithCatalog(catalog, Identifier("foo", "bar"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context, builder.Finish());
+    const auto unsupported = TableScan::Create(std::move(context), {32, 32, 32});
+    EXPECT_TRUE(unsupported.status().IsNotImplemented());
 }
 
 TEST(TableTest, TestQueryAuthTableAppliesTheSameRulesToEachFileFormat) {

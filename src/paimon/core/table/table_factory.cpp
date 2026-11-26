@@ -37,6 +37,7 @@
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/table/file_store_table.h"
 #include "paimon/core/table/format/format_table_loader.h"
+#include "paimon/core/table/source/data_table_batch_scan.h"
 #include "paimon/core/table/system/system_table.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/context_utils.h"
@@ -373,6 +374,22 @@ Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext
     PAIMON_RETURN_NOT_OK(ContextUtils::CheckOperatorContext(context, "scan"));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table, TableFactory::Create(context.get()));
     return table->NewScan(std::move(context));
+}
+
+Result<std::unique_ptr<TableScan>> TableScan::Create(std::unique_ptr<ScanContext> context,
+                                                     const PlanningLimits& limits) {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Table> table, TableFactory::Create(context.get()));
+    // Some system tables delegate NewScan and return an ordinary managed batch scan.
+    if (dynamic_cast<const FileStoreTable*>(table.get()) == nullptr) {
+        return Status::NotImplemented("planning limits require a managed data table");
+    }
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableScan> scan, table->NewScan(std::move(context)));
+    auto* batch = dynamic_cast<DataTableBatchScan*>(scan.get());
+    if (!batch) {
+        return Status::NotImplemented("planning limits require an unwrapped managed batch scan");
+    }
+    PAIMON_RETURN_NOT_OK(batch->SetPlanningLimits(limits));
+    return scan;
 }
 
 Result<std::unique_ptr<TableRead>> TableRead::Create(std::unique_ptr<ReadContext> context) {

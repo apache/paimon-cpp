@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -40,6 +42,7 @@
 #include "paimon/common/utils/path_util.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/io/meta_to_arrow_array_converter.h"
+#include "paimon/core/table/source/planning_control.h"
 #include "paimon/core/utils/manifest_meta_reader.h"
 #include "paimon/core/utils/object_serializer.h"
 #include "paimon/core/utils/path_factory.h"
@@ -69,8 +72,11 @@ class ObjectsFile {
     ///                  skip the metadata request a bare `Open` issues on a remote store. Pass
     ///                  std::nullopt when the length is not known; the read then discovers it
     ///                  itself.
+    /// @param row_limit Optional cumulative count of objects admitted for decoding. The reader may
+    ///                 already hold a decoded Arrow batch when it checks this limit.
     Status Read(const std::string& file_name, const std::function<Result<bool>(const T&)>& filter,
-                std::optional<int64_t> file_size, std::vector<T>* result) const;
+                std::optional<int64_t> file_size, std::vector<T>* result,
+                ManifestRowLimit* row_limit = nullptr) const;
     Status ReadIfFileExist(const std::string& file_name,
                            const std::function<Result<bool>(const T&)>& filter,
                            std::optional<int64_t> file_size, std::vector<T>* result) const;
@@ -97,7 +103,8 @@ class ObjectsFile {
     Status ReadArrowBatches(
         const std::string& file_name, std::optional<int64_t> file_size,
         const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
-        const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const;
+        const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader,
+        bool allow_cache = true) const;
 
     std::shared_ptr<PathFactory> path_factory_;
     std::shared_ptr<MemoryPool> pool_;
@@ -165,10 +172,19 @@ Status ObjectsFile<T>::ReadIfFileExist(const std::string& file_name,
 template <typename T>
 Status ObjectsFile<T>::Read(const std::string& file_name,
                             const std::function<Result<bool>(const T&)>& filter,
-                            std::optional<int64_t> file_size, std::vector<T>* result) const {
+                            std::optional<int64_t> file_size, std::vector<T>* result,
+                            ManifestRowLimit* row_limit) const {
     return ReadArrowBatches(
         file_name, file_size,
-        [this, &filter, result](const std::shared_ptr<arrow::StructArray>& struct_array) -> Status {
+        [this, &filter, result,
+         row_limit](const std::shared_ptr<arrow::StructArray>& struct_array) -> Status {
+            if (row_limit) {
+                auto rows = static_cast<uint64_t>(struct_array->length());
+                if (rows > result->max_size() - result->size()) {
+                    return Status::CapacityError("manifest object row limit exceeded");
+                }
+                PAIMON_RETURN_NOT_OK(row_limit->Admit(static_cast<size_t>(rows)));
+            }
             result->reserve(result->size() + struct_array->length());
             const arrow::ArrayVector& fields = struct_array->fields();
             ColumnarRow row(fields, pool_, /*row_id=*/0);
@@ -186,7 +202,7 @@ Status ObjectsFile<T>::Read(const std::string& file_name,
             }
             return Status::OK();
         },
-        /*prepare_reader=*/nullptr);
+        /*prepare_reader=*/nullptr, /*allow_cache=*/!row_limit);
 }
 
 template <typename T>
@@ -313,9 +329,13 @@ template <typename T>
 Status ObjectsFile<T>::ReadArrowBatches(
     const std::string& file_name, std::optional<int64_t> file_size,
     const std::function<Status(const std::shared_ptr<arrow::StructArray>&)>& consumer,
-    const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader) const {
+    const std::function<Status(std::unique_ptr<FileBatchReader>*)>& prepare_reader,
+    bool allow_cache) const {
     if (!cache_) {
         return ReadUncachedArrowBatches(file_name, file_size, consumer, prepare_reader);
+    }
+    if (!allow_cache) {
+        return Status::NotImplemented("manifest planning controls require an uncached reader");
     }
     const std::string path = path_factory_->ToPath(file_name);
     auto key = CacheKey::ForKind(path, /*position=*/0, /*length=*/-1, CacheKind::MANIFEST);

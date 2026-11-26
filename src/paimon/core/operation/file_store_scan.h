@@ -19,6 +19,7 @@
 #pragma once
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -67,6 +68,7 @@ class InternalRow;
 class ManifestFile;
 class ManifestFileMeta;
 class ManifestList;
+class ManifestRowLimit;
 class MemoryPool;
 class Predicate;
 class ScanFilter;
@@ -75,6 +77,7 @@ class SimpleStatsEvolution;
 class SnapshotManager;
 class TableSchema;
 struct DataFileMeta;
+struct PlanningControl;
 
 /// Scan operation which produces a plan.
 class FileStoreScan {
@@ -110,6 +113,16 @@ class FileStoreScan {
         specified_snapshot_ = snapshot;
         return this;
     }
+
+    void WithPlanningControl(std::shared_ptr<PlanningControl> control) {
+        planning_control_ = std::move(control);
+    }
+
+    const std::shared_ptr<PlanningControl>& GetPlanningControl() const {
+        return planning_control_;
+    }
+
+    Status ValidateControlledScanProfile() const;
 
     const std::optional<Snapshot>& GetSpecifiedSnapshot() const {
         return specified_snapshot_;
@@ -322,7 +335,8 @@ class FileStoreScan {
     bool FilterManifestByRowRanges(const ManifestFileMeta& manifest) const;
 
     Status ReadManifestFileMeta(const ManifestFileMeta& manifest,
-                                std::vector<ManifestEntry>* entries) const;
+                                std::vector<ManifestEntry>* entries,
+                                ManifestRowLimit* row_limit = nullptr) const;
 
     /// If provided, predicate_failed must initially be false and outlive the synchronous callback.
     /// Only predicate evaluation errors set it; partition decoding errors leave it unchanged.
@@ -356,6 +370,7 @@ class FileStoreScan {
     std::function<bool(int32_t)> level_filter_;
     std::optional<Snapshot> specified_snapshot_;
     std::shared_ptr<Metrics> metrics_;
+    std::shared_ptr<PlanningControl> planning_control_;
     std::string table_path_;
     bool drop_stats_ = false;
 };

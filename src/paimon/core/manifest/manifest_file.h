@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -82,12 +83,13 @@ class ManifestFile : public ObjectsFile<ManifestEntry> {
     /// A null row_ranges or row_filter disables that selection. Unknown ranges are retained.
     /// Add and Delete entries use the same selection. The entry filter runs after decoding.
     /// The reader validates the entry version before inspecting row ranges or invoking the filter.
+    /// The optional row_limit limits the selected entries before materializing each object.
     Status ReadSelectedEntries(
         const std::string& file_name, std::optional<int64_t> file_size,
         const RowRangeIndex* row_ranges,
         const std::function<Result<bool>(const InternalRow&)>& row_filter,
         const std::function<Result<bool>(const ManifestEntry&)>& entry_filter,
-        std::vector<ManifestEntry>* entries) const;
+        std::vector<ManifestEntry>* entries, ManifestRowLimit* row_limit = nullptr) const;
 
  private:
     Status PrepareBucketRead(int32_t bucket, const std::optional<int32_t>& expected_total_buckets,

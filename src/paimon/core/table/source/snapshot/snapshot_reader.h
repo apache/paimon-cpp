@@ -48,6 +48,15 @@ struct DataFileMeta;
 
 class SnapshotReader {
  public:
+    Status SetPlanningControl(std::shared_ptr<PlanningControl> control) {
+        scan_->WithPlanningControl(std::move(control));
+        return scan_->ValidateControlledScanProfile();
+    }
+
+    const std::shared_ptr<PlanningControl>& GetPlanningControl() const {
+        return scan_->GetPlanningControl();
+    }
+
     SnapshotReader(const std::shared_ptr<FileStoreScan>& scan,
                    const std::shared_ptr<FileStorePathFactory>& path_factory,
                    std::unique_ptr<SplitGenerator>&& split_generator,
