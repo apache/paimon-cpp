@@ -46,9 +46,10 @@ whose query uses the same JSON DSL as ``FullTextSearch``. Do not modify a reques
 after passing it to a predicate or read context.
 
 Compose full-text and scalar predicates with the existing
-``PredicateBuilder::And`` and ``PredicateBuilder::Or`` factories. Every field
-referenced by this tree must appear in the read schema; field indices refer to
-positions in that schema. For example, the following constructs
+``PredicateBuilder::And`` and ``PredicateBuilder::Or`` factories. Referenced fields
+need not appear in the output projection; field indices refer to zero-based
+positions in the complete table schema. For example, for a table whose first two
+columns are ``body`` and ``price``, the following constructs
 ``body matches "apple" OR price < 10``:
 
 .. code-block:: cpp

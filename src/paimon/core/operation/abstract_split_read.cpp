@@ -72,6 +72,7 @@
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/status.h"
 #include "paimon/utils/roaring_bitmap32.h"
 
@@ -251,7 +252,12 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::ApplyIndexAndDvReade
             std::unique_ptr<FileIndexEvaluator> evaluator,
             FileIndexEvaluator::Create(data_schema, file_index_options, data_file_path_factory,
                                        file, options_.GetFileSystem(), /*cache=*/nullptr, pool_));
-        PAIMON_ASSIGN_OR_RAISE(file_index_result, evaluator->Evaluate(predicate));
+        // File indexes only cover the file fields, not virtual system fields.
+        PAIMON_ASSIGN_OR_RAISE(
+            std::shared_ptr<Predicate> index_predicate,
+            PredicateUtils::CreatePickedFieldFilter(
+                predicate, ObjectUtils::CreateIdentifierToIndexMap(data_schema->field_names())));
+        PAIMON_ASSIGN_OR_RAISE(file_index_result, evaluator->Evaluate(index_predicate));
         PAIMON_ASSIGN_OR_RAISE(bool is_remain, file_index_result->IsRemain());
         if (!is_remain) {
             return std::unique_ptr<FileBatchReader>();

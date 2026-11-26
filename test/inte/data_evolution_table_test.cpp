@@ -3078,6 +3078,15 @@ TEST_P(DataEvolutionTableTest, TestDataEvolutionPredicatePushDownBoundaries) {
                               /*row_ranges=*/{Range(0l, 4l)},
                               /*check_scan_plan_when_empty_result=*/true,
                               /*apply_predicate_to_scan=*/false));
+        // The indexed predicate column is an internal dependency when only row ids are requested.
+        expected_array = std::dynamic_pointer_cast<arrow::StructArray>(
+            arrow::ipc::internal::json::ArrayFromJSON(
+                arrow::struct_({SpecialFields::RowId().ArrowField()}), "[[4]]")
+                .ValueOrDie());
+        ASSERT_OK(ScanAndRead(table_path, {"_ROW_ID"}, expected_array, predicate,
+                              /*row_ranges=*/{Range(0l, 4l)},
+                              /*check_scan_plan_when_empty_result=*/true,
+                              /*apply_predicate_to_scan=*/false));
     }
 }
 

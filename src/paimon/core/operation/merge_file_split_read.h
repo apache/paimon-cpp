@@ -68,8 +68,8 @@ class MergeFunctionWrapper;
 /// If the class name below is enclosed in parentheses, it might be present in the read path;
 /// otherwise, it must be present in the read path.
 ///
-/// Readers Overview: (ConcatBatchReader across
-/// splits)->CompleteRowKindBatchReader->(PredicateBatchReader)
+/// Readers Overview: (ConcatBatchReader across splits)->(ProjectionBatchReader)
+/// ->CompleteRowKindBatchReader->(PredicateBatchReader)
 /// ->ConcatBatchReader across no overlapped
 /// files->KeyValueProjectionReader/AsyncKeyValueProjectionReader
 /// ->DropDeleteReader->SortMergeReader->ConcatKeyValueRecordReader->KeyValueDataFileRecordReader

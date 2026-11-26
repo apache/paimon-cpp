@@ -20,11 +20,13 @@
 #include "paimon/table/source/full_text_search_builder.h"
 
 #include <optional>
+#include <set>
 #include <utility>
 
 #include "fmt/format.h"
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/predicate/predicate_validator.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/path_util.h"
@@ -224,6 +226,13 @@ Result<SearchFilters> ResolveFilters(const std::vector<std::shared_ptr<Predicate
     if (PredicateUtils::ContainsFullTextMatch(filter)) {
         return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
     }
+    std::set<std::string> field_names;
+    if (filter) {
+        PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(filter, &field_names));
+    }
+    PAIMON_RETURN_NOT_OK(
+        SpecialFields::ValidatePredicateFieldNames(field_names, /*allowed_system_fields=*/{}));
+
     std::map<std::string, int32_t> partition_key_to_idx =
         ObjectUtils::CreateIdentifierToIndexMap(partition_keys);
     std::vector<std::shared_ptr<Predicate>> partition_conjuncts;
@@ -253,8 +262,7 @@ Result<SearchFilters> ResolveFilters(const std::vector<std::shared_ptr<Predicate
     }
     const auto& to_validate = validate_data_filter ? filter : search_filters.partition_predicate;
     if (to_validate) {
-        PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
-            schema, to_validate, /*validate_field_idx=*/false));
+        PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(schema, to_validate));
     }
     return search_filters;
 }

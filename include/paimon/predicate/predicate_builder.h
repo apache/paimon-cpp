@@ -35,6 +35,8 @@ enum class FieldType;
 ///
 /// PredicateBuilder provides static factory methods to create various types of predicates
 /// that can be used for filtering data in Paimon tables.
+/// For table queries, field_index is the zero-based position in the complete table schema,
+/// not a persistent field ID or a position in the output projection.
 class PAIMON_EXPORT PredicateBuilder {
  public:
     PredicateBuilder() = delete;
@@ -43,7 +45,7 @@ class PAIMON_EXPORT PredicateBuilder {
     /// Create a full-text predicate returning all matching rows without TopK truncation.
     /// The field must have STRING type and a full-text index.
     /// Project `_<field>_INDEX_SCORE` in the read schema to request score output.
-    /// @param field_index The index of the field in read schema (0-based).
+    /// @param field_index The index of the field in the complete table schema (0-based).
     /// @param match The full-text request, including the field name, JSON DSL query and
     /// optional eligible row ids.
     static Result<std::shared_ptr<Predicate>> FullTextMatch(
@@ -51,7 +53,7 @@ class PAIMON_EXPORT PredicateBuilder {
 
     /// Create an equality predicate (field == literal).
     ///
-    /// @param field_index The index of the field in read schema (0-based).
+    /// @param field_index The index of the field in the complete table schema (0-based).
     /// @param field_name The name of the field.
     /// @param field_type The data type of the field.
     /// @param literal The literal value to compare against.
@@ -113,7 +115,7 @@ class PAIMON_EXPORT PredicateBuilder {
     ///
     /// Tests whether the field value falls within the specified range (inclusive on both ends).
     ///
-    /// @param field_index The index of the field in read schema (0-based).
+    /// @param field_index The index of the field in the complete table schema (0-based).
     /// @param field_name The name of the field.
     /// @param field_type The data type of the field.
     /// @param included_lower_bound The lower bound of the range (inclusive).

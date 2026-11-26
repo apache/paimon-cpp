@@ -33,6 +33,7 @@
 #include "paimon/commit_context.h"
 #include "paimon/common/fs/resolving_file_system.h"
 #include "paimon/common/predicate/predicate_validator.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/binary_row_partition_computer.h"
@@ -90,6 +91,7 @@
 #include "paimon/file_store_write.h"
 #include "paimon/format/file_format.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/predicate/predicate_utils.h"
 #include "paimon/read_context.h"
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/result.h"
@@ -505,9 +507,25 @@ Result<std::unique_ptr<TableScan>> FileStoreTable::NewScan(
 
     auto arrow_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     if (context->GetScanFilters() && context->GetScanFilters()->GetPredicate()) {
+        const auto& predicate = context->GetScanFilters()->GetPredicate();
+        std::set<std::string> field_names;
+        PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(predicate, &field_names));
+        arrow::FieldVector allowed_system_fields;
+        if (core_options.RowTrackingEnabled()) {
+            allowed_system_fields.push_back(
+                DataField::ConvertDataFieldToArrowField(SpecialFields::RowId()));
+        }
+        if (core_options.RowTrackingEnabled() || core_options.KeyValueSequenceNumberEnabled()) {
+            allowed_system_fields.push_back(
+                DataField::ConvertDataFieldToArrowField(SpecialFields::SequenceNumber()));
+        }
+        PAIMON_RETURN_NOT_OK(
+            SpecialFields::ValidatePredicateFieldNames(field_names, allowed_system_fields));
+        arrow::FieldVector validation_fields = arrow_schema->fields();
+        validation_fields.insert(validation_fields.end(), allowed_system_fields.begin(),
+                                 allowed_system_fields.end());
         PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
-            *arrow_schema, context->GetScanFilters()->GetPredicate(),
-            /*validate_field_idx=*/false));
+            *arrow::schema(validation_fields), predicate));
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
                            file_store.NewPathFactory(arrow_schema, table_schema->PartitionKeys(),

@@ -85,8 +85,9 @@ is read past. A column the file does not hold is filled with nulls, which is how
 before a column was added is still read - unless the table declares that column ``NOT NULL``, when
 the file is refused instead, as Java's ``VectorizedParquetRecordReader`` refuses it. Only the
 columns a read actually asks a file for are held to the table's schema: a partition column is
-rebuilt from the directory name whether or not the file stores one of its own, and a column
-outside the projection is never read, which is how Java scopes the same checks.
+rebuilt from the directory name whether or not the file stores one of its own. The internal
+read schema includes both projected columns and predicate dependencies; columns needed only
+for a predicate are removed from the final output after filtering.
 
 ``FormatTable`` is the only format-table type in the public API. The classes behind it -
 ``FormatTableScan``, ``FormatTableRead``, ``FormatTableWrite``, ``FormatTableCommit``,

@@ -242,9 +242,7 @@ Status ManifestFile::PrepareBucketRead(int32_t bucket,
                  kVersionFieldIndex, version_name, FieldType::INT,
                  Literal(
                      checked_cast<ManifestEntrySerializer*>(serializer_.get())->GetVersion()))}));
-    if (!PredicateValidator::ValidatePredicateWithSchema(*file_schema, selector,
-                                                         /*validate_field_idx=*/true)
-             .ok()) {
+    if (!PredicateValidator::ValidatePredicateWithSchema(*file_schema, selector).ok()) {
         // An incompatible projection must fall back to ordinary schema evolution.
         return Status::OK();
     }

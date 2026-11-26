@@ -2309,6 +2309,28 @@ TEST_P(ReadInteTest, TestAppendReadWithPredicate) {
                                                                          &expected_array);
     ASSERT_TRUE(array_status.ok());
     ASSERT_TRUE(result_array->Equals(*expected_array));
+    // Neither the data predicate nor the partition predicate is in the output.
+    ReadContextBuilder projected_builder(path);
+    projected_builder.SetReadFieldNames({"f0"})
+        .SetPredicate(predicate)
+        .EnablePredicateFilter(true)
+        .SetReadAheadCacheEnabled(param.read_ahead_cache_enabled)
+        .EnablePrefetch(param.enable_prefetch)
+        .AddOption(Options::FILE_FORMAT, param.file_format)
+        .AddOption(Options::READ_BATCH_SIZE, "2")
+        .AddOption("test.enable-adaptive-prefetch-strategy",
+                   param.enable_adaptive_prefetch_strategy);
+    ASSERT_OK_AND_ASSIGN(read_context, projected_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(batch_reader, table_read->CreateReader(data_splits));
+    ASSERT_OK_AND_ASSIGN(result_array, ReadResultCollector::CollectResult(batch_reader.get()));
+    ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
+                    arrow::struct_({arrow::field("_VALUE_KIND", arrow::int8()),
+                                    arrow::field("f0", arrow::utf8())}),
+                    {R"([[0,"Emily"],[0,"Alex"],[0,"David"],[0,"Lily"],[0,"Lucy"],[0,"Paul"]])"},
+                    &expected_array)
+                    .ok());
+    ASSERT_TRUE(result_array->Equals(*expected_array));
     if (param.file_format == "orc") {
         // test metrics
         ASSERT_TRUE(read_metrics);
@@ -3723,6 +3745,28 @@ TEST_P(ReadInteTest, TestPkReadSnapshot6WithSchemaEvolutionWithPredicateFilter) 
 ])"},
                                                                          &expected_array);
     ASSERT_TRUE(array_status.ok());
+    ASSERT_TRUE(result_array->Equals(*expected_array)) << result_array->ToString();
+
+    // Merge and schema evolution must still evaluate unprojected partition/value fields.
+    ReadContextBuilder projected_builder(path);
+    projected_builder.SetReadFieldNames({"k"})
+        .SetPredicate(predicate)
+        .EnablePredicateFilter(true)
+        .SetReadAheadCacheEnabled(param.read_ahead_cache_enabled)
+        .EnablePrefetch(param.enable_prefetch)
+        .AddOption(Options::FILE_FORMAT, param.file_format)
+        .AddOption(Options::READ_BATCH_SIZE, "2")
+        .AddOption("test.enable-adaptive-prefetch-strategy",
+                   param.enable_adaptive_prefetch_strategy);
+    ASSERT_OK_AND_ASSIGN(read_context, projected_builder.Finish());
+    ASSERT_OK_AND_ASSIGN(table_read, TableRead::Create(std::move(read_context)));
+    ASSERT_OK_AND_ASSIGN(batch_reader, table_read->CreateReader(data_splits));
+    ASSERT_OK_AND_ASSIGN(result_array, ReadResultCollector::CollectResult(std::move(batch_reader)));
+    auto projected_type =
+        DataField::ConvertDataFieldsToArrowStructType({SpecialFields::ValueKind(), read_fields[1]});
+    ASSERT_TRUE(arrow::ipc::internal::json::ChunkedArrayFromJSON(
+                    projected_type, {R"([[0, "Paul"]])"}, &expected_array)
+                    .ok());
     ASSERT_TRUE(result_array->Equals(*expected_array)) << result_array->ToString();
 }
 

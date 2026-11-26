@@ -585,8 +585,7 @@ Result<std::shared_ptr<ScoredGlobalIndexResult>> DataEvolutionFullTextRead::Sear
     int64_t snapshot_id, const RowRangeIndex& raw_rows, const std::string& raw_index_type) const {
     if (filter_) {
         PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
-            *DataField::ConvertDataFieldsToArrowSchema(table_schema_->Fields()), filter_,
-            /*validate_field_idx=*/false));
+            *DataField::ConvertDataFieldsToArrowSchema(table_schema_->Fields()), filter_));
     }
     // Keep data reads on the caller: they can submit work to the same executor as the shards.
     PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap64> live_rows,

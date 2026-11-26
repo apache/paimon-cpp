@@ -57,7 +57,8 @@ std::unique_ptr<BatchReader> TopKBatchReader::ApplyTopkReaderIfNeeded(
             : ScoreOrder::DESCENDING;
     return std::make_unique<TopKBatchReader>(std::move(reader), score_name, score_order, limit,
                                              context.GetCoreOptions().GetReadBatchSize(),
-                                             context.GetReadSchema(), context.GetArrowMemoryPool());
+                                             context.GetReadSchemaPlan()->GetOutputSchema(),
+                                             context.GetArrowMemoryPool());
 }
 
 TopKBatchReader::TopKBatchReader(std::unique_ptr<BatchReader> reader,

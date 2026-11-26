@@ -276,6 +276,17 @@ std::optional<DataField> InternalReadContext::TryResolveSpecialFieldByName(
     return std::nullopt;
 }
 
+Result<std::shared_ptr<ReadSchemaPlan>> InternalReadContext::CreateReadSchemaPlan(
+    const std::shared_ptr<arrow::Schema>& source_schema,
+    const std::shared_ptr<arrow::Schema>& output_schema,
+    const std::shared_ptr<Predicate>& predicate) {
+    std::set<std::string> required_names;
+    if (predicate) {
+        PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(predicate, &required_names));
+    }
+    return ReadSchemaPlan::Create(source_schema, output_schema, required_names);
+}
+
 Result<std::unique_ptr<InternalReadContext>> InternalReadContext::Create(
     const std::shared_ptr<ReadContext>& context, const std::shared_ptr<TableSchema>& table_schema,
     const std::map<std::string, std::string>& options) {
@@ -391,35 +402,46 @@ Result<std::unique_ptr<InternalReadContext>> InternalReadContext::CreateFromCore
             "Precise file-index evaluation does not support _INDEX_SCORE; "
             "project _<field>_INDEX_SCORE instead");
     }
-    // validate predicate
+    auto source_schema = DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields());
     if (context->GetPredicate()) {
         std::set<std::string> field_names;
         PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(context->GetPredicate(), &field_names));
-        for (const auto& field_name : field_names) {
-            if (field_name == SpecialFields::IndexScore().Name() ||
-                SpecialFields::ParseIndexScoreFieldName(field_name)) {
-                return Status::Invalid(fmt::format(
-                    "Predicates on virtual index score column '{}' are not supported", field_name));
-            }
+        arrow::FieldVector allowed_system_fields;
+        if (core_options.RowTrackingEnabled()) {
+            allowed_system_fields.push_back(
+                DataField::ConvertDataFieldToArrowField(SpecialFields::RowId()));
         }
+        if (core_options.RowTrackingEnabled() || core_options.KeyValueSequenceNumberEnabled()) {
+            allowed_system_fields.push_back(
+                DataField::ConvertDataFieldToArrowField(SpecialFields::SequenceNumber()));
+        }
+        PAIMON_RETURN_NOT_OK(
+            SpecialFields::ValidatePredicateFieldNames(field_names, allowed_system_fields));
+        arrow::FieldVector validation_fields = source_schema->fields();
+        validation_fields.insert(validation_fields.end(), allowed_system_fields.begin(),
+                                 allowed_system_fields.end());
+        source_schema = arrow::schema(validation_fields);
         PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
-            *read_schema, context->GetPredicate(), /*validate_field_idx=*/true));
+            *source_schema, context->GetPredicate()));
     }
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<ReadSchemaPlan> schema_plan,
+        CreateReadSchemaPlan(source_schema, read_schema, context->GetPredicate()));
     if (!context->GetMemoryPool()) {
         return Status::Invalid("memory pool is null");
     }
     std::shared_ptr<arrow::MemoryPool> arrow_pool = GetArrowPool(context->GetMemoryPool());
-    auto internal_context = std::unique_ptr<InternalReadContext>(
-        new InternalReadContext(context, table_schema, read_schema, core_options, arrow_pool));
+    auto internal_context = std::unique_ptr<InternalReadContext>(new InternalReadContext(
+        context, table_schema, std::move(schema_plan), core_options, arrow_pool));
     PAIMON_RETURN_NOT_OK(internal_context->BindIndexScores());
     return internal_context;
 }
 
 Status InternalReadContext::BindIndexScores() {
     std::map<std::string, int32_t> projected_scores;
-    for (int32_t idx = 0; idx < read_schema_->num_fields(); ++idx) {
+    for (int32_t idx = 0; idx < GetReadSchema()->num_fields(); ++idx) {
         if (auto field_name =
-                SpecialFields::ParseIndexScoreFieldName(read_schema_->field(idx)->name())) {
+                SpecialFields::ParseIndexScoreFieldName(GetReadSchema()->field(idx)->name())) {
             projected_scores.emplace(*field_name, idx);
         }
     }
@@ -467,7 +489,7 @@ Status InternalReadContext::BindIndexScores() {
     for (const auto& [field_name, output_idx] : projected_scores) {
         if (index_score_bindings_.find(output_idx) == index_score_bindings_.end()) {
             return Status::Invalid(fmt::format("Index score field '{}' has no search source",
-                                               read_schema_->field(output_idx)->name()));
+                                               GetReadSchema()->field(output_idx)->name()));
         }
     }
     return Status::OK();
@@ -488,12 +510,12 @@ bool InternalReadContext::NeedsScores(const IndexScoreSource& source) const {
 
 InternalReadContext::InternalReadContext(const std::shared_ptr<ReadContext>& read_context,
                                          const std::shared_ptr<TableSchema>& table_schema,
-                                         const std::shared_ptr<arrow::Schema>& read_schema,
+                                         std::shared_ptr<ReadSchemaPlan> schema_plan,
                                          const CoreOptions& options,
                                          const std::shared_ptr<arrow::MemoryPool>& arrow_pool)
     : read_context_(read_context),
       table_schema_(table_schema),
-      read_schema_(read_schema),
+      schema_plan_(std::move(schema_plan)),
       arrow_pool_(arrow_pool),
       options_(options),
       fs_scheme_map_(read_context->GetFileSystemSchemeToIdentifierMap()) {}
@@ -507,9 +529,12 @@ Result<std::shared_ptr<InternalReadContext>> InternalReadContext::CreateWithSche
     }
     // Create a new InternalReadContext sharing all properties except read_schema.
     // The new read_schema is the minimal column set for COUNT(*).
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<ReadSchemaPlan> schema_plan,
+        CreateReadSchemaPlan(original->GetReadSchema(), new_read_schema, original->GetPredicate()));
     auto result = std::shared_ptr<InternalReadContext>(
-        new InternalReadContext(original->read_context_, original->table_schema_, new_read_schema,
-                                original->options_, original->arrow_pool_));
+        new InternalReadContext(original->read_context_, original->table_schema_,
+                                std::move(schema_plan), original->options_, original->arrow_pool_));
     result->path_ = original->path_;
     result->fs_scheme_map_ = original->fs_scheme_map_;
     return result;

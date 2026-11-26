@@ -21,12 +21,14 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 
 #include "arrow/type_fwd.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/string_utils.h"
+#include "paimon/status.h"
 #include "paimon/utils/special_field_ids.h"
 
 namespace paimon {
@@ -110,6 +112,27 @@ struct SpecialFields {
                field_name == RowKind().Name() || field_name == RowId().Name() ||
                field_name == IndexScore().Name() ||
                ParseIndexScoreFieldName(field_name).has_value();
+    }
+
+    /// Check user predicate names against the system fields supported by the scan/read entry.
+    static Status ValidatePredicateFieldNames(const std::set<std::string>& field_names,
+                                              const arrow::FieldVector& allowed_system_fields) {
+        for (const auto& name : field_names) {
+            if (!IsSystemField(name)) {
+                continue;
+            }
+            bool allowed = false;
+            for (const auto& field : allowed_system_fields) {
+                if (field->name() == name) {
+                    allowed = true;
+                    break;
+                }
+            }
+            if (!allowed) {
+                return Status::Invalid("Predicate on system field '", name, "' are not supported");
+            }
+        }
+        return Status::OK();
     }
 
     // TODO(xinyu.lxy): add a func to complete row-tracking fields

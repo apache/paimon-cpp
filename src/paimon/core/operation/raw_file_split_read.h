@@ -53,7 +53,8 @@ struct DeletionFile;
 /// otherwise, it must be present in the read path.
 ///
 /// Readers Overview: (TopKBatchReader) -> (ConcatBatchReader across splits)
-/// -> CompleteRowKindBatchReader -> (PredicateBatchReader) -> ConcatBatchReader across files
+/// -> (ProjectionBatchReader) -> CompleteRowKindBatchReader -> (PredicateBatchReader)
+/// -> ConcatBatchReader across files
 /// -> (CompleteIndexScoreFileBatchReader) -> FieldMappingReader
 /// -> (ApplyDeletionVectorBatchReader) -> (ApplyBitmapIndexBatchReader)
 /// -> (CompleteRowTrackingFieldsBatchReader) -> (ShreddingFileReader)

@@ -42,14 +42,13 @@ class Metrics;
 class Predicate;
 class QueryAuthSplit;
 
-/// Applies the column masks to each batch, each computed from the raw batch, and drops the columns
-/// only the rules needed, mirroring Java `TableQueryAuthResult.doAuth`. The masked columns, and
-/// the columns a predicate evaluated next reads, are output decoded.
+/// Applies the column masks to each batch, each computed from the raw batch, mirroring Java
+/// `TableQueryAuthResult.doAuth`. The masked columns, and the columns a predicate evaluated
+/// next reads, are output decoded.
 class QueryAuthBatchReader : public BatchReader {
  public:
     /// @param masks The masks to apply, keyed by the column they replace; a mask whose column is
     ///        not in a batch is not applied.
-    /// @param dropped_fields The columns removed from each batch after masking.
     /// @param decoded_fields The unmasked columns output no longer dictionary-encoded or large
     ///        strings; other unmasked columns are output as read unless `logical_type` decodes
     ///        them.
@@ -57,7 +56,7 @@ class QueryAuthBatchReader : public BatchReader {
     ///        logical schema so a row filter cannot leave unauthorized values in a dictionary.
     QueryAuthBatchReader(std::unique_ptr<BatchReader> reader,
                          std::map<std::string, std::shared_ptr<MaskTransform>> masks,
-                         std::set<std::string> dropped_fields, std::set<std::string> decoded_fields,
+                         std::set<std::string> decoded_fields,
                          std::shared_ptr<arrow::MemoryPool> arrow_pool,
                          std::shared_ptr<arrow::DataType> logical_type = nullptr);
 
@@ -79,7 +78,6 @@ class QueryAuthBatchReader : public BatchReader {
 
     std::unique_ptr<BatchReader> reader_;
     std::map<std::string, std::shared_ptr<MaskTransform>> masks_;
-    std::set<std::string> dropped_fields_;
     std::set<std::string> decoded_fields_;
     /// `decoded_fields_` and the columns `masks_` read.
     std::set<std::string> decode_inputs_;

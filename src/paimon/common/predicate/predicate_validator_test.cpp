@@ -32,25 +32,19 @@ class Schema;
 }  // namespace arrow
 
 namespace paimon::test {
-TEST(PredicateValidatorTest, TestFullTextMatchRequiresProjectedStringField) {
+TEST(PredicateValidatorTest, TestFullTextMatchRequiresStringField) {
     auto schema =
         arrow::schema({arrow::field("id", arrow::int32()), arrow::field("text", arrow::utf8())});
     auto match = std::make_shared<FullTextMatch>("text", R"({"match":{"query":"apple"}})");
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> text,
                          PredicateBuilder::FullTextMatch(1, match));
-    ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, text, true));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> wrong_index,
-                         PredicateBuilder::FullTextMatch(0, match));
-    ASSERT_NOK_WITH_MSG(
-        PredicateValidator::ValidatePredicateWithSchema(*schema, wrong_index, true),
-        "field text has field idx 1 in input schema, mismatch field idx 0 in predicate");
-    ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, wrong_index, false));
+    ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, text));
     auto missing = arrow::schema({arrow::field("id", arrow::int32())});
-    ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*missing, text, true),
+    ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*missing, text),
                         "field text does not exist in schema");
     auto numeric =
         arrow::schema({arrow::field("id", arrow::int32()), arrow::field("text", arrow::int32())});
-    ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*numeric, text, true),
+    ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*numeric, text),
                         "schema type int32 mismatches predicate field type STRING");
 }
 
@@ -68,10 +62,10 @@ TEST(PredicateValidatorTest, TestFullTextMatchAllowsOrAndRepeatedFields) {
     auto scalar = PredicateBuilder::Equal(0, "id", FieldType::INT, Literal(7));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> conjunction,
                          PredicateBuilder::And({apple, orange}));
-    ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, conjunction, true));
+    ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, conjunction));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> disjunction,
                          PredicateBuilder::Or({conjunction, scalar}));
-    ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, disjunction, true));
+    ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, disjunction));
 }
 
 TEST(PredicateValidatorTest, TestRejectEmptyInLiterals) {
@@ -83,12 +77,9 @@ TEST(PredicateValidatorTest, TestRejectEmptyInLiterals) {
                              PredicateBuilder::And({valid, predicate}));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> disjunction,
                              PredicateBuilder::Or({valid, conjunction}));
-        for (bool validate_field_idx : {false, true}) {
-            for (const auto& candidate : {predicate, conjunction, disjunction}) {
-                ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(
-                                        *schema, candidate, validate_field_idx),
-                                    "literals cannot be empty");
-            }
+        for (const auto& candidate : {predicate, conjunction, disjunction}) {
+            ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*schema, candidate),
+                                "literals cannot be empty");
         }
     }
 }
@@ -101,7 +92,7 @@ TEST(PredicateValidatorTest, TestAcceptNonEmptyInAndNullChecks) {
              PredicateBuilder::IsNull(0, "f0", FieldType::INT),
              PredicateBuilder::IsNotNull(0, "f0", FieldType::INT),
          }) {
-        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate, true));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate));
     }
 }
 
@@ -145,8 +136,7 @@ TEST(PredicateValidatorTest, TestValidateLiterals) {
                 PredicateBuilder::Equal(/*field_index=*/9, /*field_name=*/"f9", FieldType::BINARY,
                                         Literal(FieldType::BINARY, str.data(), str.size())),
             }));
-        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                                  /*validate_field_idx=*/true));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate));
     }
     {
         // f1 field type is FLOAT, literal type is BIGINT
@@ -163,8 +153,7 @@ TEST(PredicateValidatorTest, TestValidateLiterals) {
                                         Literal(true)),
             }));
         ASSERT_NOK_WITH_MSG(
-            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                            /*validate_field_idx=*/true),
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
             "field f1 has field type BIGINT in literal, mismatch field type FLOAT in predicate");
     }
     {
@@ -182,8 +171,7 @@ TEST(PredicateValidatorTest, TestValidateLiterals) {
                                         Literal(true)),
             }));
         ASSERT_NOK_WITH_MSG(
-            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                            /*validate_field_idx=*/true),
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
             "field f2 has field type BINARY in literal, mismatch field type STRING in predicate");
     }
     {
@@ -200,10 +188,8 @@ TEST(PredicateValidatorTest, TestValidateLiterals) {
                 PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3", FieldType::BOOLEAN,
                                         Literal(true)),
             }));
-        ASSERT_NOK_WITH_MSG(
-            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                            /*validate_field_idx=*/true),
-            "literal cannot be null in predicate, field name f2");
+        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
+                            "literal cannot be null in predicate, field name f2");
     }
 }
 
@@ -245,8 +231,7 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
                 PredicateBuilder::Equal(/*field_index=*/8, /*field_name=*/"f8", FieldType::TINYINT,
                                         Literal(static_cast<int8_t>(20))),
             }));
-        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                                  /*validate_field_idx=*/true));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate));
     }
     {
         // f2 schema type is DECIMAL(23,5), but the literal scale is 4.
@@ -270,63 +255,9 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
                                         Literal(true)),
             }));
         ASSERT_NOK_WITH_MSG(
-            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                            /*validate_field_idx=*/true),
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
             "decimal literal for field f2 has scale 4, expected 5; rescale the literal before "
             "building the predicate");
-    }
-    {
-        // predicate field idx mismatch
-        std::shared_ptr<arrow::Schema> schema = arrow::schema(arrow::FieldVector({
-            arrow::field("f0", arrow::int64()),
-            arrow::field("f1", arrow::float32()),
-            arrow::field("f2", arrow::utf8()),
-            arrow::field("f3", arrow::boolean()),
-        }));
-
-        ASSERT_OK_AND_ASSIGN(
-            auto predicate,
-            PredicateBuilder::And({
-                PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                        Literal(3l)),
-                PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f1", FieldType::FLOAT,
-                                        Literal(static_cast<float>(5.5))),
-                PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::STRING,
-                                        Literal(FieldType::STRING, str.data(), str.size())),
-                PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3", FieldType::BOOLEAN,
-                                        Literal(true)),
-            }));
-
-        ASSERT_NOK_WITH_MSG(
-            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                            /*validate_field_idx=*/true),
-            "field f1 has field idx 1 in input schema, mismatch "
-            "field idx 2 in predicate");
-    }
-    {
-        // predicate field idx mismatch, but not validate
-        std::shared_ptr<arrow::Schema> schema = arrow::schema(arrow::FieldVector({
-            arrow::field("f0", arrow::int64()),
-            arrow::field("f1", arrow::float32()),
-            arrow::field("f2", arrow::utf8()),
-            arrow::field("f3", arrow::boolean()),
-        }));
-
-        ASSERT_OK_AND_ASSIGN(
-            auto predicate,
-            PredicateBuilder::And({
-                PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT,
-                                        Literal(3l)),
-                PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f1", FieldType::FLOAT,
-                                        Literal(static_cast<float>(5.5))),
-                PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::STRING,
-                                        Literal(FieldType::STRING, str.data(), str.size())),
-                PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3", FieldType::BOOLEAN,
-                                        Literal(true)),
-            }));
-
-        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                                  /*validate_field_idx=*/false));
     }
     {
         // f0 is uint16
@@ -349,10 +280,8 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
                 PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3", FieldType::BOOLEAN,
                                         Literal(true)),
             }));
-        ASSERT_NOK_WITH_MSG(
-            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                            /*validate_field_idx=*/true),
-            "Invalid type uint16 for predicate");
+        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
+                            "Invalid type uint16 for predicate");
     }
     {
         // f2 schema type is DOUBLE, predicate type is STRING
@@ -375,10 +304,8 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
                 PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3", FieldType::BOOLEAN,
                                         Literal(true)),
             }));
-        ASSERT_NOK_WITH_MSG(
-            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                            /*validate_field_idx=*/true),
-            "schema type double mismatches predicate field type STRING");
+        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
+                            "schema type double mismatches predicate field type STRING");
     }
     {
         // f2 schema type is BINARY, predicate type is STRING
@@ -401,10 +328,8 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
                 PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3", FieldType::BOOLEAN,
                                         Literal(true)),
             }));
-        ASSERT_NOK_WITH_MSG(
-            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                            /*validate_field_idx=*/true),
-            "schema type binary mismatches predicate field type STRING");
+        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
+                            "schema type binary mismatches predicate field type STRING");
     }
     {
         // f2 in predicate does not exist in schema
@@ -427,10 +352,8 @@ TEST(PredicateValidatorTest, TestValidateSchema) {
                                         Literal(true)),
             }));
 
-        ASSERT_NOK_WITH_MSG(
-            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                            /*validate_field_idx=*/true),
-            "field f2 does not exist in schema");
+        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
+                            "field f2 does not exist in schema");
     }
 }
 
@@ -442,31 +365,27 @@ TEST(PredicateValidatorTest, TestValidateDecimalLiteral) {
         auto predicate =
             PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"amount", FieldType::DECIMAL,
                                     Literal(Decimal(10, 2, 12345)));
-        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                                  /*validate_field_idx=*/true));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate));
     }
     {
         // Literal precision metadata may be smaller than the field precision.
         auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"amount",
                                                  FieldType::DECIMAL, Literal(Decimal(9, 2, 12345)));
-        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                                  /*validate_field_idx=*/true));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate));
     }
     {
         // Literal precision metadata may be larger than the field precision if the value fits.
         auto predicate =
             PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"amount", FieldType::DECIMAL,
                                     Literal(Decimal(12, 2, 12345)));
-        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                                  /*validate_field_idx=*/true));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate));
     }
     {
         auto predicate =
             PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"amount", FieldType::DECIMAL,
                                     Literal(Decimal(10, 1, 12345)));
         ASSERT_NOK_WITH_MSG(
-            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                            /*validate_field_idx=*/true),
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
             "decimal literal for field amount has scale 1, expected 2; rescale the literal before "
             "building the predicate");
     }
@@ -475,8 +394,7 @@ TEST(PredicateValidatorTest, TestValidateDecimalLiteral) {
             /*field_index=*/0, /*field_name=*/"amount", FieldType::DECIMAL,
             {Literal(Decimal(10, 2, 12345)), Literal(Decimal(10, 3, 123450))});
         ASSERT_NOK_WITH_MSG(
-            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                            /*validate_field_idx=*/true),
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
             "decimal literal for field amount has scale 3, expected 2; rescale the literal before "
             "building the predicate");
     }
@@ -485,8 +403,7 @@ TEST(PredicateValidatorTest, TestValidateDecimalLiteral) {
             PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"amount", FieldType::DECIMAL,
                                     Literal(Decimal(10, 2, 10000000000LL)));
         ASSERT_NOK_WITH_MSG(
-            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                            /*validate_field_idx=*/true),
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
             "decimal literal 100000000.00 for field amount does not fit field type DECIMAL(10, "
             "2)");
     }
@@ -507,27 +424,23 @@ TEST(PredicateValidatorTest, TestValidateTime) {
                                            Literal(FieldType::TIME, 86399999)),
                 PredicateBuilder::IsNotNull(/*field_index=*/0, /*field_name=*/"t", FieldType::TIME),
             }));
-        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                                  /*validate_field_idx=*/true));
+        ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate));
     }
     for (int32_t value : {-1, 86400000}) {
         auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"t",
                                                  FieldType::TIME, Literal(FieldType::TIME, value));
         ASSERT_NOK_WITH_MSG(
-            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
-                                                            /*validate_field_idx=*/true),
+            PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
             "time literal " + std::to_string(value) + " for field t is out of range");
     }
     {
         auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"t",
                                                  FieldType::INT, Literal(1));
-        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(
-                                *schema, predicate, /*validate_field_idx=*/true),
+        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
                             "mismatches predicate field type INT");
         predicate = PredicateBuilder::Equal(/*field_index=*/1, /*field_name=*/"i", FieldType::TIME,
                                             Literal(FieldType::TIME, 1));
-        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(
-                                *schema, predicate, /*validate_field_idx=*/true),
+        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate),
                             "mismatches predicate field type TIME");
     }
     {
@@ -535,9 +448,9 @@ TEST(PredicateValidatorTest, TestValidateTime) {
             arrow::FieldVector({arrow::field("t", arrow::time32(arrow::TimeUnit::SECOND))}));
         auto predicate = PredicateBuilder::Equal(/*field_index=*/0, /*field_name=*/"t",
                                                  FieldType::TIME, Literal(FieldType::TIME, 1));
-        ASSERT_NOK_WITH_MSG(PredicateValidator::ValidatePredicateWithSchema(
-                                *seconds_schema, predicate, /*validate_field_idx=*/true),
-                            "TIME requires time32[ms]");
+        ASSERT_NOK_WITH_MSG(
+            PredicateValidator::ValidatePredicateWithSchema(*seconds_schema, predicate),
+            "TIME requires time32[ms]");
     }
 }
 }  // namespace paimon::test

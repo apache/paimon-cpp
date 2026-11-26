@@ -932,7 +932,8 @@ TEST_F(DataEvolutionFullTextReadTest, TestBuilderValidatesSettings) {
     std::unique_ptr<FullTextSearchBuilder> row_id_field = NewBuilder(3);
     row_id_field->WithFilter(PredicateBuilder::Equal(
         /*field_index=*/0, "_ROW_ID", FieldType::BIGINT, Literal(static_cast<int64_t>(1))));
-    ASSERT_NOK_WITH_MSG(row_id_field->NewFullTextScan(), "field _ROW_ID does not exist in schema");
+    ASSERT_NOK_WITH_MSG(row_id_field->NewFullTextScan(),
+                        "Predicate on system field '_ROW_ID' are not supported");
 
     std::unique_ptr<FullTextSearchBuilder> wrong_type = NewBuilder(3);
     wrong_type->WithFilter(PredicateBuilder::Equal(/*field_index=*/0, "id", FieldType::STRING,

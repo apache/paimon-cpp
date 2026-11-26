@@ -216,7 +216,8 @@ class PAIMON_EXPORT ScanContextBuilder {
     /// partition_filters is {{k1=1,k2=10}, {k1=2,k2=20}} => OR(AND(k1=1,k2=10), AND(k1=2,k2=20))
     ScanContextBuilder& SetPartitionFilter(
         const std::vector<std::map<std::string, std::string>>& partition_filters);
-    /// Set a predicate for filtering data.
+    /// Set a predicate for filtering data. Field indices are zero-based positions in the
+    /// complete table schema, independently of the requested output fields.
     ScanContextBuilder& SetPredicate(const std::shared_ptr<Predicate>& predicate);
     /// Set the columns the query reads. A table with `query-auth.enabled=true` asks its catalog
     /// for the rules of these columns plus those of the predicate and the partition filter; by

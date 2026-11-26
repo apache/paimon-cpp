@@ -49,6 +49,66 @@
 
 namespace paimon::test {
 
+TEST(InternalReadContext, SystemPredicatesResolveOnlyRequestedFields) {
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> table_schema,
+        TableSchema::Create(0, arrow::schema({arrow::field("id", arrow::int32())}), {}, {}, {}));
+    for (const auto& field : {SpecialFields::RowId(), SpecialFields::SequenceNumber()}) {
+        for (const auto& option :
+             {Options::ROW_TRACKING_ENABLED, Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED}) {
+            ReadContextBuilder builder("unused");
+            auto predicate = PredicateBuilder::GreaterThan(77, field.Name(), FieldType::BIGINT,
+                                                           Literal(int64_t{10}));
+            builder.SetReadFieldNames({"id"}).SetPredicate(predicate);
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+            ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, {}),
+                                "Predicate on system field");
+            const std::map<std::string, std::string> options = {{option, "true"}};
+            if (field.Name() == SpecialFields::RowId().Name() &&
+                option == Options::KEY_VALUE_SEQUENCE_NUMBER_ENABLED) {
+                ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, options),
+                                    "Predicate on system field");
+                continue;
+            }
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<InternalReadContext> internal,
+                                 InternalReadContext::Create(context, table_schema, options));
+            ASSERT_EQ(internal->GetTableSchema()->Fields().size(), 1);
+            ASSERT_EQ(internal->GetReadSchemaPlan()->GetOutputSchema()->field_names(),
+                      std::vector<std::string>{"id"});
+            ASSERT_EQ(internal->GetReadSchema()->field_names(),
+                      (std::vector<std::string>{"id", field.Name()}));
+            ASSERT_OK_AND_ASSIGN(
+                std::shared_ptr<InternalReadContext> count_context,
+                InternalReadContext::CreateWithSchema(
+                    internal, arrow::schema({arrow::field("id", arrow::int32())})));
+            ASSERT_EQ(count_context->GetReadSchema()->field_names(),
+                      (std::vector<std::string>{"id", field.Name()}));
+        }
+    }
+}
+
+TEST(InternalReadContext, ValidatesPredicateFieldsWithoutChangingProjection) {
+    auto schema = arrow::schema({arrow::field("id", arrow::int32())});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema,
+                         TableSchema::Create(0, schema, {}, {}, {}));
+    const auto& field = SpecialFields::ValueKind();
+    for (bool projected : {false, true}) {
+        ReadContextBuilder builder("unused");
+        builder.SetReadFieldNames(projected ? std::vector<std::string>{"id", field.Name()}
+                                            : std::vector<std::string>{"id"});
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> projection, builder.Finish());
+        ASSERT_OK(InternalReadContext::Create(projection, table_schema, {}));
+        auto leaf = PredicateBuilder::IsNotNull(77, field.Name(), FieldType::TINYINT);
+        ASSERT_OK_AND_ASSIGN(
+            std::shared_ptr<Predicate> predicate,
+            PredicateBuilder::Or({PredicateBuilder::IsNotNull(0, "id", FieldType::INT), leaf}));
+        builder.SetPredicate(predicate);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+        ASSERT_NOK_WITH_MSG(InternalReadContext::Create(context, table_schema, {}),
+                            "Predicate on system field");
+    }
+}
+
 TEST(InternalReadContext, TestReadWithUnspecifiedSchema) {
     // no read schema is specified, read all fields
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
@@ -488,7 +548,7 @@ TEST(InternalReadContext, TestPrimaryKeyVectorSearchRequiresDeletionVectors) {
                         "primary-key tables requires deletion vectors");
 }
 
-TEST(InternalReadContext, TestFullTextMatchValidatesProjection) {
+TEST(InternalReadContext, TestFullTextMatchValidatesTableSchema) {
     std::string path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09";
     SchemaManager schema_manager(std::make_shared<LocalFileSystem>(), path);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> table_schema, schema_manager.ReadSchema(0));
@@ -500,11 +560,7 @@ TEST(InternalReadContext, TestFullTextMatchValidatesProjection) {
     };
     const std::vector<TestCase> cases = {
         {0, "f0", {"f0"}, ""},
-        {0, "f0", {"f1"}, "field f0 does not exist in schema"},
-        {1,
-         "f0",
-         {"f0"},
-         "field f0 has field idx 0 in input schema, mismatch field idx 1 in predicate"},
+        {0, "f0", {"f1"}, ""},
         {0, "f1", {"f1"}, "schema type int32 mismatches predicate field type STRING"}};
     for (const auto& test_case : cases) {
         auto match =
@@ -794,9 +850,8 @@ TEST_F(InternalReadContextScoreTest, RejectsPredicatesOnFullTextMatchScores) {
         builder.EnablePreciseFileIndexEvaluate(true)
             .SetReadFieldNames({"F1", "_F1_INDEX_SCORE"})
             .SetPredicate(predicate);
-        ASSERT_NOK_WITH_MSG(
-            Create(&builder),
-            "Predicates on virtual index score column '_F1_INDEX_SCORE' are not supported");
+        ASSERT_NOK_WITH_MSG(Create(&builder),
+                            "Predicate on system field '_F1_INDEX_SCORE' are not supported");
     }
 }
 
@@ -813,17 +868,15 @@ TEST_F(InternalReadContextScoreTest, RejectsNestedPredicatesOnRootSearchScores) 
         .SetFullTextSearch(search)
         .SetReadFieldNames({"F1", "_F1_INDEX_SCORE"})
         .SetPredicate(predicate);
-    ASSERT_NOK_WITH_MSG(
-        Create(&builder),
-        "Predicates on virtual index score column '_F1_INDEX_SCORE' are not supported");
+    ASSERT_NOK_WITH_MSG(Create(&builder),
+                        "Predicate on system field '_F1_INDEX_SCORE' are not supported");
 }
 
 TEST_F(InternalReadContextScoreTest, RejectsPredicatesOnUnnamedIndexScores) {
     ReadContextBuilder builder("/tmp/unused-table-path");
     builder.SetPredicate(PredicateBuilder::IsNull(0, "_INDEX_SCORE", FieldType::FLOAT));
-    ASSERT_NOK_WITH_MSG(
-        Create(&builder),
-        "Predicates on virtual index score column '_INDEX_SCORE' are not supported");
+    ASSERT_NOK_WITH_MSG(Create(&builder),
+                        "Predicate on system field '_INDEX_SCORE' are not supported");
 }
 
 TEST_F(InternalReadContextScoreTest, RejectsMissingScoreSource) {
