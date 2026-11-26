@@ -31,6 +31,7 @@
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
 #include "paimon/common/file_index/bsi/bit_slice_index_roaring_bitmap.h"
+#include "paimon/common/file_index/truncated_value_reader.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/io/offset_input_stream.h"
 #include "paimon/common/memory/memory_segment_utils.h"
@@ -250,8 +251,13 @@ Result<std::shared_ptr<FileIndexReader>> BitSliceIndexBitmapFileIndex::CreateRea
                            GetValueMapper(arrow_type));
     PAIMON_ASSIGN_OR_RAISE(FieldType data_type,
                            FieldTypeUtils::ConvertToFieldType(arrow_type->id()));
-    return std::make_shared<BitSliceIndexBitmapFileIndexReader>(row_number, data_type, value_mapper,
-                                                                positive, negative);
+    auto reader = std::make_shared<BitSliceIndexBitmapFileIndexReader>(
+        row_number, data_type, value_mapper, positive, negative);
+    if (data_type == FieldType::TIMESTAMP &&
+        checked_pointer_cast<arrow::TimestampType>(arrow_type)->unit() == arrow::TimeUnit::NANO) {
+        return std::make_shared<TruncatedValueReader>(std::move(reader));
+    }
+    return reader;
 }
 
 // precondition, literal is not null

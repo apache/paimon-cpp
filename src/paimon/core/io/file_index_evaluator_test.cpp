@@ -455,8 +455,8 @@ TEST_F(FileIndexEvaluatorTest, TestTimestampType) {
         FileIndexEvaluator::Create(data_schema, core_options_.ToMap(), data_file_path_factory,
                                    data_file_meta, /*file_system=*/fs_, /*cache=*/nullptr, pool_));
     ASSERT_OK_AND_ASSIGN(auto file_index_result, evaluator->Evaluate(predicate));
-    // Timestamp comparisons are inexact, so defer to data filtering.
-    ASSERT_EQ(file_index_result, FileIndexResult::Remain());
+    // Intersect the inexact timestamp candidates before rechecking the data.
+    CheckResult(file_index_result, {0, 6});
     ASSERT_FALSE(file_index_result->IsExact());
 }
 
@@ -941,9 +941,10 @@ TEST_P(FileIndexSearchEvaluatorTest, TestScalarIndexesUseFirstExactResult) {
     ASSERT_TRUE(result->IsExact());
     ASSERT_TRUE(second->candidates.empty());
 
-    // Inexact results, including empty ones, must not narrow the next reader's scope.
+    // Prefer an exact result over earlier candidate supersets.
     second->result = make_bitmap_result(RoaringBitmap32::From({2, 3}), /*is_exact=*/true);
-    for (const RoaringBitmap32& rows : {RoaringBitmap32::From({0}), RoaringBitmap32()}) {
+    for (const RoaringBitmap32& rows :
+         {RoaringBitmap32::From({0, 2}), RoaringBitmap32::From({0, 1, 2})}) {
         first->result = make_bitmap_result(rows, /*is_exact=*/false);
         const size_t executions = second->candidates.size();
         ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, &candidates));
@@ -960,26 +961,45 @@ TEST_P(FileIndexSearchEvaluatorTest, TestScalarIndexesUseFirstExactResult) {
     ASSERT_TRUE(result->IsExact());
     ASSERT_EQ(second->candidates.back(), candidates);
 
-    // Without any exact result, return Remain and require rechecking the input scope.
+    // Without an exact result, intersect all candidate supersets.
     second->result = make_bitmap_result(RoaringBitmap32::From({2, 3}), /*is_exact=*/false);
     for (bool remain : {false, true}) {
         if (remain) {
             first->result = FileIndexResult::Remain();
         } else {
-            first->result = make_bitmap_result(RoaringBitmap32(), /*is_exact=*/false);
+            first->result = make_bitmap_result(RoaringBitmap32::From({0, 2}), /*is_exact=*/false);
         }
         for (const RoaringBitmap32* scope :
              std::vector<const RoaringBitmap32*>{&candidates, nullptr}) {
             ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, scope));
-            ASSERT_EQ(result, FileIndexResult::Remain());
+            if (remain && !scope) {
+                CheckResult(result, {2, 3});
+            } else {
+                CheckResult(result, {2});
+            }
             ASSERT_FALSE(result->IsExact());
             ASSERT_EQ(first->candidates.back(), second->candidates.back());
         }
     }
     second->result = FileIndexResult::Remain();
     ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, &candidates));
-    ASSERT_EQ(result, FileIndexResult::Remain());
+    CheckResult(result, {0, 1, 2});
     ASSERT_FALSE(result->IsExact());
+
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, nullptr));
+    ASSERT_EQ(result, FileIndexResult::Remain());
+
+    // An empty superset proves that there are no matches and stops later readers.
+    first->result = make_bitmap_result(RoaringBitmap32(), /*is_exact=*/false);
+    const size_t executions = second->candidates.size();
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, &candidates));
+    ASSERT_EQ(result, FileIndexResult::Skip());
+    ASSERT_EQ(second->candidates.size(), executions);
+
+    first->result = make_bitmap_result(RoaringBitmap32::From({0}), /*is_exact=*/false);
+    second->result = make_bitmap_result(RoaringBitmap32::From({2}), /*is_exact=*/false);
+    ASSERT_OK_AND_ASSIGN(result, evaluator->EvaluateLeaf(predicate, false, &candidates));
+    ASSERT_EQ(result, FileIndexResult::Skip());
 
     RoaringBitmap32 empty_candidates;
     const size_t first_executions = first->candidates.size();
@@ -1024,12 +1044,13 @@ TEST_P(FileIndexSearchEvaluatorTest, TestPreservesReaderResultAndExactness) {
             for (const auto& leaf : {scalar, full_text}) {
                 ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> result,
                                      evaluator->EvaluateLeaf(leaf, false, nullptr));
-                if (leaf == scalar && !is_exact) {
-                    ASSERT_EQ(result, FileIndexResult::Remain());
+                if (leaf == scalar && !is_exact && empty) {
+                    ASSERT_EQ(result, FileIndexResult::Skip());
+                    ASSERT_TRUE(result->IsExact());
                 } else {
                     ASSERT_EQ(result, state->result);
+                    ASSERT_EQ(result->IsExact(), is_exact);
                 }
-                ASSERT_EQ(result->IsExact(), is_exact);
             }
             std::vector<float> scores =
                 empty ? std::vector<float>() : std::vector<float>({0.5f, 0.9f});

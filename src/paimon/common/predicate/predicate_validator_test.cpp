@@ -492,6 +492,51 @@ TEST(PredicateValidatorTest, TestValidateDecimalLiteral) {
     }
 }
 
+TEST(PredicateValidatorTest, TestValidateTimestampPrecision) {
+    struct TestCase {
+        arrow::TimeUnit::type unit;
+        std::vector<Timestamp> valid;
+        std::vector<Timestamp> invalid;
+    };
+    const std::vector<TestCase> cases = {
+        {arrow::TimeUnit::SECOND,
+         {Timestamp(0, 0), Timestamp(1000, 0), Timestamp(-1000, 0)},
+         {Timestamp(1, 0), Timestamp(-1, 0), Timestamp(1000, 1)}},
+        {arrow::TimeUnit::MILLI,
+         {Timestamp(1, 0), Timestamp(-1, 0)},
+         {Timestamp(1, 1000), Timestamp(-1, 999999)}},
+        {arrow::TimeUnit::MICRO,
+         {Timestamp(1, 1000), Timestamp(-1, 999000)},
+         {Timestamp(1, 1), Timestamp(-1, 999999)}},
+        {arrow::TimeUnit::NANO, {Timestamp(1, 1), Timestamp(-1, 999999)}, {}},
+    };
+    for (const auto& test_case : cases) {
+        for (const std::string& timezone : {std::string(), std::string("UTC")}) {
+            auto schema =
+                arrow::schema({arrow::field("ts", arrow::timestamp(test_case.unit, timezone))});
+            auto is_null = PredicateBuilder::IsNull(0, "ts", FieldType::TIMESTAMP);
+            ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, is_null,
+                                                                      /*validate_field_idx=*/true));
+            for (const Timestamp& timestamp : test_case.valid) {
+                auto predicate =
+                    PredicateBuilder::Equal(0, "ts", FieldType::TIMESTAMP, Literal(timestamp));
+                ASSERT_OK(PredicateValidator::ValidatePredicateWithSchema(
+                    *schema, predicate, /*validate_field_idx=*/true));
+            }
+            for (const Timestamp& timestamp : test_case.invalid) {
+                // Check every IN literal, including predicates nested in a compound.
+                auto in = PredicateBuilder::In(0, "ts", FieldType::TIMESTAMP,
+                                               {Literal(Timestamp(0, 0)), Literal(timestamp)});
+                ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::Or({is_null, in}));
+                ASSERT_NOK_WITH_MSG(
+                    PredicateValidator::ValidatePredicateWithSchema(*schema, predicate,
+                                                                    /*validate_field_idx=*/true),
+                    "timestamp literal for field ts cannot be represented without precision loss");
+            }
+        }
+    }
+}
+
 TEST(PredicateValidatorTest, TestValidateTime) {
     std::shared_ptr<arrow::Schema> schema = arrow::schema(arrow::FieldVector({
         arrow::field("t", arrow::time32(arrow::TimeUnit::MILLI)),

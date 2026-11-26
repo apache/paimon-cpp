@@ -29,7 +29,8 @@ namespace paimon {
 /// An index result within one source, read view and candidate scope.
 /// Implementations are provided for RoaringBitmap32 and RoaringBitmap64.
 /// Bitmap constrains And/Or to compatible result types; this base class stores no bitmap.
-/// Exact results contain all and only matching rows. Inexact results may omit matches.
+/// Scalar predicate results never omit matches: exact results contain only matching rows,
+/// while inexact results may contain false positives. This does not guarantee search recall.
 template <typename Bitmap>
 class PAIMON_EXPORT IndexResult : public std::enable_shared_from_this<IndexResult<Bitmap>> {
  public:

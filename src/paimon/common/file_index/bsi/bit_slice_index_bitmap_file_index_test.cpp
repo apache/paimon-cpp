@@ -351,7 +351,7 @@ TEST_F(BitSliceIndexBitmapIndexReaderTest, TestPrimitiveType) {
     check_result(arrow::int32(), Literal(static_cast<int32_t>(1)));
     check_result(arrow::date32(), Literal(FieldType::DATE, 1));
     check_result(arrow::int64(), Literal(static_cast<int64_t>(1)));
-    check_result(arrow::timestamp(arrow::TimeUnit::NANO), Literal(Timestamp(0, 1000)));
+    check_result(arrow::timestamp(arrow::TimeUnit::MICRO), Literal(Timestamp(0, 1000)));
 }
 
 TEST_F(BitSliceIndexBitmapIndexReaderTest, TestTimestampType) {
@@ -447,37 +447,10 @@ TEST_F(BitSliceIndexBitmapIndexReaderTest, TestTimestampType) {
           reader->VisitGreaterThan(timestamp), reader->VisitGreaterOrEqual(timestamp),
           reader->VisitLessThan(timestamp), reader->VisitLessOrEqual(timestamp)}) {
         ASSERT_OK(result);
-        ASSERT_FALSE(result.value()->IsExact());
+        ASSERT_EQ(result.value(), FileIndexResult::Remain());
     }
     CheckResult(reader->VisitIsNotNull().value(), {0, 1, 2, 3, 4, 6, 7});
     ASSERT_TRUE(reader->VisitIsNotNull().value()->IsExact());
-    // as timestamp is normalized by micro seconds, there is a loss of precision in the nanosecond
-    // part
-    CheckResult(reader->VisitGreaterThan(Literal(Timestamp(1745542802000l, 123000))).value(), {1});
-    CheckResult(reader->VisitGreaterOrEqual(Literal(Timestamp(1745542802000l, 123000))).value(),
-                {0, 1, 6});
-    CheckResult(reader->VisitLessThan(Literal(Timestamp(-1745, 123000))).value(), {4});
-    CheckResult(reader->VisitLessOrEqual(Literal(Timestamp(0, 123000))).value(), {3, 4, 7});
-    CheckResult(reader->VisitEqual(Literal(Timestamp(1745542502000l, 123000))).value(), {});
-    CheckResult(reader->VisitEqual(Literal(Timestamp(1745542802000l, 123000))).value(), {0, 6});
-    CheckResult(reader->VisitNotEqual(Literal(Timestamp(1745542802000l, 123000))).value(),
-                {1, 2, 3, 4, 7});
-    CheckResult(reader
-                    ->VisitIn({Literal(Timestamp(1745542802000l, 123000)),
-                               Literal(Timestamp(-1745, 123000)),
-                               Literal(Timestamp(1745542602000, 123000))})
-                    .value(),
-                {0, 2, 3, 6});
-    CheckResult(reader
-                    ->VisitNotIn({Literal(Timestamp(1745542802000l, 123000)),
-                                  Literal(Timestamp(-1745, 123000)),
-                                  Literal(Timestamp(1745542602000, 123000))})
-                    .value(),
-                {1, 4, 7});
-
-    // test invalid case
-    ASSERT_NOK_WITH_MSG(reader->VisitEqual(Literal(FieldType::TIMESTAMP)).value()->IsRemain(),
-                        "literal cannot be null when GetValue in BitSliceIndexBitmapFileIndex");
 }
 
 TEST_F(BitSliceIndexBitmapIndexReaderTest, TestDecimalType) {

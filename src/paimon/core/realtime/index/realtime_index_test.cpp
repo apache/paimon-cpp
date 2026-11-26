@@ -107,6 +107,56 @@ class RealtimeIndexTest : public testing::Test {
     std::shared_ptr<RealtimeIndexSet> index_;
 };
 
+TEST_F(RealtimeIndexTest, ScalarResultsIntersectCandidatesAndPreferExactMatches) {
+    const int64_t offset = int64_t{1} << 40;
+    auto make_result = [](RoaringBitmap64 rows, bool exact) {
+        return std::make_shared<BitmapResult<RoaringBitmap64>>(
+            [rows]() -> Result<RoaringBitmap64> { return rows; }, exact);
+    };
+    std::vector<std::shared_ptr<RealtimeIndexResult>> results = {
+        make_result(RoaringBitmap64::From({offset, offset + 1}), false),
+        RealtimeIndexResult::Remain(),
+        make_result(RoaringBitmap64::From({offset + 1, offset + 2}), false)};
+    size_t evaluated = 0;
+    struct ResultReader {
+        Result<std::shared_ptr<RealtimeIndexResult>> Evaluate(const std::shared_ptr<LeafPredicate>&,
+                                                              const RoaringBitmap64*) {
+            ++*evaluated;
+            return result;
+        }
+
+        std::shared_ptr<RealtimeIndexResult> result;
+        size_t* evaluated;
+    };
+    std::vector<std::shared_ptr<ResultReader>> readers;
+    for (const auto& result : results) {
+        readers.push_back(std::make_shared<ResultReader>(ResultReader{result, &evaluated}));
+    }
+    const auto predicate = std::dynamic_pointer_cast<LeafPredicate>(EqualId(1));
+    ASSERT_OK_AND_ASSIGN(auto result, IndexReaderUtils::EvaluateScalar<RoaringBitmap64>(
+                                          readers, predicate, nullptr));
+    ASSERT_OK_AND_ASSIGN(auto rows, IndexReaderUtils::GetScalarRows(result));
+    ASSERT_TRUE(rows.has_value());
+    ASSERT_EQ(*rows, RoaringBitmap64::From({offset + 1}));
+    ASSERT_FALSE(result->IsExact());
+    ASSERT_EQ(evaluated, 3);
+
+    readers[1]->result = make_result(RoaringBitmap64::From({offset + 1}), true);
+    evaluated = 0;
+    ASSERT_OK_AND_ASSIGN(
+        result, IndexReaderUtils::EvaluateScalar<RoaringBitmap64>(readers, predicate, nullptr));
+    ASSERT_EQ(result, readers[1]->result);
+    ASSERT_TRUE(result->IsExact());
+    ASSERT_EQ(evaluated, 2);
+
+    readers[0]->result = make_result(RoaringBitmap64(), false);
+    evaluated = 0;
+    ASSERT_OK_AND_ASSIGN(
+        result, IndexReaderUtils::EvaluateScalar<RoaringBitmap64>(readers, predicate, nullptr));
+    ASSERT_EQ(result, RealtimeIndexResult::Skip());
+    ASSERT_EQ(evaluated, 1);
+}
+
 TEST_F(RealtimeIndexTest, RetainsAllKeyAndValueOffsetsWithinBothBounds) {
     ASSERT_OK(Add(R"([[10, 1, "a"], [13, 2, "a"], [20, 1, "b"]])", OffsetRange(10, 21)));
     ASSERT_OK_AND_ASSIGN(std::optional<RoaringBitmap64> keys,

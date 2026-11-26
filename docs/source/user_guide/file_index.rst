@@ -30,6 +30,8 @@ exact matching row positions within that file.
 within the candidates used for that evaluation. ``Remain`` is not exact, while
 ``Skip`` is exact. A bitmap alone does not imply exactness. Combining different
 predicates preserves an exact guarantee only when justified by both results.
+Scalar index results never omit matches, but inexact results may contain false
+positives.
 
 For a root full-text or vector TopK request, predicate filtering, row-range
 restrictions and deletion vectors are applied before the TopK limit. Filtering after

@@ -675,31 +675,22 @@ TEST_F(BitmapIndexTest, TestTimestampType) {
         const Literal timestamp(Timestamp(1745542802000l, 123000));
         auto predicate = std::dynamic_pointer_cast<LeafPredicate>(
             PredicateBuilder::Equal(0, "f0", FieldType::TIMESTAMP, timestamp));
-        auto candidates = RoaringBitmap32::From({0, 6});
+        auto candidates = RoaringBitmap32::From({0, 1, 6});
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> result,
                              reader->Evaluate(predicate, &candidates));
         ASSERT_FALSE(result->IsExact());
-        CheckResult(result, {0, 6});
+        CheckResult(result, {0, 1, 6});
         CheckResult(reader->VisitIsNotNull().value(), {0, 1, 2, 3, 4, 6, 7});
         ASSERT_TRUE(reader->VisitIsNotNull().value()->IsExact());
-        CheckResult(reader->VisitEqual(Literal(Timestamp(1745542502000l, 123000))).value(), {});
-        // as timestamp is normalized by micro seconds, there is a loss of precision in the
-        // nanosecond part
-        CheckResult(reader->VisitEqual(Literal(Timestamp(1745542802000l, 123000))).value(), {0, 6});
-        CheckResult(reader->VisitNotEqual(Literal(Timestamp(1745542802000l, 123000))).value(),
-                    {1, 2, 3, 4, 7});
-        CheckResult(reader
-                        ->VisitIn({Literal(Timestamp(1745542802000l, 123000)),
-                                   Literal(Timestamp(-1745, 123000)),
-                                   Literal(Timestamp(1745542602000, 123000))})
-                        .value(),
-                    {0, 2, 3, 6});
-        CheckResult(reader
-                        ->VisitNotIn({Literal(Timestamp(1745542802000l, 123000)),
-                                      Literal(Timestamp(-1745, 123000)),
-                                      Literal(Timestamp(1745542602000, 123000))})
-                        .value(),
-                    {1, 4, 7});
+        // Java stores microseconds, so value comparisons on nanosecond fields must fall back.
+        for (const auto& comparison :
+             {reader->VisitEqual(timestamp), reader->VisitNotEqual(timestamp),
+              reader->VisitIn({timestamp}), reader->VisitNotIn({timestamp}),
+              reader->VisitGreaterThan(timestamp), reader->VisitGreaterOrEqual(timestamp),
+              reader->VisitLessThan(timestamp), reader->VisitLessOrEqual(timestamp)}) {
+            ASSERT_OK(comparison);
+            ASSERT_EQ(comparison.value(), FileIndexResult::Remain());
+        }
     };
     {
         // test write and read, v1 version

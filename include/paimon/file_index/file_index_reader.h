@@ -45,8 +45,10 @@ struct FullTextMatch;
 /// including when no rows match.
 ///
 /// Readers set FileIndexResult::IsExact() when creating each result; callers use that guarantee.
+/// Scalar results may contain false positives but must not omit matching rows.
 /// @note Callers of `Visit*` for DECIMAL fields must ensure each literal's scale matches the scale
 /// of the indexed data; otherwise, index filtering results may be incorrect.
+/// TIMESTAMP literals must match the indexed field's precision.
 class PAIMON_EXPORT FileIndexReader : public IndexReaderCapabilities,
                                       public FunctionVisitor<std::shared_ptr<FileIndexResult>> {
  public:

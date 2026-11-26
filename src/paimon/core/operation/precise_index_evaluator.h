@@ -87,7 +87,7 @@ class PreciseIndexEvaluator {
     }
 
     /// Field mapping and physical scans remain with the storage adapter. Exact index
-    /// results avoid scalar scans; inexact results recheck the original candidates.
+    /// results avoid scalar scans; inexact results narrow the candidates before rechecking.
     /// @param predicate Original predicate in the query's logical schema, used for exact
     /// scalar filtering and binding scores to the original field name.
     /// @param index_predicate Predicate mapped to the source's physical schema for index
@@ -130,16 +130,21 @@ class PreciseIndexEvaluator {
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<IndexResult<Bitmap>> indexed,
                 IndexReaderUtils::EvaluateScalar<Bitmap>(readers, index_predicate, &candidates));
+            PAIMON_ASSIGN_OR_RAISE(std::optional<Bitmap> rows,
+                                   IndexReaderUtils::GetScalarRows(indexed));
             if (indexed->IsExact()) {
-                PAIMON_ASSIGN_OR_RAISE(std::optional<Bitmap> rows,
-                                       IndexReaderUtils::GetScalarRows(indexed));
                 if (!rows) {
                     return Status::Invalid("Exact scalar index result has no row positions");
                 }
                 return Evaluation{std::move(*rows), {}};
             }
+            if (rows) {
+                result.rows = std::move(*rows);
+            }
         }
-        PAIMON_ASSIGN_OR_RAISE(result.rows, scan_scalar(predicate, candidates));
+        if (!result.rows.IsEmpty()) {
+            PAIMON_ASSIGN_OR_RAISE(result.rows, scan_scalar(predicate, result.rows));
+        }
         return result;
     }
 

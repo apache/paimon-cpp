@@ -152,8 +152,7 @@ class IndexReaderUtils {
         if (candidates && candidates->IsEmpty()) {
             return IndexResult<Bitmap>::Skip();
         }
-        // TODO(xinyu.lxy): Redefine IsExact semantics and allow ANDing results from multiple
-        // indexes on the same field when none is exact.
+        std::shared_ptr<IndexResult<Bitmap>> combined = IndexResult<Bitmap>::Remain();
         for (const auto& reader : readers) {
             PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<IndexResult<Bitmap>> result,
                                    reader->Evaluate(predicate, candidates));
@@ -163,8 +162,13 @@ class IndexReaderUtils {
             if (result->IsExact()) {
                 return result;
             }
+            PAIMON_ASSIGN_OR_RAISE(combined, combined->And(result));
+            PAIMON_ASSIGN_OR_RAISE(bool remain, combined->IsRemain());
+            if (!remain) {
+                return IndexResult<Bitmap>::Skip();
+            }
         }
-        return IndexResult<Bitmap>::Remain();
+        return combined;
     }
 
     template <typename Reader, typename Bitmap>

@@ -20,13 +20,14 @@
 #include "paimon/core/realtime/index/realtime_index_evaluator.h"
 
 #include <utility>
+#include <vector>
 
+#include "paimon/common/index/index_reader_utils.h"
 #include "paimon/core/realtime/index/realtime_index_set.h"
 #include "paimon/macros.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/function.h"
 #include "paimon/predicate/leaf_predicate.h"
-#include "paimon/predicate/predicate_utils.h"
 #include "paimon/realtime/index/realtime_index.h"
 #include "paimon/realtime/index/realtime_index_reader.h"
 
@@ -89,32 +90,17 @@ Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexEvaluator::EvaluateCom
 Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexEvaluator::EvaluateLeaf(
     const std::shared_ptr<RealtimeIndexSet>& indexes, const std::shared_ptr<LeafPredicate>& leaf,
     const OffsetRange& offset_range, const std::shared_ptr<MemoryPool>& pool) {
-    std::shared_ptr<RealtimeIndexResult> result = RealtimeIndexResult::Remain();
+    std::vector<std::shared_ptr<RealtimeIndexReader>> readers;
     for (const std::shared_ptr<RealtimeIndex>& index :
          indexes->FindIndexes(leaf->FieldName(), leaf->GetFieldType())) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeIndexReader> reader,
                                index->CreateReader(offset_range, pool));
-        if (!reader) {
-            continue;
-        }
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<RealtimeIndexResult> indexed,
-            PredicateUtils::VisitPredicate<std::shared_ptr<RealtimeIndexResult>>(leaf, reader));
-        if (!indexed) {
-            return Status::Invalid("Scalar index returned a null result");
-        }
-        // These readers guarantee no false negatives. One exact result fully resolves
-        // this leaf; otherwise their candidate supersets can be intersected for pruning.
-        if (indexed->IsExact()) {
-            return indexed;
-        }
-        PAIMON_ASSIGN_OR_RAISE(result, result->And(indexed));
-        PAIMON_ASSIGN_OR_RAISE(bool remain, result->IsRemain());
-        if (!remain) {
-            break;
+        if (reader) {
+            readers.push_back(std::move(reader));
         }
     }
-    return result;
+    return IndexReaderUtils::EvaluateScalar<RoaringBitmap64>(readers, leaf,
+                                                             /*candidates=*/nullptr);
 }
 
 }  // namespace paimon

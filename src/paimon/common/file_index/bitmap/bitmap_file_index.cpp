@@ -26,6 +26,7 @@
 #include "paimon/common/file_index/bitmap/bitmap_file_index_meta.h"
 #include "paimon/common/file_index/bitmap/bitmap_file_index_meta_v1.h"
 #include "paimon/common/file_index/bitmap/bitmap_file_index_meta_v2.h"
+#include "paimon/common/file_index/truncated_value_reader.h"
 #include "paimon/common/io/offset_input_stream.h"
 #include "paimon/common/memory/memory_segment_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -136,7 +137,13 @@ Result<std::shared_ptr<FileIndexReader>> BitmapFileIndex::CreateReader(
     auto arrow_type = arrow_schema->field(0)->type();
     PAIMON_ASSIGN_OR_RAISE(FieldType data_type,
                            FieldTypeUtils::ConvertToFieldType(arrow_type->id()));
-    return std::make_shared<BitmapFileIndexReader>(arrow_type, data_type, bounded_stream, pool);
+    auto reader =
+        std::make_shared<BitmapFileIndexReader>(arrow_type, data_type, bounded_stream, pool);
+    if (data_type == FieldType::TIMESTAMP &&
+        checked_pointer_cast<arrow::TimestampType>(arrow_type)->unit() == arrow::TimeUnit::NANO) {
+        return std::make_shared<TruncatedValueReader>(std::move(reader));
+    }
+    return reader;
 }
 
 Result<std::shared_ptr<FileIndexWriter>> BitmapFileIndex::CreateWriter(
