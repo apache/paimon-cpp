@@ -22,13 +22,12 @@
 #include <cstdint>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 
 #include "paimon/core/core_options.h"
 #include "paimon/core/realtime/realtime_schema_layout.h"
-#include "paimon/core/utils/batch_writer.h"
+#include "paimon/core/realtime/realtime_writer.h"
 #include "paimon/realtime/realtime_context.h"
 #include "paimon/realtime/realtime_store.h"
 
@@ -45,7 +44,7 @@ class FieldsComparator;
 class RealtimeContextImpl;
 struct RealtimeStoreState;
 
-class RealtimePrimaryKeyWriter final : public BatchWriter {
+class RealtimePrimaryKeyWriter final : public RealtimeWriter {
  public:
     static Result<std::shared_ptr<RealtimePrimaryKeyWriter>> Create(
         const std::map<std::string, std::string>& partition, int32_t bucket,
@@ -59,16 +58,12 @@ class RealtimePrimaryKeyWriter final : public BatchWriter {
         const std::shared_ptr<MemoryPool>& memory_pool);
 
     Status Write(std::unique_ptr<RecordBatch>&& batch) override;
-    Status Seal() override;
-    Result<CommitIncrement> PrepareCommit(bool wait_compaction) override;
     Status Compact(bool full_compaction) override;
     uint64_t GetMemoryUsage() const override;
     Status FlushMemory() override;
     Result<bool> CompactNotCompleted() override;
     Status Sync() override;
     Status Close() override;
-    bool HasUnpreparedRealtimeData() const override;
-    void ReleaseCommittedRealtimeSegments(int64_t committed_end_offset) override;
     std::shared_ptr<Metrics> GetMetrics() const override;
 
  private:
@@ -86,26 +81,22 @@ class RealtimePrimaryKeyWriter final : public BatchWriter {
                              const std::shared_ptr<MemoryPool>& memory_pool);
 
     Status FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment);
-    Status SealCurrentSegment(bool allow_spill);
+    Result<CommitIncrement> PrepareCommitImpl(
+        const std::vector<std::shared_ptr<RealtimeSegmentHandle>>& segments,
+        bool wait_compaction) override;
 
     std::shared_ptr<MemoryPool> memory_pool_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
-    std::shared_ptr<RealtimeStore> realtime_store_;
     std::shared_ptr<MergeTreeWriter> merge_tree_writer_;
     std::shared_ptr<RealtimeContextImpl> realtime_context_;
     RealtimePartitionBucket partition_bucket_;
     std::shared_ptr<RealtimeSchemaLayout> schema_layout_;
-    std::vector<std::shared_ptr<RealtimeSegmentHandle>> sealed_segments_;
     std::shared_ptr<arrow::Schema> key_schema_;
     std::vector<std::string> trimmed_primary_keys_;
     std::vector<std::string> primary_keys_;
     std::shared_ptr<FieldsComparator> key_comparator_;
     CoreOptions options_;
-    int64_t next_offset_;
     int64_t last_sequence_number_;
-    bool has_building_data_ = false;
-    mutable std::mutex realtime_store_mutex_;
-    std::mutex prepare_mutex_;
 };
 
 }  // namespace paimon

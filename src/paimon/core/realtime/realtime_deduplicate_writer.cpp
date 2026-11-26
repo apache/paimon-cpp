@@ -18,14 +18,11 @@
 
 #include "paimon/core/realtime/realtime_deduplicate_writer.h"
 
-#include <algorithm>
-#include <iterator>
 #include <optional>
 #include <utility>
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
-#include "arrow/c/helpers.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -82,20 +79,11 @@ Result<std::shared_ptr<RealtimeDeduplicateWriter>> RealtimeDeduplicateWriter::Cr
 
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> context,
                            RealtimeContextImpl::Cast(realtime_context));
-    auto write_schema = std::make_unique<ArrowSchema>();
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(
-        arrow::ExportSchema(*schema_layout->StoreWriteSchema(), write_schema.get()));
-    RealtimeStoreCreateRequest request{std::move(write_schema), options.ToMap(), memory_pool,
-                                       RealtimeStoreMode::DEDUPLICATE,
-                                       options.GetRealtimeStoreStatisticsMode()};
-    request.deduplicate_key_fields = deduplicate_key_fields;
-    if (options.RealtimeSpillEnabled()) {
-        request.temp_directory = temp_directory;
-        request.file_system = options.GetFileSystem();
-    }
-    PAIMON_ASSIGN_OR_RAISE(RealtimeStoreState store_state,
-                           context->GetOrCreateRealtimeStore(
-                               std::move(request), RealtimePartitionBucket(partition, bucket)));
+    PAIMON_ASSIGN_OR_RAISE(
+        RealtimeStoreState store_state,
+        GetOrCreateStore(context, RealtimePartitionBucket(partition, bucket),
+                         schema_layout->StoreWriteSchema(), RealtimeStoreMode::DEDUPLICATE, options,
+                         temp_directory, deduplicate_key_fields, memory_pool));
     std::shared_ptr<ArrowDeduplicateRealtimeStore> store =
         std::dynamic_pointer_cast<ArrowDeduplicateRealtimeStore>(store_state.store);
     if (!store || !store_state.deduplicate_state) {
@@ -120,12 +108,15 @@ RealtimeDeduplicateWriter::RealtimeDeduplicateWriter(
     std::shared_ptr<RealtimeSchemaLayout> schema_layout,
     std::shared_ptr<arrow::Field> deduplicate_key_field, int64_t next_offset,
     std::shared_ptr<MemoryPool> memory_pool)
-    : arrow_pool_(GetArrowPool(memory_pool)),
-      realtime_store_(std::move(realtime_store)),
+    : RealtimeWriter(realtime_store, next_offset, "deduplicate"),
+      arrow_pool_(GetArrowPool(memory_pool)),
       file_writer_(std::move(file_writer)),
       schema_layout_(std::move(schema_layout)),
-      deduplicate_key_field_(std::move(deduplicate_key_field)),
-      next_offset_(next_offset) {}
+      deduplicate_key_field_(std::move(deduplicate_key_field)) {}
+
+ArrowDeduplicateRealtimeStore* RealtimeDeduplicateWriter::DeduplicateStore() const {
+    return checked_cast<ArrowDeduplicateRealtimeStore*>(realtime_store_.get());
+}
 
 Status RealtimeDeduplicateWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     if (!batch || !batch->GetData()) {
@@ -162,45 +153,24 @@ Status RealtimeDeduplicateWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     RoaringBitmap64 previous_offsets;
     {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<const KeyOffsetLookup> lookup,
-                               realtime_store_->AcquireKeyOffsetLookup());
+                               DeduplicateStore()->AcquireKeyOffsetLookup());
         PAIMON_ASSIGN_OR_RAISE(previous_offsets, lookup->LookupOffsets(keys));
     }
-    PAIMON_RETURN_NOT_OK(realtime_store_->WriteAndLookup(validated.data, row_kinds,
-                                                         validated.offset_range, previous_offsets));
+    PAIMON_RETURN_NOT_OK(DeduplicateStore()->WriteAndLookup(
+        validated.data, row_kinds, validated.offset_range, previous_offsets));
     next_offset_ = validated.offset_range.end;
     has_building_data_ = true;
     return Status::OK();
 }
 
-Status RealtimeDeduplicateWriter::SealCurrentSegment(bool allow_spill) {
-    PAIMON_ASSIGN_OR_RAISE(
-        std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
-        allow_spill ? realtime_store_->SealForCommit() : realtime_store_->FreezeBuildingSegment());
-    std::lock_guard<std::mutex> lock(realtime_store_mutex_);
-    if (!segment) {
-        return Status::OK();
-    }
-    if (!segment.value()) {
-        return Status::Invalid("deduplicate real-time store sealed a null segment");
-    }
-    has_building_data_ = next_offset_ > segment.value()->GetOffsetRange().end;
-    sealed_segments_.push_back(std::move(segment.value()));
-    return Status::OK();
+Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> RealtimeDeduplicateWriter::SealStore(
+    bool allow_spill) {
+    return allow_spill ? realtime_store_->SealForCommit()
+                       : DeduplicateStore()->FreezeBuildingSegment();
 }
 
-Status RealtimeDeduplicateWriter::Seal() {
-    std::lock_guard<std::mutex> lock(prepare_mutex_);
-    return SealCurrentSegment(/*allow_spill=*/true);
-}
-
-Result<CommitIncrement> RealtimeDeduplicateWriter::PrepareCommit(bool wait_compaction) {
-    std::lock_guard<std::mutex> prepare_lock(prepare_mutex_);
-    PAIMON_RETURN_NOT_OK(SealCurrentSegment(/*allow_spill=*/false));
-    std::vector<std::shared_ptr<RealtimeSegmentHandle>> segments;
-    {
-        std::lock_guard<std::mutex> store_lock(realtime_store_mutex_);
-        segments.swap(sealed_segments_);
-    }
+Result<CommitIncrement> RealtimeDeduplicateWriter::PrepareCommitImpl(
+    const std::vector<std::shared_ptr<RealtimeSegmentHandle>>& segments, bool wait_compaction) {
     if (segments.empty()) {
         return CommitIncrement(DataIncrement({}, {}, {}, {}, {}),
                                CompactIncrement({}, {}, {}, {}, {}), nullptr);
@@ -247,8 +217,6 @@ Result<CommitIncrement> RealtimeDeduplicateWriter::PrepareCommit(bool wait_compa
     CompactIncrement compact_increment({}, {}, {}, {}, {});
     CommitIncrement result(data_increment, compact_increment, nullptr);
     result.SetRealtimeDeletedOffsets(std::move(deleted_offsets));
-    result.SetRealtimeOffsetRange(OffsetRange(segments.front()->GetOffsetRange().begin,
-                                              segments.back()->GetOffsetRange().end));
     return result;
 }
 
@@ -308,28 +276,6 @@ Status RealtimeDeduplicateWriter::Sync() {
 
 Status RealtimeDeduplicateWriter::Close() {
     return file_writer_->Close();
-}
-
-bool RealtimeDeduplicateWriter::HasUnpreparedRealtimeData() const {
-    std::lock_guard<std::mutex> lock(realtime_store_mutex_);
-    return has_building_data_ || !sealed_segments_.empty();
-}
-
-void RealtimeDeduplicateWriter::ReleaseCommittedRealtimeSegments(int64_t committed_end_offset) {
-    std::vector<std::shared_ptr<RealtimeSegmentHandle>> retired_segments;
-    {
-        std::lock_guard<std::mutex> prepare_lock(prepare_mutex_);
-        std::lock_guard<std::mutex> store_lock(realtime_store_mutex_);
-        auto retained_end = std::stable_partition(
-            sealed_segments_.begin(), sealed_segments_.end(),
-            [committed_end_offset](const std::shared_ptr<RealtimeSegmentHandle>& segment) {
-                return segment->GetOffsetRange().end > committed_end_offset;
-            });
-        retired_segments.assign(std::make_move_iterator(retained_end),
-                                std::make_move_iterator(sealed_segments_.end()));
-        sealed_segments_.erase(retained_end, sealed_segments_.end());
-    }
-    // Release Arrow buffers and spill files without holding the writer locks.
 }
 
 std::shared_ptr<Metrics> RealtimeDeduplicateWriter::GetMetrics() const {
