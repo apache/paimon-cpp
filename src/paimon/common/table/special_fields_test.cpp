@@ -21,7 +21,9 @@
 #include <memory>
 
 #include "arrow/type.h"
+#include "fmt/format.h"
 #include "gtest/gtest.h"
+#include "paimon/testing/utils/testharness.h"
 
 namespace paimon::test {
 
@@ -95,6 +97,34 @@ TEST(SpecialFieldsTest, TestIsSystemField) {
     ASSERT_TRUE(SpecialFields::IsSystemField("_INDEX_SCORE"));
     ASSERT_FALSE(SpecialFields::IsSystemField("_REALTIME_OFFSET"));
     ASSERT_TRUE(SpecialFields::IsSystemField("_KEY_0"));
+}
+
+TEST(SpecialFieldsTest, PredicateFieldNamesAllowOnlyConfiguredSystemFields) {
+    ASSERT_OK(SpecialFields::ValidatePredicateFieldNames({"id", "name"}, {}));
+    arrow::FieldVector allowed_fields = {SpecialFields::RowId().ArrowField(),
+                                         SpecialFields::SequenceNumber().ArrowField()};
+    ASSERT_OK(SpecialFields::ValidatePredicateFieldNames({"id", "_ROW_ID", "_SEQUENCE_NUMBER"},
+                                                         allowed_fields));
+    for (const auto& field : allowed_fields) {
+        ASSERT_OK(SpecialFields::ValidatePredicateFieldNames({"id", field->name()}, {field}));
+        ASSERT_NOK_WITH_MSG(
+            SpecialFields::ValidatePredicateFieldNames({field->name()}, {}),
+            fmt::format("Predicate on system field '{}' are not supported", field->name()));
+        ASSERT_NOK_WITH_MSG(
+            SpecialFields::ValidatePredicateFieldNames({"_ROW_ID", "_SEQUENCE_NUMBER"}, {field}),
+            "Predicate on system field");
+    }
+}
+
+TEST(SpecialFieldsTest, PredicateFieldNamesRejectOtherSystemFields) {
+    arrow::FieldVector allowed_fields = {SpecialFields::RowId().ArrowField(),
+                                         SpecialFields::SequenceNumber().ArrowField()};
+    for (const auto& field_name :
+         {"_VALUE_KIND", "rowkind", "_INDEX_SCORE", "_text_INDEX_SCORE", "_KEY_id"}) {
+        ASSERT_NOK_WITH_MSG(
+            SpecialFields::ValidatePredicateFieldNames({field_name}, allowed_fields),
+            fmt::format("Predicate on system field '{}' are not supported", field_name));
+    }
 }
 
 }  // namespace paimon::test

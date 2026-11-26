@@ -26,6 +26,7 @@
 
 #include "paimon/core/core_options.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/utils/read_schema_plan.h"
 #include "paimon/read_context.h"
 #include "paimon/result.h"
 
@@ -82,7 +83,10 @@ class InternalReadContext {
         return options_;
     }
     std::shared_ptr<arrow::Schema> GetReadSchema() const {
-        return read_schema_;
+        return schema_plan_->GetReadSchema();
+    }
+    std::shared_ptr<ReadSchemaPlan> GetReadSchemaPlan() const {
+        return schema_plan_;
     }
     const std::shared_ptr<TableSchema>& GetTableSchema() const {
         return table_schema_;
@@ -177,9 +181,13 @@ class InternalReadContext {
         CoreOptions options);
     InternalReadContext(const std::shared_ptr<ReadContext>& read_context,
                         const std::shared_ptr<TableSchema>& table_schema,
-                        const std::shared_ptr<arrow::Schema>& read_schema,
-                        const CoreOptions& options,
+                        std::shared_ptr<ReadSchemaPlan> schema_plan, const CoreOptions& options,
                         const std::shared_ptr<arrow::MemoryPool>& arrow_pool);
+
+    static Result<std::shared_ptr<ReadSchemaPlan>> CreateReadSchemaPlan(
+        const std::shared_ptr<arrow::Schema>& source_schema,
+        const std::shared_ptr<arrow::Schema>& output_schema,
+        const std::shared_ptr<Predicate>& predicate);
 
     static std::optional<DataField> TryResolveSpecialFieldById(int32_t field_id,
                                                                const CoreOptions& core_options);
@@ -194,7 +202,7 @@ class InternalReadContext {
 
     std::shared_ptr<ReadContext> read_context_;
     std::shared_ptr<TableSchema> table_schema_;
-    std::shared_ptr<arrow::Schema> read_schema_;
+    std::shared_ptr<ReadSchemaPlan> schema_plan_;
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
     CoreOptions options_;
     std::optional<std::string> path_;

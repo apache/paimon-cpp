@@ -43,6 +43,7 @@
 #include "paimon/common/reader/complete_index_score_batch_reader.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
+#include "paimon/common/reader/projection_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -243,8 +244,15 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateReader(
             batch_reader = std::make_unique<CompleteIndexScoreBatchReader>(
                 std::move(batch_reader), std::move(scores_by_row_id), remove_row_id, arrow_pool_);
         }
-        return WrapWithBlobViewResolverIfNeeded(data_split, std::move(batch_reader),
-                                                indexed_split->RowRanges());
+        PAIMON_ASSIGN_OR_RAISE(batch_reader,
+                               WrapWithBlobViewResolverIfNeeded(data_split, std::move(batch_reader),
+                                                                indexed_split->RowRanges()));
+        if (context_->GetReadSchemaPlan()->NeedsProjection()) {
+            batch_reader = std::make_unique<ProjectionBatchReader>(
+                std::move(batch_reader),
+                context_->GetReadSchemaPlan()->GetOutputSchema()->field_names(), arrow_pool_);
+        }
+        return batch_reader;
     } else if (auto data_split = std::dynamic_pointer_cast<DataSplit>(split)) {
         if (HasIndexScoreField(raw_read_schema_)) {
             return Status::Invalid(
@@ -253,8 +261,15 @@ Result<std::unique_ptr<BatchReader>> DataEvolutionSplitRead::CreateReader(
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<BatchReader> inner_reader,
             InnerCreateReader(data_split, /*row_ranges=*/std::nullopt, raw_read_schema_));
-        return WrapWithBlobViewResolverIfNeeded(data_split, std::move(inner_reader),
-                                                /*row_ranges=*/std::nullopt);
+        PAIMON_ASSIGN_OR_RAISE(inner_reader,
+                               WrapWithBlobViewResolverIfNeeded(data_split, std::move(inner_reader),
+                                                                /*row_ranges=*/std::nullopt));
+        if (context_->GetReadSchemaPlan()->NeedsProjection()) {
+            inner_reader = std::make_unique<ProjectionBatchReader>(
+                std::move(inner_reader),
+                context_->GetReadSchemaPlan()->GetOutputSchema()->field_names(), arrow_pool_);
+        }
+        return inner_reader;
     }
     return Status::Invalid("Invalid Split, cannot cast to IndexedSplit or DataSplit");
 }

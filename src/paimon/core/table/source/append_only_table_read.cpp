@@ -30,6 +30,7 @@
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/reader/predicate_batch_reader.h"
+#include "paimon/common/reader/projection_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
@@ -171,6 +172,7 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateReader(
 Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
     const std::shared_ptr<RealtimeSplit>& realtime_split,
     const RealtimePartitionBucketView& memory) {
+    const auto& schema_plan = context_->GetReadSchemaPlan();
     std::vector<std::unique_ptr<BatchReader>> readers;
     readers.reserve(realtime_split->DiskSplits().size() + 1);
     ScopeGuard readers_guard([&readers]() {
@@ -197,6 +199,11 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
                                    context_, memory.mode, memory.store, memory.read_view,
                                    OffsetRange(realtime_split->CommittedEndOffset(),
                                                realtime_split->MemoryEndOffset())));
+        if (schema_plan->NeedsProjection()) {
+            memory_reader = std::make_unique<ProjectionBatchReader>(
+                std::move(memory_reader), schema_plan->GetOutputSchema()->field_names(),
+                context_->GetArrowMemoryPool());
+        }
         readers.push_back(std::move(memory_reader));
         std::unique_ptr<BatchReader> result =
             std::make_unique<ConcatBatchReader>(std::move(readers), context_->GetArrowMemoryPool());
@@ -256,6 +263,11 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateRealtimeReader(
                 PredicateBatchReader::Create(std::move(memory_reader), context_->GetPredicate(),
                                              context_->GetArrowMemoryPool()));
         }
+        if (schema_plan->NeedsProjection()) {
+            memory_reader = std::make_unique<ProjectionBatchReader>(
+                std::move(memory_reader), schema_plan->GetOutputSchema()->field_names(),
+                context_->GetArrowMemoryPool());
+        }
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<RealtimeReader> realtime_reader,
                                RealtimeReader::Create(memory.read_view, std::move(memory_reader)));
         memory_reader = std::move(realtime_reader);
@@ -306,6 +318,7 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateDeduplicateDiskR
         return Status::Invalid("deduplicate real-time disk split is not a data split");
     }
 
+    const auto& schema_plan = context_->GetReadSchemaPlan();
     if (offset_deletions->IsEmpty()) {
         return raw_read->CreateReader(data_split->Partition(), data_split->Bucket(),
                                       data_split->DataFiles(), data_split->DeletionFiles(),
@@ -353,6 +366,11 @@ Result<std::unique_ptr<BatchReader>> AppendOnlyTableRead::CreateDeduplicateDiskR
             std::move(predicate_provider)));
     if (!expose_offset) {
         reader = std::make_unique<RemoveRealtimeOffsetBatchReader>(std::move(reader));
+    }
+    if (schema_plan->NeedsProjection()) {
+        reader = std::make_unique<ProjectionBatchReader>(
+            std::move(reader), schema_plan->GetOutputSchema()->field_names(),
+            context_->GetArrowMemoryPool());
     }
     return reader;
 }

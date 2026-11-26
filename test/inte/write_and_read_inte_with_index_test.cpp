@@ -1900,6 +1900,7 @@ TEST_P(WriteAndReadInteWithIndexTest, TestPkDvPreciseScalarPredicates) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> disjunction,
                          PredicateBuilder::Or({name, value}));
     CheckPkDvPreciseResult(split, fields, R"([[0,5,"Bob",16.1]])", conjunction);
+    CheckPkDvPreciseResult(split, {arrow::field("key", arrow::int32())}, "[[0,5]]", conjunction);
     CheckPkDvPreciseResult(
         split, fields,
         R"([[0,1,"Bob",12.1],[0,5,"Bob",16.1],[0,6,"Tony",17.1],[0,7,"Alice",18.1]])", disjunction);
@@ -1931,6 +1932,10 @@ TEST_P(WriteAndReadInteWithIndexTest, TestPkDvMixedFilePredicatesAndScores) {
             {arrow::field("_f0_INDEX_SCORE", arrow::float32()), arrow::field("key", arrow::int32()),
              arrow::field("f0", arrow::utf8()), arrow::field("f3", arrow::float64())},
             R"([[0,0.125,6,"Tony",17.1],[0,0.5,7,"Alice",18.1]])", predicate);
+        CheckPkDvPreciseResult(split,
+                               {arrow::field("_f0_INDEX_SCORE", arrow::float32()),
+                                arrow::field("key", arrow::int32())},
+                               R"([[0,0.125,6],[0,0.5,7]])", predicate);
     }
     {
         ASSERT_OK_AND_ASSIGN(
@@ -1971,9 +1976,8 @@ TEST_P(WriteAndReadInteWithIndexTest, TestPkDvFullTextTopKFiltersBeforeLimit) {
     // the surviving TopK, which is returned in descending full-text score order.
     CheckPkDvPreciseResult(
         split,
-        {arrow::field("key", arrow::int32()), arrow::field("_f0_INDEX_SCORE", arrow::float32()),
-         arrow::field("f3", arrow::float64())},
-        R"([[0,5,0.625,16.1],[0,2,0.5,13.1]])", predicate, /*vector_search=*/nullptr, search);
+        {arrow::field("key", arrow::int32()), arrow::field("_f0_INDEX_SCORE", arrow::float32())},
+        R"([[0,5,0.625],[0,2,0.5]])", predicate, /*vector_search=*/nullptr, search);
     ASSERT_EQ(statistics_->executions.size(), 1);
     ASSERT_TRUE(statistics_->executions.front().needs_scores);
     ASSERT_FALSE(search->include_row_ids);

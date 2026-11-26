@@ -35,6 +35,8 @@
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/reader/data_file_reader_factory.h"
 #include "paimon/common/reader/predicate_batch_reader.h"
+#include "paimon/common/reader/projection_batch_reader.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -47,10 +49,12 @@
 #include "paimon/core/table/format/format_path_validation.h"
 #include "paimon/core/table/format/lazy_concat_batch_reader.h"
 #include "paimon/core/utils/field_mapping.h"
+#include "paimon/core/utils/read_schema_plan.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/predicate/predicate.h"
+#include "paimon/predicate/predicate_utils.h"
 
 namespace paimon {
 
@@ -236,8 +240,8 @@ Result<std::vector<DataField>> DescribeFileColumns(
 class FormatTableRead::Impl {
  public:
     std::shared_ptr<FormatTable> table;
-    /// Columns the reader returns, in the order it returns them.
-    std::shared_ptr<arrow::Schema> read_schema;
+    /// Output columns and the internal read schema, including predicate dependencies.
+    std::shared_ptr<ReadSchemaPlan> schema_plan;
     /// The whole table schema, as the mapping describes a column: what a file's own columns are
     /// matched against, one file at a time. See `DescribeFileColumns()`.
     ///
@@ -393,7 +397,20 @@ Result<std::unique_ptr<FormatTableRead>> FormatTableRead::CreateInternal(
 
     auto impl = std::make_unique<Impl>();
     impl->table = table;
-    impl->read_schema = arrow::schema(read_fields);
+    std::set<std::string> required_fields;
+    if (predicate) {
+        PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(predicate, &required_fields));
+        PAIMON_RETURN_NOT_OK(SpecialFields::ValidatePredicateFieldNames(
+            required_fields, /*allowed_system_fields=*/{}));
+        PAIMON_RETURN_NOT_OK(
+            PredicateValidator::ValidatePredicateWithSchema(*table_schema, predicate));
+    }
+    if (enable_predicate_filter) {
+        impl->filter_predicate = predicate;
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        impl->schema_plan,
+        ReadSchemaPlan::Create(table_schema, arrow::schema(read_fields), required_fields));
     impl->pool = memory_pool;
     impl->arrow_pool = GetArrowPool(memory_pool);
     impl->format_identifier = FormatTable::FormatToString(table->GetFormat());
@@ -401,7 +418,8 @@ Result<std::unique_ptr<FormatTableRead>> FormatTableRead::CreateInternal(
                            DataField::ConvertArrowSchemaToDataFields(table_schema));
     impl->table_fields = std::make_shared<const std::vector<DataField>>(std::move(table_fields));
     std::set<std::string> read_file_columns;
-    for (const std::shared_ptr<arrow::Field>& read_field : read_fields) {
+    for (const std::shared_ptr<arrow::Field>& read_field :
+         impl->schema_plan->GetReadSchema()->fields()) {
         if (!is_partition_key(read_field->name())) {
             read_file_columns.insert(read_field->name());
         }
@@ -421,20 +439,10 @@ Result<std::unique_ptr<FormatTableRead>> FormatTableRead::CreateInternal(
                         table->FullName()));
     }
 
-    if (predicate != nullptr) {
-        // The same rules `InternalReadContext` applies to a managed table's predicate. The field
-        // index is not among them: everything downstream resolves a field by name.
-        PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
-            *impl->read_schema, predicate, /*validate_field_idx=*/false));
-        if (enable_predicate_filter) {
-            impl->filter_predicate = predicate;
-        }
-    }
-
     // The builder also hands the file reader only the conjuncts naming columns the file holds.
     PAIMON_ASSIGN_OR_RAISE(
         std::unique_ptr<FieldMappingBuilder> field_mapping_builder,
-        FieldMappingBuilder::Create(impl->read_schema, partition_keys, predicate));
+        FieldMappingBuilder::Create(impl->schema_plan->GetReadSchema(), partition_keys, predicate));
     impl->field_mapping_builder = std::move(field_mapping_builder);
 
     PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options,
@@ -592,7 +600,13 @@ Result<std::unique_ptr<BatchReader>> FormatTableRead::ApplyFilterAndRowKind(
     }
     // Every row is an insert, but `BatchReader::NextBatch()` still promises the leading
     // `_VALUE_KIND` field: an engine reading by field index would find its columns shifted.
-    return std::make_unique<CompleteRowKindBatchReader>(std::move(result), impl_->arrow_pool);
+    result = std::make_unique<CompleteRowKindBatchReader>(std::move(result), impl_->arrow_pool);
+    if (impl_->schema_plan->NeedsProjection()) {
+        result = std::make_unique<ProjectionBatchReader>(
+            std::move(result), impl_->schema_plan->GetOutputSchema()->field_names(),
+            impl_->arrow_pool);
+    }
+    return result;
 }
 
 Result<std::unique_ptr<BatchReader>> FormatTableRead::CreateReader(

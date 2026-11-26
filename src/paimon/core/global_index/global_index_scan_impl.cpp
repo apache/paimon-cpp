@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <limits>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -29,6 +30,8 @@
 #include "arrow/c/helpers.h"
 #include "paimon/common/global_index/offset_global_index_reader.h"
 #include "paimon/common/global_index/union_global_index_reader.h"
+#include "paimon/common/predicate/predicate_validator.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/global_index/global_index_evaluator_impl.h"
 #include "paimon/core/global_index/global_index_live_row_filter.h"
@@ -37,6 +40,7 @@
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/global_index/global_indexer.h"
 #include "paimon/global_index/global_indexer_factory.h"
+#include "paimon/predicate/predicate_utils.h"
 
 namespace paimon {
 GlobalIndexScanImpl::GlobalIndexScanImpl(const std::shared_ptr<TableSchema>& table_schema,
@@ -324,6 +328,14 @@ GlobalIndexIOMeta GlobalIndexScanImpl::ToGlobalIndexIOMeta(
 
 Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexScanImpl::Scan(
     const std::shared_ptr<Predicate>& predicate) {
+    std::set<std::string> field_names;
+    if (predicate) {
+        PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(predicate, &field_names));
+    }
+    PAIMON_RETURN_NOT_OK(
+        SpecialFields::ValidatePredicateFieldNames(field_names, /*allowed_system_fields=*/{}));
+    PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
+        *DataField::ConvertDataFieldsToArrowSchema(table_schema_->Fields()), predicate));
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<GlobalIndexEvaluator> evaluator,
                            GetOrCreateIndexEvaluator());
     return evaluator->Evaluate(predicate);
@@ -331,6 +343,8 @@ Result<std::shared_ptr<GlobalIndexResult>> GlobalIndexScanImpl::Scan(
 
 Result<std::optional<GlobalIndexEvaluatorImpl::Evaluation>> GlobalIndexScanImpl::ScanWithCoverage(
     const std::shared_ptr<Predicate>& predicate) const {
+    PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
+        *DataField::ConvertDataFieldsToArrowSchema(table_schema_->Fields()), predicate));
     GlobalIndexEvaluatorImpl evaluator(
         table_schema_,
         [this](int32_t field_id) -> Result<std::vector<std::shared_ptr<GlobalIndexReader>>> {

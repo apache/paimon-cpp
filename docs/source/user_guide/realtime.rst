@@ -431,8 +431,10 @@ For ``id = 7 AND score > 100``, an index supporting equality on ``id`` selects
 candidate offsets; statistics can then skip batches whose maximum ``score``
 is at most 100.
 Statistics cover entire batches, so mixed batches still need row-level
-filtering. Keep predicate fields in the read schema and enable
-``ReadContextBuilder::EnablePredicateFilter(true)`` for exact filtering.
+filtering. Enable ``ReadContextBuilder::EnablePredicateFilter(true)`` for exact
+filtering. Predicate fields are resolved by name; supplied ``field_index`` values
+are not validated, and execution indices are rebound internally. The reader
+fetches any unprojected predicate columns internally.
 
 In-memory and disk indexes are configured independently. Use
 ``file-index.<type>.columns`` to enable indexes for committed files.

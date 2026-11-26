@@ -101,18 +101,6 @@ TEST(TableReadTest, TestReadWithInvalidContext) {
                             "schema type double mismatches predicate field type BIGINT");
     }
     {
-        // field idx in predicate mismatch in schema
-        auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f3",
-                                                 FieldType::DOUBLE, Literal(15.0));
-        ReadContextBuilder context_builder(path);
-        context_builder.SetReadFieldNames({"f3", "f0", "f1"});
-        context_builder.SetPredicate(predicate);
-        ASSERT_OK_AND_ASSIGN(auto read_context, context_builder.Finish());
-        ASSERT_NOK_WITH_MSG(
-            TableRead::Create(std::move(read_context)),
-            "field f3 has field idx 0 in input schema, mismatch field idx 2 in predicate");
-    }
-    {
         // literal cannot be null
         auto predicate = PredicateBuilder::Equal(/*field_index=*/3, /*field_name=*/"f3",
                                                  FieldType::DOUBLE, Literal(FieldType::DOUBLE));
@@ -130,6 +118,47 @@ TEST(TableReadTest, TestReadWithInvalidContext) {
         ASSERT_NOK_WITH_MSG(TableRead::Create(std::move(read_context)),
                             "validate schema failed: read schema has duplicate field f3");
     }
+}
+
+TEST(TableReadTest, ScanRowTrackingPredicatesKeepCandidatesForReadFiltering) {
+    const std::string path =
+        GetDataDir() + "/orc/multi_partition_append_table.db/multi_partition_append_table";
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> baseline_context,
+                         ScanContextBuilder(path).Finish());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> baseline_scan,
+                         TableScan::Create(std::move(baseline_context)));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> baseline, baseline_scan->CreatePlan());
+    ASSERT_FALSE(baseline->Splits().empty());
+    for (const std::string& name : {"_ROW_ID", "_SEQUENCE_NUMBER"}) {
+        auto system =
+            PredicateBuilder::GreaterThan(77, name, FieldType::BIGINT, Literal(int64_t{100}));
+        auto impossible = PredicateBuilder::Equal(1, "f1", FieldType::INT, Literal(-999));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> conjunction,
+                             PredicateBuilder::And({system, impossible}));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> disjunction,
+                             PredicateBuilder::Or({system, impossible}));
+        for (const auto& predicate : {system, conjunction, disjunction}) {
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> context,
+                                 ScanContextBuilder(path)
+                                     .AddOption(Options::ROW_TRACKING_ENABLED, "true")
+                                     .SetPredicate(predicate)
+                                     .Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableScan> scan,
+                                 TableScan::Create(std::move(context)));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+            ASSERT_EQ(plan->Splits().size(),
+                      predicate == conjunction ? 0 : baseline->Splits().size());
+        }
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<ScanContext> disabled,
+                             ScanContextBuilder(path).SetPredicate(system).Finish());
+        ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(disabled)), "Predicate on system field");
+    }
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<ScanContext> forbidden,
+        ScanContextBuilder(path)
+            .SetPredicate(PredicateBuilder::IsNotNull(77, "_VALUE_KIND", FieldType::TINYINT))
+            .Finish());
+    ASSERT_NOK_WITH_MSG(TableScan::Create(std::move(forbidden)), "Predicate on system field");
 }
 
 TEST(TableReadTest, TestReadWithSpecifiedInvalidSchema) {
@@ -230,26 +259,48 @@ TEST(TableReadTest, TestMixedFilePredicateProducesScoresThroughPublicReadEntry) 
     auto scalar = PredicateBuilder::GreaterThan(1, "f3", FieldType::DOUBLE, Literal(13.0));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
                          PredicateBuilder::And({text, scalar}));
-    ReadContextBuilder builder(path);
-    builder.EnablePreciseFileIndexEvaluate(true)
-        .SetReadFieldNames({"_f0_INDEX_SCORE", "f3", "f0"})
-        .SetPredicate(predicate)
-        .AddOption(Options::READ_BATCH_SIZE, "1");
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read, TableRead::Create(std::move(context)));
-    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(selected_split));
-    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
-                         ReadResultCollector::CollectResult(std::move(reader)));
-    ASSERT_TRUE(actual);
-    ASSERT_EQ(actual->length(), 1);
-    auto values = std::dynamic_pointer_cast<arrow::StructArray>(actual->chunk(0));
-    ASSERT_TRUE(values);
-    auto scores = std::dynamic_pointer_cast<arrow::FloatArray>(values->field(1));
-    auto names = std::dynamic_pointer_cast<arrow::StringArray>(values->field(3));
-    ASSERT_TRUE(scores);
-    ASSERT_TRUE(names);
-    ASSERT_FLOAT_EQ(scores->Value(0), 0.75f);
-    ASSERT_EQ(names->GetString(0), "Tony");
+    for (bool root_topk : {false, true}) {
+        for (bool project_score : {false, true}) {
+            SCOPED_TRACE(root_topk);
+            SCOPED_TRACE(project_score);
+            std::vector<std::string> output_fields = {"f0"};
+            if (project_score) {
+                output_fields.insert(output_fields.begin(), "_f0_INDEX_SCORE");
+            }
+            ReadContextBuilder builder(path);
+            builder.EnablePreciseFileIndexEvaluate(true)
+                .SetReadFieldNames(output_fields)
+                .SetPredicate(root_topk ? scalar : predicate)
+                .AddOption(Options::READ_BATCH_SIZE, "1");
+            if (root_topk) {
+                builder.SetFullTextSearch(std::make_shared<FullTextSearch>(
+                    "f0", R"({"match":{"query":"names"}})", /*limit=*/1));
+            }
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> context, builder.Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> read,
+                                 TableRead::Create(std::move(context)));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                                 read->CreateReader(selected_split));
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> actual,
+                                 ReadResultCollector::CollectResult(std::move(reader)));
+            ASSERT_TRUE(actual);
+            ASSERT_EQ(actual->length(), 1);
+            auto values = std::dynamic_pointer_cast<arrow::StructArray>(actual->chunk(0));
+            ASSERT_TRUE(values);
+            output_fields.insert(output_fields.begin(), "_VALUE_KIND");
+            ASSERT_EQ(arrow::schema(values->struct_type()->fields())->field_names(), output_fields);
+            auto names =
+                std::dynamic_pointer_cast<arrow::StringArray>(values->GetFieldByName("f0"));
+            ASSERT_TRUE(names);
+            ASSERT_EQ(names->GetString(0), "Tony");
+            if (project_score) {
+                auto scores = std::dynamic_pointer_cast<arrow::FloatArray>(
+                    values->GetFieldByName("_f0_INDEX_SCORE"));
+                ASSERT_TRUE(scores);
+                ASSERT_FLOAT_EQ(scores->Value(0), 0.75f);
+            }
+        }
+    }
 }
 
 TEST(TableReadTest, TestRootTopKEmptyInput) {

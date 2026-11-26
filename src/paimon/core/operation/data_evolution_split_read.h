@@ -58,8 +58,8 @@ struct DeletionFile;
 /// If the class name below is enclosed in parentheses, it might be present in the read path;
 /// otherwise, it must be present in the read path.
 ///
-/// Readers Overview: (ConcatBatchReader across
-/// splits)->(BlobViewResolvingBatchReader)->(CompleteIndexScoreBatchReader)->
+/// Readers Overview: (ConcatBatchReader across splits)->(ProjectionBatchReader)
+/// ->(BlobViewResolvingBatchReader)->(CompleteIndexScoreBatchReader)->
 /// CompleteRowKindBatchReader->(PredicateBatchReader)
 /// ->ConcatBatchReader across files->DataEvolutionFileReader
 /// ->(ConcatBatchReader across vector files | BlobFallbackBatchReader across blob sequence layers)

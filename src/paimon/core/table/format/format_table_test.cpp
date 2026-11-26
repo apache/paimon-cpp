@@ -4962,21 +4962,9 @@ TEST(FormatTableTest, TestPredicateIsCheckedTheWayEveryOtherReadPathChecksIt) {
                                      /*enable_predicate_filter=*/false);
     ASSERT_FALSE(wrong_type.ok());
     ASSERT_TRUE(wrong_type.status().IsInvalid()) << wrong_type.status().ToString();
-
-    // The field index a predicate carries is not one of the checks: everything downstream
-    // resolves a field by name, and a caller that built the predicate against the table cannot
-    // know where a projection will put the column.
-    std::shared_ptr<Predicate> wrong_index = PredicateBuilder::Equal(
-        /*field_index=*/7, /*field_name=*/"id", FieldType::INT, Literal(1));
-    ASSERT_OK(FormatTableRead::TEST_Create(table, /*projection=*/std::nullopt,
-                                           /*pool=*/nullptr, wrong_index,
-                                           /*enable_predicate_filter=*/false));
 }
 
-TEST(FormatTableTest, TestPredicateMayOnlyNameColumnsTheReadProduces) {
-    // One rule, the one `InternalReadContext` applies to a managed table: validated against the
-    // read schema. An unknown field and a dropped one are refused alike, since nothing
-    // downstream could evaluate either.
+TEST(FormatTableTest, TestPredicateMayNameUnprojectedTableColumns) {
     std::unique_ptr<UniqueTestDirectory> dir = UniqueTestDirectory::Create();
     ASSERT_TRUE(dir);
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatTable> table,
@@ -4990,20 +4978,39 @@ TEST(FormatTableTest, TestPredicateMayOnlyNameColumnsTheReadProduces) {
                                      /*enable_predicate_filter=*/false),
         "does not exist in schema");
 
-    // A column of the table that this read does not produce.
+    // A table column can be used by the predicate without appearing in the output.
     std::shared_ptr<Predicate> id_gt_1 = PredicateBuilder::GreaterThan(
         /*field_index=*/0, /*field_name=*/"id", FieldType::INT, Literal(1));
     std::vector<std::string> projection = {"name", "dt"};
-    ASSERT_NOK_WITH_MSG(FormatTableRead::TEST_Create(table, projection, /*pool=*/nullptr, id_gt_1,
-                                                     /*enable_predicate_filter=*/true),
-                        "does not exist in schema");
-    ASSERT_NOK(FormatTableRead::TEST_Create(table, projection, /*pool=*/nullptr, id_gt_1,
-                                            /*enable_predicate_filter=*/false));
+    ASSERT_OK(FormatTableRead::TEST_Create(table, projection, /*pool=*/nullptr, id_gt_1,
+                                           /*enable_predicate_filter=*/true));
+    ASSERT_OK(FormatTableRead::TEST_Create(table, projection, /*pool=*/nullptr, id_gt_1,
+                                           /*enable_predicate_filter=*/false));
 
     // Projected back in, and the same predicate is accepted.
     ASSERT_OK(FormatTableRead::TEST_Create(table, std::vector<std::string>{"id", "name", "dt"},
                                            /*pool=*/nullptr, id_gt_1,
                                            /*enable_predicate_filter=*/true));
+
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<RecordBatch> batch,
+        MakeBatch({1, 2, 3}, {"alice", "bob", "carol"}, "20240101", {{"dt", "20240101"}}));
+    ASSERT_OK(WriteAndCommit(table, std::move(batch)));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FormatTableScan> scan,
+                         FormatTableScan::Create(table, {}, std::nullopt));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, scan->CreatePlan());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<FormatTableRead> read,
+                         FormatTableRead::TEST_Create(table, projection, nullptr, id_gt_1, true));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(plan->Splits()));
+    ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch result, reader->NextBatch());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::RecordBatch> rows, ImportBatch(result));
+    ASSERT_EQ(rows->num_rows(), 2);
+    ASSERT_EQ(rows->schema()->field_names(),
+              (std::vector<std::string>{"_VALUE_KIND", "name", "dt"}));
+    auto names = checked_pointer_cast<arrow::StringArray>(rows->column(1));
+    ASSERT_EQ(names->GetString(0), "bob");
+    ASSERT_EQ(names->GetString(1), "carol");
+    reader->Close();
 }
 
 TEST(FormatTableTest, TestAPartitionValueIsReadIntoItsColumnTypeBeforeItNamesADirectory) {

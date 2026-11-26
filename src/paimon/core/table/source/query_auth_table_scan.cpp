@@ -28,6 +28,8 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
+#include "paimon/common/predicate/predicate_validator.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/object_utils.h"
 #include "paimon/core/catalog/catalog_utils.h"
@@ -148,6 +150,13 @@ Result<std::unique_ptr<TableScan>> QueryAuthTableScan::Create(
         if (seen.insert(name).second) {
             columns.push_back(name);
         }
+    }
+    if (scan_filter && scan_filter->GetPredicate()) {
+        PAIMON_RETURN_NOT_OK(SpecialFields::ValidatePredicateFieldNames(
+            user_filter_fields, /*allowed_system_fields=*/{}));
+        PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
+            *DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields()),
+            scan_filter->GetPredicate()));
     }
     std::optional<std::vector<std::string>> authorization_columns;
     if (read_field_names) {

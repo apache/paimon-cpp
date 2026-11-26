@@ -105,8 +105,7 @@ Status PredicateBatchReader::BindPredicateToArray(const arrow::Array& array) {
     }
     const auto& struct_type = checked_cast<const arrow::StructType&>(*array.type());
     std::shared_ptr<arrow::Schema> schema = arrow::schema(struct_type.fields());
-    PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
-        *schema, predicate_, /*validate_field_idx=*/false));
+    PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(*schema, predicate_));
 
     std::map<std::string, int32_t> field_name_to_index;
     for (int32_t i = 0; i < schema->num_fields(); ++i) {

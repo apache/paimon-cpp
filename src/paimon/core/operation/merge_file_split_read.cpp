@@ -30,6 +30,7 @@
 #include "fmt/format.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
+#include "paimon/common/reader/projection_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -438,13 +439,28 @@ Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateReader(
     } else {
         PAIMON_ASSIGN_OR_RAISE(batch_reader, CreateMergeReader(data_split, data_file_path_factory));
     }
-    return std::make_unique<CompleteRowKindBatchReader>(std::move(batch_reader), arrow_pool_);
+    batch_reader =
+        std::make_unique<CompleteRowKindBatchReader>(std::move(batch_reader), arrow_pool_);
+    if (context_->GetReadSchemaPlan()->NeedsProjection()) {
+        batch_reader = std::make_unique<ProjectionBatchReader>(
+            std::move(batch_reader),
+            context_->GetReadSchemaPlan()->GetOutputSchema()->field_names(), arrow_pool_);
+    }
+    return batch_reader;
 }
 
 Result<std::unique_ptr<BatchReader>> MergeFileSplitRead::CreateRealtimeReader(
     const std::vector<std::shared_ptr<Split>>& disk_splits,
     std::vector<std::unique_ptr<KeyValueRecordReader>>&& additional_readers) {
-    return RealtimeReaderBuilder::Create(disk_splits, std::move(additional_readers), this);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<BatchReader> reader,
+        RealtimeReaderBuilder::Create(disk_splits, std::move(additional_readers), this));
+    if (context_->GetReadSchemaPlan()->NeedsProjection()) {
+        reader = std::make_unique<ProjectionBatchReader>(
+            std::move(reader), context_->GetReadSchemaPlan()->GetOutputSchema()->field_names(),
+            arrow_pool_);
+    }
+    return reader;
 }
 
 void MergeFileSplitRead::SetMergeFunctionWrapper(

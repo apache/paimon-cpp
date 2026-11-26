@@ -156,6 +156,7 @@ set(PAIMON_COMMON_SRCS
     common/reader/late_materializing_file_batch_reader.cpp
     common/reader/data_file_reader_factory.cpp
     common/reader/predicate_batch_reader.cpp
+    common/reader/projection_batch_reader.cpp
     common/reader/prefetch_file_batch_reader_impl.cpp
     common/reader/reader_utils.cpp
     common/reader/blob_fallback_batch_reader.cpp
@@ -750,6 +751,7 @@ if(PAIMON_BUILD_TESTS)
                     common/reader/data_file_reader_factory_test.cpp
                     common/reader/late_materializing_file_batch_reader_test.cpp
                     common/reader/predicate_batch_reader_test.cpp
+                    common/reader/projection_batch_reader_test.cpp
                     common/reader/prefetch_file_batch_reader_impl_test.cpp
                     common/reader/reader_utils_test.cpp
                     common/reader/complete_row_kind_batch_reader_test.cpp

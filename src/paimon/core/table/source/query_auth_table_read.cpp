@@ -26,8 +26,11 @@
 #include "arrow/c/bridge.h"
 #include "arrow/compute/cast.h"
 #include "fmt/format.h"
+#include "paimon/common/predicate/predicate_validator.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/reader/predicate_batch_reader.h"
+#include "paimon/common/reader/projection_batch_reader.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/utils/arrow/arrow_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -38,6 +41,7 @@
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/table/source/query_auth_split.h"
 #include "paimon/core/utils/branch_manager.h"
+#include "paimon/core/utils/read_schema_plan.h"
 #include "paimon/defs.h"
 #include "paimon/predicate/predicate.h"
 #include "paimon/predicate/predicate_builder.h"
@@ -105,11 +109,10 @@ class RowFilterBoundaryReader : public BatchReader {
 QueryAuthBatchReader::QueryAuthBatchReader(
     std::unique_ptr<BatchReader> reader,
     std::map<std::string, std::shared_ptr<MaskTransform>> masks,
-    std::set<std::string> dropped_fields, std::set<std::string> decoded_fields,
-    std::shared_ptr<arrow::MemoryPool> arrow_pool, std::shared_ptr<arrow::DataType> logical_type)
+    std::set<std::string> decoded_fields, std::shared_ptr<arrow::MemoryPool> arrow_pool,
+    std::shared_ptr<arrow::DataType> logical_type)
     : reader_(std::move(reader)),
       masks_(std::move(masks)),
-      dropped_fields_(std::move(dropped_fields)),
       decoded_fields_(std::move(decoded_fields)),
       arrow_pool_(std::move(arrow_pool)),
       logical_type_(std::move(logical_type)) {
@@ -188,9 +191,6 @@ Result<BatchReader::ReadBatch> QueryAuthBatchReader::NextBatch() {
     arrow::ArrayVector children;
     for (int32_t i = 0; i < struct_type.num_fields(); ++i) {
         const std::shared_ptr<arrow::Field>& field = struct_type.field(i);
-        if (dropped_fields_.count(field->name()) > 0) {
-            continue;
-        }
         auto mask = masks_.find(field->name());
         if (mask == masks_.end()) {
             const arrow::StructArray& source =
@@ -278,6 +278,11 @@ Result<std::unique_ptr<TableRead>> QueryAuthTableRead::Create(
                 name));
         }
     }
+    PAIMON_RETURN_NOT_OK(
+        SpecialFields::ValidatePredicateFieldNames(predicate_fields, /*allowed_system_fields=*/{}));
+    PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
+        *DataField::ConvertDataFieldsToArrowSchema(table_schema->Fields()),
+        context->GetPredicate()));
     std::unique_ptr<QueryAuthTableRead> read(new QueryAuthTableRead(
         context, table_schema, arrow_pool, std::move(create_inner), std::move(output_fields)));
     // Built now, so a read the table cannot serve fails here rather than at the first split.
@@ -435,23 +440,31 @@ Result<std::unique_ptr<BatchReader>> QueryAuthTableRead::CreateReader(
             std::vector<std::unique_ptr<BatchReader>>(), arrow_pool_));
     }
 
-    // The columns read only for the rules or for the predicate, dropped from the output.
-    std::vector<std::string> extra_fields;
+    std::shared_ptr<arrow::Schema> source_schema =
+        DataField::ConvertDataFieldsToArrowSchema(table_schema_->Fields());
+    std::shared_ptr<arrow::Schema> output_schema = source_schema;
     if (output_fields_) {
-        std::set<std::string> output(output_fields_->begin(), output_fields_->end());
-        std::vector<std::string> visible = output_fields_.value();
-        for (const std::string& field : filter_fields) {
-            if (output.count(field) == 0) {
-                visible.push_back(field);
-            }
+        arrow::FieldVector fields;
+        for (const std::string& name : *output_fields_) {
+            fields.push_back(source_schema->GetFieldByName(name));
         }
-        std::set<std::string> required = rules.RequiredFields(visible);
-        required.insert(filter_fields.begin(), filter_fields.end());
-        for (const DataField& field : table_schema_->Fields()) {
-            if (required.count(field.Name()) > 0 && output.count(field.Name()) == 0) {
-                extra_fields.push_back(field.Name());
-            }
+        output_schema = arrow::schema(fields);
+    }
+    std::vector<std::string> visible = output_schema->field_names();
+    std::set<std::string> visible_names(visible.begin(), visible.end());
+    for (const std::string& field : filter_fields) {
+        if (visible_names.insert(field).second) {
+            visible.push_back(field);
         }
+    }
+    std::set<std::string> required = rules.RequiredFields(visible);
+    required.insert(filter_fields.begin(), filter_fields.end());
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ReadSchemaPlan> schema_plan,
+                           ReadSchemaPlan::Create(source_schema, output_schema, required));
+    std::vector<std::string> extra_fields;
+    for (int32_t i = output_schema->num_fields(); i < schema_plan->GetReadSchema()->num_fields();
+         ++i) {
+        extra_fields.push_back(schema_plan->GetReadSchema()->field(i)->name());
     }
     PAIMON_ASSIGN_OR_RAISE(TableRead * inner, GetOrCreateInnerRead(extra_fields));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BatchReader> reader,
@@ -470,32 +483,26 @@ Result<std::unique_ptr<BatchReader>> QueryAuthTableRead::CreateReader(
     const std::map<std::string, std::shared_ptr<MaskTransform>> no_masks;
     if (rules.RowFilter() != nullptr) {
         reader = std::make_unique<QueryAuthBatchReader>(
-            std::move(reader), no_masks,
-            /*dropped_fields=*/std::set<std::string>(), rules.RowFilterFields(), arrow_pool_,
+            std::move(reader), no_masks, rules.RowFilterFields(), arrow_pool_,
             DataField::ConvertDataFieldsToArrowStructType(table_schema_->Fields()));
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<PredicateBatchReader> filtered,
             PredicateBatchReader::Create(std::move(reader), rules.RowFilter(), arrow_pool_));
         reader = std::make_unique<RowFilterBoundaryReader>(std::move(filtered));
     }
-    std::set<std::string> dropped_fields(extra_fields.begin(), extra_fields.end());
-    if (!rules.Masks().empty() || !filter_fields.empty() ||
-        (filter == nullptr && !dropped_fields.empty())) {
-        reader = std::make_unique<QueryAuthBatchReader>(
-            std::move(reader), rules.Masks(),
-            filter == nullptr ? dropped_fields : std::set<std::string>(), filter_fields,
-            arrow_pool_);
+    if (!rules.Masks().empty() || !filter_fields.empty()) {
+        reader = std::make_unique<QueryAuthBatchReader>(std::move(reader), rules.Masks(),
+                                                        filter_fields, arrow_pool_);
     }
     if (filter != nullptr) {
         PAIMON_ASSIGN_OR_RAISE(
             std::unique_ptr<PredicateBatchReader> filtered,
             PredicateBatchReader::Create(std::move(reader), filter, arrow_pool_));
         reader = std::move(filtered);
-        if (!dropped_fields.empty()) {
-            reader = std::make_unique<QueryAuthBatchReader>(
-                std::move(reader), no_masks, dropped_fields,
-                /*decoded_fields=*/std::set<std::string>(), arrow_pool_);
-        }
+    }
+    if (schema_plan->NeedsProjection()) {
+        reader = std::make_unique<ProjectionBatchReader>(
+            std::move(reader), schema_plan->GetOutputSchema()->field_names(), arrow_pool_);
     }
     close_guard.Release();
     return reader;

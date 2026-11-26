@@ -3665,7 +3665,38 @@ TEST_F(RealtimeWriteInteTest,
                          Commit(data_file_progress, /*commit_identifier=*/0));
     ASSERT_OK(writer->RefreshCommittedSnapshot(data_file_snapshot_id));
 
+    const std::string matching_payload = "match";
+    std::shared_ptr<Predicate> scan_predicate = PredicateBuilder::Equal(
+        /*field_index=*/2, /*field_name=*/"payload", FieldType::STRING,
+        Literal(FieldType::STRING, matching_payload.data(), matching_payload.size()));
+    auto check_projection = [&](bool empty_deletions, const std::string& expected_json) {
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> projected_plan,
+                             CreatePlan(realtime_context, scan_predicate));
+        ASSERT_EQ(1, projected_plan->Splits().size());
+        auto realtime_split =
+            std::dynamic_pointer_cast<RealtimeSplit>(projected_plan->Splits().front());
+        ASSERT_NE(nullptr, realtime_split);
+        ASSERT_FALSE(realtime_split->DiskSplits().empty());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeContextImpl> context_impl,
+                             RealtimeContextImpl::Cast(realtime_context));
+        ASSERT_OK_AND_ASSIGN(RealtimePartitionBucketView view,
+                             context_impl->ResolveReadView(realtime_split->OpaqueTicket()));
+        ASSERT_NE(nullptr, view.offset_deletions);
+        ASSERT_EQ(empty_deletions, view.offset_deletions->IsEmpty());
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> projected_result,
+                             ReadPlan(projected_plan, realtime_context, {"id"}, scan_predicate,
+                                      /*enable_predicate_filter=*/false));
+        const std::shared_ptr<arrow::DataType> projected_type = arrow::struct_(
+            {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("id", arrow::int64())});
+        const std::shared_ptr<arrow::Array> expected =
+            arrow::ipc::internal::json::ArrayFromJSON(projected_type, expected_json).ValueOrDie();
+        ASSERT_NE(nullptr, projected_result);
+        ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*projected_result))
+            << projected_result->ToString();
+    };
+
     ASSERT_OK(write_one({3, "match", "p0"}));
+    ASSERT_NO_FATAL_FAILURE(check_projection(/*empty_deletions=*/true, "[[0, 1], [0, 7], [0, 3]]"));
     ASSERT_OK(write_one({4, "sealed-other", "p0"}));
     ASSERT_OK(write_one({7, "replacement-other", "p0"}));
     ASSERT_OK(writer->Seal());
@@ -3673,10 +3704,6 @@ TEST_F(RealtimeWriteInteTest,
     ASSERT_OK(write_one({5, "match", "p0"}));
     ASSERT_OK(write_one({6, "building-other", "p0"}));
 
-    const std::string matching_payload = "match";
-    std::shared_ptr<Predicate> scan_predicate = PredicateBuilder::Equal(
-        /*field_index=*/2, /*field_name=*/"payload", FieldType::STRING,
-        Literal(FieldType::STRING, matching_payload.data(), matching_payload.size()));
     std::shared_ptr<Predicate> read_predicate = PredicateBuilder::Equal(
         /*field_index=*/1, /*field_name=*/"payload", FieldType::STRING,
         Literal(FieldType::STRING, matching_payload.data(), matching_payload.size()));
@@ -3687,6 +3714,8 @@ TEST_F(RealtimeWriteInteTest,
     ASSERT_OK_AND_ASSIGN(std::vector<Row> rows, ReadRows(plan, realtime_context, read_predicate,
                                                          /*enable_predicate_filter=*/false));
     ASSERT_EQ((std::vector<Row>{{1, "match", "p0"}, {3, "match", "p0"}, {5, "match", "p0"}}), rows);
+    ASSERT_NO_FATAL_FAILURE(
+        check_projection(/*empty_deletions=*/false, "[[0, 1], [0, 3], [0, 5]]"));
     ASSERT_OK_AND_ASSIGN(std::vector<RealtimeCommitProgress> final_progress,
                          writer->PrepareCommitWithProgress(/*commit_identifier=*/1));
     ASSERT_EQ(1, final_progress.size());
@@ -4717,6 +4746,49 @@ TEST_F(RealtimeWriteInteTest, TestPkMergeDiskSealedAndActive) {
             .ValueOrDie();
     ASSERT_TRUE(std::make_shared<arrow::ChunkedArray>(expected)->Equals(*result))
         << result->ToString();
+
+    // Matching old or deleted versions must be removed before filtering and dropping payload.
+    const std::shared_ptr<Predicate> predicate = PredicateBuilder::In(
+        /*field_index=*/1, /*field_name=*/"payload", FieldType::STRING,
+        {Literal(FieldType::STRING, "disk-1", 6), Literal(FieldType::STRING, "sealed-4", 8),
+         Literal(FieldType::STRING, "active-5", 8), Literal(FieldType::STRING, "disk-10", 7)});
+    const std::shared_ptr<arrow::DataType> projected_type = arrow::struct_(
+        {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("id", arrow::int64())});
+    const std::shared_ptr<arrow::Array> expected_projected =
+        arrow::ipc::internal::json::ArrayFromJSON(projected_type, "[[0, 5], [0, 10]]").ValueOrDie();
+    for (bool single_split : {false, true}) {
+        SCOPED_TRACE(single_split);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> projected_plan,
+                             CreatePlan(realtime_context, predicate));
+        std::shared_ptr<arrow::ChunkedArray> projected_result;
+        if (single_split) {
+            ASSERT_EQ(1, projected_plan->Splits().size());
+            ASSERT_NE(nullptr,
+                      std::dynamic_pointer_cast<RealtimeSplit>(projected_plan->Splits().front()));
+            ReadContextBuilder read_builder(table_path_);
+            read_builder.SetOptions(options_)
+                .SetReadFieldNames({"id"})
+                .SetPredicate(predicate)
+                .EnablePredicateFilter(true)
+                .WithRealtimeContext(realtime_context)
+                .WithMemoryPool(pool_);
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableRead> table_read,
+                                 TableRead::Create(std::move(read_context)));
+            ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader,
+                                 table_read->CreateReader(projected_plan->Splits().front()));
+            ASSERT_OK_AND_ASSIGN(projected_result,
+                                 ReadResultCollector::CollectResult(std::move(reader)));
+        } else {
+            ASSERT_OK_AND_ASSIGN(projected_result,
+                                 ReadPlan(projected_plan, realtime_context, {"id"}, predicate,
+                                          /*enable_predicate_filter=*/true));
+        }
+        ASSERT_NE(nullptr, projected_result);
+        ASSERT_TRUE(
+            std::make_shared<arrow::ChunkedArray>(expected_projected)->Equals(*projected_result))
+            << projected_result->ToString();
+    }
     ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
@@ -6894,16 +6966,10 @@ class RealtimePreciseIndexInteTest : public RealtimeWriteInteTest {
     Result<std::unique_ptr<BatchReader>> CreateSearchReader(
         const std::shared_ptr<Plan>& plan, const std::shared_ptr<RealtimeContext>& realtime_context,
         const SearchQuery& query) const {
-        std::map<std::string, int32_t> positions;
-        for (int32_t i = 0; i < static_cast<int32_t>(query.fields.size()); ++i) {
-            positions.emplace(query.fields[i], i);
-        }
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> predicate,
-                               PredicateUtils::CreatePickedFieldFilter(query.predicate, positions));
         ReadContextBuilder builder(table_path_);
         builder.SetOptions(options_)
             .SetReadFieldNames(query.fields)
-            .SetPredicate(predicate)
+            .SetPredicate(query.predicate)
             .SetVectorSearch(query.vector)
             .SetFullTextSearch(query.text)
             .EnablePreciseFileIndexEvaluate(true)
@@ -6981,9 +7047,8 @@ TEST_F(RealtimePreciseIndexInteTest, TestAppendScalarFilteringBeforeVectorTopK) 
     for (const auto& predicate : predicates) {
         SCOPED_TRACE(predicate->ToString());
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, CreatePlan(context, predicate));
-        SearchQuery query{
-            {"_embedding_INDEX_SCORE", "payload", "id", "pt"}, predicate, Vector(1), nullptr};
-        ASSERT_NO_FATAL_FAILURE(CheckSearch(plan, context, query, R"([[0,0.875,"hit",2,"keep"]])"));
+        SearchQuery query{{"_embedding_INDEX_SCORE", "payload"}, predicate, Vector(1), nullptr};
+        ASSERT_NO_FATAL_FAILURE(CheckSearch(plan, context, query, R"([[0,0.875,"hit"]])"));
     }
     ASSERT_OK(PrepareAndClose(writer.get()));
 }
@@ -7016,13 +7081,11 @@ TEST_F(RealtimePreciseIndexInteTest, TestFullTextSearchAndMixedPredicateScores) 
     auto range = PredicateBuilder::GreaterThan(0, "id", FieldType::BIGINT, Literal(int64_t{1}));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Predicate> predicate,
                          PredicateBuilder::And({match, range}));
-    SearchQuery mixed{{"id", "payload", "_payload_INDEX_SCORE", "_embedding_INDEX_SCORE"},
-                      predicate,
-                      Vector(1),
-                      nullptr};
+    SearchQuery mixed{
+        {"id", "_payload_INDEX_SCORE", "_embedding_INDEX_SCORE"}, predicate, Vector(1), nullptr};
     // Split planning accepts scalar predicates; FullTextMatch is evaluated by the precise reader.
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> mixed_plan, CreatePlan(context, range));
-    ASSERT_NO_FATAL_FAILURE(CheckSearch(mixed_plan, context, mixed, R"([[0,3,"lake",0.625,0.5]])"));
+    ASSERT_NO_FATAL_FAILURE(CheckSearch(mixed_plan, context, mixed, R"([[0,3,0.625,0.5]])"));
     ASSERT_OK(PrepareAndClose(writer.get()));
 }
 
@@ -7970,10 +8033,9 @@ TEST_F(RealtimeWriteInteTest, TestProjectionAndPredicateForMemoryAndDisk) {
     std::shared_ptr<Predicate> read_predicate =
         PredicateBuilder::GreaterThan(/*field_index=*/1, /*field_name=*/"id", FieldType::BIGINT,
                                       Literal(static_cast<int64_t>(1)));
-    const std::vector<std::string> read_fields = {"payload", "id"};
+    const std::vector<std::string> read_fields = {"payload"};
     std::shared_ptr<arrow::DataType> result_type = arrow::struct_(
-        {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("payload", arrow::utf8()),
-         arrow::field("id", arrow::int64())});
+        {arrow::field("_VALUE_KIND", arrow::int8()), arrow::field("payload", arrow::utf8())});
 
     std::vector<Row> disk_rows = MakeRows(/*first_id=*/0, /*count=*/3, /*partition=*/"p0");
     ASSERT_OK_AND_ASSIGN(std::unique_ptr<RecordBatch> disk_batch,
@@ -7987,7 +8049,7 @@ TEST_F(RealtimeWriteInteTest, TestProjectionAndPredicateForMemoryAndDisk) {
                                   /*enable_predicate_filter=*/true));
     std::shared_ptr<arrow::Array> expected_memory =
         arrow::ipc::internal::json::ArrayFromJSON(result_type, R"([
-            [0, "value-2", 2]
+            [0, "value-2"]
         ])")
             .ValueOrDie();
     ASSERT_NE(nullptr, memory_result);
@@ -8008,10 +8070,10 @@ TEST_F(RealtimeWriteInteTest, TestProjectionAndPredicateForMemoryAndDisk) {
                                   /*enable_predicate_filter=*/true));
     std::shared_ptr<arrow::Array> expected_union =
         arrow::ipc::internal::json::ArrayFromJSON(result_type, R"([
-            [0, "value-2", 2],
-            [0, "value-3", 3],
-            [0, "value-4", 4],
-            [0, "value-5", 5]
+            [0, "value-2"],
+            [0, "value-3"],
+            [0, "value-4"],
+            [0, "value-5"]
         ])")
             .ValueOrDie();
     ASSERT_NE(nullptr, union_result);

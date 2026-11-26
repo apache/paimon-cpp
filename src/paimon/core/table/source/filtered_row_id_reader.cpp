@@ -30,10 +30,8 @@
 #include "arrow/c/bridge.h"
 #include "fmt/format.h"
 #include "paimon/common/table/special_fields.h"
-#include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
-#include "paimon/common/utils/object_utils.h"
 #include "paimon/common/utils/scope_guard.h"
 #include "paimon/core/catalog/catalog_utils.h"
 #include "paimon/core/global_index/global_index_evaluator_impl.h"
@@ -46,7 +44,6 @@
 #include "paimon/global_index/bitmap_global_index_result.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/leaf_predicate.h"
-#include "paimon/predicate/predicate_utils.h"
 #include "paimon/read_context.h"
 #include "paimon/reader/batch_reader.h"
 #include "paimon/scan_context.h"
@@ -154,18 +151,10 @@ Result<RoaringBitmap64> FilteredRowIdReader::MatchingRowIds(const RowRangeIndex&
     if (row_ranges.Ranges().empty()) {
         return matching;
     }
-    std::set<std::string> filter_fields;
-    PAIMON_RETURN_NOT_OK(PredicateUtils::GetAllNames(filter_, &filter_fields));
-    std::vector<std::string> read_fields;
-    for (const DataField& field : table_schema_->Fields()) {
-        if (filter_fields.count(field.Name()) > 0) {
-            read_fields.push_back(field.Name());
-        }
-    }
     PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, LoadSnapshot(options_, root_path_, snapshot_id_));
     PAIMON_RETURN_NOT_OK(
         ReadRows(root_path_, table_schema_, options_, partition_filter_, snapshot, row_ranges,
-                 read_fields, filter_, executor_, pool_,
+                 /*read_fields=*/{}, filter_, executor_, pool_,
                  [&row_ranges, &matching](const arrow::StructArray& /*batch*/,
                                           const arrow::Int64Array& row_ids) -> Status {
                      for (int64_t i = 0; i < row_ids.length(); ++i) {
@@ -230,10 +219,7 @@ Status FilteredRowIdReader::ReadRows(
         .WithMemoryPool(pool)
         .WithExecutor(executor);
     if (predicate) {
-        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> read_predicate,
-                               PredicateUtils::CreatePickedFieldFilter(
-                                   predicate, ObjectUtils::CreateIdentifierToIndexMap(fields)));
-        read_builder.SetPredicate(read_predicate).EnablePredicateFilter(true);
+        read_builder.SetPredicate(predicate).EnablePredicateFilter(true);
     }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<ReadContext> read_context, read_builder.Finish());
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableRead> table_read,

@@ -19,6 +19,7 @@
 #include "paimon/core/io/complete_row_tracking_fields_reader.h"
 
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -30,6 +31,7 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/object_utils.h"
+#include "paimon/predicate/predicate_utils.h"
 
 namespace paimon {
 CompleteRowTrackingFieldsBatchReader::CompleteRowTrackingFieldsBatchReader(
@@ -61,19 +63,24 @@ Status CompleteRowTrackingFieldsBatchReader::SetReadSchema(
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> arrow_schema,
                                       arrow::ImportSchema(read_schema));
     read_schema_ = arrow_schema;
+    std::set<std::string> completed_fields;
     int32_t row_id_idx = arrow_schema->GetFieldIndex(SpecialFields::RowId().Name());
     if (row_id_idx != -1 &&
         !ObjectUtils::Contains(file_field_names, SpecialFields::RowId().Name())) {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(arrow_schema, arrow_schema->RemoveField(row_id_idx));
+        completed_fields.insert(SpecialFields::RowId().Name());
     }
     int32_t sequence_id_idx = arrow_schema->GetFieldIndex(SpecialFields::SequenceNumber().Name());
     if (sequence_id_idx != -1 &&
         !ObjectUtils::Contains(file_field_names, SpecialFields::SequenceNumber().Name())) {
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(arrow_schema, arrow_schema->RemoveField(sequence_id_idx));
+        completed_fields.insert(SpecialFields::SequenceNumber().Name());
     }
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> physical_predicate,
+                           PredicateUtils::ExcludePredicateWithFields(predicate, completed_fields));
     ArrowSchema c_schema;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(*arrow_schema, &c_schema));
-    return reader_->SetReadSchema(&c_schema, predicate, selection_bitmap);
+    return reader_->SetReadSchema(&c_schema, physical_predicate, selection_bitmap);
 }
 
 Result<BatchReader::ReadBatchWithBitmap>

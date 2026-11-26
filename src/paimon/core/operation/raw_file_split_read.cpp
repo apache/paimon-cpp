@@ -27,6 +27,7 @@
 #include "paimon/common/executor/reader_build_executor.h"
 #include "paimon/common/reader/complete_row_kind_batch_reader.h"
 #include "paimon/common/reader/concat_batch_reader.h"
+#include "paimon/common/reader/projection_batch_reader.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/core/core_options.h"
 #include "paimon/core/deletionvectors/deletion_vector.h"
@@ -200,7 +201,15 @@ Result<std::unique_ptr<BatchReader>> RawFileSplitRead::CreateReader(
     auto dv_factory = DeletionVector::CreateFactory(
         options_.GetFileSystem(), DeletionVector::CreateDeletionFileMap(data_files, deletion_files),
         pool_);
-    return CreateReader(partition, bucket, data_files, dv_factory, local_row_ranges);
+    PAIMON_ASSIGN_OR_RAISE(
+        std::unique_ptr<BatchReader> reader,
+        CreateReader(partition, bucket, data_files, dv_factory, local_row_ranges));
+    if (context_->GetReadSchemaPlan()->NeedsProjection()) {
+        reader = std::make_unique<ProjectionBatchReader>(
+            std::move(reader), context_->GetReadSchemaPlan()->GetOutputSchema()->field_names(),
+            arrow_pool_);
+    }
+    return reader;
 }
 
 Result<bool> RawFileSplitRead::Match(const std::shared_ptr<Split>& split,

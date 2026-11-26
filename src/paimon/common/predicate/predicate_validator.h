@@ -45,10 +45,9 @@ class PredicateValidator {
     ~PredicateValidator() = delete;
 
     static Status ValidatePredicateWithSchema(const arrow::Schema& schema,
-                                              const std::shared_ptr<Predicate>& predicate,
-                                              bool validate_field_idx) {
+                                              const std::shared_ptr<Predicate>& predicate) {
         PAIMON_RETURN_NOT_OK(ValidatePredicateWithLiterals(predicate));
-        return ValidatePredicateWithSchemaImpl(schema, predicate, validate_field_idx);
+        return ValidatePredicateWithSchemaImpl(schema, predicate);
     }
 
  private:
@@ -90,21 +89,14 @@ class PredicateValidator {
     }
 
     static Status ValidatePredicateWithSchemaImpl(const arrow::Schema& schema,
-                                                  const std::shared_ptr<Predicate>& predicate,
-                                                  bool validate_field_idx) {
+                                                  const std::shared_ptr<Predicate>& predicate) {
         if (auto leaf_predicate = std::dynamic_pointer_cast<LeafPredicate>(predicate)) {
             const auto& field_name = leaf_predicate->FieldName();
-            // check field index
+            // check field existence
             int32_t schema_field_idx = schema.GetFieldIndex(field_name);
             if (schema_field_idx == -1) {
                 return Status::Invalid(
                     fmt::format("field {} does not exist in schema", field_name));
-            }
-            if (validate_field_idx && schema_field_idx != leaf_predicate->FieldIndex()) {
-                return Status::Invalid(
-                    fmt::format("field {} has field idx {} in input schema, mismatch field idx "
-                                "{} in predicate",
-                                field_name, schema_field_idx, leaf_predicate->FieldIndex()));
             }
             // check field type (schema vs. predicate)
             const std::shared_ptr<arrow::DataType>& schema_type =
@@ -121,8 +113,7 @@ class PredicateValidator {
                        std::dynamic_pointer_cast<CompoundPredicate>(predicate)) {
             const auto& children = compound_predicate->Children();
             for (const auto& child : children) {
-                PAIMON_RETURN_NOT_OK(
-                    ValidatePredicateWithSchemaImpl(schema, child, validate_field_idx));
+                PAIMON_RETURN_NOT_OK(ValidatePredicateWithSchemaImpl(schema, child));
             }
         }
         return Status::OK();

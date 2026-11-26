@@ -35,6 +35,7 @@
 #include "paimon/common/executor/future.h"
 #include "paimon/common/io/cache/cache_key.h"
 #include "paimon/common/predicate/literal_converter.h"
+#include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/common/utils/scope_guard.h"
@@ -736,9 +737,21 @@ Status FileStoreScan::SplitAndSetFilter(const std::vector<std::string>& partitio
         return Status::NotImplemented("FullTextMatch predicate execution is not implemented yet");
     }
     if (scan_filters->GetPredicate()) {
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FieldMappingBuilder> mapping_builder,
-                               FieldMappingBuilder::Create(arrow_schema, partition_keys,
-                                                           scan_filters->GetPredicate()));
+        // Virtual row-tracking values are completed during reading, not stored in manifest stats.
+        // Drop entire conjuncts that depend on them, including OR branches, to avoid false
+        // negatives.
+        std::set<std::string> virtual_fields;
+        for (const auto& field : {SpecialFields::RowId(), SpecialFields::SequenceNumber()}) {
+            if (arrow_schema->GetFieldIndex(field.Name()) < 0) {
+                virtual_fields.insert(field.Name());
+            }
+        }
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<Predicate> stats_predicate,
+                               PredicateUtils::ExcludePredicateWithFields(
+                                   scan_filters->GetPredicate(), virtual_fields));
+        PAIMON_ASSIGN_OR_RAISE(
+            std::unique_ptr<FieldMappingBuilder> mapping_builder,
+            FieldMappingBuilder::Create(arrow_schema, partition_keys, stats_predicate));
         PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> data_fields,
                                DataField::ConvertArrowSchemaToDataFields(arrow_schema));
         auto converted_fields = BlobUtils::ConvertBlobInlineDataFields(

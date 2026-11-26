@@ -33,6 +33,7 @@
 #include "fmt/format.h"
 #include "gtest/gtest.h"
 #include "paimon/common/reader/predicate_batch_reader.h"
+#include "paimon/common/reader/reader_utils.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -173,8 +174,7 @@ TEST(QueryAuthTableReadTest, TestBatchReaderDecodesDictionaryAndLargeStringColum
              {"alias", fmt::format(R"({{"name": "FIELD_REF", "fieldRef": {}}})", nick_ref)}}));
 
     QueryAuthBatchReader reader(std::make_unique<OneBatchReader>(batch), rules->Masks(),
-                                /*dropped_fields=*/{}, /*decoded_fields=*/{},
-                                GetArrowPool(GetDefaultPool()));
+                                /*decoded_fields=*/{}, GetArrowPool(GetDefaultPool()));
     ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatch masked_batch, reader.NextBatch());
     ASSERT_FALSE(BatchReader::IsEofBatch(masked_batch));
     std::shared_ptr<arrow::Array> masked =
@@ -207,7 +207,6 @@ TEST(QueryAuthTableReadTest, TestBatchReaderDecodesDictionaryAndLargeStringColum
         PredicateBatchReader::Create(std::make_unique<QueryAuthBatchReader>(
                                          std::make_unique<OneBatchReader>(batch),
                                          std::map<std::string, std::shared_ptr<MaskTransform>>(),
-                                         /*dropped_fields=*/std::set<std::string>(),
                                          /*decoded_fields=*/std::set<std::string>{"name", "phone"},
                                          GetArrowPool(GetDefaultPool())),
                                      name_or_phone, GetArrowPool(GetDefaultPool())));
@@ -227,7 +226,6 @@ TEST(QueryAuthTableReadTest, TestBatchReaderDecodesDictionaryAndLargeStringColum
             std::make_unique<QueryAuthBatchReader>(
                 std::make_unique<OneBatchReader>(batch),
                 std::map<std::string, std::shared_ptr<MaskTransform>>(),
-                /*dropped_fields=*/std::set<std::string>(),
                 /*decoded_fields=*/std::set<std::string>{"name"}, GetArrowPool(GetDefaultPool()),
                 /*logical_type=*/
                 arrow::struct_(
@@ -394,6 +392,74 @@ TEST(QueryAuthTableReadTest, TestRowFilterRemovesRowsFromTheBatchWithBitmap) {
     assert_only_tenant_a(std::move(reader));
     ASSERT_OK_AND_ASSIGN(reader, read->CreateReader(std::vector<std::shared_ptr<Split>>{split}));
     assert_only_tenant_a(std::move(reader));
+}
+
+TEST(QueryAuthTableReadTest, FiltersAnUnprojectedMaskUsingItsUnprojectedInput) {
+    auto fields = arrow::schema(
+        {arrow::field("id", arrow::int32()), arrow::field("name", arrow::utf8()),
+         arrow::field("tenant", arrow::int32()), arrow::field("public_name", arrow::utf8())});
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema,
+                         TableSchema::Create(0, fields, {}, {}, {}));
+    auto batch =
+        arrow::ipc::internal::json::ArrayFromJSON(
+            arrow::struct_(fields->fields()),
+            R"([[101,"private",7,"Alice"], [102,"Alice",8,"Alice"], [103,"Alice",7,"Bob"]])")
+            .ValueOrDie();
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableQueryAuthResult> rules,
+        TableQueryAuthResult::Create(
+            {R"({"kind":"LEAF","transform":{"name":"FIELD_REF","fieldRef":{"index":2, "name":"tenant","type":"INT"}},"function":"EQUAL","literals":[7]})"},
+            {{"name",
+              R"({"name":"FIELD_REF","fieldRef":{"index":3,"name":"public_name","type":"STRING"}})"}}));
+    QueryAuthScope scope;
+    scope.table_path = "table_root_path";
+    scope.branch = "main";
+    scope.authorized_field_ids = {{"id", schema->Fields()[0].Id()},
+                                  {"name", schema->Fields()[1].Id()}};
+    scope.rule_field_ids = rules->BindFieldIds(schema->Fields());
+    auto split = std::make_shared<QueryAuthSplit>(std::make_shared<DummySplit>(), rules, scope);
+    for (bool filter_enabled : {false, true}) {
+        ReadContextBuilder builder(scope.table_path);
+        builder.SetReadFieldNames({"id"})
+            .EnablePredicateFilter(filter_enabled)
+            .SetPredicate(PredicateBuilder::Equal(1, "name", FieldType::STRING,
+                                                  Literal(FieldType::STRING, "Alice", 5)));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<ReadContext> context, builder.Finish());
+        ASSERT_OK_AND_ASSIGN(
+            std::unique_ptr<TableRead> read,
+            QueryAuthTableRead::Create(
+                context, schema, GetArrowPool(GetDefaultPool()),
+                [batch](std::unique_ptr<ReadContext> inner) -> Result<std::unique_ptr<TableRead>> {
+                    // Create() first probes the reader without rule dependencies.
+                    if (inner->GetReadFieldNames().size() > 1 &&
+                        inner->GetReadFieldNames() !=
+                            (std::vector<std::string>{"id", "name", "tenant", "public_name"})) {
+                        return Status::Invalid("incorrect auth dependency projection");
+                    }
+                    if (inner->GetPredicate()) {
+                        return Status::Invalid("masked predicate must not reach the raw reader");
+                    }
+                    return std::unique_ptr<TableRead>(std::make_unique<SplitTableRead>(
+                        [batch](
+                            const std::shared_ptr<Split>&) -> Result<std::unique_ptr<BatchReader>> {
+                            return std::unique_ptr<BatchReader>(
+                                std::make_unique<OneBatchReader>(batch));
+                        }));
+                }));
+        ASSERT_OK_AND_ASSIGN(std::unique_ptr<BatchReader> reader, read->CreateReader(split));
+        ASSERT_OK_AND_ASSIGN(BatchReader::ReadBatchWithBitmap result,
+                             reader->NextBatchWithBitmap());
+        ASSERT_EQ(result.second, RoaringBitmap32::From({0}));
+        ASSERT_OK_AND_ASSIGN(
+            BatchReader::ReadBatch filtered,
+            ReaderUtils::ApplyBitmapToReadBatch(std::move(result), GetArrowPool(GetDefaultPool())));
+        auto array = arrow::ImportArray(filtered.first.get(), filtered.second.get()).ValueOrDie();
+        ASSERT_TRUE(
+            array->Equals(*arrow::ipc::internal::json::ArrayFromJSON(
+                               arrow::struct_({arrow::field("id", arrow::int32())}), "[[101]]")
+                               .ValueOrDie()));
+        reader->Close();
+    }
 }
 
 }  // namespace paimon::test

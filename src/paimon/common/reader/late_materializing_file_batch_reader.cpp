@@ -305,8 +305,8 @@ Status LateMaterializingFileBatchReader::SetReadSchema(
         if (!probe_fields.empty() && !payload_fields.empty()) {
             probe_schema_ = arrow::schema(probe_fields, full_schema_->metadata());
             payload_schema_ = arrow::schema(payload_fields, full_schema_->metadata());
-            PAIMON_RETURN_NOT_OK(PredicateValidator::ValidatePredicateWithSchema(
-                *probe_schema_, predicate_, /*validate_field_idx=*/false));
+            PAIMON_RETURN_NOT_OK(
+                PredicateValidator::ValidatePredicateWithSchema(*probe_schema_, predicate_));
             std::map<std::string, int32_t> name_to_idx;
             for (int32_t i = 0; i < probe_schema_->num_fields(); ++i) {
                 name_to_idx.emplace(probe_schema_->field(i)->name(), i);
