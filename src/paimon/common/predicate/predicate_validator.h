@@ -160,7 +160,7 @@ class PredicateValidator {
             if (literal.IsNull()) {
                 continue;
             }
-            const Timestamp timestamp = literal.GetValue<Timestamp>();
+            const auto timestamp = literal.GetValue<Timestamp>();
             const int32_t nanos = timestamp.GetNanoOfMillisecond();
             bool aligned = false;
             switch (field_type.unit()) {
