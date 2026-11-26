@@ -21,7 +21,6 @@
 #include <optional>
 #include <vector>
 
-#include "arrow/c/bridge.h"
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/core/compact/noop_compact_manager.h"
@@ -38,6 +37,7 @@
 #include "paimon/core/realtime/realtime_context_impl.h"
 #include "paimon/core/realtime/realtime_primary_key_writer.h"
 #include "paimon/core/realtime/realtime_schema_layout.h"
+#include "paimon/core/realtime/realtime_writer.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/primary_key_table_utils.h"
@@ -139,20 +139,13 @@ Result<std::shared_ptr<BatchWriter>> KeyValueFileStoreWrite::CreateWriter(
         if (!realtime_schema_layout_) {
             return Status::Invalid("PK realtime schema layout is null");
         }
-        auto c_write_schema = std::make_unique<ArrowSchema>();
-        PAIMON_RETURN_NOT_OK_FROM_ARROW(arrow::ExportSchema(
-            *realtime_schema_layout_->StoreWriteSchema(), c_write_schema.get()));
-        RealtimeStoreCreateRequest request{std::move(c_write_schema), options_.ToMap(), pool_,
-                                           RealtimeStoreMode::PRIMARY_KEY,
-                                           options_.GetRealtimeStoreStatisticsMode()};
-        if (options_.RealtimeSpillEnabled()) {
-            request.temp_directory = io_manager_ ? io_manager_->GetTempDir() : "";
-            request.file_system = options_.GetFileSystem();
-        }
         PAIMON_ASSIGN_OR_RAISE(
             RealtimeStoreState store_state,
-            realtime_context_impl->GetOrCreateRealtimeStore(
-                std::move(request), RealtimePartitionBucket(partition_map, bucket)));
+            RealtimeWriter::GetOrCreateStore(
+                realtime_context_impl, RealtimePartitionBucket(partition_map, bucket),
+                realtime_schema_layout_->StoreWriteSchema(), RealtimeStoreMode::PRIMARY_KEY,
+                options_, io_manager_ ? io_manager_->GetTempDir() : "",
+                /*deduplicate_key_fields=*/{}, pool_));
         realtime_store_state = std::move(store_state);
         compact_manager = std::make_shared<NoopCompactManager>();
     } else {

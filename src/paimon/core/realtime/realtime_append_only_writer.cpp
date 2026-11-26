@@ -19,17 +19,12 @@
 
 #include "paimon/core/realtime/realtime_append_only_writer.h"
 
-#include <algorithm>
 #include <cstdint>
-#include <iterator>
-#include <limits>
-#include <optional>
 #include <utility>
 #include <vector>
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
-#include "arrow/c/helpers.h"
 #include "paimon/common/reader/concat_batch_reader.h"
 #include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/row_kind.h"
@@ -63,19 +58,11 @@ Result<std::shared_ptr<RealtimeAppendOnlyWriter>> RealtimeAppendOnlyWriter::Crea
     }
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeContextImpl> realtime_context_impl,
                            RealtimeContextImpl::Cast(realtime_context));
-    auto write_schema = std::make_unique<ArrowSchema>();
-    PAIMON_RETURN_NOT_OK_FROM_ARROW(
-        arrow::ExportSchema(*schema_layout->StoreWriteSchema(), write_schema.get()));
-    RealtimeStoreCreateRequest request{std::move(write_schema), options.ToMap(), memory_pool,
-                                       RealtimeStoreMode::APPEND_ONLY,
-                                       options.GetRealtimeStoreStatisticsMode()};
-    if (options.RealtimeSpillEnabled()) {
-        request.temp_directory = temp_directory;
-        request.file_system = options.GetFileSystem();
-    }
-    PAIMON_ASSIGN_OR_RAISE(RealtimeStoreState store_state,
-                           realtime_context_impl->GetOrCreateRealtimeStore(
-                               std::move(request), RealtimePartitionBucket(partition, bucket)));
+    PAIMON_ASSIGN_OR_RAISE(
+        RealtimeStoreState store_state,
+        GetOrCreateStore(realtime_context_impl, RealtimePartitionBucket(partition, bucket),
+                         schema_layout->StoreWriteSchema(), RealtimeStoreMode::APPEND_ONLY, options,
+                         temp_directory, /*deduplicate_key_fields=*/{}, memory_pool));
     return std::shared_ptr<RealtimeAppendOnlyWriter>(new RealtimeAppendOnlyWriter(
         store_state.store, file_writer, schema_layout, store_state.initial_offset, memory_pool));
 }
@@ -85,11 +72,10 @@ RealtimeAppendOnlyWriter::RealtimeAppendOnlyWriter(
     const std::shared_ptr<AppendOnlyWriter>& file_writer,
     const std::shared_ptr<RealtimeSchemaLayout>& schema_layout, int64_t next_offset,
     const std::shared_ptr<MemoryPool>& memory_pool)
-    : arrow_pool_(GetArrowPool(memory_pool)),
-      realtime_store_(realtime_store),
+    : RealtimeWriter(realtime_store, next_offset, "append"),
+      arrow_pool_(GetArrowPool(memory_pool)),
       file_writer_(file_writer),
-      schema_layout_(schema_layout),
-      next_offset_(next_offset) {}
+      schema_layout_(schema_layout) {}
 
 Status RealtimeAppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     if (!batch || !batch->GetData()) {
@@ -120,46 +106,12 @@ Status RealtimeAppendOnlyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     return Status::OK();
 }
 
-// TODO(xinyu.lxy): Refactor the shared seal logic with RealtimePrimaryKeyWriter.
-Status RealtimeAppendOnlyWriter::SealCurrentSegment(bool allow_spill) {
-    auto* two_phase = dynamic_cast<TwoPhaseSealableRealtimeStore*>(realtime_store_.get());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
-                           !allow_spill && two_phase ? two_phase->FreezeBuildingSegment()
-                                                     : realtime_store_->SealForCommit());
-    std::lock_guard<std::mutex> lock(realtime_store_mutex_);
-    if (!segment) {
-        return Status::OK();
-    }
-    if (!segment.value()) {
-        return Status::Invalid("append real-time store sealed a null segment");
-    }
-    has_building_data_ = next_offset_ > segment.value()->GetOffsetRange().end;
-    sealed_segments_.push_back(std::move(segment.value()));
-    return Status::OK();
-}
-
-Status RealtimeAppendOnlyWriter::Seal() {
-    std::lock_guard<std::mutex> lock(prepare_mutex_);
-    return SealCurrentSegment(/*allow_spill=*/true);
-}
-
-Result<CommitIncrement> RealtimeAppendOnlyWriter::PrepareCommit(bool wait_compaction) {
-    std::lock_guard<std::mutex> lock(prepare_mutex_);
-    PAIMON_RETURN_NOT_OK(SealCurrentSegment(/*allow_spill=*/false));
-    std::vector<std::shared_ptr<RealtimeSegmentHandle>> segments;
-    {
-        std::lock_guard<std::mutex> realtime_store_lock(realtime_store_mutex_);
-        segments.swap(sealed_segments_);
-    }
+Result<CommitIncrement> RealtimeAppendOnlyWriter::PrepareCommitImpl(
+    const std::vector<std::shared_ptr<RealtimeSegmentHandle>>& segments, bool wait_compaction) {
     for (const std::shared_ptr<RealtimeSegmentHandle>& segment : segments) {
         PAIMON_RETURN_NOT_OK(FlushSegment(segment));
     }
-    PAIMON_ASSIGN_OR_RAISE(CommitIncrement increment, file_writer_->PrepareCommit(wait_compaction));
-    if (!segments.empty()) {
-        increment.SetRealtimeOffsetRange(OffsetRange(segments.front()->GetOffsetRange().begin,
-                                                     segments.back()->GetOffsetRange().end));
-    }
-    return increment;
+    return file_writer_->PrepareCommit(wait_compaction);
 }
 
 Status RealtimeAppendOnlyWriter::FlushSegment(
@@ -236,28 +188,6 @@ Status RealtimeAppendOnlyWriter::Sync() {
 Status RealtimeAppendOnlyWriter::Close() {
     // The shared real-time context owns the real-time store for scans and later writers.
     return file_writer_->Close();
-}
-
-bool RealtimeAppendOnlyWriter::HasUnpreparedRealtimeData() const {
-    std::lock_guard<std::mutex> lock(realtime_store_mutex_);
-    return has_building_data_ || !sealed_segments_.empty();
-}
-
-void RealtimeAppendOnlyWriter::ReleaseCommittedRealtimeSegments(int64_t committed_end_offset) {
-    std::vector<std::shared_ptr<RealtimeSegmentHandle>> retired_segments;
-    {
-        std::lock_guard<std::mutex> prepare_lock(prepare_mutex_);
-        std::lock_guard<std::mutex> store_lock(realtime_store_mutex_);
-        auto retained_end = std::stable_partition(
-            sealed_segments_.begin(), sealed_segments_.end(),
-            [committed_end_offset](const std::shared_ptr<RealtimeSegmentHandle>& segment) {
-                return segment->GetOffsetRange().end > committed_end_offset;
-            });
-        retired_segments.assign(std::make_move_iterator(retained_end),
-                                std::make_move_iterator(sealed_segments_.end()));
-        sealed_segments_.erase(retained_end, sealed_segments_.end());
-    }
-    // Release Arrow buffers and spill files without holding the writer locks.
 }
 
 std::shared_ptr<Metrics> RealtimeAppendOnlyWriter::GetMetrics() const {

@@ -18,10 +18,7 @@
 
 #include "paimon/core/realtime/realtime_primary_key_writer.h"
 
-#include <algorithm>
-#include <iterator>
 #include <limits>
-#include <optional>
 #include <utility>
 #include <vector>
 
@@ -152,9 +149,9 @@ RealtimePrimaryKeyWriter::RealtimePrimaryKeyWriter(
     const std::shared_ptr<FieldsComparator>& key_comparator, const CoreOptions& options,
     int64_t next_offset, int64_t last_sequence_number,
     const std::shared_ptr<MemoryPool>& memory_pool)
-    : memory_pool_(memory_pool),
+    : RealtimeWriter(realtime_store, next_offset, "PK"),
+      memory_pool_(memory_pool),
       arrow_pool_(GetArrowPool(memory_pool)),
-      realtime_store_(realtime_store),
       merge_tree_writer_(merge_tree_writer),
       realtime_context_(realtime_context),
       partition_bucket_(partition_bucket),
@@ -164,7 +161,6 @@ RealtimePrimaryKeyWriter::RealtimePrimaryKeyWriter(
       primary_keys_(primary_keys),
       key_comparator_(key_comparator),
       options_(options),
-      next_offset_(next_offset),
       last_sequence_number_(last_sequence_number) {}
 
 Status RealtimePrimaryKeyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
@@ -212,46 +208,12 @@ Status RealtimePrimaryKeyWriter::Write(std::unique_ptr<RecordBatch>&& batch) {
     return Status::OK();
 }
 
-Status RealtimePrimaryKeyWriter::SealCurrentSegment(bool allow_spill) {
-    auto* two_phase = dynamic_cast<TwoPhaseSealableRealtimeStore*>(realtime_store_.get());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<std::shared_ptr<RealtimeSegmentHandle>> segment,
-                           !allow_spill && two_phase ? two_phase->FreezeBuildingSegment()
-                                                     : realtime_store_->SealForCommit());
-    std::lock_guard<std::mutex> lock(realtime_store_mutex_);
-    if (!segment) {
-        return Status::OK();
-    }
-    if (!segment.value()) {
-        return Status::Invalid("PK real-time store sealed a null segment");
-    }
-    has_building_data_ = next_offset_ > segment.value()->GetOffsetRange().end;
-    sealed_segments_.push_back(std::move(segment.value()));
-    return Status::OK();
-}
-
-Status RealtimePrimaryKeyWriter::Seal() {
-    std::lock_guard<std::mutex> lock(prepare_mutex_);
-    return SealCurrentSegment(/*allow_spill=*/true);
-}
-
-Result<CommitIncrement> RealtimePrimaryKeyWriter::PrepareCommit(bool wait_compaction) {
-    std::lock_guard<std::mutex> prepare_lock(prepare_mutex_);
-    PAIMON_RETURN_NOT_OK(SealCurrentSegment(/*allow_spill=*/false));
-    std::vector<std::shared_ptr<RealtimeSegmentHandle>> segments;
-    {
-        std::lock_guard<std::mutex> store_lock(realtime_store_mutex_);
-        segments.swap(sealed_segments_);
-    }
+Result<CommitIncrement> RealtimePrimaryKeyWriter::PrepareCommitImpl(
+    const std::vector<std::shared_ptr<RealtimeSegmentHandle>>& segments, bool wait_compaction) {
     for (const std::shared_ptr<RealtimeSegmentHandle>& segment : segments) {
         PAIMON_RETURN_NOT_OK(FlushSegment(segment));
     }
-    PAIMON_ASSIGN_OR_RAISE(CommitIncrement increment,
-                           merge_tree_writer_->PrepareCommit(wait_compaction));
-    if (!segments.empty()) {
-        increment.SetRealtimeOffsetRange(OffsetRange(segments.front()->GetOffsetRange().begin,
-                                                     segments.back()->GetOffsetRange().end));
-    }
-    return increment;
+    return merge_tree_writer_->PrepareCommit(wait_compaction);
 }
 
 Status RealtimePrimaryKeyWriter::FlushSegment(
@@ -295,28 +257,6 @@ Status RealtimePrimaryKeyWriter::Sync() {
 Status RealtimePrimaryKeyWriter::Close() {
     return merge_tree_writer_->Close();
 }
-bool RealtimePrimaryKeyWriter::HasUnpreparedRealtimeData() const {
-    std::lock_guard<std::mutex> lock(realtime_store_mutex_);
-    return has_building_data_ || !sealed_segments_.empty();
-}
-
-void RealtimePrimaryKeyWriter::ReleaseCommittedRealtimeSegments(int64_t committed_end_offset) {
-    std::vector<std::shared_ptr<RealtimeSegmentHandle>> retired_segments;
-    {
-        std::lock_guard<std::mutex> prepare_lock(prepare_mutex_);
-        std::lock_guard<std::mutex> store_lock(realtime_store_mutex_);
-        auto retained_end = std::stable_partition(
-            sealed_segments_.begin(), sealed_segments_.end(),
-            [committed_end_offset](const std::shared_ptr<RealtimeSegmentHandle>& segment) {
-                return segment->GetOffsetRange().end > committed_end_offset;
-            });
-        retired_segments.assign(std::make_move_iterator(retained_end),
-                                std::make_move_iterator(sealed_segments_.end()));
-        sealed_segments_.erase(retained_end, sealed_segments_.end());
-    }
-    // Release Arrow buffers and spill files without holding the writer locks.
-}
-
 std::shared_ptr<Metrics> RealtimePrimaryKeyWriter::GetMetrics() const {
     return merge_tree_writer_->GetMetrics();
 }

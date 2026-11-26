@@ -20,11 +20,10 @@
 
 #include <map>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 
-#include "paimon/core/utils/batch_writer.h"
+#include "paimon/core/realtime/realtime_writer.h"
 
 namespace arrow {
 class Field;
@@ -45,7 +44,7 @@ class SchemaManager;
 struct DataFileMeta;
 
 /// Writer for an append table whose user-defined deduplicate key uses last-write-wins semantics.
-class RealtimeDeduplicateWriter final : public BatchWriter {
+class RealtimeDeduplicateWriter final : public RealtimeWriter {
  public:
     static Result<std::shared_ptr<RealtimeDeduplicateWriter>> Create(
         const std::map<std::string, std::string>& partition, int32_t bucket,
@@ -60,16 +59,12 @@ class RealtimeDeduplicateWriter final : public BatchWriter {
         const std::shared_ptr<MemoryPool>& memory_pool);
 
     Status Write(std::unique_ptr<RecordBatch>&& batch) override;
-    Status Seal() override;
-    Result<CommitIncrement> PrepareCommit(bool wait_compaction) override;
     Status Compact(bool full_compaction) override;
     uint64_t GetMemoryUsage() const override;
     Status FlushMemory() override;
     Result<bool> CompactNotCompleted() override;
     Status Sync() override;
     Status Close() override;
-    bool HasUnpreparedRealtimeData() const override;
-    void ReleaseCommittedRealtimeSegments(int64_t committed_end_offset) override;
     std::shared_ptr<Metrics> GetMetrics() const override;
 
  private:
@@ -79,19 +74,18 @@ class RealtimeDeduplicateWriter final : public BatchWriter {
                               std::shared_ptr<arrow::Field> deduplicate_key_field,
                               int64_t next_offset, std::shared_ptr<MemoryPool> memory_pool);
 
-    Status SealCurrentSegment(bool allow_spill);
+    ArrowDeduplicateRealtimeStore* DeduplicateStore() const;
+    Result<std::optional<std::shared_ptr<RealtimeSegmentHandle>>> SealStore(
+        bool allow_spill) override;
+    Result<CommitIncrement> PrepareCommitImpl(
+        const std::vector<std::shared_ptr<RealtimeSegmentHandle>>& segments,
+        bool wait_compaction) override;
     Status FlushSegment(const std::shared_ptr<RealtimeSegmentHandle>& segment);
 
     std::shared_ptr<arrow::MemoryPool> arrow_pool_;
-    std::shared_ptr<ArrowDeduplicateRealtimeStore> realtime_store_;
     std::shared_ptr<AppendOnlyWriter> file_writer_;
     std::shared_ptr<RealtimeSchemaLayout> schema_layout_;
     std::shared_ptr<arrow::Field> deduplicate_key_field_;
-    std::vector<std::shared_ptr<RealtimeSegmentHandle>> sealed_segments_;
-    int64_t next_offset_;
-    bool has_building_data_ = false;
-    mutable std::mutex realtime_store_mutex_;
-    std::mutex prepare_mutex_;
 };
 
 }  // namespace paimon
