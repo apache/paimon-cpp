@@ -549,7 +549,7 @@ TEST_F(VariantParquetTest, PhysicalLayoutMatchesJava) {
     ASSERT_TRUE(file.ok()) << file.status().ToString();
     std::unique_ptr<::parquet::arrow::FileReader> reader;
     auto status =
-        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
+        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool()).Value(&reader);
     ASSERT_TRUE(status.ok()) << status.ToString();
     const ::parquet::SchemaDescriptor* schema = reader->parquet_reader()->metadata()->schema();
     ASSERT_EQ(schema->num_columns(), 3);
@@ -597,12 +597,12 @@ TEST_F(VariantParquetTest, WriteAndReadRoundTrip) {
         auto file = arrow::io::ReadableFile::Open(file_path_, arrow::default_memory_pool());
         ASSERT_TRUE(file.ok()) << file.status().ToString();
         std::unique_ptr<::parquet::arrow::FileReader> raw_reader;
-        ASSERT_TRUE(
-            ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &raw_reader)
-                .ok());
-        std::shared_ptr<arrow::Table> table;
-        ASSERT_TRUE(raw_reader->ReadTable(&table).ok());
-        auto raw_variant = checked_pointer_cast<arrow::StructArray>(table->column(1)->chunk(0));
+        ASSERT_TRUE(::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool())
+                        .Value(&raw_reader)
+                        .ok());
+        auto table = raw_reader->ReadTable();
+        ASSERT_TRUE(table.ok()) << table.status().ToString();
+        auto raw_variant = checked_pointer_cast<arrow::StructArray>((*table)->column(1)->chunk(0));
         auto raw_value = checked_pointer_cast<arrow::BinaryArray>(raw_variant->field(0));
         for (size_t i = 0; i < jsons.size(); ++i) {
             SCOPED_TRACE("raw row " + std::to_string(i));
@@ -718,8 +718,9 @@ TEST_F(VariantParquetTest, ShreddedWriteAndReadRoundTrip) {
                 auto file = arrow::io::ReadableFile::Open(file_path_, arrow::default_memory_pool());
                 ASSERT_TRUE(file.ok()) << file.status().ToString();
                 std::unique_ptr<::parquet::arrow::FileReader> reader;
-                auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(),
-                                                         arrow::default_memory_pool(), &reader);
+                auto status =
+                    ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool())
+                        .Value(&reader);
                 ASSERT_TRUE(status.ok()) << status.ToString();
                 const auto* root = reader->parquet_reader()->metadata()->schema()->group_node();
                 ASSERT_EQ(root->field_count(), 2);

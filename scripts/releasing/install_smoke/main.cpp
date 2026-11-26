@@ -18,10 +18,17 @@
 
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <string>
+#include <utility>
 
+#include "paimon/read_context.h"
+#include "paimon/realtime/realtime_store.h"
+#include "paimon/schema/schema.h"
 #include "paimon/status.h"
 #include "paimon/utils/special_field_ids.h"
+
+static_assert(__cplusplus == 201703L, "The installed public API must compile as C++17");
 
 int main() {
     const paimon::Status status = paimon::Status::Invalid("install smoke test");
@@ -29,5 +36,21 @@ int main() {
     const bool valid_status =
         !status.ok() && status.ToString().find("install smoke test") != std::string::npos;
     const bool valid_row_id = *row_id == std::numeric_limits<int32_t>::max() - 5;
-    return valid_status && valid_row_id ? 0 : 1;
+
+    bool released = false;
+    {
+        auto schema = std::make_unique<ArrowSchema>();
+        schema->format = "+s";
+        schema->private_data = &released;
+        schema->release = [](ArrowSchema* schema) {
+            *static_cast<bool*>(schema->private_data) = true;
+            schema->release = nullptr;
+        };
+        paimon::ReadContextBuilder builder("install-smoke-table");
+        auto context = builder.SetReadSchema(std::move(schema)).Finish();
+        if (!context.ok() || !context.value()->HasReadSchema()) {
+            return 1;
+        }
+    }
+    return valid_status && valid_row_id && released ? 0 : 1;
 }

@@ -296,14 +296,15 @@ Result<std::unique_ptr<parquet::arrow::FileReader>> OpenParquetSourceReader(
                                input.status().ToString());
     }
 
-    std::unique_ptr<parquet::arrow::FileReader> parquet_reader;
-    const auto open_status = parquet::arrow::OpenFile(
-        input.ValueUnsafe(), arrow::default_memory_pool(), &parquet_reader);
-    if (!open_status.ok()) {
-        return Status::Invalid("create Parquet reader failed: ", open_status.ToString());
+    auto reader_result =
+        parquet::arrow::OpenFile(input.ValueUnsafe(), arrow::default_memory_pool());
+    if (!reader_result.ok()) {
+        return Status::Invalid("create Parquet reader failed for ", path, ": ",
+                               reader_result.status().ToString());
     }
-    parquet_reader->set_batch_size(GetSourceBatchMaxRows());
-    return parquet_reader;
+    auto reader = std::move(reader_result).ValueUnsafe();
+    reader->set_batch_size(GetSourceBatchMaxRows());
+    return reader;
 }
 #endif
 
@@ -396,12 +397,12 @@ Status WriteSourceDataToWriter(paimon::FileStoreWrite* writer, const SourceDataS
 #else
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<parquet::arrow::FileReader> parquet_reader,
                            OpenParquetSourceReader(source_spec.path));
-    std::unique_ptr<arrow::RecordBatchReader> batch_reader;
-    const auto reader_status = parquet_reader->GetRecordBatchReader(&batch_reader);
-    if (!reader_status.ok()) {
-        return Status::Invalid("create Parquet source batch reader failed: ",
-                               reader_status.ToString());
+    auto batch_reader_result = parquet_reader->GetRecordBatchReader();
+    if (!batch_reader_result.ok()) {
+        return Status::Invalid("create Parquet source batch reader failed for ", source_spec.path,
+                               ": ", batch_reader_result.status().ToString());
     }
+    auto batch_reader = std::move(batch_reader_result).ValueUnsafe();
 
     int64_t written_rows = 0;
     while (true) {

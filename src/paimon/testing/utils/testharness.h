@@ -53,6 +53,7 @@
 #include <string>
 #include <utility>
 
+#include "arrow/ipc/json_simple.h"
 #include "gtest/gtest.h"
 #include "paimon/macros.h"
 #include "paimon/result.h"

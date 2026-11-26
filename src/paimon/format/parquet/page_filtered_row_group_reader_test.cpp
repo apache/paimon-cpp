@@ -80,8 +80,13 @@ class SyntheticOffsetIndex : public ::parquet::OffsetIndex {
         return pages_;
     }
 
+    const std::vector<int64_t>& unencoded_byte_array_data_bytes() const override {
+        return byte_array_sizes_;
+    }
+
  private:
     std::vector<::parquet::PageLocation> pages_;
+    std::vector<int64_t> byte_array_sizes_;
 };
 
 class SyntheticPageIndexReader : public ::parquet::RowGroupPageIndexReader {
@@ -113,32 +118,27 @@ class MockArrowFileReader : public ::parquet::arrow::FileReader {
     MOCK_METHOD(arrow::Status, GetSchema, (std::shared_ptr<arrow::Schema>*), (override));
     MOCK_METHOD(arrow::Status, ReadColumn, (int32_t, std::shared_ptr<arrow::ChunkedArray>*),
                 (override));
-    MOCK_METHOD(arrow::Status, GetRecordBatchReader, (std::unique_ptr<arrow::RecordBatchReader>*),
+    MOCK_METHOD(arrow::Result<std::unique_ptr<arrow::RecordBatchReader>>, GetRecordBatchReader, (),
                 (override));
-    MOCK_METHOD(arrow::Status, GetRecordBatchReader,
-                (const std::vector<int32_t>&, std::unique_ptr<arrow::RecordBatchReader>*),
-                (override));
-    MOCK_METHOD(arrow::Status, GetRecordBatchReader,
-                (const std::vector<int32_t>&, const std::vector<int32_t>&,
-                 std::unique_ptr<arrow::RecordBatchReader>*),
-                (override));
+    MOCK_METHOD(arrow::Result<std::unique_ptr<arrow::RecordBatchReader>>, GetRecordBatchReader,
+                (const std::vector<int32_t>&), (override));
+    MOCK_METHOD(arrow::Result<std::unique_ptr<arrow::RecordBatchReader>>, GetRecordBatchReader,
+                (const std::vector<int32_t>&, const std::vector<int32_t>&), (override));
     MOCK_METHOD(arrow::Result<std::function<arrow::Future<std::shared_ptr<arrow::RecordBatch>>()>>,
                 GetRecordBatchGenerator,
                 (std::shared_ptr<::parquet::arrow::FileReader>, const std::vector<int32_t>,
                  const std::vector<int32_t>, arrow::internal::Executor*, int64_t),
                 (override));
-    MOCK_METHOD(arrow::Status, ReadTable, (std::shared_ptr<arrow::Table>*), (override));
-    MOCK_METHOD(arrow::Status, ReadTable,
-                (const std::vector<int32_t>&, std::shared_ptr<arrow::Table>*), (override));
-    MOCK_METHOD(arrow::Status, ReadRowGroup,
-                (int32_t, const std::vector<int32_t>&, std::shared_ptr<arrow::Table>*), (override));
-    MOCK_METHOD(arrow::Status, ReadRowGroup, (int32_t, std::shared_ptr<arrow::Table>*), (override));
-    MOCK_METHOD(arrow::Status, ReadRowGroups,
-                (const std::vector<int32_t>&, const std::vector<int32_t>&,
-                 std::shared_ptr<arrow::Table>*),
-                (override));
-    MOCK_METHOD(arrow::Status, ReadRowGroups,
-                (const std::vector<int32_t>&, std::shared_ptr<arrow::Table>*), (override));
+    MOCK_METHOD(arrow::Result<std::shared_ptr<arrow::Table>>, ReadTable, (), (override));
+    MOCK_METHOD(arrow::Result<std::shared_ptr<arrow::Table>>, ReadTable,
+                (const std::vector<int32_t>&), (override));
+    MOCK_METHOD(arrow::Result<std::shared_ptr<arrow::Table>>, ReadRowGroup,
+                (int32_t, const std::vector<int32_t>&), (override));
+    MOCK_METHOD(arrow::Result<std::shared_ptr<arrow::Table>>, ReadRowGroup, (int32_t), (override));
+    MOCK_METHOD(arrow::Result<std::shared_ptr<arrow::Table>>, ReadRowGroups,
+                (const std::vector<int32_t>&, const std::vector<int32_t>&), (override));
+    MOCK_METHOD(arrow::Result<std::shared_ptr<arrow::Table>>, ReadRowGroups,
+                (const std::vector<int32_t>&), (override));
     MOCK_METHOD(arrow::Status, ScanContents, (std::vector<int32_t>, int32_t, int64_t*), (override));
     MOCK_METHOD(std::shared_ptr<::parquet::arrow::RowGroupReader>, RowGroup, (int32_t), (override));
     MOCK_METHOD(int32_t, num_row_groups, (), (const, override));
@@ -1018,7 +1018,7 @@ TEST_F(PageFilteredRowGroupReaderTest, StreamingAlignsMisalignedChunksAcrossDeco
     ASSERT_OK_AND_ASSIGN(int64_t length, input->Length());
     auto stream = std::make_shared<ArrowInputStreamAdapter>(input, length, arrow_pool_);
     std::unique_ptr<::parquet::arrow::FileReader> file_reader;
-    ASSERT_TRUE(::parquet::arrow::OpenFile(stream, arrow_pool_.get(), &file_reader).ok());
+    ASSERT_TRUE(::parquet::arrow::OpenFile(stream, arrow_pool_.get()).Value(&file_reader).ok());
     auto indexes = file_reader->parquet_reader()->GetPageIndexReader()->RowGroup(0);
     const RowRanges ranges(
         {RowRanges::Range(2, 5), RowRanges::Range(10, 15), RowRanges::Range(19, 23)});
@@ -2006,7 +2006,7 @@ TEST_F(PageFilteredRowGroupReaderTest, InvalidOffsetIndexFallsBackWithoutChangin
     ASSERT_OK_AND_ASSIGN(int64_t length, in->Length());
     auto stream = std::make_shared<ArrowInputStreamAdapter>(in, length, arrow_pool_);
     std::unique_ptr<::parquet::arrow::FileReader> reader;
-    ASSERT_TRUE(::parquet::arrow::OpenFile(stream, arrow_pool_.get(), &reader).ok());
+    ASSERT_TRUE(::parquet::arrow::OpenFile(stream, arrow_pool_.get()).Value(&reader).ok());
     auto valid_index =
         reader->parquet_reader()->GetPageIndexReader()->RowGroup(0)->GetOffsetIndex(1);
     ASSERT_NE(nullptr, valid_index);
@@ -3030,7 +3030,7 @@ TEST_F(PageFilteredRowGroupReaderTest, StreamingBoundsDecodedMemoryAndPreservesR
         ASSERT_OK_AND_ASSIGN(int64_t length, input->Length());
         auto stream = std::make_shared<ArrowInputStreamAdapter>(input, length, read_pool);
         std::unique_ptr<::parquet::arrow::FileReader> file_reader;
-        ASSERT_TRUE(::parquet::arrow::OpenFile(stream, read_pool.get(), &file_reader).ok());
+        ASSERT_TRUE(::parquet::arrow::OpenFile(stream, read_pool.get()).Value(&file_reader).ok());
         auto indexes = file_reader->parquet_reader()->GetPageIndexReader()->RowGroup(0);
         TargetRowGroup target(0, true, ranges);
         const auto page_ranges = PageFilteredRowGroupReader::ComputePageRanges(
@@ -3104,7 +3104,7 @@ TEST_F(PageFilteredRowGroupReaderTest, StreamingDefersLaterPageDecodeErrors) {
     ASSERT_OK_AND_ASSIGN(int64_t length, input->Length());
     auto stream = std::make_shared<ArrowInputStreamAdapter>(input, length, arrow_pool_);
     std::unique_ptr<::parquet::arrow::FileReader> original;
-    ASSERT_TRUE(::parquet::arrow::OpenFile(stream, arrow_pool_.get(), &original).ok());
+    ASSERT_TRUE(::parquet::arrow::OpenFile(stream, arrow_pool_.get()).Value(&original).ok());
     auto index = original->parquet_reader()->GetPageIndexReader()->RowGroup(0)->GetOffsetIndex(1);
     ASSERT_NE(nullptr, index);
     ASSERT_EQ(10, index->page_locations().size());
@@ -3122,7 +3122,7 @@ TEST_F(PageFilteredRowGroupReaderTest, StreamingDefersLaterPageDecodeErrors) {
                                                   contents.size());
     auto corrupted = std::make_shared<arrow::io::BufferReader>(buffer);
     std::unique_ptr<::parquet::arrow::FileReader> file_reader;
-    ASSERT_TRUE(::parquet::arrow::OpenFile(corrupted, arrow_pool_.get(), &file_reader).ok());
+    ASSERT_TRUE(::parquet::arrow::OpenFile(corrupted, arrow_pool_.get()).Value(&file_reader).ok());
     auto indexes = file_reader->parquet_reader()->GetPageIndexReader()->RowGroup(0);
     TargetRowGroup target(0, true, RowRanges::CreateSingle(100));
     const auto ranges = PageFilteredRowGroupReader::ComputePageRanges(

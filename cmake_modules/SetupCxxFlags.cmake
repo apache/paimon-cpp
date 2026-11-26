@@ -49,16 +49,6 @@ if(NOT DEFINED CMAKE_C_STANDARD)
     set(CMAKE_C_STANDARD 11)
 endif()
 
-# This ensures that things like c++11 get passed correctly
-if(NOT DEFINED CMAKE_CXX_STANDARD)
-    set(CMAKE_CXX_STANDARD 17)
-endif()
-
-# We require a C++11 compliant compiler
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-set(CMAKE_CXX_EXTENSIONS OFF)
-
 # Build with -fPIC so that can static link our libraries into other people's
 # shared libraries
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -184,12 +174,6 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     if(CMAKE_UNITY_BUILD)
         # Work around issue similar to https://bugs.webkit.org/show_bug.cgi?id=176869
         set(CXX_ONLY_FLAGS "${CXX_ONLY_FLAGS} -Wno-subobject-linkage")
-    endif()
-
-    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "8.0"
-       AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.0")
-        # When using the C++17 filesystem library (<filesystem>) with GCC 8, you do need to explicitly link stdc++fs.
-        link_libraries(stdc++fs)
     endif()
 
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL

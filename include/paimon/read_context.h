@@ -25,7 +25,7 @@
 #include <string>
 #include <vector>
 
-#include "arrow/c/abi.h"
+#include "paimon/arrow/abi.h"
 #include "paimon/cache/cache.h"
 #include "paimon/catalog/identifier.h"
 #include "paimon/predicate/predicate.h"

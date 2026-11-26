@@ -58,6 +58,7 @@
 #include "parquet/arrow/reader.h"
 #include "parquet/file_reader.h"
 #include "parquet/metadata.h"
+#include "parquet/page_index.h"
 #include "parquet/properties.h"
 #include "parquet/schema.h"
 #include "parquet/statistics.h"
@@ -147,8 +148,8 @@ class ParquetFormatWriterTest : public ::testing::Test {
         auto file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
         ASSERT_TRUE(file.ok()) << file.status().ToString();
         std::unique_ptr<::parquet::arrow::FileReader> reader;
-        auto status =
-            ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
+        auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool())
+                          .Value(&reader);
         ASSERT_TRUE(status.ok()) << status.ToString();
         const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
         const ::parquet::SchemaDescriptor* schema = metadata->schema();
@@ -272,8 +273,8 @@ class ParquetFormatWriterTest : public ::testing::Test {
         auto file = arrow::io::ReadableFile::Open(file_path, arrow::default_memory_pool());
         ASSERT_TRUE(file.ok()) << file.status().ToString();
         std::unique_ptr<::parquet::arrow::FileReader> reader;
-        auto status =
-            ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
+        auto status = ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool())
+                          .Value(&reader);
         ASSERT_TRUE(status.ok()) << status.ToString();
         const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
         ASSERT_EQ(metadata->num_rows(), row_count);
@@ -396,6 +397,50 @@ TEST_F(ParquetFormatWriterTest, TestWriteWithV1Version) {
     CheckResult(file_path, record_batch_size, /*row_group_count=*/1);
 }
 
+TEST_F(ParquetFormatWriterTest, TestByteSizedPagesAndPageIndexOption) {
+    constexpr int32_t row_count = ::parquet::kDefaultMaxRowsPerPage + 1;
+    const auto [schema, struct_type] = PrepareArrowSchema();
+    for (bool write_page_index : {true, false}) {
+        SCOPED_TRACE(write_page_index);
+        std::map<std::string, std::string> options = {{Options::FILE_FORMAT, "parquet"}};
+        if (!write_page_index) {
+            options[PARQUET_WRITE_ENABLE_PAGE_INDEX] = "false";
+        }
+        ASSERT_OK_AND_ASSIGN(auto file_format, FileFormatFactory::Get("parquet", options));
+        ArrowSchema c_schema;
+        ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+        ASSERT_OK_AND_ASSIGN(auto builder,
+                             file_format->CreateWriterBuilder(&c_schema, /*batch_size=*/1024));
+        const auto path =
+            PathUtil::JoinPath(dir_->Str(), fmt::format("{}.parquet", write_page_index));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output,
+                             fs_->Create(path, /*overwrite=*/false));
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatWriter> writer,
+                             builder->Build(output, "uncompressed"));
+        ASSERT_NO_FATAL_FAILURE(AddRecordBatchOnce(writer, struct_type, row_count, /*offset=*/0));
+        ASSERT_OK(writer->Flush());
+        ASSERT_OK(writer->Finish());
+        ASSERT_OK(output->Close());
+
+        const auto reader = ::parquet::ParquetFileReader::OpenFile(path);
+        const auto metadata = reader->metadata();
+        ASSERT_EQ(row_count, metadata->num_rows());
+        ASSERT_EQ(1, metadata->num_row_groups());
+        const auto column = metadata->RowGroup(0)->ColumnChunk(0);
+        ASSERT_TRUE(column->is_stats_set());
+        ASSERT_EQ(nullptr, column->size_statistics());
+        ASSERT_EQ(write_page_index, column->GetColumnIndexLocation().has_value());
+        ASSERT_EQ(write_page_index, column->GetOffsetIndexLocation().has_value());
+        if (write_page_index) {
+            const auto row_group_index = reader->GetPageIndexReader()->RowGroup(0);
+            ASSERT_NE(nullptr, row_group_index);
+            const auto offset_index = row_group_index->GetOffsetIndex(0);
+            ASSERT_NE(nullptr, offset_index);
+            ASSERT_EQ(1, offset_index->page_locations().size());
+        }
+    }
+}
+
 TEST_F(ParquetFormatWriterTest, TestWriteMultipleTimes) {
     // arrow array length = 6 + 10 + 15 + 6 = 37
     // parquet batch capacity = 10
@@ -474,69 +519,26 @@ TEST_F(ParquetFormatWriterTest, TestGetEstimateLength) {
 }
 
 TEST_F(ParquetFormatWriterTest, TestMemoryControl) {
-    auto run = [&](bool all_null_value, uint64_t max_memory_use) {
+    constexpr int32_t batch_size = 4096;
+    constexpr int32_t batch_count = 2000;
+    constexpr uint64_t memory_threshold = 20 * 1024 * 1024;
+    const auto schema_pair = PrepareArrowSchema();
+    const auto& arrow_schema = schema_pair.first;
+    const auto& struct_type = schema_pair.second;
+
+    struct WriteResult {
+        uint64_t peak_memory = 0;
+        int32_t row_group_count = 0;
+    };
+    auto write_file = [&](int32_t num_batches, bool all_null_value, uint64_t max_memory_use,
+                          WriteResult* result) {
         ASSERT_OK_AND_ASSIGN(std::unique_ptr<FileFormat> file_format,
                              FileFormatFactory::Get("parquet", {{Options::FILE_FORMAT, "parquet"},
                                                                 {"parquet.writer.max.memory.use",
                                                                  std::to_string(max_memory_use)}}));
-
         std::shared_ptr<MemoryPool> pool = GetMemoryPool();
-        auto schema_pair = PrepareArrowSchema();
-        const auto& arrow_schema = schema_pair.first;
-        const auto& struct_type = schema_pair.second;
-        int32_t batch_size = 4096;
-
-        auto c_schema = std::make_unique<::ArrowSchema>();
-        ASSERT_TRUE(arrow::ExportSchema(*arrow_schema, c_schema.get()).ok());
-        ASSERT_OK_AND_ASSIGN(auto writer_builder,
-                             file_format->CreateWriterBuilder(c_schema.get(), batch_size));
-        ASSERT_OK_AND_ASSIGN(
-            std::shared_ptr<OutputStream> out,
-            fs_->Create(
-                PathUtil::JoinPath(dir_->Str(), std::to_string(all_null_value) +
-                                                    std::to_string(max_memory_use) + ".parquet"),
-                /*overwrite=*/false));
-        ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatWriter> writer,
-                             writer_builder->WithMemoryPool(pool)->Build(out, "uncompressed"));
-
-        auto array = PrepareArray(struct_type, batch_size, /*offset=*/0, all_null_value);
-        for (int32_t i = 0; i < 2000; ++i) {
-            auto arrow_array = std::make_unique<ArrowArray>();
-            ASSERT_TRUE(arrow::ExportArray(*array, arrow_array.get()).ok());
-            auto batch = std::make_shared<RecordBatch>(
-                /*partition=*/std::map<std::string, std::string>(), /*bucket=*/-1,
-                /*row_kinds=*/std::vector<RecordBatch::RowKind>(), arrow_array.get());
-            ASSERT_OK(writer->AddBatch(batch->GetData()));
-            ASSERT_OK(writer->Flush());
-        }
-
-        ASSERT_OK(writer->Flush());
-        ASSERT_OK(writer->Finish());
-        ASSERT_OK(out->Flush());
-        ASSERT_OK(out->Close());
-        uint64_t actual_max_mem = pool->MaxMemoryUsage();
-        ASSERT_GT(actual_max_mem, max_memory_use);
-        ASSERT_LT(actual_max_mem, max_memory_use * 1.5);  // allow 50% overhead
-    };
-    run(/*all_null_value=*/true, /*max_memory_use=*/20 * 1024 * 1024);   // 20MB
-    run(/*all_null_value=*/true, /*max_memory_use=*/40 * 1024 * 1024);   // 40MB
-    run(/*all_null_value=*/false, /*max_memory_use=*/20 * 1024 * 1024);  // 20MB
-    run(/*all_null_value=*/false, /*max_memory_use=*/40 * 1024 * 1024);  // 40MB
-}
-
-TEST_F(ParquetFormatWriterTest, TestMemoryControlForCheckRowGroupCount) {
-    auto run = [&](int32_t write_times) {
-        ASSERT_OK_AND_ASSIGN(
-            std::unique_ptr<FileFormat> file_format,
-            FileFormatFactory::Get("parquet", {{Options::FILE_FORMAT, "parquet"},
-                                               {"parquet.writer.max.memory.use", "1"}}));
-
-        auto schema_pair = PrepareArrowSchema();
-        const auto& arrow_schema = schema_pair.first;
-        const auto& struct_type = schema_pair.second;
-        int32_t batch_size = 4096;
-        std::string file_path =
-            PathUtil::JoinPath(dir_->Str(), std::to_string(write_times) + ".parquet");
+        std::string file_path = PathUtil::JoinPath(
+            dir_->Str(), fmt::format("{}-{}.parquet", all_null_value, max_memory_use));
 
         auto c_schema = std::make_unique<::ArrowSchema>();
         ASSERT_TRUE(arrow::ExportSchema(*arrow_schema, c_schema.get()).ok());
@@ -545,21 +547,41 @@ TEST_F(ParquetFormatWriterTest, TestMemoryControlForCheckRowGroupCount) {
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> out,
                              fs_->Create(file_path, /*overwrite=*/false));
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<FormatWriter> writer,
-                             writer_builder->Build(out, "uncompressed"));
+                             writer_builder->WithMemoryPool(pool)->Build(out, "uncompressed"));
 
-        for (int32_t i = 0; i < write_times; ++i) {
-            AddRecordBatchOnce(writer, struct_type, 10, i * 10);
+        auto array = PrepareArray(struct_type, batch_size, /*offset=*/0, all_null_value);
+        for (int32_t i = 0; i < num_batches; ++i) {
+            auto arrow_array = std::make_unique<ArrowArray>();
+            ASSERT_TRUE(arrow::ExportArray(*array, arrow_array.get()).ok());
+            ASSERT_OK(writer->AddBatch(arrow_array.get()));
         }
 
         ASSERT_OK(writer->Flush());
         ASSERT_OK(writer->Finish());
         ASSERT_OK(out->Flush());
         ASSERT_OK(out->Close());
-        CheckResult(file_path, /*row_count=*/write_times * 10, /*row_group_count=*/write_times);
+        const auto metadata = ::parquet::ParquetFileReader::OpenFile(file_path)->metadata();
+        ASSERT_EQ(num_batches * batch_size, metadata->num_rows());
+        result->peak_memory = pool->MaxMemoryUsage();
+        result->row_group_count = metadata->num_row_groups();
     };
-    run(/*write_times=*/1);
-    run(/*write_times=*/2);
-    run(/*write_times=*/5);
+
+    for (bool all_null_value : {false, true}) {
+        SCOPED_TRACE(::testing::Message() << "all_null_value=" << all_null_value);
+        WriteResult limited;
+        WriteResult default_limit;
+        ASSERT_NO_FATAL_FAILURE(
+            write_file(batch_count, all_null_value, memory_threshold, &limited));
+        ASSERT_NO_FATAL_FAILURE(write_file(batch_count, all_null_value,
+                                           DEFAULT_PARQUET_WRITER_MAX_MEMORY_USE, &default_limit));
+        EXPECT_GT(limited.row_group_count, default_limit.row_group_count);
+        EXPECT_LT(limited.peak_memory, default_limit.peak_memory);
+    }
+
+    WriteResult per_batch;
+    ASSERT_NO_FATAL_FAILURE(write_file(/*num_batches=*/5, /*all_null_value=*/false,
+                                       /*max_memory_use=*/1, &per_batch));
+    EXPECT_EQ(5, per_batch.row_group_count);
 }
 
 TEST_F(ParquetFormatWriterTest, TestTimestampType) {
@@ -644,7 +666,7 @@ TEST_F(ParquetFormatWriterTest, TestWriteDictionaryChangingAcrossBatches) {
     ASSERT_TRUE(file.ok()) << file.status().ToString();
     std::unique_ptr<::parquet::arrow::FileReader> reader;
     auto status =
-        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
+        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool()).Value(&reader);
     ASSERT_TRUE(status.ok()) << status.ToString();
     const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
     ASSERT_EQ(3 * kBatchRows, metadata->num_rows());
@@ -717,7 +739,7 @@ TEST_F(ParquetFormatWriterTest, TestWriteDictionaryWithNullRows) {
     ASSERT_TRUE(file.ok()) << file.status().ToString();
     std::unique_ptr<::parquet::arrow::FileReader> reader;
     auto status =
-        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
+        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool()).Value(&reader);
     ASSERT_TRUE(status.ok()) << status.ToString();
     const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
     ASSERT_EQ(6, metadata->num_rows());
@@ -776,7 +798,7 @@ TEST_F(ParquetFormatWriterTest, TestWriteDictionaryWithDuplicateValues) {
     ASSERT_TRUE(file.ok()) << file.status().ToString();
     std::unique_ptr<::parquet::arrow::FileReader> reader;
     auto status =
-        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
+        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool()).Value(&reader);
     ASSERT_TRUE(status.ok()) << status.ToString();
     const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
     ASSERT_EQ(4, metadata->num_rows());
@@ -900,7 +922,7 @@ TEST_F(ParquetFormatWriterTest, TestWriteDictionaryOfBinaryColumn) {
     ASSERT_TRUE(file.ok()) << file.status().ToString();
     std::unique_ptr<::parquet::arrow::FileReader> reader;
     auto status =
-        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool(), &reader);
+        ::parquet::arrow::OpenFile(file.ValueOrDie(), arrow::default_memory_pool()).Value(&reader);
     ASSERT_TRUE(status.ok()) << status.ToString();
     const ::parquet::FileMetaData* metadata = reader->parquet_reader()->metadata().get();
     ASSERT_EQ(4, metadata->num_rows());

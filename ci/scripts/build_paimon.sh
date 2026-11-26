@@ -135,10 +135,6 @@ pushd "${build_dir}"
 ENABLE_LUMINA="ON"
 ENABLE_FULL_TEXT="ON"
 ENABLE_LANCE="ON"
-if [[ "${CC:-}" == *"gcc-8"* ]] || [[ "${CXX:-}" == *"g++-8"* ]]; then
-    ENABLE_LUMINA="OFF"
-    ENABLE_FULL_TEXT="OFF" # The full-text index (Rust FFI) is not built on the gcc-8 image.
-fi
 if [[ "${enable_tsan}" == "true" ]]; then
     ENABLE_FULL_TEXT="OFF" # The full-text Rust library is not TSAN-instrumented.
     ENABLE_LANCE="OFF"     # Lance's Rust library is not TSAN-instrumented.
@@ -217,12 +213,10 @@ if [[ "${install_smoke}" == "true" ]]; then
         -S "${source_dir}/scripts/releasing/install_smoke" \
         -B "${smoke_build_dir}" \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_PREFIX_PATH="${install_dir};${build_dir}/arrow_ep-install"
+        -DCMAKE_PREFIX_PATH="${install_dir}"
     cmake --build "${smoke_build_dir}" -- -j "${build_jobs}"
 
     runtime_library_path="${install_dir}/lib:${install_dir}/lib64"
-    runtime_library_path+=":${build_dir}/arrow_ep-install/lib"
-    runtime_library_path+=":${build_dir}/arrow_ep-install/lib64"
     if [[ "$(uname -s)" == "Darwin" ]]; then
         cmake -E env \
             "DYLD_LIBRARY_PATH=${runtime_library_path}" \

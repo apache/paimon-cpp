@@ -46,7 +46,8 @@ Paimon C++ currently provides:
 
 ## Building
 
-Building requires a C++17-compatible compiler and CMake 3.22 or newer.
+Building requires a C++20-compatible compiler and CMake 3.26 or newer. The
+installed public headers support C++17.
 Linux `x86_64` and `aarch64` builds are supported and verified in CI.
 See the [build guide](docs/source/building.rst) for platform support, system requirements,
 dependency configuration, optional components, and instructions for building and running tests.

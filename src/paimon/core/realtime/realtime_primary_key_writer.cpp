@@ -28,7 +28,6 @@
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "arrow/compute/api.h"
-#include "paimon/common/table/special_fields.h"
 #include "paimon/common/types/row_kind.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
@@ -71,6 +70,7 @@ Result<RealtimeOffsetUtils::ValidatedBatch> CreateRealtimePrimaryKeyStoreBatch(
     std::shared_ptr<arrow::Array> sequence_array;
     PAIMON_RETURN_NOT_OK_FROM_ARROW(kinds.Finish(&kind_array));
     PAIMON_RETURN_NOT_OK_FROM_ARROW(sequences.Finish(&sequence_array));
+    constexpr int32_t kSequenceNumberColumn = 0;
     arrow::ArrayVector columns = {std::move(sequence_array), std::move(kind_array)};
     columns.insert(columns.end(), values->fields().begin(), values->fields().end());
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
@@ -80,12 +80,13 @@ Result<RealtimeOffsetUtils::ValidatedBatch> CreateRealtimePrimaryKeyStoreBatch(
     std::vector<arrow::compute::SortKey> sort_keys;
     sort_keys.reserve(trimmed_primary_keys.size() + 1);
     for (const std::string& key : trimmed_primary_keys) {
-        sort_keys.emplace_back(key, arrow::compute::SortOrder::Ascending);
+        sort_keys.emplace_back(key, arrow::compute::SortOrder::Ascending,
+                               arrow::compute::NullPlacement::AtStart);
     }
-    sort_keys.emplace_back(SpecialFields::SequenceNumber().Name(),
-                           arrow::compute::SortOrder::Ascending);
+    sort_keys.emplace_back(kSequenceNumberColumn, arrow::compute::SortOrder::Ascending,
+                           arrow::compute::NullPlacement::AtStart);
     arrow::compute::ExecContext context(arrow_pool);
-    arrow::compute::SortOptions options(sort_keys, arrow::compute::NullPlacement::AtStart);
+    arrow::compute::SortOptions options(std::move(sort_keys));
     PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
         arrow::Datum indices,
         arrow::compute::SortIndices(arrow::Datum(store_batch), options, &context));

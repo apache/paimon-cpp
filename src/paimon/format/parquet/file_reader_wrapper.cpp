@@ -119,31 +119,32 @@ Result<std::unique_ptr<FileReaderWrapper>> FileReaderWrapper::Create(
         if (file_reader == nullptr) {
             return Status::Invalid("file reader wrapper create failed. file reader is nullptr");
         }
-        std::vector<std::pair<uint64_t, uint64_t>> all_row_group_ranges;
         auto meta_data = file_reader->parquet_reader()->metadata();
-        // prepare [start_row_idx, end_row_idx) for all row groups
+        const int32_t row_group_count = meta_data->num_row_groups();
+        std::vector<std::pair<uint64_t, uint64_t>> all_row_group_ranges;
+        all_row_group_ranges.reserve(row_group_count);
+        TargetRowGroups all_target_row_groups;
+        all_target_row_groups.reserve(row_group_count);
         uint64_t start_row_idx = 0;
-        for (int32_t i = 0; i < meta_data->num_row_groups(); i++) {
+        for (int32_t i = 0; i < row_group_count; i++) {
             uint64_t end_row_idx = start_row_idx + meta_data->RowGroup(i)->num_rows();
             all_row_group_ranges.emplace_back(start_row_idx, end_row_idx);
+            // Arrow skips empty row groups when producing batches.
+            if (start_row_idx < end_row_idx) {
+                all_target_row_groups.emplace_back(i, /*is_partially_matched=*/false, RowRanges());
+            }
             start_row_idx = end_row_idx;
         }
-        uint64_t num_rows = file_reader->parquet_reader()->metadata()->num_rows();
+        uint64_t num_rows = meta_data->num_rows();
         if (start_row_idx != num_rows) {
             assert(false);
             return Status::Invalid(fmt::format(
                 "unexpected error. row group ranges not match with num rows {}", num_rows));
         }
-        std::vector<int32_t> columns_indices =
-            arrow::internal::Iota(file_reader->parquet_reader()->metadata()->num_columns());
+        std::vector<int32_t> columns_indices = arrow::internal::Iota(meta_data->num_columns());
         auto file_reader_wrapper = std::unique_ptr<FileReaderWrapper>(new FileReaderWrapper(
             std::move(file_reader), all_row_group_ranges, num_rows, batch_size, pool));
         file_reader_wrapper->enable_offset_index_cache_ = enable_offset_index_cache;
-        std::vector<TargetRowGroup> all_target_row_groups;
-        for (int32_t i = 0; i < file_reader_wrapper->GetNumberOfRowGroups(); i++) {
-            all_target_row_groups.emplace_back(/*rg_index=*/i, /*is_partially_matched=*/false,
-                                               /*ranges=*/RowRanges());
-        }
         PAIMON_RETURN_NOT_OK(
             file_reader_wrapper->PrepareForReadingLazy(all_target_row_groups, columns_indices));
         return file_reader_wrapper;
@@ -254,8 +255,9 @@ Status FileReaderWrapper::SeekToRow(uint64_t row_number) {
                     }
                 }
                 if (!fully_matched_indices.empty()) {
-                    PAIMON_RETURN_NOT_OK_FROM_ARROW(file_reader_->GetRecordBatchReader(
-                        fully_matched_indices, target_column_indices_, &batch_reader_));
+                    PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                        batch_reader_, file_reader_->GetRecordBatchReader(fully_matched_indices,
+                                                                          target_column_indices_));
                 } else {
                     batch_reader_.reset();
                 }
@@ -560,8 +562,9 @@ Status FileReaderWrapper::PrepareForReading(const std::vector<TargetRowGroup>& t
 
         // Create standard reader for fully-matched row groups.
         if (!fully_matched_row_groups.empty()) {
-            PAIMON_RETURN_NOT_OK_FROM_ARROW(file_reader_->GetRecordBatchReader(
-                fully_matched_row_groups, column_indices, &batch_reader_));
+            PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(
+                batch_reader_,
+                file_reader_->GetRecordBatchReader(fully_matched_row_groups, column_indices));
         } else {
             batch_reader_.reset();
         }

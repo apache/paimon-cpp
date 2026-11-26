@@ -266,7 +266,7 @@ TEST(BinaryRowPartitionComputerTest, TestNullOrWhitespaceOnlyStr) {
     ASSERT_OK_AND_ASSIGN(
         auto partition_key_values,
         computer->GeneratePartitionVector(BinaryRowGenerator::GenerateRow(
-            {std::string(" "), std::string(""), std::string("ab "), std::string(u8"\u3000\u2000")},
+            {std::string(" "), std::string(""), std::string("ab "), std::string("\u3000\u2000")},
             pool.get())));
     std::vector<std::pair<std::string, std::string>> expected = {
         {"f0", "__DEFAULT_PARTITION__"},

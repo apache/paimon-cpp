@@ -34,6 +34,7 @@
 #include "arrow/c/abi.h"
 #include "arrow/c/bridge.h"
 #include "arrow/io/caching.h"
+#include "arrow/io/file.h"
 #include "arrow/memory_pool.h"
 #include "fmt/format.h"
 #include "gtest/gtest.h"
@@ -53,6 +54,7 @@
 #include "paimon/record_batch.h"
 #include "paimon/testing/utils/testharness.h"
 #include "parquet/arrow/reader.h"
+#include "parquet/arrow/writer.h"
 #include "parquet/file_reader.h"
 #include "parquet/metadata.h"
 #include "parquet/page_index.h"
@@ -438,6 +440,39 @@ TEST_F(FileReaderWrapperTest, Simple) {
     ASSERT_FALSE(record_batch);
     ASSERT_EQ(5500, reader_wrapper->GetNextRowToRead());
     ASSERT_EQ(5500, reader_wrapper->GetPreviousBatchFirstRowNumber().value());
+}
+
+TEST_F(FileReaderWrapperTest, SkipsEmptyRowGroups) {
+    const std::string file_path = PathUtil::JoinPath(dir_->Str(), "empty-row-groups.parquet");
+    const auto [schema, struct_type] = PrepareArrowSchema();
+    auto data = arrow::RecordBatch::FromStructArray(PrepareArray(struct_type, 4)).ValueOrDie();
+    auto output = arrow::io::FileOutputStream::Open(file_path).ValueOrDie();
+    auto writer =
+        ::parquet::arrow::FileWriter::Open(*schema, arrow_pool_.get(), output).ValueOrDie();
+    int64_t offset = 0;
+    for (int64_t row_count : {0, 2, 0, 2, 0}) {
+        ASSERT_OK(ToPaimonStatus(writer->NewBufferedRowGroup()));
+        if (row_count > 0) {
+            ASSERT_OK(ToPaimonStatus(writer->WriteRecordBatch(*data->Slice(offset, row_count))));
+            offset += row_count;
+        }
+    }
+    ASSERT_OK(ToPaimonStatus(writer->Close()));
+    ASSERT_OK(ToPaimonStatus(output->Close()));
+
+    ASSERT_OK_AND_ASSIGN(auto reader, PrepareReaderWrapper(file_path));
+    const std::vector<std::pair<uint64_t, uint64_t>> expected_ranges = {
+        {0, 0}, {0, 2}, {2, 2}, {2, 4}, {4, 4}};
+    ASSERT_EQ(expected_ranges, reader->GetAllRowGroupRanges());
+    for (int64_t first_row : {0, 2}) {
+        ASSERT_OK_AND_ASSIGN(auto batch, reader->Next());
+        ASSERT_TRUE(batch);
+        ASSERT_TRUE(batch->Equals(*data->Slice(first_row, 2)));
+        ASSERT_EQ(first_row, reader->GetPreviousBatchFirstRowNumber().value());
+        ASSERT_EQ(first_row + 2, reader->GetNextRowToRead());
+    }
+    ASSERT_OK_AND_ASSIGN(auto end, reader->Next());
+    ASSERT_FALSE(end);
 }
 
 /// The prefetch framework always issues SeekToRow right after SetReadRanges, while the

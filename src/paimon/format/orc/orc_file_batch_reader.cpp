@@ -128,10 +128,13 @@ Result<std::unique_ptr<OrcFileBatchReader>> OrcFileBatchReader::Create(
                                                         natural_read_size, options, read_memory));
         auto orc_file_batch_reader = std::unique_ptr<OrcFileBatchReader>(
             new OrcFileBatchReader(std::move(reader_metrics), std::move(reader_wrapper), options));
-        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<::ArrowSchema> file_schema,
-                               orc_file_batch_reader->GetFileSchema());
+        auto file_schema = orc_file_batch_reader->GetFileSchema();
+        if (!file_schema.ok()) {
+            const auto& status = file_schema.status();
+            return status.WithMessage("read ORC schema from ", file_name, ": ", status.message());
+        }
         PAIMON_RETURN_NOT_OK(orc_file_batch_reader->SetReadSchema(
-            file_schema.get(), /*predicate=*/nullptr, /*selection_bitmap=*/std::nullopt));
+            file_schema.value().get(), /*predicate=*/nullptr, /*selection_bitmap=*/std::nullopt));
         return orc_file_batch_reader;
     } catch (const std::exception& e) {
         return Status::Invalid(fmt::format(
@@ -149,7 +152,7 @@ Result<std::unique_ptr<::ArrowSchema>> OrcFileBatchReader::GetFileSchema() const
     // AddMetadata, prefer that over the plain ORC type tree.
     if (reader_->HasMetadataValue(ArrowUtils::kArrowSchemaMetadataKey)) {
         std::string encoded = reader_->GetMetadataValue(ArrowUtils::kArrowSchemaMetadataKey);
-        std::string decoded = arrow::util::base64_decode(encoded);
+        PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::string decoded, arrow::util::base64_decode(encoded));
         auto buffer = arrow::Buffer::FromString(std::move(decoded));
         arrow::io::BufferReader buf_reader(buffer);
         PAIMON_ASSIGN_OR_RAISE_FROM_ARROW(std::shared_ptr<arrow::Schema> schema,

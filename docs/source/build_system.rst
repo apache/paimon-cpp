@@ -24,9 +24,10 @@ Integrating Apache Paimon C++
 
 This section assumes that you have already built and installed the Paimon C++
 libraries on your system after :ref:`building them yourself <building-paimon-cpp>`.
-Additionally, you will need `Apache Arrow for C++ <https://arrow.apache.org/docs/cpp/getting_started.html>`_
-as in-memory data format interface. Please ensure that Arrow C++ is installed
-and available to your build system
+The installed Paimon public API supports C++17 and exchanges columnar data
+through the Arrow C Data Interface. To use the Apache Arrow C++ library for
+creating and consuming this data, install it separately and compile with the
+language standard required by that Arrow version.
 
 The recommended way to integrate the Paimon C++ libraries into your C++ project
 is to use CMake's `find_package <https://cmake.org/cmake/help/latest/command/find_package.html>`_
@@ -38,9 +39,10 @@ CMake
 Quick Start
 -----------
 
-This ``CMakeLists.txt`` compiles the ``my_example.cc`` source file into
-an executable and links it with the Paimon C++ shared library and its plugins
-for data format and file system.
+This ``CMakeLists.txt`` links ``my_example.cc`` with Arrow C++ 26, the Paimon C++
+shared library, and the Parquet and local file system plugins. A consumer using
+the C Data Interface directly can compile as C++17 and link
+``Paimon::paimon_shared`` plus any Paimon plugins it needs.
 
 .. code-block:: cmake
 
@@ -48,7 +50,7 @@ for data format and file system.
 
    project(MyExample)
 
-   set(CMAKE_CXX_STANDARD 17)
+   set(CMAKE_CXX_STANDARD 20)
    set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
    # Arrow's static package may export LZ4 under a different target name.

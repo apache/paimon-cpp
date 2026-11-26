@@ -107,20 +107,20 @@ TEST_F(FieldListaggAggTest, TestBlankStrings) {
                                                     "\r",
                                                     "\r\n",
                                                     " \t\n\r ",
-                                                    u8"\u3000",
-                                                    u8"\u2000",
-                                                    u8" \t\u3000\u2000\n"};
+                                                    "\u3000",
+                                                    "\u2000",
+                                                    " \t\u3000\u2000\n"};
     for (const std::string& blank : blank_strings) {
         auto ret = agg->Agg(std::string_view("user1"), std::string_view(blank)).value();
         ASSERT_EQ(DataDefine::GetStringView(ret), "user1");
     }
 
     // A blank accumulator must not add a leading delimiter.
-    auto ret = agg->Agg(std::string_view(u8"\u3000\t"), std::string_view("user1")).value();
+    auto ret = agg->Agg(std::string_view("\u3000\t"), std::string_view("user1")).value();
     ASSERT_EQ(DataDefine::GetStringView(ret), "user1");
 
     // A blank input must not turn a null accumulator into a non-null value.
-    ret = agg->Agg(NullType(), std::string_view(u8" \t\u3000")).value();
+    ret = agg->Agg(NullType(), std::string_view(" \t\u3000")).value();
     ASSERT_TRUE(DataDefine::IsVariantNull(ret));
 }
 
@@ -158,7 +158,7 @@ TEST_F(FieldListaggAggTest, TestDistinctIgnoresBlankTokens) {
     ASSERT_OK_AND_ASSIGN(auto agg, MakeAgg(",", true));
 
     auto ret =
-        agg->Agg(std::string_view("user1"), std::string_view(u8" ,user2,\t,\u3000,user1,\u2000"))
+        agg->Agg(std::string_view("user1"), std::string_view(" ,user2,\t,\u3000,user1,\u2000"))
             .value();
     ASSERT_EQ(DataDefine::GetStringView(ret), "user1,user2");
 }

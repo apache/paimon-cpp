@@ -28,8 +28,6 @@
 #include "arrow/api.h"
 #include "arrow/array/array_base.h"
 #include "arrow/array/array_nested.h"
-#include "arrow/c/abi.h"
-#include "arrow/c/bridge.h"
 #include "arrow/ipc/json_simple.h"
 #include "arrow/result.h"
 #include "arrow/status.h"
@@ -41,7 +39,6 @@
 #include "orc/Type.hh"
 #include "orc/Vector.hh"
 #include "orc/Writer.hh"
-#include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/format/orc/orc_format_defs.h"
 #include "paimon/format/orc/orc_input_stream_impl.h"
@@ -694,26 +691,6 @@ TEST_P(OrcAdapterTest, TestTime) {
         /*size=*/1, *::orc::getDefaultPool(), /*encoded=*/false, /*useTightNumericVector=*/true);
     ASSERT_NOK_WITH_MSG(OrcAdapter::WriteBatch(second_array, write_batch.get()),
                         "Only millisecond TIME is supported");
-}
-
-TEST_F(OrcAdapterTest, TestBridgeForMapType) {
-    // map type will lose meta of key and value field after c <-> c++ bridge
-    auto key_field = DataField::ConvertDataFieldToArrowField(
-        DataField(100, arrow::field("key", arrow::int32())));
-    auto value_field = DataField::ConvertDataFieldToArrowField(
-        DataField(101, arrow::field("value", arrow::utf8())));
-    auto map_type = std::make_shared<arrow::MapType>(key_field, value_field);
-    auto map_field = arrow::field("f0", map_type);
-    arrow::Schema arrow_schema({map_field});
-    // from c++ to c
-    auto c_schema = std::make_unique<::ArrowSchema>();
-    ASSERT_TRUE(arrow::ExportSchema(arrow_schema, c_schema.get()).ok());
-
-    // from c to c++
-    auto new_arrow_schema = arrow::ImportSchema(c_schema.get()).ValueOrDie();
-    ASSERT_TRUE(new_arrow_schema->Equals(arrow_schema, /*check_metadata=*/false));
-    // check meta failed
-    ASSERT_FALSE(new_arrow_schema->Equals(arrow_schema, /*check_metadata=*/true));
 }
 
 TEST_F(OrcAdapterTest, TestDataBufferSetData) {

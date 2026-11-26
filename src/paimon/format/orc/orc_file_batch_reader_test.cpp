@@ -895,8 +895,6 @@ TEST_F(OrcFileBatchReaderTest, TestGetFileSchemaWithFieldId) {
         auto file_schema = get_file_schema(file_name);
         ASSERT_OK_AND_ASSIGN(auto data_fields,
                              DataField::ConvertArrowSchemaToDataFields(file_schema));
-        // map type will lose meta info in c <-> c++ bridge (see
-        // TestBridgeForMapType in OrcAdapterTest
         auto map_type = arrow::map(arrow::int8(), arrow::int16());
         auto list_type = arrow::list(DataField::ConvertDataFieldToArrowField(
             DataField(536871936, arrow::field("item", arrow::float32()))));
@@ -1326,13 +1324,11 @@ TEST_F(OrcFileBatchReaderTest, TestListStructPartialProjection) {
                         "type mismatch");
 }
 
-TEST_F(OrcFileBatchReaderTest, TestAddMetadataPerFieldMetadata) {
-    // Write a simple ORC file, call AddMetadata to inject per-field metadata
-    // before Finish, then read back and verify the file schema carries the metadata.
+TEST_F(OrcFileBatchReaderTest, TestAddMetadataPreservesFieldMetadata) {
     auto write_schema = arrow::schema({
         arrow::field("id", arrow::int32()),
         arrow::field("name", arrow::utf8()),
-        arrow::field("score", arrow::float64()),
+        arrow::field("scores", arrow::map(arrow::int32(), arrow::float64())),
     });
 
     auto dir = paimon::test::UniqueTestDirectory::Create();
@@ -1348,67 +1344,83 @@ TEST_F(OrcFileBatchReaderTest, TestAddMetadataPerFieldMetadata) {
                                                  /*options=*/{}, "zstd",
                                                  /*batch_size=*/10, pool_));
 
-    // Write one batch of data.
-    auto data = arrow::ipc::internal::json::ArrayFromJSON(
-                    arrow::struct_(write_schema->fields()),
-                    R"([[1, "alice", 95.5], [2, "bob", 88.0], [3, "charlie", 72.3]])")
-                    .ValueOrDie();
+    auto data =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_(write_schema->fields()), R"([
+        [1, "alice", [[1, 95.5]]],
+        [2, "bob", [[1, 88.0], [2, 86.5]]],
+        [3, "charlie", [[2, 72.3]]]
+    ])")
+            .ValueOrDie();
     ArrowArray c_array;
     ASSERT_TRUE(arrow::ExportArray(*data, &c_array).ok());
     ASSERT_OK(format_writer->AddBatch(&c_array));
     ASSERT_OK(format_writer->Flush());
 
-    // Build an updated schema with per-field metadata on "name" and "score".
     auto name_meta = std::make_shared<arrow::KeyValueMetadata>();
     name_meta->Append("shredding.field_mapping", "0:alice,1:bob,2:charlie");
     name_meta->Append("shredding.num_columns", "3");
-    auto score_meta = std::make_shared<arrow::KeyValueMetadata>();
-    score_meta->Append("custom.unit", "percent");
-
+    auto key_field = DataField::ConvertDataFieldToArrowField(
+        DataField(100, arrow::field("key", arrow::int32(), /*nullable=*/false)));
+    auto value_field = DataField::ConvertDataFieldToArrowField(
+        DataField(101, arrow::field("value", arrow::float64(), /*nullable=*/true,
+                                    arrow::key_value_metadata({"custom.unit"}, {"percent"}))));
     auto updated_schema = arrow::schema({
-        write_schema->field(0),                            // id — no metadata
-        write_schema->field(1)->WithMetadata(name_meta),   // name — shredding metadata
-        write_schema->field(2)->WithMetadata(score_meta),  // score — custom metadata
+        write_schema->field(0),
+        write_schema->field(1)->WithMetadata(name_meta),
+        write_schema->field(2)->WithType(std::make_shared<arrow::MapType>(key_field, value_field)),
     });
 
-    // AddMetadata must be called before Finish.
     ASSERT_OK(format_writer->AddMetadata(
         {{ArrowUtils::kArrowSchemaMetadataKey, SerializeSchemaToString(updated_schema)}}));
     ASSERT_OK(format_writer->Finish());
     ASSERT_OK(out->Flush());
     ASSERT_OK(out->Close());
 
-    // Read back: GetFileSchema should reflect the updated per-field metadata.
     auto orc_batch_reader = PrepareOrcFileBatchReader(file_path, write_schema.get(), batch_size_,
                                                       DEFAULT_NATURAL_READ_SIZE);
 
     ASSERT_OK_AND_ASSIGN(auto c_file_schema, orc_batch_reader->GetFileSchema());
     auto file_schema = arrow::ImportSchema(c_file_schema.get()).ValueOrDie();
+    ASSERT_TRUE(file_schema->Equals(*updated_schema, /*check_metadata=*/true))
+        << file_schema->ToString(/*show_metadata=*/true);
 
-    // Field 0 "id": no metadata.
-    ASSERT_EQ("id", file_schema->field(0)->name());
-
-    // Field 1 "name": should have the shredding metadata we set.
-    ASSERT_EQ("name", file_schema->field(1)->name());
-    auto read_name_meta = file_schema->field(1)->metadata();
-    ASSERT_NE(nullptr, read_name_meta);
-    auto field_mapping_val = read_name_meta->Get("shredding.field_mapping").ValueOrDie();
-    ASSERT_EQ("0:alice,1:bob,2:charlie", field_mapping_val);
-    auto num_columns_val = read_name_meta->Get("shredding.num_columns").ValueOrDie();
-    ASSERT_EQ("3", num_columns_val);
-
-    // Field 2 "score": should have the custom metadata.
-    ASSERT_EQ("score", file_schema->field(2)->name());
-    auto read_score_meta = file_schema->field(2)->metadata();
-    ASSERT_NE(nullptr, read_score_meta);
-    auto unit_val = read_score_meta->Get("custom.unit").ValueOrDie();
-    ASSERT_EQ("percent", unit_val);
-
-    // Also verify data integrity — read it back and compare content.
     ASSERT_OK_AND_ASSIGN(auto result_array, paimon::test::ReadResultCollector::CollectResult(
                                                 std::move(orc_batch_reader)));
     ASSERT_EQ(result_array->num_chunks(), 1);
     ASSERT_TRUE(data->Equals(*result_array->chunk(0))) << result_array->ToString();
+}
+
+TEST_F(OrcFileBatchReaderTest, RejectsMalformedArrowSchemaMetadata) {
+    auto dir = paimon::test::UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto file_system = dir->GetFileSystem();
+    const std::string path = dir->Str() + "/invalid-schema.orc";
+    const std::pair<const char*, const char*> cases[] = {
+        {"ab$=", "Invalid base64 input"},
+        {"AAAAAA==", "Tried reading schema message"},
+    };
+    for (const auto& [metadata, error] : cases) {
+        SCOPED_TRACE(metadata);
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<OutputStream> output,
+                             file_system->Create(path, /*overwrite=*/true));
+        ASSERT_OK_AND_ASSIGN(auto orc_output, OrcOutputStreamImpl::Create(output));
+        auto type = ::orc::createStructType();
+        type->addStructField("id", ::orc::createPrimitiveType(::orc::INT));
+        auto writer = ::orc::createWriter(*type, orc_output.get(), ::orc::WriterOptions());
+        writer->addUserMetadata(ArrowUtils::kArrowSchemaMetadataKey, metadata);
+        writer->close();
+        ASSERT_OK(output->Close());
+
+        ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, file_system->Open(path));
+        ASSERT_OK_AND_ASSIGN(std::string file_uri, input->GetUri());
+        ASSERT_OK_AND_ASSIGN(auto orc_input,
+                             OrcInputStreamImpl::Create(input, DEFAULT_NATURAL_READ_SIZE));
+        auto reader =
+            OrcFileBatchReader::Create(std::move(orc_input), std::make_shared<OrcReadMemory>(pool_),
+                                       /*options=*/{}, batch_size_);
+        ASSERT_NOK_WITH_MSG(reader, error);
+        ASSERT_NOK_WITH_MSG(reader, file_uri);
+    }
 }
 
 }  // namespace paimon::orc::test

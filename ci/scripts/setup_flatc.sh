@@ -36,8 +36,7 @@ set -eux
 FLATBUFFERS_VERSION=${FLATBUFFERS_VERSION:-25.12.19}
 FLATC_INSTALL_DIR=${FLATC_INSTALL_DIR:-"${HOME}/.local/bin"}
 
-# Vortex's native dependencies invoke bindgen in their build scripts, which loads libclang at
-# build time. Images that only carry GCC (e.g. the gcc8 test container) may lack it.
+# Vortex's native dependencies use bindgen, which loads libclang at build time.
 if ! ldconfig -p 2>/dev/null | grep -q 'libclang'; then
     if [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
         apt_prefix="sudo"

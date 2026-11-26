@@ -21,15 +21,14 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
-#include "arrow/api.h"
-#include "arrow/c/bridge.h"
+#include "paimon/arrow/abi.h"
+#include "paimon/defs.h"
 #include "paimon/result.h"
 #include "paimon/visibility.h"
-
-struct ArrowSchema;
 
 namespace paimon {
 

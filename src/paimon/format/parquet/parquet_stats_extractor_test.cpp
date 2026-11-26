@@ -144,9 +144,9 @@ TEST_F(ParquetStatsExtractorTest, TestExtractStats) {
     };
     {
         std::string data_str = R"([
-            [[true, 0], "str0", 100, true, "3970-01-01 00:00:00.000", "0.22", 1.1, 12.2],
-            [[false, 1], "str1", 101, false, "3970-01-01 00:02:03.999", "0.28", 2.2, 12.2],
-            [[false, 2], "str2", 102, true, "3455-01-01 00:02:03.000", "1234567890123456.00", 3.3, 13.2]
+            [[true, 0], "str0", 100, true, "2170-01-01 00:00:00.000", "0.22", 1.1, 12.2],
+            [[false, 1], "str1", 101, false, "2170-01-01 00:02:03.999", "0.28", 2.2, 12.2],
+            [[false, 2], "str2", 102, true, "2055-01-01 00:02:03.000", "1234567890123456.00", 3.3, 13.2]
         ])";
         std::vector<std::string> expected_stats_str = {
             "min null, max null, null count null",
@@ -162,9 +162,9 @@ TEST_F(ParquetStatsExtractorTest, TestExtractStats) {
     }
     {
         std::string data_str = R"([
-            [[true, 0], "str0", 100, true, "3970-01-01 00:00:00.000", "0.22", 1.1, 12.2],
-            [[false, 1], "str1", 101, true, "3970-01-01 00:02:03.999", "0.28", 2.2, 12.2],
-            [[false, 2], "str2", 102, true, "3455-01-01 00:02:03.000", "1234567890123456.00", 3.3, 13.2]
+            [[true, 0], "str0", 100, true, "2170-01-01 00:00:00.000", "0.22", 1.1, 12.2],
+            [[false, 1], "str1", 101, true, "2170-01-01 00:02:03.999", "0.28", 2.2, 12.2],
+            [[false, 2], "str2", 102, true, "2055-01-01 00:02:03.000", "1234567890123456.00", 3.3, 13.2]
         ])";
         std::vector<std::string> expected_stats_str = {
             "min null, max null, null count null",
@@ -195,9 +195,9 @@ TEST_F(ParquetStatsExtractorTest, TestExtractStats) {
     }
     {
         std::string data_str = R"([
-            [[true, 0], null, 100, null, "3970-01-01 00:00:00.000", null, null, null],
-            [[false, 1], "str1", 101, null, "3970-01-01 00:02:03.999", null, null, 2.2],
-            [null, "str2", null, true, "3455-01-01 00:02:03.000", null, 1.1, 3.3]
+            [[true, 0], null, 100, null, "2170-01-01 00:00:00.000", null, null, null],
+            [[false, 1], "str1", 101, null, "2170-01-01 00:02:03.999", null, null, 2.2],
+            [null, "str2", null, true, "2055-01-01 00:02:03.000", null, 1.1, 3.3]
         ])";
         std::vector<std::string> expected_stats_str = {
             "min null, max null, null count null", "min str1, max str2, null count 1",
