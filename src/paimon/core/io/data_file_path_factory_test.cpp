@@ -19,7 +19,9 @@
 #include "paimon/core/io/data_file_path_factory.h"
 
 #include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "paimon/common/data/binary_row.h"
@@ -113,6 +115,25 @@ TEST_F(DataFilePathFactoryTest, TestToFileIndexPath) {
     std::string index_path = factory_.ToFileIndexPath(file_path);
 
     ASSERT_EQ(index_path, "/tmp/example.txt.index");
+}
+
+TEST_F(DataFilePathFactoryTest, TestCreateNewFileIndexFilePath) {
+    for (const auto& [before, after] : std::vector<std::pair<std::string, std::string>>{
+             {"example.txt.index", "example.txt-1.index"},
+             {"data-uuid-0.orc.index", "data-uuid-0.orc-1.index"},
+             {"data-uuid-0.orc-1.index", "data-uuid-0.orc-2.index"},
+             {"example-9.index", "example-10.index"},
+             {"example.index", "example-1.index"},
+             {"example-other.index", "example-other-1.index"},
+             {"example-2147483647.index", "example--2147483648.index"},
+             {"example-2147483648.index", "example-2147483648-1.index"}}) {
+        for (const std::string& parent :
+             std::vector<std::string>{"/tmp", "file:/external/bucket-0"}) {
+            ASSERT_EQ(PathUtil::JoinPath(parent, after),
+                      DataFilePathFactory::CreateNewFileIndexFilePath(
+                          PathUtil::JoinPath(parent, before)));
+        }
+    }
 }
 
 TEST_F(DataFilePathFactoryTest, TestToAlignedPath) {

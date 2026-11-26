@@ -261,6 +261,35 @@ TEST_F(ConflictDetectionTest, TestEmptyAndUnrelatedEntriesSkipRowIdChecks) {
     ASSERT_OK(detection.CheckGlobalIndexRowIdExistence({}, {deleted_index, dv_index}));
 }
 
+TEST_F(ConflictDetectionTest, TestIndexMetadataRewrite) {
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<TableSchema> schema,
+        TableSchema::Create(0, arrow::schema(fields_), {"f1"}, {}, {{Options::BUCKET, "2"}}));
+    ASSERT_OK_AND_ASSIGN(CoreOptions options, CoreOptions::FromMap(schema->Options()));
+    ConflictDetection detection(schema, options, nullptr, nullptr, nullptr, nullptr, "test-user",
+                                "test-table", nullptr);
+    auto original = CreateManifestEntry("file1", FileKind::Add());
+    for (bool embedded : {false, true}) {
+        original.File()->extra_files = embedded
+                                           ? std::vector<std::optional<std::string>>{}
+                                           : std::vector<std::optional<std::string>>{"old.index"};
+        original.File()->embedded_index =
+            embedded ? std::make_shared<Bytes>("old", GetDefaultPool().get()) : nullptr;
+        auto indexed = original.File()->CopyWithExtraFiles({"new.index"});
+        indexed->embedded_index.reset();
+        std::vector<ManifestEntry> changes = {
+            {FileKind::Delete(), original.Partition(), 0, 2, original.File()},
+            {FileKind::Add(), original.Partition(), 0, 2, indexed}};
+        ASSERT_OK(CheckConflicts(detection, {original}, changes, Snapshot::CommitKind::Compact()));
+
+        auto stale = original.File()->CopyWithExtraFiles({"stale.index"});
+        changes[0] = ManifestEntry(FileKind::Delete(), original.Partition(), 0, 2, stale);
+        ASSERT_NOK_WITH_MSG(
+            CheckConflicts(detection, {original}, changes, Snapshot::CommitKind::Compact()),
+            "Trying to delete file file1");
+    }
+}
+
 TEST_F(ConflictDetectionTest, TestRowIdChecksAreDisabledWithoutDataEvolution) {
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema,
                          TableSchema::Create(0, arrow::schema(fields_), {"f1"}, {}, {}));

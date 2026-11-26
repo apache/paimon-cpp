@@ -410,6 +410,7 @@ set(PAIMON_CORE_SRCS
     core/operation/commit/retry_waiter.cpp
     core/operation/commit_context.cpp
     core/operation/expire_snapshots.cpp
+    core/operation/file_index_write.cpp
     core/operation/file_store_commit.cpp
     core/operation/file_store_commit_impl.cpp
     core/operation/file_store_scan.cpp
@@ -1044,6 +1045,7 @@ if(PAIMON_BUILD_TESTS)
                     core/operation/commit_metrics_test.cpp
                     core/operation/commit_context_test.cpp
                     core/operation/expire_snapshots_test.cpp
+                    core/operation/file_index_write_test.cpp
                     core/operation/file_store_commit_impl_test.cpp
                     core/operation/file_store_commit_test.cpp
                     core/operation/append_only_file_store_scan_test.cpp
