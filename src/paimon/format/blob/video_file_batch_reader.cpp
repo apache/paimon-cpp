@@ -231,7 +231,8 @@ Result<BatchReader::ReadBatch> VideoFileBatchReader::NextBatch() {
         previous_batch_size_ = 0;
         return BatchReader::MakeEofBatch();
     }
-    const auto request = blob_context_ ? blob_context_->request : std::nullopt;
+    const BlobBatchRequest* request =
+        blob_context_ && blob_context_->request ? &blob_context_->request.value() : nullptr;
     if (request && request->max_rows <= 0) {
         return Status::Invalid("video read batch row limit must be positive");
     }
