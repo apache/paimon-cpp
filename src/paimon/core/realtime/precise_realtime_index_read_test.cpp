@@ -48,6 +48,7 @@
 #include "paimon/core/table/source/topk_batch_reader.h"
 #include "paimon/factories/factory_creator.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/index/bitmap_result.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/full_text_search.h"
@@ -225,8 +226,7 @@ class PreciseRealtimeIndexReadTest : public testing::Test {
 };
 
 TEST_F(PreciseRealtimeIndexReadTest, FullTextMatchScoresAreOptional) {
-    using MatchResult =
-        IndexReaderUtils::FullTextResult<RoaringBitmap64, ScoredRealtimeIndexResult>;
+    using MatchResult = IndexReaderUtils::FullTextResult<RoaringBitmap64>;
     // Scores must follow offset order even when the index ranks matches differently.
     state_->ranked = {{30, 0.9f}, {10, 0.8f}, {20, 0.7f}};
     auto reader = std::make_shared<MockSearchReader>(
@@ -248,8 +248,7 @@ TEST_F(PreciseRealtimeIndexReadTest, FullTextMatchScoresAreOptional) {
 }
 
 TEST_F(PreciseRealtimeIndexReadTest, EmptyFullTextMatchPreservesRequestedScoreType) {
-    using MatchResult =
-        IndexReaderUtils::FullTextResult<RoaringBitmap64, ScoredRealtimeIndexResult>;
+    using MatchResult = IndexReaderUtils::FullTextResult<RoaringBitmap64>;
     auto reader = std::make_shared<MockSearchReader>(
         IndexReaderCapabilities::SearchType::FULL_TEXT_SEARCH, OffsetRange(10, 41),
         RoaringBitmap64::From({10, 20, 30, 40}), state_);
@@ -270,7 +269,7 @@ TEST_F(PreciseRealtimeIndexReadTest, FullTextMatchRejectsMissingRequestedScores)
      public:
         Result<std::shared_ptr<RealtimeIndexResult>> VisitFullTextMatch(
             const std::shared_ptr<FullTextMatch>&, bool) override {
-            return RealtimeIndexResult::Create(RoaringBitmap64());
+            return BitmapResult<RoaringBitmap64>::Create(RoaringBitmap64(), /*is_exact=*/true);
         }
     };
     auto reader = std::make_shared<UnscoredReader>();
@@ -490,7 +489,7 @@ TEST_F(PreciseRealtimeIndexReadTest, PinnedSegmentsContributeToGlobalTopK) {
 
 TEST_F(PreciseRealtimeIndexReadTest, RejectsMisalignedScores) {
     ASSERT_NOK_WITH_MSG(ScoredRealtimeIndexResult::Create(RoaringBitmap64::From({10, 20}), {1.0f}),
-                        "score count");
+                        "2 row positions but 1 scores");
 }
 
 }  // namespace

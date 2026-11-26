@@ -60,7 +60,6 @@
 #include "paimon/core/utils/blob_view_lookup.h"
 #include "paimon/core/utils/data_evolution_utils.h"
 #include "paimon/core/utils/field_mapping.h"
-#include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/file_index/file_index_result.h"
 #include "paimon/predicate/predicate_utils.h"
 

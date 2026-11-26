@@ -20,29 +20,30 @@
 #include "paimon/core/realtime/index/realtime_index_evaluator.h"
 
 #include <utility>
+#include <vector>
 
+#include "paimon/common/index/index_reader_utils.h"
 #include "paimon/core/realtime/index/realtime_index_set.h"
 #include "paimon/macros.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/function.h"
 #include "paimon/predicate/leaf_predicate.h"
-#include "paimon/predicate/predicate_utils.h"
 #include "paimon/realtime/index/realtime_index.h"
 #include "paimon/realtime/index/realtime_index_reader.h"
 
 namespace paimon {
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexEvaluator::Evaluate(
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexEvaluator::Evaluate(
     const std::shared_ptr<RealtimeIndexSet>& indexes, const std::shared_ptr<Predicate>& predicate,
     const OffsetRange& offset_range, const std::shared_ptr<MemoryPool>& pool) {
     if (offset_range.begin < 0 || offset_range.begin > offset_range.end) {
         return Status::Invalid("real-time index query offset range is invalid");
     }
     if (offset_range.Empty()) {
-        return std::optional<RoaringBitmap64>(RoaringBitmap64());
+        return RealtimeIndexResult::Skip();
     }
     if (!indexes || !predicate) {
-        return std::optional<RoaringBitmap64>();
+        return RealtimeIndexResult::Remain();
     }
     const Function::Type function = predicate->GetFunction().GetType();
     if (function == Function::Type::AND || function == Function::Type::OR) {
@@ -55,67 +56,51 @@ Result<std::optional<RoaringBitmap64>> RealtimeIndexEvaluator::Evaluate(
     }
     const std::shared_ptr<LeafPredicate> leaf = std::dynamic_pointer_cast<LeafPredicate>(predicate);
     if (!leaf) {
-        return std::optional<RoaringBitmap64>();
+        return Status::Invalid("invalid real-time index leaf predicate");
     }
     return EvaluateLeaf(indexes, leaf, offset_range, pool);
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexEvaluator::EvaluateCompound(
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexEvaluator::EvaluateCompound(
     const std::shared_ptr<RealtimeIndexSet>& indexes,
     const std::shared_ptr<CompoundPredicate>& compound, const OffsetRange& offset_range,
     const std::shared_ptr<MemoryPool>& pool) {
     const Function::Type function = compound->GetFunction().GetType();
-    std::optional<RoaringBitmap64> result;
+    std::shared_ptr<RealtimeIndexResult> result;
     for (const std::shared_ptr<Predicate>& child : compound->Children()) {
-        PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap64> candidates,
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeIndexResult> evaluated,
                                Evaluate(indexes, child, offset_range, pool));
-        if (!candidates) {
-            if (function == Function::Type::OR) {
-                return std::optional<RoaringBitmap64>();
-            }
-            continue;
-        }
         if (!result) {
-            result = std::move(candidates);
+            result = std::move(evaluated);
         } else if (function == Function::Type::AND) {
-            *result &= *candidates;
+            PAIMON_ASSIGN_OR_RAISE(result, result->And(evaluated));
         } else {
-            *result |= *candidates;
+            PAIMON_ASSIGN_OR_RAISE(result, result->Or(evaluated));
         }
-        if (function == Function::Type::AND && result->IsEmpty()) {
+        PAIMON_ASSIGN_OR_RAISE(bool remain, result->IsRemain());
+        if ((function == Function::Type::AND && !remain) ||
+            (function == Function::Type::OR &&
+             std::dynamic_pointer_cast<RemainIndexResult<RoaringBitmap64>>(result))) {
             break;
         }
     }
     return result;
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexEvaluator::EvaluateLeaf(
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexEvaluator::EvaluateLeaf(
     const std::shared_ptr<RealtimeIndexSet>& indexes, const std::shared_ptr<LeafPredicate>& leaf,
     const OffsetRange& offset_range, const std::shared_ptr<MemoryPool>& pool) {
-    std::optional<RoaringBitmap64> result;
+    std::vector<std::shared_ptr<RealtimeIndexReader>> readers;
     for (const std::shared_ptr<RealtimeIndex>& index :
          indexes->FindIndexes(leaf->FieldName(), leaf->GetFieldType())) {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeIndexReader> reader,
                                index->CreateReader(offset_range, pool));
-        if (!reader) {
-            continue;
-        }
-        PAIMON_ASSIGN_OR_RAISE(
-            std::optional<RoaringBitmap64> candidates,
-            PredicateUtils::VisitPredicate<std::optional<RoaringBitmap64>>(leaf, reader));
-        if (!candidates) {
-            continue;
-        }
-        if (!result) {
-            result = std::move(candidates);
-        } else {
-            *result &= *candidates;
-        }
-        if (result->IsEmpty()) {
-            break;
+        if (reader) {
+            readers.push_back(std::move(reader));
         }
     }
-    return result;
+    return IndexReaderUtils::EvaluateScalar<RoaringBitmap64>(readers, leaf,
+                                                             /*candidates=*/nullptr);
 }
 
 }  // namespace paimon

@@ -195,7 +195,9 @@ TEST_P(LuminaRealtimeIndexTest, ReportsVectorSearchCapabilityThroughBaseInterfac
                          reader->VisitVectorSearch(Search(/*limit=*/1)));
     Check(result, RoaringBitmap64(), {});
     std::shared_ptr<RealtimeIndexResult> base_result = result;
-    EXPECT_TRUE(base_result->GetRowPositions().IsEmpty());
+    auto scored_result = std::dynamic_pointer_cast<ScoredRealtimeIndexResult>(base_result);
+    ASSERT_NE(scored_result, nullptr);
+    EXPECT_TRUE(scored_result->GetRowPositions().IsEmpty());
     ASSERT_NOK(reader->VisitFullTextSearch(nullptr));
     ASSERT_NOK(reader->VisitFullTextMatch(nullptr, /*needs_scores=*/true));
 }
@@ -320,8 +322,8 @@ TEST_P(LuminaRealtimeIndexTest, RejectsInvalidQueriesAndUnsupportedTags) {
     search = Search(/*limit=*/10);
     search->predicate = PredicateBuilder::Equal(0, "tag", FieldType::INT, Literal(int32_t{1}));
     ASSERT_NOK_WITH_MSG(reader->VisitVectorSearch(search), "tags are not supported");
-    ASSERT_OK_AND_ASSIGN(std::optional<RoaringBitmap64> candidates, reader->VisitIsNull());
-    ASSERT_FALSE(candidates.has_value());
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<RealtimeIndexResult> result, reader->VisitIsNull());
+    ASSERT_NE(std::dynamic_pointer_cast<RemainIndexResult<RoaringBitmap64>>(result), nullptr);
 }
 
 TEST_P(LuminaRealtimeIndexTest, RejectsInvalidSchemasAndOptions) {

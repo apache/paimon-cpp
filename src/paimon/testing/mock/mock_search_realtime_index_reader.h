@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 
+#include "paimon/index/bitmap_result.h"
 #include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/full_text_search.h"
 #include "paimon/predicate/vector_search.h"
@@ -90,7 +91,7 @@ class MockSearchReader final : public RealtimeIndexReader {
                     rows.Add(offset);
                 }
             }
-            return RealtimeIndexResult::Create(std::move(rows));
+            return BitmapResult<RoaringBitmap64>::Create(std::move(rows), /*is_exact=*/true);
         }
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<ScoredRealtimeIndexResult> result,
                                Search(static_cast<int32_t>(state_->ranked.size()), filter));

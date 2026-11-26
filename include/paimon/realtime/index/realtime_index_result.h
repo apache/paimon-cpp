@@ -18,44 +18,13 @@
 
 #pragma once
 
-#include <memory>
-#include <utility>
-
-#include "paimon/macros.h"
-#include "paimon/result.h"
+#include "paimon/index/index_result.h"
+#include "paimon/index/scored_index_result.h"
 #include "paimon/utils/roaring_bitmap64.h"
-#include "paimon/visibility.h"
 
 namespace paimon {
 
-/// Matching real-time offsets. ScoredRealtimeIndexResult additionally carries scores.
-class PAIMON_EXPORT RealtimeIndexResult {
- public:
-    virtual ~RealtimeIndexResult() = default;
-
-    static Result<std::shared_ptr<RealtimeIndexResult>> Create(RoaringBitmap64 rows) {
-        PAIMON_RETURN_NOT_OK(ValidateRowPositions(rows));
-        return std::shared_ptr<RealtimeIndexResult>(new RealtimeIndexResult(std::move(rows)));
-    }
-
-    const RoaringBitmap64& GetRowPositions() const {
-        return rows_;
-    }
-
- protected:
-    explicit RealtimeIndexResult(RoaringBitmap64 rows) : rows_(std::move(rows)) {}
-
-    static Status ValidateRowPositions(const RoaringBitmap64& rows) {
-        for (auto iter = rows.Begin(); iter != rows.End(); ++iter) {
-            if (*iter < 0) {
-                return Status::Invalid("Real-time search returned a negative offset");
-            }
-        }
-        return Status::OK();
-    }
-
- private:
-    RoaringBitmap64 rows_;
-};
+using RealtimeIndexResult = IndexResult<RoaringBitmap64>;
+using ScoredRealtimeIndexResult = ScoredIndexResult<RoaringBitmap64>;
 
 }  // namespace paimon

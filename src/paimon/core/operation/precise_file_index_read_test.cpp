@@ -49,7 +49,7 @@
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/data/timestamp.h"
 #include "paimon/factories/factory_creator.h"
-#include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/bytes.h"
 #include "paimon/memory/memory_pool.h"
@@ -77,9 +77,9 @@ class TestScalarFileIndexReader : public FileIndexReader {
     }
 
     Result<std::shared_ptr<FileIndexResult>> Evaluate(const std::shared_ptr<LeafPredicate>&,
-                                                      const RoaringBitmap32*) override {
+                                                      const RoaringBitmap32* candidates) override {
         ++evaluate_count_;
-        return result_;
+        return IndexReaderUtils::RestrictScalarResult(result_, candidates);
     }
 
  private:
@@ -259,7 +259,7 @@ class PreciseFileIndexReadTest : public ::testing::Test {
 };
 
 TEST_F(PreciseFileIndexReadTest, FullTextMatchPushesDownCandidates) {
-    using MatchResult = IndexReaderUtils::FullTextResult<RoaringBitmap32, ScoredFileIndexResult>;
+    using MatchResult = IndexReaderUtils::FullTextResult<RoaringBitmap32>;
     auto reader = std::make_shared<MockSearchFileIndexReader>(
         "f0", SearchIndexType::FULL_TEXT,
         MockSearchFileIndex::ScoredRows{{2, 0.9f}, {0, 0.8f}, {1, 0.7f}}, statistics_);
@@ -633,9 +633,16 @@ TEST_F(PreciseFileIndexReadTest, TestMixedPredicateRechecksScalarIndexCandidates
     ASSERT_TRUE(statistics_->executions.front().needs_scores);
 }
 
-TEST_F(PreciseFileIndexReadTest, TestInexactScalarIndexRecoversMissingRows) {
+TEST_F(PreciseFileIndexReadTest, TestInexactScalarIndexRechecksCandidates) {
     auto field = arrow::field("f3", arrow::float64());
-    auto predicate = PredicateBuilder::NotEqual(1, "f3", FieldType::DOUBLE, Literal(13.1));
+    auto scalar = std::dynamic_pointer_cast<LeafPredicateImpl>(
+        PredicateBuilder::NotEqual(1, "f3", FieldType::DOUBLE, Literal(13.1)));
+    ASSERT_TRUE(scalar);
+    std::vector<double> evaluated;
+    RecordingDoubleFunction function(scalar->GetLeafFunction(), &evaluated);
+    auto predicate =
+        std::make_shared<LeafPredicateImpl>(function, scalar->FieldIndex(), scalar->FieldName(),
+                                            scalar->GetFieldType(), scalar->Literals());
     ReadContextBuilder builder(SearchTablePath());
     builder.EnablePreciseFileIndexEvaluate(true)
         .SetReadFieldNames({"f0", "f3"})
@@ -663,14 +670,21 @@ TEST_F(PreciseFileIndexReadTest, TestInexactScalarIndexRecoversMissingRows) {
     indexes["f0"][statistics_index_type_] = text_payload;
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<Bytes> index,
                          MockSearchFileIndex::Serialize(indexes, pool_));
-    // The actual matches are rows 0 and 2. Simulate partial and complete false negatives.
-    for (const auto& rows : {RoaringBitmap32::From({2}), RoaringBitmap32()}) {
+    // Both candidate sets contain all matches; the first also contains a false positive.
+    for (const auto& rows : {RoaringBitmap32::From({0, 1, 2}), RoaringBitmap32::From({0, 2})}) {
         scalar_index_result_ = std::make_shared<BitmapIndexResult>(
             [rows]() -> Result<RoaringBitmap32> { return rows; }, /*is_exact=*/false);
+        evaluated.clear();
         ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::ChunkedArray> result,
                              ReadWithFileIndex(context, index));
         CheckSearchResult(result, {arrow::field("f0", arrow::utf8()), field},
                           R"([["Bob",12.1],["Tony",14.1]])");
+        ASSERT_FALSE(evaluated.empty());
+        if (rows == RoaringBitmap32::From({0, 2})) {
+            for (double value : evaluated) {
+                ASSERT_NE(value, 13.1);
+            }
+        }
 
         ASSERT_OK_AND_ASSIGN(result, ReadWithFileIndex(context, index, RoaringBitmap32::From({2})));
         CheckSearchResult(result, {arrow::field("f0", arrow::utf8()), field}, R"([["Bob",12.1]])");
@@ -678,7 +692,7 @@ TEST_F(PreciseFileIndexReadTest, TestInexactScalarIndexRecoversMissingRows) {
                                                        std::vector<Range>{Range(1, 2)}));
         CheckSearchResult(result, {arrow::field("f0", arrow::utf8()), field}, R"([["Tony",14.1]])");
 
-        // Recovery must preserve the exact result of the preceding full-text predicate.
+        // Rechecking must preserve the exact result of the preceding full-text predicate.
         ASSERT_OK_AND_ASSIGN(result, ReadWithFileIndex(and_context, index));
         CheckSearchResult(result, {arrow::field("f0", arrow::utf8()), field}, R"([["Bob",12.1]])");
     }

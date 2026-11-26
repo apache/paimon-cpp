@@ -25,7 +25,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -44,14 +43,14 @@ namespace paimon {
 
 /// Shared precise evaluation over file row positions or real-time offsets.
 /// Storage adapters supply readers and physical scans; this class owns tree and leaf semantics.
-template <typename Bitmap, typename ScoredResult>
+template <typename Bitmap>
 class PreciseIndexEvaluator {
  public:
     struct Evaluation {
         Bitmap rows;
         // Sources retain physical row positions or real-time offsets until all filtering and
         // root TopK are complete.
-        std::map<std::string, std::shared_ptr<ScoredResult>> scores;
+        std::map<std::string, std::shared_ptr<ScoredIndexResult<Bitmap>>> scores;
     };
     using LeafEvaluator =
         std::function<Result<Evaluation>(const std::shared_ptr<LeafPredicate>&, const Bitmap&)>;
@@ -87,8 +86,8 @@ class PreciseIndexEvaluator {
         return prepare_leaf(leaf);
     }
 
-    /// Field mapping and physical scans remain with the storage adapter. Exact file
-    /// indexes avoid scalar scans; inexact file results recheck the original candidates.
+    /// Field mapping and physical scans remain with the storage adapter. Exact index
+    /// results avoid scalar scans; inexact results narrow the candidates before rechecking.
     /// @param predicate Original predicate in the query's logical schema, used for exact
     /// scalar filtering and binding scores to the original field name.
     /// @param index_predicate Predicate mapped to the source's physical schema for index
@@ -114,7 +113,7 @@ class PreciseIndexEvaluator {
                 std::shared_ptr<Reader> reader,
                 indexes->GetSearchReader(index_predicate->FieldName(),
                                          IndexReaderCapabilities::SearchType::FULL_TEXT_MATCH));
-            using FullTextResult = IndexReaderUtils::FullTextResult<Bitmap, ScoredResult>;
+            using FullTextResult = IndexReaderUtils::FullTextResult<Bitmap>;
             PAIMON_ASSIGN_OR_RAISE(
                 FullTextResult indexed,
                 IndexReaderUtils::VisitFullTextMatch(reader, full_text->GetFullTextMatch(),
@@ -125,51 +124,28 @@ class PreciseIndexEvaluator {
             }
             return result;
         }
-        if constexpr (std::is_same_v<Reader, FileIndexReader>) {
-            if (index_predicate) {
-                PAIMON_ASSIGN_OR_RAISE(
-                    std::shared_ptr<FileIndexResult> indexed,
-                    indexes->EvaluateLeaf(index_predicate, /*needs_scores=*/false, &candidates));
-                if (!indexed) {
-                    return Status::Invalid("Scalar index returned a null result");
+        if (index_predicate) {
+            PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<Reader>> readers,
+                                   indexes->GetReaders(index_predicate->FieldName()));
+            PAIMON_ASSIGN_OR_RAISE(
+                std::shared_ptr<IndexResult<Bitmap>> indexed,
+                IndexReaderUtils::EvaluateScalar<Bitmap>(readers, index_predicate, &candidates));
+            PAIMON_ASSIGN_OR_RAISE(std::optional<Bitmap> rows,
+                                   IndexReaderUtils::GetScalarRows(indexed));
+            if (indexed->IsExact()) {
+                if (!rows) {
+                    return Status::Invalid("Exact scalar index result has no row positions");
                 }
-                if (indexed->IsExact()) {
-                    if (auto bitmap = std::dynamic_pointer_cast<BitmapIndexResult>(indexed)) {
-                        PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap32* rows, bitmap->GetBitmap());
-                        return Evaluation{*rows, {}};
-                    }
-                    if (std::dynamic_pointer_cast<Skip>(indexed)) {
-                        return Evaluation{};
-                    }
-                    return Status::Invalid("Invalid exact scalar index result");
-                }
+                return Evaluation{std::move(*rows), {}};
             }
-            PAIMON_ASSIGN_OR_RAISE(result.rows, scan_scalar(predicate, candidates));
-            return result;
-        } else {
-            if (index_predicate) {
-                PAIMON_ASSIGN_OR_RAISE(std::vector<std::shared_ptr<Reader>> readers,
-                                       indexes->GetReaders(index_predicate->FieldName()));
-                for (const auto& reader : readers) {
-                    PAIMON_ASSIGN_OR_RAISE(std::optional<Bitmap> indexed,
-                                           IndexReaderUtils::VisitScalar(reader, index_predicate));
-                    if (indexed) {
-                        result.rows &= *indexed;
-                        if (result.rows.IsEmpty()) {
-                            break;
-                        }
-                    }
-                }
+            if (rows) {
+                result.rows = std::move(*rows);
             }
-            // TODO(xinyu.lxy): Whether to ScanScalar depends on whether the index returns exact
-            // results.
-            if (!result.rows.IsEmpty()) {
-                // Scalar indexes may contain false positives, even if they return a bitmap.
-                PAIMON_ASSIGN_OR_RAISE(Bitmap exact_rows, scan_scalar(predicate, result.rows));
-                result.rows &= exact_rows;
-            }
-            return result;
         }
+        if (!result.rows.IsEmpty()) {
+            PAIMON_ASSIGN_OR_RAISE(result.rows, scan_scalar(predicate, result.rows));
+        }
+        return result;
     }
 
     Result<Evaluation> Evaluate(const std::shared_ptr<Predicate>& predicate,
@@ -310,7 +286,7 @@ class PreciseIndexEvaluator {
         if (!score_field) {
             return Status::Invalid("Root search field name is missing");
         }
-        std::shared_ptr<ScoredResult> scored;
+        std::shared_ptr<ScoredIndexResult<Bitmap>> scored;
         if (vector_search) {
             PAIMON_ASSIGN_OR_RAISE(
                 std::shared_ptr<Reader> reader,
@@ -334,8 +310,8 @@ class PreciseIndexEvaluator {
         return Status::OK();
     }
 
-    static Result<std::vector<float>> AlignScores(const std::shared_ptr<ScoredResult>& source,
-                                                  const Bitmap& rows) {
+    static Result<std::vector<float>> AlignScores(
+        const std::shared_ptr<ScoredIndexResult<Bitmap>>& source, const Bitmap& rows) {
         if (!source) {
             return Status::Invalid("Projected search source did not return scores");
         }

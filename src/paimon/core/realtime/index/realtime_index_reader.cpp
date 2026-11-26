@@ -21,9 +21,18 @@
 
 #include <utility>
 
+#include "paimon/common/index/index_reader_utils.h"
 #include "paimon/macros.h"
 
 namespace paimon {
+
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::Evaluate(
+    const std::shared_ptr<LeafPredicate>& predicate, const RoaringBitmap64* candidates) {
+    PAIMON_ASSIGN_OR_RAISE(
+        std::shared_ptr<RealtimeIndexResult> result,
+        PredicateUtils::VisitPredicate<std::shared_ptr<RealtimeIndexResult>>(predicate, this));
+    return IndexReaderUtils::RestrictScalarResult(result, candidates);
+}
 
 Result<std::shared_ptr<ScoredRealtimeIndexResult>> RealtimeIndexReader::VisitVectorSearch(
     const std::shared_ptr<VectorSearch>&) {
@@ -40,82 +49,80 @@ Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitFullTextM
     return Status::NotImplemented("Real-time index does not support full-text match");
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitIsNotNull() {
-    return std::optional<RoaringBitmap64>();
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitIsNotNull() {
+    return RealtimeIndexResult::Remain();
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitIsNull() {
-    return std::optional<RoaringBitmap64>();
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitIsNull() {
+    return RealtimeIndexResult::Remain();
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitEqual(const Literal&) {
-    return std::optional<RoaringBitmap64>();
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitEqual(const Literal&) {
+    return RealtimeIndexResult::Remain();
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitNotEqual(const Literal&) {
-    return std::optional<RoaringBitmap64>();
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitNotEqual(const Literal&) {
+    return RealtimeIndexResult::Remain();
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitLessThan(const Literal&) {
-    return std::optional<RoaringBitmap64>();
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitLessThan(const Literal&) {
+    return RealtimeIndexResult::Remain();
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitLessOrEqual(const Literal&) {
-    return std::optional<RoaringBitmap64>();
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitLessOrEqual(const Literal&) {
+    return RealtimeIndexResult::Remain();
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitGreaterThan(const Literal&) {
-    return std::optional<RoaringBitmap64>();
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitGreaterThan(const Literal&) {
+    return RealtimeIndexResult::Remain();
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitGreaterOrEqual(const Literal&) {
-    return std::optional<RoaringBitmap64>();
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitGreaterOrEqual(
+    const Literal&) {
+    return RealtimeIndexResult::Remain();
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitIn(
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitIn(
     const std::vector<Literal>& literals) {
-    RoaringBitmap64 result;
+    std::shared_ptr<RealtimeIndexResult> result = RealtimeIndexResult::Skip();
     for (const Literal& literal : literals) {
-        PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap64> candidates, VisitEqual(literal));
-        if (!candidates) {
-            return std::optional<RoaringBitmap64>();
-        }
-        result |= *candidates;
-    }
-    return std::optional<RoaringBitmap64>(std::move(result));
-}
-
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitNotIn(
-    const std::vector<Literal>& literals) {
-    std::optional<RoaringBitmap64> result;
-    for (const Literal& literal : literals) {
-        PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap64> candidates, VisitNotEqual(literal));
-        if (!candidates) {
-            continue;
-        }
-        if (!result) {
-            result = std::move(candidates);
-        } else {
-            *result &= *candidates;
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeIndexResult> child, VisitEqual(literal));
+        PAIMON_ASSIGN_OR_RAISE(result, result->Or(child));
+        if (std::dynamic_pointer_cast<RemainIndexResult<RoaringBitmap64>>(result)) {
+            return result;
         }
     }
     return result;
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitStartsWith(const Literal&) {
-    return std::optional<RoaringBitmap64>();
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitNotIn(
+    const std::vector<Literal>& literals) {
+    std::shared_ptr<RealtimeIndexResult> result;
+    for (const Literal& literal : literals) {
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<RealtimeIndexResult> child, VisitNotEqual(literal));
+        if (!result) {
+            result = std::move(child);
+        } else {
+            PAIMON_ASSIGN_OR_RAISE(result, result->And(child));
+        }
+    }
+    return result ? result : RealtimeIndexResult::Remain();
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitEndsWith(const Literal&) {
-    return std::optional<RoaringBitmap64>();
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitStartsWith(const Literal&) {
+    return RealtimeIndexResult::Remain();
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitContains(const Literal&) {
-    return std::optional<RoaringBitmap64>();
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitEndsWith(const Literal&) {
+    return RealtimeIndexResult::Remain();
 }
 
-Result<std::optional<RoaringBitmap64>> RealtimeIndexReader::VisitLike(const Literal&) {
-    return std::optional<RoaringBitmap64>();
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitContains(const Literal&) {
+    return RealtimeIndexResult::Remain();
+}
+
+Result<std::shared_ptr<RealtimeIndexResult>> RealtimeIndexReader::VisitLike(const Literal&) {
+    return RealtimeIndexResult::Remain();
 }
 
 }  // namespace paimon

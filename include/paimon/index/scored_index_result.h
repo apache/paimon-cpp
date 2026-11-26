@@ -22,33 +22,29 @@
 #include <string>
 #include <vector>
 
-#include "paimon/file_index/file_index_result.h"
-#include "paimon/result.h"
-#include "paimon/utils/roaring_bitmap32.h"
-#include "paimon/visibility.h"
+#include "paimon/index/index_result.h"
 
 namespace paimon {
 
-/// File-local search result. Scores correspond to row positions in ascending order.
-class PAIMON_EXPORT ScoredFileIndexResult : public FileIndexResult {
+/// Scores follow ascending row positions, not ranking order.
+/// IsExact() describes predicate matching within the candidate scope,
+/// not search recall or global TopK completeness.
+template <typename Bitmap>
+class PAIMON_EXPORT ScoredIndexResult : public IndexResult<Bitmap> {
  public:
-    static Result<std::shared_ptr<ScoredFileIndexResult>> Create(RoaringBitmap32&& row_positions,
-                                                                 std::vector<float>&& scores,
-                                                                 bool is_exact = false);
+    static Result<std::shared_ptr<ScoredIndexResult<Bitmap>>> Create(Bitmap rows,
+                                                                     std::vector<float> scores,
+                                                                     bool is_exact = false);
 
     bool IsEmpty() const {
         return row_positions_.IsEmpty();
     }
 
-    Result<bool> IsRemain() const override;
+    Result<bool> IsRemain() const override {
+        return !IsEmpty();
+    }
 
-    Result<std::shared_ptr<FileIndexResult>> And(
-        const std::shared_ptr<FileIndexResult>& other) override;
-
-    Result<std::shared_ptr<FileIndexResult>> Or(
-        const std::shared_ptr<FileIndexResult>& other) override;
-
-    const RoaringBitmap32& GetRowPositions() const {
+    const Bitmap& GetRowPositions() const {
         return row_positions_;
     }
 
@@ -56,13 +52,16 @@ class PAIMON_EXPORT ScoredFileIndexResult : public FileIndexResult {
         return scores_;
     }
 
+    Result<std::shared_ptr<IndexResult<Bitmap>>> And(
+        const std::shared_ptr<IndexResult<Bitmap>>& other) override;
+    Result<std::shared_ptr<IndexResult<Bitmap>>> Or(
+        const std::shared_ptr<IndexResult<Bitmap>>& other) override;
     std::string ToString() const override;
 
  private:
-    ScoredFileIndexResult(RoaringBitmap32&& row_positions, std::vector<float>&& scores,
-                          bool is_exact);
+    ScoredIndexResult(Bitmap rows, std::vector<float> scores, bool is_exact);
 
-    RoaringBitmap32 row_positions_;
+    Bitmap row_positions_;
     std::vector<float> scores_;
 };
 

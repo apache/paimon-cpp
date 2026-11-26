@@ -38,7 +38,6 @@
 #include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/file_index/file_index_result.h"
-#include "paimon/file_index/scored_file_index_result.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/memory/bytes.h"
@@ -851,124 +850,48 @@ TEST_F(FileIndexFormatTest, TestBitmapIndexWithTimestamp) {
         // 1745542802001lms, 1001ns
         // -1725001lms, 1001ns
 
-        // as timestamp is normalized by micro seconds, there is a loss of precision in the
-        // nanosecond part
+        // Nanosecond values lose precision in Bitmap/BSI storage. Only null checks
+        // can prune rows; value comparisons must retain all candidates.
         ASSERT_OK_AND_ASSIGN(auto index_file_readers,
                              reader->ReadColumnIndex(field_name, CreateArrowSchema(schema).get()));
         ASSERT_EQ(3, index_file_readers.size());
-        BitSliceIndexBitmapFileIndexReader* bsi_reader = nullptr;
-        BitmapFileIndexReader* bitmap_reader = nullptr;
         BloomFilterFileIndexReader* bloom_filter_reader = nullptr;
+        int32_t truncated_reader_count = 0;
+        for (const auto& index_reader : index_file_readers) {
+            if (auto* bloom = dynamic_cast<BloomFilterFileIndexReader*>(index_reader.get())) {
+                bloom_filter_reader = bloom;
+                continue;
+            }
+            ++truncated_reader_count;
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> null_result,
+                                 index_reader->VisitIsNull());
+            ASSERT_EQ("{5}", null_result->ToString());
+            ASSERT_TRUE(null_result->IsExact());
+            ASSERT_OK_AND_ASSIGN(std::shared_ptr<FileIndexResult> nonnull_result,
+                                 index_reader->VisitIsNotNull());
+            ASSERT_EQ("{0,1,2,3,4,6,7}", nonnull_result->ToString());
+            ASSERT_TRUE(nonnull_result->IsExact());
 
-        for (const auto& reader : index_file_readers) {
-            if (auto* r = dynamic_cast<BitSliceIndexBitmapFileIndexReader*>(reader.get())) {
-                bsi_reader = r;
-            } else if (auto* r = dynamic_cast<BitmapFileIndexReader*>(reader.get())) {
-                bitmap_reader = r;
-            } else if (auto* r = dynamic_cast<BloomFilterFileIndexReader*>(reader.get())) {
-                bloom_filter_reader = r;
+            for (const Literal& literal :
+                 {Literal(Timestamp(1745542502001l, 1000)),
+                  Literal(Timestamp(1745542802001l, 1000)),
+                  Literal(Timestamp(1745542802001l, 1001)), Literal(Timestamp(-1745001l, 1000))}) {
+                for (const auto& result :
+                     {index_reader->VisitEqual(literal), index_reader->VisitNotEqual(literal),
+                      index_reader->VisitIn({literal, Literal(Timestamp(1745542602001l, 1000))}),
+                      index_reader->VisitNotIn({literal, Literal(Timestamp(1745542602001l, 1000))}),
+                      index_reader->VisitGreaterThan(literal),
+                      index_reader->VisitGreaterOrEqual(literal),
+                      index_reader->VisitLessThan(literal),
+                      index_reader->VisitLessOrEqual(literal)}) {
+                    ASSERT_OK(result);
+                    ASSERT_EQ(result.value(), FileIndexResult::Remain());
+                    ASSERT_FALSE(result.value()->IsExact());
+                }
             }
         }
-        ASSERT_TRUE(bsi_reader);
-        ASSERT_TRUE(bitmap_reader);
+        ASSERT_EQ(2, truncated_reader_count);
         ASSERT_TRUE(bloom_filter_reader);
-        // test bitmap
-        {
-            ASSERT_OK_AND_ASSIGN(auto result, bitmap_reader->VisitIsNull());
-            ASSERT_EQ("{5}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(auto result, bitmap_reader->VisitIsNotNull());
-            ASSERT_EQ("{0,1,2,3,4,6,7}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(
-                auto result, bitmap_reader->VisitEqual(Literal(Timestamp(1745542502001l, 1000))));
-            ASSERT_EQ("{}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(
-                auto result, bitmap_reader->VisitEqual(Literal(Timestamp(1745542802001l, 1001))));
-            ASSERT_EQ("{0,6}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(auto result, bitmap_reader->VisitNotEqual(
-                                                  Literal(Timestamp(1745542802001l, 1001))));
-            ASSERT_EQ("{1,2,3,4,7}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(
-                auto result, bitmap_reader->VisitIn({Literal(Timestamp(1745542802001l, 1001)),
-                                                     Literal(Timestamp(-1745001l, 1000)),
-                                                     Literal(Timestamp(1745542602001l, 1000))}));
-            ASSERT_EQ("{0,2,3,6}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(
-                auto result, bitmap_reader->VisitNotIn({Literal(Timestamp(1745542802001l, 1001)),
-                                                        Literal(Timestamp(-1745001l, 1000)),
-                                                        Literal(Timestamp(1745542602001l, 1000))}));
-            ASSERT_EQ("{1,4,7}", result->ToString());
-        }
-
-        // test bsi
-        {
-            ASSERT_OK_AND_ASSIGN(auto result, bsi_reader->VisitIsNull());
-            ASSERT_EQ("{5}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(auto result, bsi_reader->VisitIsNotNull());
-            ASSERT_EQ("{0,1,2,3,4,6,7}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(auto result,
-                                 bsi_reader->VisitEqual(Literal(Timestamp(1745542502001l, 1000))));
-            ASSERT_EQ("{}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(auto result,
-                                 bsi_reader->VisitEqual(Literal(Timestamp(1745542802001l, 1001))));
-            ASSERT_EQ("{0,6}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(
-                auto result, bsi_reader->VisitNotEqual(Literal(Timestamp(1745542802001l, 1001))));
-            ASSERT_EQ("{1,2,3,4,7}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(auto result,
-                                 bsi_reader->VisitIn({Literal(Timestamp(1745542802001l, 1001)),
-                                                      Literal(Timestamp(-1745001l, 1000)),
-                                                      Literal(Timestamp(1745542602001l, 1000))}));
-            ASSERT_EQ("{0,2,3,6}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(
-                auto result, bsi_reader->VisitNotIn({Literal(Timestamp(1745542802001l, 1001)),
-                                                     Literal(Timestamp(-1745001l, 1000)),
-                                                     Literal(Timestamp(1745542602001l, 1000))}));
-            ASSERT_EQ("{1,4,7}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(auto result, bsi_reader->VisitGreaterThan(
-                                                  Literal(Timestamp(1745542802001l, 1000))));
-            ASSERT_EQ("{1}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(auto result, bsi_reader->VisitGreaterOrEqual(
-                                                  Literal(Timestamp(1745542802001l, 1000))));
-            ASSERT_EQ("{0,1,6}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(auto result,
-                                 bsi_reader->VisitLessThan(Literal(Timestamp(-1745001l, 1000))));
-            ASSERT_EQ("{4}", result->ToString());
-        }
-        {
-            ASSERT_OK_AND_ASSIGN(auto result,
-                                 bsi_reader->VisitLessOrEqual(Literal(Timestamp(0l, 1000))));
-            ASSERT_EQ("{3,4,7}", result->ToString());
-        }
 
         // test bloom filter
         ASSERT_TRUE(bloom_filter_reader->VisitEqual(Literal(Timestamp(1745542802001l, 1001)))

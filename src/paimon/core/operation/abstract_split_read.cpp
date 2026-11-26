@@ -67,7 +67,6 @@
 #include "paimon/core/table/source/data_split_impl.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/nested_projection_utils.h"
-#include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/file_index/file_index_result.h"
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"

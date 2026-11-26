@@ -31,6 +31,7 @@
 #include "arrow/compute/api_aggregate.h"
 #include "paimon/common/data/columnar/columnar_array.h"
 #include "paimon/common/data/columnar/columnar_row.h"
+#include "paimon/common/index/index_reader_utils.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/predicate/predicate_filter.h"
 #include "paimon/common/reader/reader_utils.h"
@@ -581,17 +582,19 @@ class ArrowRealtimeStore::AppendQueryBatchReader : public BatchReader {
             }
             if (enable_index_pruning_ && segment->GetIndex() && predicate_) {
                 PAIMON_ASSIGN_OR_RAISE(
-                    std::optional<RoaringBitmap64> indexed,
+                    std::shared_ptr<RealtimeIndexResult> indexed,
                     RealtimeIndexEvaluator::Evaluate(
                         segment->GetIndex(), predicate_,
                         OffsetRange(std::max(segment_range.begin, offset_range_.begin),
                                     std::min(segment_range.end, offset_range_.end)),
                         memory_pool_));
-                if (indexed) {
+                PAIMON_ASSIGN_OR_RAISE(std::optional<RoaringBitmap64> rows,
+                                       IndexReaderUtils::GetScalarRows(indexed));
+                if (rows) {
                     if (candidates_) {
-                        *candidates_ &= *indexed;
+                        *candidates_ &= *rows;
                     } else {
-                        candidates_ = std::move(indexed);
+                        candidates_ = std::move(rows);
                     }
                 }
             }

@@ -22,13 +22,11 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
-#include "paimon/file_index/bitmap_index_result.h"
 #include "paimon/file_index/file_index_reader.h"
-#include "paimon/file_index/scored_file_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/predicate/full_text_match.h"
 #include "paimon/predicate/function.h"
 #include "paimon/predicate/leaf_predicate.h"
@@ -43,16 +41,11 @@ class IndexReaderUtils {
     IndexReaderUtils() = delete;
     ~IndexReaderUtils() = delete;
 
-    template <typename Bitmap, typename ScoredResult>
+    template <typename Bitmap>
     struct FullTextResult {
         Bitmap rows;
-        std::shared_ptr<ScoredResult> scores;
+        std::shared_ptr<ScoredIndexResult<Bitmap>> scores;
     };
-
-    template <typename Bitmap>
-    using FullTextScoredResult =
-        std::conditional_t<std::is_same_v<Bitmap, RoaringBitmap32>, ScoredFileIndexResult,
-                           ScoredRealtimeIndexResult>;
 
     template <typename Reader>
     static Result<std::shared_ptr<Reader>> GetSearchReader(
@@ -98,39 +91,91 @@ class IndexReaderUtils {
         return estimate;
     }
 
-    static Result<std::optional<RoaringBitmap32>> VisitScalar(
-        const std::shared_ptr<FileIndexReader>& reader,
-        const std::shared_ptr<LeafPredicate>& predicate) {
-        PAIMON_ASSIGN_OR_RAISE(
-            std::shared_ptr<FileIndexResult> result,
-            PredicateUtils::VisitPredicate<std::shared_ptr<FileIndexResult>>(predicate, reader));
+    /// Extract scalar row selection at the reader boundary. Remain is unrestricted;
+    /// Skip is empty. Neither sentinel needs to own a bitmap.
+    template <typename Bitmap>
+    static Result<std::optional<Bitmap>> GetScalarRows(
+        const std::shared_ptr<IndexResult<Bitmap>>& result) {
         if (!result) {
             return Status::Invalid("Scalar index returned a null result");
         }
-        if (auto bitmap = std::dynamic_pointer_cast<BitmapIndexResult>(result)) {
-            PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap32* rows, bitmap->GetBitmap());
-            return std::optional<RoaringBitmap32>(*rows);
+        if (auto bitmap = std::dynamic_pointer_cast<BitmapResult<Bitmap>>(result)) {
+            PAIMON_ASSIGN_OR_RAISE(const Bitmap* rows, bitmap->GetBitmap());
+            return std::optional<Bitmap>(*rows);
         }
-        if (std::dynamic_pointer_cast<Skip>(result)) {
-            return std::optional<RoaringBitmap32>(RoaringBitmap32());
+        if (std::dynamic_pointer_cast<SkipIndexResult<Bitmap>>(result)) {
+            return std::optional<Bitmap>(Bitmap());
         }
-        if (std::dynamic_pointer_cast<Remain>(result)) {
-            return std::optional<RoaringBitmap32>();
+        if (std::dynamic_pointer_cast<RemainIndexResult<Bitmap>>(result)) {
+            return std::optional<Bitmap>();
         }
-        return Status::Invalid("Invalid scalar index result for predicate ", predicate->ToString());
+        return Status::Invalid("Scalar evaluation requires a bitmap, Skip or Remain");
     }
 
-    static Result<std::optional<RoaringBitmap64>> VisitScalar(
-        const std::shared_ptr<RealtimeIndexReader>& reader,
-        const std::shared_ptr<LeafPredicate>& predicate) {
-        return PredicateUtils::VisitPredicate<std::optional<RoaringBitmap64>>(predicate, reader);
+    /// Restrict a scalar result without changing the predicate's exactness.
+    template <typename Bitmap>
+    static Result<std::shared_ptr<IndexResult<Bitmap>>> RestrictScalarResult(
+        const std::shared_ptr<IndexResult<Bitmap>>& result, const Bitmap* candidates) {
+        if (!result) {
+            return Status::Invalid("Scalar index returned a null result");
+        }
+        if (auto bitmap = std::dynamic_pointer_cast<BitmapResult<Bitmap>>(result)) {
+            if (!candidates) {
+                return result;
+            }
+            return std::make_shared<BitmapResult<Bitmap>>(
+                [bitmap, rows = *candidates]() -> Result<Bitmap> {
+                    PAIMON_ASSIGN_OR_RAISE(const Bitmap* matches, bitmap->GetBitmap());
+                    return Bitmap::And(rows, *matches);
+                },
+                bitmap->IsExact());
+        }
+        if (std::dynamic_pointer_cast<RemainIndexResult<Bitmap>>(result)) {
+            if (candidates) {
+                return std::make_shared<BitmapResult<Bitmap>>(
+                    [rows = *candidates]() -> Result<Bitmap> { return rows; },
+                    /*is_exact=*/false);
+            }
+            return result;
+        }
+        if (std::dynamic_pointer_cast<SkipIndexResult<Bitmap>>(result)) {
+            return result;
+        }
+        return Status::Invalid("Scalar evaluation requires a bitmap, Skip or Remain");
+    }
+
+    /// Each index evaluates the same input scope: inexact results cannot discard matches.
+    template <typename Bitmap, typename Reader>
+    static Result<std::shared_ptr<IndexResult<Bitmap>>> EvaluateScalar(
+        const std::vector<std::shared_ptr<Reader>>& readers,
+        const std::shared_ptr<LeafPredicate>& predicate, const Bitmap* candidates) {
+        if (candidates && candidates->IsEmpty()) {
+            return IndexResult<Bitmap>::Skip();
+        }
+        std::shared_ptr<IndexResult<Bitmap>> combined = IndexResult<Bitmap>::Remain();
+        for (const auto& reader : readers) {
+            PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<IndexResult<Bitmap>> result,
+                                   reader->Evaluate(predicate, candidates));
+            if (!result) {
+                return Status::Invalid("Scalar index returned a null result");
+            }
+            if (result->IsExact()) {
+                return result;
+            }
+            PAIMON_ASSIGN_OR_RAISE(combined, combined->And(result));
+            PAIMON_ASSIGN_OR_RAISE(bool remain, combined->IsRemain());
+            if (!remain) {
+                return IndexResult<Bitmap>::Skip();
+            }
+        }
+        return combined;
     }
 
     template <typename Reader, typename Bitmap>
-    static Result<FullTextResult<Bitmap, FullTextScoredResult<Bitmap>>> VisitFullTextMatch(
+    static Result<FullTextResult<Bitmap>> VisitFullTextMatch(
         const std::shared_ptr<Reader>& reader, const std::shared_ptr<FullTextMatch>& match,
         const Bitmap& candidates, bool needs_scores) {
-        using ScoredResult = FullTextScoredResult<Bitmap>;
+        using ScoredResult = ScoredIndexResult<Bitmap>;
         auto filtered = std::make_shared<FullTextMatch>(*match);
         RoaringBitmap64 eligible(candidates);
         if (filtered->include_row_ids) {
@@ -138,28 +183,26 @@ class IndexReaderUtils {
         } else {
             filtered->include_row_ids = std::move(eligible);
         }
-        PAIMON_ASSIGN_OR_RAISE(auto result, reader->VisitFullTextMatch(filtered, needs_scores));
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<IndexResult<Bitmap>> result,
+                               reader->VisitFullTextMatch(filtered, needs_scores));
         if (!result) {
             return Status::Invalid("Full-text match returned a null result");
         }
+        std::shared_ptr<ScoredResult> scored;
         if (needs_scores) {
-            auto scored = std::dynamic_pointer_cast<ScoredResult>(result);
+            scored = std::dynamic_pointer_cast<ScoredResult>(result);
             if (!scored) {
                 return Status::Invalid("Full-text index did not return requested scores");
             }
-            return FullTextResult<Bitmap, ScoredResult>{scored->GetRowPositions(),
-                                                        std::move(scored)};
         }
-        if constexpr (std::is_same_v<Bitmap, RoaringBitmap32>) {
-            auto bitmap = std::dynamic_pointer_cast<BitmapIndexResult>(result);
-            if (!bitmap) {
-                return Status::Invalid("Full-text index did not return a bitmap");
-            }
-            PAIMON_ASSIGN_OR_RAISE(const RoaringBitmap32* rows, bitmap->GetBitmap());
-            return FullTextResult<Bitmap, ScoredResult>{*rows, nullptr};
-        } else {
-            return FullTextResult<Bitmap, ScoredResult>{result->GetRowPositions(), nullptr};
+        if (auto scored_result = std::dynamic_pointer_cast<ScoredResult>(result)) {
+            return FullTextResult<Bitmap>{scored_result->GetRowPositions(), std::move(scored)};
         }
+        PAIMON_ASSIGN_OR_RAISE(std::optional<Bitmap> rows, GetScalarRows(result));
+        if (!rows) {
+            return Status::Invalid("Full-text index did not return row positions");
+        }
+        return FullTextResult<Bitmap>{std::move(*rows), nullptr};
     }
 };
 

@@ -48,7 +48,7 @@
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/core/utils/field_mapping.h"
-#include "paimon/file_index/scored_file_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/format/reader_builder.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/full_text_search.h"
@@ -78,7 +78,7 @@ Status PreparePredicate(
     const std::map<int32_t, std::pair<int32_t, DataField>>& data_by_id,
     const std::vector<std::string>& partition_keys, FileIndexEvaluator* indexes,
     std::map<std::shared_ptr<LeafPredicate>, std::shared_ptr<LeafPredicate>>* mapped_leaves) {
-    return PreciseIndexEvaluator<RoaringBitmap32, ScoredFileIndexResult>::Prepare(
+    return PreciseIndexEvaluator<RoaringBitmap32>::Prepare(
         predicate, [&](const std::shared_ptr<LeafPredicate>& leaf) -> Status {
             bool full_text = leaf->GetFunction().GetType() == Function::Type::FULL_TEXT_MATCH;
             if (!full_text && ObjectUtils::Contains(partition_keys, leaf->FieldName())) {

@@ -47,10 +47,18 @@ Interface
    :members:
    :undoc-members:
 
-.. doxygenclass:: paimon::FileIndexResult
+.. doxygentypedef:: paimon::FileIndexResult
+
+.. doxygenclass:: paimon::IndexResult
    :members:
    :undoc-members:
 
-.. doxygenclass:: paimon::BitmapIndexResult
+.. doxygentypedef:: paimon::BitmapIndexResult
+
+.. doxygenclass:: paimon::BitmapResult
+   :members:
+   :undoc-members:
+
+.. doxygenclass:: paimon::ScoredIndexResult
    :members:
    :undoc-members:

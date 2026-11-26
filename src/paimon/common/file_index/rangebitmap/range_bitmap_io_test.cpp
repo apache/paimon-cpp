@@ -28,7 +28,7 @@
 #include "paimon/common/file_index/rangebitmap/range_bitmap_file_index.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/scope_guard.h"
-#include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/memory/memory_pool.h"

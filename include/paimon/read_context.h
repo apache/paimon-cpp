@@ -396,7 +396,7 @@ class PAIMON_EXPORT ReadContextBuilder {
     /// Compute exact file-local result row positions during file-index evaluation, using the
     /// configured Predicate and optional VectorSearch or FullTextSearch request.
     /// Requires file-index.read.enabled=true. Uses exact scalar index results directly and
-    /// rechecks the original candidate scope when indexes are inexact. If a scalar predicate's
+    /// rechecks intersected candidates when indexes are inexact. If a scalar predicate's
     /// field has no index, reads the data to compute exact matching rows. Only scalar predicates
     /// may be evaluated without an index. Score output must use named projections such as
     /// _<field>_INDEX_SCORE; projecting _INDEX_SCORE by name, field ID or read schema is not

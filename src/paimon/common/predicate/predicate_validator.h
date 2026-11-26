@@ -30,6 +30,7 @@
 #include "paimon/common/utils/date_time_utils.h"
 #include "paimon/common/utils/field_type_utils.h"
 #include "paimon/data/decimal.h"
+#include "paimon/data/timestamp.h"
 #include "paimon/defs.h"
 #include "paimon/predicate/compound_predicate.h"
 #include "paimon/predicate/function.h"
@@ -116,6 +117,9 @@ class PredicateValidator {
                     *checked_pointer_cast<arrow::Decimal128Type>(schema_type), *leaf_predicate));
             } else if (schema_type->id() == arrow::Type::TIME32) {
                 PAIMON_RETURN_NOT_OK(ValidateTimeLiterals(*leaf_predicate));
+            } else if (schema_type->id() == arrow::Type::TIMESTAMP) {
+                PAIMON_RETURN_NOT_OK(ValidateTimestampLiterals(
+                    *checked_pointer_cast<arrow::TimestampType>(schema_type), *leaf_predicate));
             }
         } else if (auto compound_predicate =
                        std::dynamic_pointer_cast<CompoundPredicate>(predicate)) {
@@ -145,6 +149,39 @@ class PredicateValidator {
                 return Status::Invalid(fmt::format(
                     "decimal literal {} for field {} does not fit field type DECIMAL({}, {})",
                     decimal.ToString(), field_name, field_type.precision(), field_type.scale()));
+            }
+        }
+        return Status::OK();
+    }
+
+    static Status ValidateTimestampLiterals(const arrow::TimestampType& field_type,
+                                            const LeafPredicate& predicate) {
+        for (const Literal& literal : predicate.Literals()) {
+            if (literal.IsNull()) {
+                continue;
+            }
+            const auto timestamp = literal.GetValue<Timestamp>();
+            const int32_t nanos = timestamp.GetNanoOfMillisecond();
+            bool aligned = false;
+            switch (field_type.unit()) {
+                case arrow::TimeUnit::SECOND:
+                    aligned = timestamp.GetMillisecond() % 1000 == 0 && nanos == 0;
+                    break;
+                case arrow::TimeUnit::MILLI:
+                    aligned = nanos == 0;
+                    break;
+                case arrow::TimeUnit::MICRO:
+                    aligned = nanos % 1000 == 0;
+                    break;
+                case arrow::TimeUnit::NANO:
+                    aligned = true;
+                    break;
+            }
+            if (!aligned) {
+                return Status::Invalid(fmt::format(
+                    "timestamp literal for field {} cannot be represented without precision "
+                    "loss in {}",
+                    predicate.FieldName(), field_type.ToString()));
             }
         }
         return Status::OK();

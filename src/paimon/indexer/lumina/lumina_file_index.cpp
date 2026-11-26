@@ -31,7 +31,7 @@
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/io/offset_input_stream.h"
 #include "paimon/common/utils/arrow/status_utils.h"
-#include "paimon/file_index/scored_file_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/indexer/lumina/lumina_file_writer.h"
 #include "paimon/indexer/lumina/lumina_utils.h"
 #include "paimon/memory/bytes.h"

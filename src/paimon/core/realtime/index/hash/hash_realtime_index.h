@@ -65,8 +65,8 @@ class HashRealtimeIndex final : public RealtimeIndex,
         std::optional<double> EstimateSelectivity(
             const std::shared_ptr<LeafPredicate>& predicate) const override;
 
-        Result<std::optional<RoaringBitmap64>> VisitEqual(const Literal& literal) override;
-        Result<std::optional<RoaringBitmap64>> VisitIn(
+        Result<std::shared_ptr<RealtimeIndexResult>> VisitEqual(const Literal& literal) override;
+        Result<std::shared_ptr<RealtimeIndexResult>> VisitIn(
             const std::vector<Literal>& literals) override;
 
      private:

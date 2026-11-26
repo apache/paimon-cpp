@@ -17,6 +17,7 @@
  */
 
 #pragma once
+
 #include <map>
 #include <memory>
 #include <optional>
@@ -44,7 +45,6 @@ class FileIndexReader;
 class MemoryPool;
 class Predicate;
 class RoaringBitmap32;
-class ScoredFileIndexResult;
 struct DataFileMeta;
 struct FullTextSearch;
 struct VectorSearch;

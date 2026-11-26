@@ -31,7 +31,7 @@
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/field_type_utils.h"
-#include "paimon/file_index/bitmap_index_result.h"
+#include "paimon/file_index/file_index_result.h"
 #include "paimon/predicate/literal.h"
 #include "paimon/result.h"
 #include "paimon/status.h"
