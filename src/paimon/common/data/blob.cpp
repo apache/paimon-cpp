@@ -89,6 +89,22 @@ const std::string& Blob::Uri() const {
     return impl_->Uri();
 }
 
+bool Blob::IsVideoFrame() const {
+    return impl_->GetDescriptor()->IsVideoFrame();
+}
+
+int64_t Blob::FrameIndex() const {
+    return impl_->GetDescriptor()->FrameIndex();
+}
+
+int64_t Blob::MoovOffset() const {
+    return impl_->GetDescriptor()->MoovOffset();
+}
+
+int64_t Blob::MoovLength() const {
+    return impl_->GetDescriptor()->MoovLength();
+}
+
 Result<std::unique_ptr<InputStream>> Blob::NewInputStream(
     const std::shared_ptr<FileSystem>& fs) const {
     if (fs == nullptr) {

@@ -41,6 +41,10 @@ namespace paimon {
 /// | 13     | uri_bytes     | byte[N]   | N    |
 /// | 13 + N | offset        | long      | 8    |
 /// | 21 + N | length        | long      | 8    |
+///
+/// A video frame descriptor uses its own magic and version, followed by the same URI,
+/// offset and length fields. Three long values follow: the frame ordinal, the MP4 moov
+/// box offset and length relative to the video payload.
 
 class PAIMON_EXPORT BlobDescriptor {
  public:
@@ -49,6 +53,14 @@ class PAIMON_EXPORT BlobDescriptor {
 
     static Result<std::unique_ptr<BlobDescriptor>> Create(int8_t version, const std::string& uri,
                                                           int64_t offset, int64_t length);
+
+    /// Create a reference to one logical frame in an encoded video payload.
+    /// An absent MP4 moov box has offset and length 0.
+    static Result<std::unique_ptr<BlobDescriptor>> CreateVideoFrame(const std::string& uri,
+                                                                    int64_t offset, int64_t length,
+                                                                    int64_t frame_index,
+                                                                    int64_t moov_offset,
+                                                                    int64_t moov_length);
 
     static Result<std::unique_ptr<BlobDescriptor>> Deserialize(const char* buffer, uint64_t size);
 
@@ -74,6 +86,23 @@ class PAIMON_EXPORT BlobDescriptor {
         return length_;
     }
 
+    bool IsVideoFrame() const {
+        return frame_index_ >= 0;
+    }
+
+    /// Zero-based frame ordinal, or -1 for a regular blob.
+    int64_t FrameIndex() const {
+        return frame_index_;
+    }
+
+    int64_t MoovOffset() const {
+        return moov_offset_;
+    }
+
+    int64_t MoovLength() const {
+        return moov_length_;
+    }
+
  private:
     BlobDescriptor(int8_t version, const std::string& uri, int64_t offset, int64_t length)
         : version_(version), uri_(uri), offset_(offset), length_(length) {}
@@ -85,6 +114,9 @@ class PAIMON_EXPORT BlobDescriptor {
     std::string uri_;
     int64_t offset_ = 0;
     int64_t length_ = -1;
+    int64_t frame_index_ = -1;
+    int64_t moov_offset_ = 0;
+    int64_t moov_length_ = 0;
 };
 
 }  // namespace paimon

@@ -195,7 +195,7 @@ bool BlobUtils::IsBlobMetadata(const std::shared_ptr<const arrow::KeyValueMetada
 }
 
 bool BlobUtils::IsBlobFile(const std::string& file_name) {
-    return StringUtils::EndsWith(file_name, ".blob");
+    return StringUtils::EndsWith(file_name, ".blob") || StringUtils::EndsWith(file_name, ".video");
 }
 
 std::shared_ptr<arrow::Field> BlobUtils::ToArrowField(

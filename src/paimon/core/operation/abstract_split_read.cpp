@@ -463,7 +463,8 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFieldMappingRe
         file_reader = std::make_unique<VectorFileBatchReader>(std::move(file_reader), arrow_pool_);
     }
     std::set<int32_t> skip_map_selected_keys_filter_field_ids;
-    if (file_format_identifier != "blob") {
+    const bool is_blob_file = BlobUtils::IsBlobFile(file_meta->file_name);
+    if (!is_blob_file) {
         std::pair<std::unique_ptr<FileBatchReader>, std::set<int32_t>> shredding_result;
         PAIMON_ASSIGN_OR_RAISE(shredding_result,
                                ApplyShreddingReaderIfNeeded(std::move(file_reader), read_schema));
@@ -474,7 +475,7 @@ Result<std::unique_ptr<FileBatchReader>> AbstractSplitRead::CreateFieldMappingRe
         // A blob file has no self-describing schema: its physical fields are declared by the
         // file meta's write cols instead of queried from the format reader.
         std::optional<std::vector<std::string>> file_field_names;
-        if (file_format_identifier == "blob") {
+        if (is_blob_file) {
             file_field_names = file_meta->write_cols;
         }
         file_reader = std::make_unique<CompleteRowTrackingFieldsBatchReader>(

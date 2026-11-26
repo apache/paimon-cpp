@@ -331,6 +331,17 @@ Implementation Guidance
 - Do not assume identical overflow semantics across C++ and Java; tests should validate acceptable ranges and nullability.
 - For timestamp handling, consider precision/range constraints in C++ when interoperating with Java-produced data splits.
 
+Reading Video Columns
+---------------------
+
+Paimon C++ can read scalar BLOB columns stored in Paimon v1 ``.video`` files.
+Each non-null row returns a serialized frame descriptor. Open it with
+``Blob::FromDescriptor()``, then use ``Blob::FrameIndex()`` to get the frame's
+zero-based position. ``Blob::NewInputStream()`` opens the encoded video payload.
+``Blob::MoovOffset()`` and ``Blob::MoovLength()`` locate the optional MP4
+``moov`` box within that payload. Applications decode the video payload with their
+own video decoder.
+
 .. _data-evolution-deletion-vectors:
 
 Deletion Vectors on Data-Evolution Tables
