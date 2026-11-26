@@ -47,9 +47,9 @@ after passing it to a predicate or read context.
 
 Compose full-text and scalar predicates with the existing
 ``PredicateBuilder::And`` and ``PredicateBuilder::Or`` factories. Referenced fields
-need not appear in the output projection; field indices refer to zero-based
-positions in the complete table schema. For example, for a table whose first two
-columns are ``body`` and ``price``, the following constructs
+need not appear in the output projection. Table reads resolve predicate fields by
+name and rebind their execution indices; supplied ``field_index`` values are not
+validated. For a table containing ``body`` and ``price``, the following constructs
 ``body matches "apple" OR price < 10``:
 
 .. code-block:: cpp
