@@ -29,6 +29,7 @@
 #include "arrow/c/helpers.h"
 #include "arrow/type.h"
 #include "arrow/util/key_value_metadata.h"
+#include "paimon/common/data/blob_defs.h"
 #include "paimon/common/data/shredding/shredding_write_plan_factories.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/types/row_kind.h"
@@ -37,6 +38,7 @@
 #include "paimon/common/utils/checked_cast.h"
 #include "paimon/common/utils/long_counter.h"
 #include "paimon/common/utils/scope_guard.h"
+#include "paimon/common/utils/string_utils.h"
 #include "paimon/core/append/bucketed_append_compact_manager.h"
 #include "paimon/core/io/append_data_file_writer_factory.h"
 #include "paimon/core/io/blob_data_file_writer_factory.h"
@@ -189,6 +191,17 @@ Status AppendOnlyWriter::Flush(bool wait_for_latest_compaction, bool forced_full
 }
 
 AppendOnlyWriter::RollingFileWriterResult AppendOnlyWriter::CreateRollingRowWriter() {
+    const auto& table_options = options_.ToMap();
+    const auto video_fields = table_options.find(BlobDefs::kVideoFrameFieldOption);
+    if (video_fields != table_options.end()) {
+        for (std::string field : StringUtils::Split(video_fields->second, ",")) {
+            StringUtils::Trim(&field);
+            if (write_schema_->GetFieldIndex(field) >= 0) {
+                return Status::NotImplemented(
+                    fmt::format("writing video-frame-field '{}' is not supported", field));
+            }
+        }
+    }
     if (options_.GetVectorFileFormat()) {
         arrow::FieldVector main_fields;
         arrow::FieldVector vector_fields;

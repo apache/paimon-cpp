@@ -75,7 +75,21 @@ class PAIMON_EXPORT Blob {
     /// Gets the URI of the blob.
     const std::string& Uri() const;
 
+    /// Whether this blob refers to one logical frame in an encoded video payload.
+    bool IsVideoFrame() const;
+
+    /// Zero-based frame ordinal, or -1 for a regular blob.
+    int64_t FrameIndex() const;
+
+    /// Offset and length of the MP4 moov box relative to the encoded video payload.
+    /// Both values are 0 if absent.
+    int64_t MoovOffset() const;
+    int64_t MoovLength() const;
+
     /// Creates an input stream for reading the blob data.
+    ///
+    /// For a video frame descriptor, the stream contains the encoded video payload.
+    /// Use `FrameIndex()` to locate the logical frame when decoding the payload.
     ///
     /// @param fs The file system to use for reading.
     /// @return A result containing the input stream or an error.

@@ -32,6 +32,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_defs.h"
 #include "paimon/common/data/blob_utils.h"
+#include "paimon/common/data/video_frame_descriptor.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
@@ -712,6 +713,22 @@ TEST_P(BlobFormatWriterTest, TestAddBatchWithNullValues) {
     ASSERT_NOK_WITH_MSG(writer2->AddBatch(null_c_array.get()),
                         "BlobFormatWriter does not support struct-level null.");
     ArrowArrayRelease(null_c_array.get());
+}
+
+TEST_F(BlobFormatWriterWriteNullTest, TestRejectVideoFrameDescriptor) {
+    const std::string path = dir_->Str() + "/payload.mp4";
+    ASSERT_OK(file_system_->WriteFile(path, "encoded", true));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<VideoFrameDescriptor> frame,
+                         VideoFrameDescriptor::Create(path, 0, 7, 42, 0, 0));
+    auto bytes = frame->Serialize(pool_);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<arrow::Array> array,
+                         MakeBlobArrayFromBytes(std::string(bytes->data(), bytes->size())));
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<BlobFormatWriter> writer,
+        BlobFormatWriter::Create(output_stream_, struct_type_, /*write_null_on_missing_file=*/true,
+                                 /*write_null_on_fetch_failure=*/true, file_system_, pool_));
+    ASSERT_NOK_WITH_MSG(AddBatchOnce(writer, array),
+                        "video frame descriptors cannot be written to .blob files");
 }
 
 TEST_F(BlobFormatWriterWriteNullTest, TestWriteNullOnMissingFile) {

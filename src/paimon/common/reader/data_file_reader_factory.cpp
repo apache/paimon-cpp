@@ -41,9 +41,9 @@ namespace {
 // files (FormatTable::ParseFormat accepts only parquet/orc), so this only concerns the managed
 // table path.
 bool FormatSupportsPrefetch(const std::string& format_identifier) {
-    return format_identifier != "blob" && format_identifier != "avro" &&
-           format_identifier != "lance" && format_identifier != "mosaic" &&
-           format_identifier != "vortex";
+    return format_identifier != "blob" && format_identifier != "video" &&
+           format_identifier != "avro" && format_identifier != "lance" &&
+           format_identifier != "mosaic" && format_identifier != "vortex";
 }
 
 }  // namespace

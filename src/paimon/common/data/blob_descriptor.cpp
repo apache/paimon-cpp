@@ -22,6 +22,7 @@
 #include <utility>
 
 #include "fmt/format.h"
+#include "paimon/common/data/video_frame_descriptor.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/memory/memory_segment_utils.h"
 #include "paimon/io/byte_array_input_stream.h"
@@ -73,6 +74,12 @@ PAIMON_UNIQUE_PTR<Bytes> BlobDescriptor::Serialize(const std::shared_ptr<MemoryP
 
 Result<std::unique_ptr<BlobDescriptor>> BlobDescriptor::Deserialize(const char* buffer,
                                                                     uint64_t size) {
+    if (buffer == nullptr || size == 0) {
+        return Status::Invalid("empty blob descriptor");
+    }
+    if (VideoFrameDescriptor::HasMagic(buffer, size)) {
+        return Status::Invalid("video frame descriptors must be opened with Blob::FromDescriptor");
+    }
     auto input_stream = std::make_shared<ByteArrayInputStream>(buffer, size);
     DataInputStream in(std::move(input_stream));
     in.SetOrder(ByteOrder::PAIMON_LITTLE_ENDIAN);
@@ -91,6 +98,13 @@ Result<std::unique_ptr<BlobDescriptor>> BlobDescriptor::Deserialize(const char* 
         }
     }
     PAIMON_ASSIGN_OR_RAISE(int32_t uri_length, in.ReadValue<int32_t>());
+    PAIMON_ASSIGN_OR_RAISE(int64_t uri_start, in.GetPos());
+    constexpr uint64_t kTailSize = 2 * sizeof(int64_t);
+    const uint64_t remaining = size - uri_start;
+    if (uri_length < 0 || remaining < kTailSize ||
+        static_cast<uint64_t>(uri_length) > remaining - kTailSize) {
+        return Status::Invalid("invalid blob descriptor length");
+    }
     std::string uri(uri_length, '\0');
     PAIMON_RETURN_NOT_OK(in.Read(uri.data(), uri.size()));
     PAIMON_ASSIGN_OR_RAISE(int64_t offset, in.ReadValue<int64_t>());
@@ -99,7 +113,7 @@ Result<std::unique_ptr<BlobDescriptor>> BlobDescriptor::Deserialize(const char* 
 }
 
 Result<bool> BlobDescriptor::IsBlobDescriptor(const char* buffer, uint64_t size) {
-    if (size < kMinDescriptorLength) {
+    if (buffer == nullptr || size < kMinDescriptorLength) {
         return false;
     }
     auto input_stream = std::make_shared<ByteArrayInputStream>(buffer, size);

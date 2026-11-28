@@ -331,6 +331,26 @@ Implementation Guidance
 - Do not assume identical overflow semantics across C++ and Java; tests should validate acceptable ranges and nullability.
 - For timestamp handling, consider precision/range constraints in C++ when interoperating with Java-produced data splits.
 
+Reading Video Columns
+---------------------
+
+Paimon C++ reads scalar BLOB columns from v1 ``.video`` files that match only
+the six-index layout (29-byte footer). It rejects files whose estimated peak
+index memory exceeds 64 MiB.
+
+Reimport five-index or ambiguous files with a Java reader for the source
+layout and a current Java writer. Verify row counts, frame ordinals and row
+alignment in C++ before switching.
+
+Non-null rows return frame descriptors even with ``blob-as-descriptor=false``.
+Open them with ``Blob::FromDescriptor()``. Use ``FrameIndex()`` for the zero-based
+frame ordinal, ``NewInputStream()`` for the encoded payload, and ``MoovOffset()``
+and ``MoovLength()`` for the optional MP4 ``moov`` range.
+
+Use Java Paimon to write video columns. C++ rejects writes to
+``video-frame-field`` columns and rejects frame descriptors in ordinary BLOB
+writes.
+
 .. _data-evolution-deletion-vectors:
 
 Deletion Vectors on Data-Evolution Tables

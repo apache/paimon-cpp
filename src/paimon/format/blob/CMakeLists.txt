@@ -14,8 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set(PAIMON_BLOB_FILE_FORMAT blob_file_batch_reader.cpp blob_file_format_factory.cpp
-                            blob_format_writer.cpp blob_stats_extractor.cpp)
+set(PAIMON_BLOB_FILE_FORMAT
+    blob_file_batch_reader.cpp
+    blob_file_format_factory.cpp
+    blob_format_writer.cpp
+    blob_stats_extractor.cpp
+    video_file_batch_reader.cpp)
 
 add_paimon_lib(paimon_blob_file_format
                SOURCES
@@ -41,6 +45,7 @@ if(PAIMON_BUILD_TESTS)
                     blob_stats_extractor_test.cpp
                     blob_writer_builder_test.cpp
                     blob_file_format_factory_test.cpp
+                    video_file_batch_reader_test.cpp
                     EXTRA_INCLUDES
                     ${BLOB_INCLUDE_DIR}
                     STATIC_LINK_LIBS
