@@ -29,7 +29,7 @@
 
 namespace paimon::test {
 
-// Apache Paimon's Java fixtures before (ff63bf8a6c24) and after (5faef60f6fee) #10905.
+// Apache Paimon's Java fixtures from apache/paimon#10905 (5faef60f6fee).
 inline Result<std::string> ReadJavaVideoFixture(const std::string& name) {
     std::ifstream input(GetDataDir() + "/video_format.data/" + name);
     if (!input) {

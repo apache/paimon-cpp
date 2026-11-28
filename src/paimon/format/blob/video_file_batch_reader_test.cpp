@@ -194,30 +194,7 @@ TEST(VideoFileBatchReaderTest, RejectsInvalidFooter) {
     ASSERT_NOK(VideoFileBatchReader::Create(shared_input, 2, GetDefaultPool(), false, nullptr));
 }
 
-TEST(VideoFileBatchReaderTest, RejectsLegacyFiveIndexLayout) {
-    ASSERT_OK_AND_ASSIGN(std::string fixture, ReadJavaVideoFixture("video-v1-five-index.hex"));
-    auto input = std::make_shared<ByteArrayInputStream>(fixture.data(), fixture.size());
-    ASSERT_NOK_WITH_MSG(VideoFileBatchReader::Create(input, 2, GetDefaultPool(), false, nullptr),
-                        "Legacy five-index .video files require reimport");
-
-    // The old payload is nine bytes. Its trailing index bytes look like a valid first index
-    // length of one in a six-index footer. At the guessed index start, 0x08 decodes to a
-    // four-byte video that exactly covers the guessed payload. Only the old layout is valid.
-    constexpr char old_file[] =
-        "abcd\x08"
-        "efgh"
-        "\x12\x00"               // Video length 9, no keyframe index.
-        "\x02\x00\x00\x00\x00"   // Five runs of one row.
-        "\x00\x01\x02\x01\x02"   // References 0, NULL, 0, NULL, 0.
-        "\x02\x01\x00\x00\x00";  // First frames 1, 0, 0, 0, 0.
-    std::string bytes(old_file, sizeof(old_file) - 1);
-    AppendVideoFooter(&bytes, {1, 1, 5, 5, 5});
-    input = std::make_shared<ByteArrayInputStream>(bytes.data(), bytes.size());
-    ASSERT_NOK_WITH_MSG(VideoFileBatchReader::Create(input, 2, GetDefaultPool(), false, nullptr),
-                        "Legacy five-index .video files require reimport");
-}
-
-TEST(VideoFileBatchReaderTest, RejectsAmbiguousVideoLayout) {
+TEST(VideoFileBatchReaderTest, RejectsLegacyAndAmbiguousVideoLayouts) {
     // Five indexes describe two 25-byte videos, no keyframe indexes and four
     // one-row runs. The same bytes also encode two 22-byte videos with no moov
     // ranges and four 25-row runs when read using the six-index footer.
@@ -234,6 +211,12 @@ TEST(VideoFileBatchReaderTest, RejectsAmbiguousVideoLayout) {
     auto input = std::make_shared<ByteArrayInputStream>(bytes.data(), bytes.size());
     ASSERT_NOK_WITH_MSG(VideoFileBatchReader::Create(input, 2, GetDefaultPool(), false, nullptr),
                         "ambiguous v1 .video layout");
+
+    // This byte belongs to the five-index payload and the six-index video lengths.
+    // Zero video lengths invalidate only the six-index interpretation.
+    bytes[44] = 0;
+    ASSERT_NOK_WITH_MSG(VideoFileBatchReader::Create(input, 2, GetDefaultPool(), false, nullptr),
+                        "Legacy five-index .video files require reimport");
 }
 
 TEST(VideoFileBatchReaderTest, ReadsDenseSelectionInSmallBatches) {
