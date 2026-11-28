@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -77,6 +78,9 @@ class VideoFileBatchReader : public FileBatchReader {
     VideoFileBatchReader(std::string uri, int32_t batch_size, std::shared_ptr<MemoryPool> pool,
                          bool emit_placeholder_sentinel,
                          const std::shared_ptr<BlobReadContext>& blob_context);
+
+    Status ReadSixIndexLayout(InputStream* input, const std::array<int32_t, 6>& index_lengths,
+                              int64_t index_start);
 
     std::string uri_;
     int32_t batch_size_;

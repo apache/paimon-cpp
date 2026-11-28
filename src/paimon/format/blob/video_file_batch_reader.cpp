@@ -43,20 +43,114 @@ namespace {
 // Encoded video payloads, six delta varint indexes, then the footer.
 // The footer stores six little endian int32 index lengths followed by the magic and version.
 constexpr int64_t kFooterSize = 29;
+constexpr int64_t kLegacyFooterSize = 25;
 constexpr int32_t kMagic = 0x4F454449;
 constexpr int8_t kVersion = 1;
 constexpr uint64_t kMaxIndexMemoryBytes = 64 * 1024 * 1024;
 constexpr int64_t kNullReference = -1;
 constexpr int64_t kPlaceholderReference = -2;
-constexpr char kLegacyVideoHint[] = ". Legacy five-index .video files require reimport";
+
+using IndexLengths = std::array<int32_t, 6>;
+
+struct IndexLayout {
+    int64_t start;
+    uint64_t decoded_bytes = 0;
+    uint64_t decode_peak_bytes = 0;
+};
 
 Status ReadAtFully(InputStream* input, int64_t offset, char* data, int64_t size) {
     for (int64_t read = 0; read < size;) {
-        PAIMON_ASSIGN_OR_RAISE(int64_t n, input->Read(data + read, size - read, offset + read));
-        if (n <= 0) {
-            return Status::Invalid("truncated video file");
+        const Result<int64_t> n = input->Read(data + read, size - read, offset + read);
+        // An I/O failure leaves the layout undetermined.
+        if (!n.ok()) {
+            return n.status().IsInvalid()
+                       ? Status::IOError("failed to read video file. ", n.status().ToString())
+                       : n.status();
         }
-        read += n;
+        if (n.value() <= 0) {
+            return Status::IOError("truncated video file");
+        }
+        read += n.value();
+    }
+    return Status::OK();
+}
+
+Result<IndexLayout> PlanIndexes(const IndexLengths& lengths, int64_t footer_start) {
+    if (footer_start < 0) {
+        return Status::Invalid("video file is smaller than its footer");
+    }
+    IndexLayout layout{footer_start};
+    for (int32_t length : lengths) {
+        if (length < 0 || length > layout.start) {
+            return Status::Invalid("video indexes exceed the file size");
+        }
+        layout.start -= length;
+        // A varint can be one byte. The decoder holds both deltas and decoded values.
+        const uint64_t decoded_bytes = static_cast<uint64_t>(length) * sizeof(int64_t);
+        layout.decode_peak_bytes =
+            std::max(layout.decode_peak_bytes, layout.decoded_bytes + length + 2 * decoded_bytes);
+        layout.decoded_bytes += decoded_bytes;
+    }
+    return layout;
+}
+
+Status CheckIndexBudget(const IndexLayout& layout, uint64_t materialized_bytes) {
+    if (std::max(layout.decode_peak_bytes, layout.decoded_bytes + materialized_bytes) >
+        kMaxIndexMemoryBytes) {
+        return Status::CapacityError("video indexes exceed the memory budget of ",
+                                     kMaxIndexMemoryBytes, " bytes");
+    }
+    return Status::OK();
+}
+
+Result<std::vector<int64_t>> ReadIndex(InputStream* input, int64_t* offset, int32_t length) {
+    std::vector<char> bytes(length);
+    PAIMON_RETURN_NOT_OK(ReadAtFully(input, *offset, bytes.data(), length));
+    *offset += length;
+    return DeltaVarintCompressor::Decompress(bytes);
+}
+
+bool IsValidFrameRun(int64_t length, int64_t reference, int64_t first, size_t video_count,
+                     int64_t rows) {
+    return length > 0 && length <= std::numeric_limits<int32_t>::max() - rows &&
+           (reference == kNullReference || reference == kPlaceholderReference ||
+            (reference >= 0 && static_cast<uint64_t>(reference) < video_count && first >= 0));
+}
+
+Status ValidateLegacyLayout(InputStream* input, const IndexLengths& lengths, int64_t index_start) {
+    // Before apache/paimon#10905, the payload area contained videos followed by keyframe
+    // indexes. The footer had two physical indexes and three run indexes.
+    int64_t offset = index_start;
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int64_t> videos, ReadIndex(input, &offset, lengths[1]));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int64_t> keyframes, ReadIndex(input, &offset, lengths[2]));
+    if (videos.size() != keyframes.size()) {
+        return Status::Invalid("legacy video and keyframe indexes have different counts");
+    }
+    int64_t remaining = index_start;
+    for (size_t i = 0; i < videos.size(); ++i) {
+        if (videos[i] <= 0 || videos[i] > remaining || keyframes[i] < 0 ||
+            keyframes[i] > remaining - videos[i]) {
+            return Status::Invalid("invalid legacy video or keyframe length");
+        }
+        remaining -= videos[i] + keyframes[i];
+    }
+    if (remaining != 0) {
+        return Status::Invalid("legacy payload length does not match its indexes");
+    }
+
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int64_t> runs, ReadIndex(input, &offset, lengths[3]));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int64_t> references, ReadIndex(input, &offset, lengths[4]));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<int64_t> first_frames,
+                           ReadIndex(input, &offset, lengths[5]));
+    if (runs.size() != references.size() || runs.size() != first_frames.size()) {
+        return Status::Invalid("legacy video run indexes have different counts");
+    }
+    int64_t rows = 0;
+    for (size_t i = 0; i < runs.size(); ++i) {
+        if (!IsValidFrameRun(runs[i], references[i], first_frames[i], videos.size(), rows)) {
+            return Status::Invalid("invalid legacy video frame run");
+        }
+        rows += runs[i];
     }
     return Status::OK();
 }
@@ -83,50 +177,84 @@ Result<std::unique_ptr<VideoFileBatchReader>> VideoFileBatchReader::Create(
         return Status::Invalid("invalid video reader input, pool, or batch size");
     }
     PAIMON_ASSIGN_OR_RAISE(int64_t size, input->Length());
-    if (size < kFooterSize) {
-        return Status::Invalid("video file is smaller than its footer", kLegacyVideoHint);
+    if (size < kLegacyFooterSize) {
+        return Status::Invalid(
+            "corrupt or unsupported .video layout. File is smaller than its footer");
     }
-    char footer[kFooterSize];
-    PAIMON_RETURN_NOT_OK(ReadAtFully(input.get(), size - kFooterSize, footer, sizeof(footer)));
+    // Both layouts end with the same five lengths, magic and version. The index data
+    // for those lengths starts four bytes earlier in the six-index interpretation.
+    char footer[kFooterSize] = {};
+    const int64_t footer_size = std::min(size, kFooterSize);
+    PAIMON_RETURN_NOT_OK(ReadAtFully(input.get(), size - footer_size,
+                                     footer + kFooterSize - footer_size, footer_size));
     DataInputStream footer_input(std::make_shared<ByteArrayInputStream>(footer, sizeof(footer)));
     footer_input.SetOrder(ByteOrder::PAIMON_LITTLE_ENDIAN);
-    std::array<int32_t, 6> index_lengths;
-    int64_t index_start = size - kFooterSize;
-    uint64_t decoded_index_bytes = 0;
-    uint64_t decode_peak_bytes = 0;
+    IndexLengths index_lengths;
     for (int32_t& index_length : index_lengths) {
         PAIMON_ASSIGN_OR_RAISE(index_length, footer_input.ReadValue<int32_t>());
-        if (index_length < 0 || index_length > index_start) {
-            return Status::Invalid("video indexes exceed the file size", kLegacyVideoHint);
-        }
-        index_start -= index_length;
-        // A varint can be one byte. The decoder holds both deltas and decoded values.
-        const uint64_t decoded_bytes = static_cast<uint64_t>(index_length) * sizeof(int64_t);
-        decode_peak_bytes =
-            std::max(decode_peak_bytes, decoded_index_bytes + index_length + 2 * decoded_bytes);
-        decoded_index_bytes += decoded_bytes;
     }
     PAIMON_ASSIGN_OR_RAISE(int32_t magic, footer_input.ReadValue<int32_t>());
     PAIMON_ASSIGN_OR_RAISE(int8_t version, footer_input.ReadValue<int8_t>());
     if (magic != kMagic || version != kVersion) {
-        return Status::Invalid("invalid or unsupported video file footer");
+        return Status::Invalid("corrupt or unsupported .video footer");
     }
-    // Each group has equal entry counts, bounded by its shortest encoded index.
-    const uint64_t video_count = std::min({index_lengths[0], index_lengths[1], index_lengths[2]});
-    const uint64_t run_count = std::min({index_lengths[3], index_lengths[4], index_lengths[5]});
-    const uint64_t build_peak_bytes =
-        decoded_index_bytes + video_count * sizeof(VideoRange) + run_count * sizeof(FrameRun);
-    if (std::max(decode_peak_bytes, build_peak_bytes) > kMaxIndexMemoryBytes) {
-        return Status::CapacityError("video indexes exceed the memory budget of ",
-                                     kMaxIndexMemoryBytes, " bytes");
+
+    // Check both budgets before reading index data. The legacy probe frees its decoded
+    // indexes before the six-index reader allocates its own.
+    const Result<IndexLayout> modern_layout = PlanIndexes(index_lengths, size - kFooterSize);
+    if (modern_layout.ok()) {
+        // Each group has equal entry counts, bounded by its shortest encoded index.
+        const uint64_t videos = std::min({index_lengths[0], index_lengths[1], index_lengths[2]});
+        const uint64_t runs = std::min({index_lengths[3], index_lengths[4], index_lengths[5]});
+        PAIMON_RETURN_NOT_OK(CheckIndexBudget(
+            modern_layout.value(), videos * sizeof(VideoRange) + runs * sizeof(FrameRun)));
     }
+    IndexLengths legacy_lengths = index_lengths;
+    legacy_lengths[0] = 0;
+    const Result<IndexLayout> legacy_layout = PlanIndexes(legacy_lengths, size - kLegacyFooterSize);
+    Status legacy_status = legacy_layout.status();
+    if (legacy_layout.ok()) {
+        PAIMON_RETURN_NOT_OK(CheckIndexBudget(legacy_layout.value(), 0));
+        legacy_status =
+            ValidateLegacyLayout(input.get(), legacy_lengths, legacy_layout.value().start);
+        if (!legacy_status.ok() && !legacy_status.IsInvalid()) {
+            return legacy_status;
+        }
+    }
+
+    std::unique_ptr<VideoFileBatchReader> reader;
+    Status modern_status = modern_layout.status();
+    if (modern_layout.ok()) {
+        PAIMON_ASSIGN_OR_RAISE(std::string uri, input->GetUri());
+        reader.reset(new VideoFileBatchReader(std::move(uri), batch_size, pool,
+                                              emit_placeholder_sentinel, blob_context));
+        modern_status =
+            reader->ReadSixIndexLayout(input.get(), index_lengths, modern_layout.value().start);
+        if (!modern_status.ok() && !modern_status.IsInvalid()) {
+            return modern_status;
+        }
+    }
+    if (legacy_status.ok()) {
+        if (modern_status.ok()) {
+            return Status::Invalid(
+                "ambiguous v1 .video layout. Both five-index and six-index "
+                "validation passed. Reimport the file");
+        }
+        return Status::Invalid("Legacy five-index .video files require reimport");
+    }
+    if (!modern_status.ok()) {
+        return Status::Invalid("corrupt or unsupported .video layout. ", modern_status.ToString());
+    }
+    return reader;
+}
+
+Status VideoFileBatchReader::ReadSixIndexLayout(InputStream* input,
+                                                const IndexLengths& index_lengths,
+                                                int64_t index_start) {
     std::array<std::vector<int64_t>, 6> indexes;
     int64_t index_offset = index_start;
     for (size_t i = 0; i < indexes.size(); ++i) {
-        std::vector<char> bytes(index_lengths[i]);
-        PAIMON_RETURN_NOT_OK(ReadAtFully(input.get(), index_offset, bytes.data(), bytes.size()));
-        PAIMON_ASSIGN_OR_RAISE(indexes[i], DeltaVarintCompressor::Decompress(bytes));
-        index_offset += index_lengths[i];
+        PAIMON_ASSIGN_OR_RAISE(indexes[i], ReadIndex(input, &index_offset, index_lengths[i]));
     }
 
     const auto& video_lengths = indexes[0];
@@ -138,54 +266,44 @@ Result<std::unique_ptr<VideoFileBatchReader>> VideoFileBatchReader::Create(
     if (video_lengths.size() != moov_offsets.size() ||
         video_lengths.size() != moov_lengths.size() || run_lengths.size() != references.size() ||
         run_lengths.size() != first_frames.size()) {
-        return Status::Invalid("video indexes have inconsistent entry counts", kLegacyVideoHint);
+        return Status::Invalid("video indexes have inconsistent entry counts");
     }
 
-    PAIMON_ASSIGN_OR_RAISE(std::string uri, input->GetUri());
-    auto reader = std::unique_ptr<VideoFileBatchReader>(new VideoFileBatchReader(
-        std::move(uri), batch_size, pool, emit_placeholder_sentinel, blob_context));
     int64_t payload_offset = 0;
-    // Both layouts use v1. For a five-index file, the moov indexes below would actually
-    // contain the old video and keyframe lengths. Their sum covers the old payload region,
-    // which ends at least four bytes after index_start. The range and exact coverage checks
-    // together therefore reject the old layout even if its footer parses.
-    reader->videos_.reserve(video_lengths.size());
+    videos_.reserve(video_lengths.size());
     for (size_t i = 0; i < video_lengths.size(); ++i) {
         const int64_t length = video_lengths[i];
         if (length <= 0 || length > index_start - payload_offset) {
-            return Status::Invalid("invalid video payload length", kLegacyVideoHint);
+            return Status::Invalid("invalid video payload length");
         }
         const int64_t moov_offset = moov_offsets[i];
         const int64_t moov_length = moov_lengths[i];
         if (moov_offset < 0 || moov_length < 0 || moov_offset > length ||
             moov_length > length - moov_offset || (moov_length == 0 && moov_offset != 0)) {
-            return Status::Invalid("invalid moov range in video payload", kLegacyVideoHint);
+            return Status::Invalid("invalid moov range in video payload");
         }
-        reader->videos_.push_back({payload_offset, length, moov_offset, moov_length});
+        videos_.push_back({payload_offset, length, moov_offset, moov_length});
         payload_offset += length;
     }
     if (payload_offset != index_start) {
-        return Status::Invalid("video payload length does not match its index", kLegacyVideoHint);
+        return Status::Invalid("video payload length does not match its index");
     }
 
     int64_t rows = 0;
-    reader->runs_.reserve(run_lengths.size());
+    runs_.reserve(run_lengths.size());
     for (size_t i = 0; i < run_lengths.size(); ++i) {
         const int64_t length = run_lengths[i];
         const int64_t ref = references[i];
         const int64_t first = first_frames[i];
-        if (length <= 0 || length > std::numeric_limits<int32_t>::max() - rows ||
-            (ref != kNullReference && ref != kPlaceholderReference &&
-             (ref < 0 || static_cast<uint64_t>(ref) >= video_lengths.size())) ||
-            (ref >= 0 &&
-             (first < 0 || first > std::numeric_limits<int64_t>::max() - (length - 1)))) {
+        if (!IsValidFrameRun(length, ref, first, video_lengths.size(), rows) ||
+            (ref >= 0 && first > std::numeric_limits<int64_t>::max() - (length - 1))) {
             return Status::Invalid("invalid video frame run");
         }
         rows += length;
-        reader->runs_.push_back({static_cast<uint64_t>(rows), ref, first});
+        runs_.push_back({static_cast<uint64_t>(rows), ref, first});
     }
-    reader->row_count_ = rows;
-    return reader;
+    row_count_ = rows;
+    return Status::OK();
 }
 
 Result<std::unique_ptr<::ArrowSchema>> VideoFileBatchReader::GetFileSchema() const {

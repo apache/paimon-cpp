@@ -202,7 +202,7 @@ TEST(VideoFileBatchReaderTest, RejectsLegacyFiveIndexLayout) {
 
     // The old payload is nine bytes. Its trailing index bytes look like a valid first index
     // length of one in a six-index footer. At the guessed index start, 0x08 decodes to a
-    // four-byte video that exactly covers the guessed payload. The moov range must reject it.
+    // four-byte video that exactly covers the guessed payload. Only the old layout is valid.
     constexpr char old_file[] =
         "abcd\x08"
         "efgh"
@@ -214,7 +214,26 @@ TEST(VideoFileBatchReaderTest, RejectsLegacyFiveIndexLayout) {
     AppendVideoFooter(&bytes, {1, 1, 5, 5, 5});
     input = std::make_shared<ByteArrayInputStream>(bytes.data(), bytes.size());
     ASSERT_NOK_WITH_MSG(VideoFileBatchReader::Create(input, 2, GetDefaultPool(), false, nullptr),
-                        "invalid moov range in video payload");
+                        "Legacy five-index .video files require reimport");
+}
+
+TEST(VideoFileBatchReaderTest, RejectsAmbiguousVideoLayout) {
+    // Five indexes describe two 25-byte videos, no keyframe indexes and four
+    // one-row runs. The same bytes also encode two 22-byte videos with no moov
+    // ranges and four 25-row runs when read using the six-index footer.
+    std::string bytes(50, '\0');
+    bytes[44] = 44;  // Six-index video lengths: 22, 22.
+    constexpr char indexes[] =
+        "\x32\x00"           // Legacy video lengths: 25, 25.
+        "\x00\x00"           // Legacy keyframe lengths: 0, 0.
+        "\x02\x00\x00\x00"   // Legacy run lengths: 1, 1, 1, 1.
+        "\x00\x02\x01\x02"   // Legacy references: 0, 1, 0, 1.
+        "\x02\x00\x00\x00";  // Legacy first frames: 1, 1, 1, 1.
+    bytes.append(indexes, sizeof(indexes) - 1);
+    AppendVideoFooter(&bytes, {2, 2, 4, 4, 4});
+    auto input = std::make_shared<ByteArrayInputStream>(bytes.data(), bytes.size());
+    ASSERT_NOK_WITH_MSG(VideoFileBatchReader::Create(input, 2, GetDefaultPool(), false, nullptr),
+                        "ambiguous v1 .video layout");
 }
 
 TEST(VideoFileBatchReaderTest, ReadsDenseSelectionInSmallBatches) {
@@ -322,8 +341,9 @@ TEST(VideoFileBatchReaderTest, RejectsMoovRangeOutsideVideo) {
     ASSERT_OK(
         fs->WriteFile(path, MakeVideoFile(/*placeholder=*/false, /*first_moov_length=*/4), true));
     ASSERT_OK_AND_ASSIGN(std::shared_ptr<InputStream> input, fs->Open(path));
-    ASSERT_NOK_WITH_MSG(VideoFileBatchReader::Create(input, 2, GetDefaultPool(), false, nullptr),
-                        "invalid moov range");
+    auto result = VideoFileBatchReader::Create(input, 2, GetDefaultPool(), false, nullptr);
+    ASSERT_NOK_WITH_MSG(result, "corrupt or unsupported .video layout");
+    ASSERT_NOK_WITH_MSG(result, "invalid moov range");
 }
 
 TEST(VideoFileBatchReaderTest, ExposesPlaceholdersOnlyForBlobFallback) {

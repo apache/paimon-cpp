@@ -336,8 +336,15 @@ Reading Video Columns
 
 Paimon C++ reads scalar BLOB columns stored in Paimon v1 ``.video`` files with
 a 29-byte footer and six indexes. Earlier files with a five-index footer also
-use version 1. Reimport those files with a current Java Paimon writer before
-reading them with Paimon C++.
+use version 1. Paimon C++ validates both layouts and reads a file only when
+the six-index layout is the sole match. If both layouts match, the reader
+reports an ambiguous layout.
+
+To migrate older files, read the encoded video payloads and row-to-frame
+mappings with a Java Paimon release that supports the five-index layout,
+then rewrite them with a current Java Paimon writer. Read the rewritten
+files with Paimon C++ and verify row counts, frame ordinals and row alignment
+before switching to the rewritten data.
 
 The reader estimates peak index memory from the footer and rejects files whose
 indexes could use more than 64 MiB during decoding or construction of the
