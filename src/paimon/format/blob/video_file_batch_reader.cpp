@@ -45,6 +45,7 @@ namespace {
 constexpr int64_t kFooterSize = 29;
 constexpr int32_t kMagic = 0x4F454449;
 constexpr int8_t kVersion = 1;
+constexpr uint64_t kMaxIndexMemoryBytes = 64 * 1024 * 1024;
 constexpr int64_t kNullReference = -1;
 constexpr int64_t kPlaceholderReference = -2;
 
@@ -90,17 +91,33 @@ Result<std::unique_ptr<VideoFileBatchReader>> VideoFileBatchReader::Create(
     footer_input.SetOrder(ByteOrder::PAIMON_LITTLE_ENDIAN);
     std::array<int32_t, 6> index_lengths;
     int64_t index_start = size - kFooterSize;
+    uint64_t decoded_index_bytes = 0;
+    uint64_t decode_peak_bytes = 0;
     for (int32_t& index_length : index_lengths) {
         PAIMON_ASSIGN_OR_RAISE(index_length, footer_input.ReadValue<int32_t>());
         if (index_length < 0 || index_length > index_start) {
             return Status::Invalid("video indexes exceed the file size");
         }
         index_start -= index_length;
+        // A varint can be one byte. The decoder holds both deltas and decoded values.
+        const uint64_t decoded_bytes = static_cast<uint64_t>(index_length) * sizeof(int64_t);
+        decode_peak_bytes =
+            std::max(decode_peak_bytes, decoded_index_bytes + index_length + 2 * decoded_bytes);
+        decoded_index_bytes += decoded_bytes;
     }
     PAIMON_ASSIGN_OR_RAISE(int32_t magic, footer_input.ReadValue<int32_t>());
     PAIMON_ASSIGN_OR_RAISE(int8_t version, footer_input.ReadValue<int8_t>());
     if (magic != kMagic || version != kVersion) {
         return Status::Invalid("invalid or unsupported video file footer");
+    }
+    // Each group has equal entry counts, bounded by its shortest encoded index.
+    const uint64_t video_count = std::min({index_lengths[0], index_lengths[1], index_lengths[2]});
+    const uint64_t run_count = std::min({index_lengths[3], index_lengths[4], index_lengths[5]});
+    const uint64_t build_peak_bytes =
+        decoded_index_bytes + video_count * sizeof(VideoRange) + run_count * sizeof(FrameRun);
+    if (std::max(decode_peak_bytes, build_peak_bytes) > kMaxIndexMemoryBytes) {
+        return Status::CapacityError("video indexes exceed the memory budget of ",
+                                     kMaxIndexMemoryBytes, " bytes");
     }
     std::array<std::vector<int64_t>, 6> indexes;
     int64_t index_offset = index_start;

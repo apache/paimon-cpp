@@ -19,6 +19,9 @@
 
 #include "paimon/format/blob/video_file_batch_reader.h"
 
+#include <cstring>
+#include <numeric>
+
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
 #include "gtest/gtest.h"
@@ -32,6 +35,8 @@
 #include "paimon/format/file_format.h"
 #include "paimon/format/file_format_factory.h"
 #include "paimon/fs/local/local_file_system.h"
+#include "paimon/io/byte_array_input_stream.h"
+#include "paimon/testing/mock/mock_file_system.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/video_test_utils.h"
 
@@ -46,6 +51,14 @@ void Append32(std::string* data, uint32_t value) {
     }
 }
 
+void AppendVideoFooter(std::string* data, const std::vector<uint32_t>& index_lengths) {
+    for (uint32_t length : index_lengths) {
+        Append32(data, length);
+    }
+    Append32(data, 0x4f454449);
+    data->push_back(1);
+}
+
 std::string MakeVideoFile(bool placeholder = false, int64_t first_moov_length = 3) {
     std::string data = "VIDEOfilm";
     const std::vector<std::vector<int64_t>> indexes = {
@@ -57,11 +70,7 @@ std::string MakeVideoFile(bool placeholder = false, int64_t first_moov_length = 
         sizes.push_back(bytes.size());
         data.append(bytes.data(), bytes.size());
     }
-    for (auto size : sizes) {
-        Append32(&data, size);
-    }
-    Append32(&data, 0x4f454449);
-    data.push_back(1);
+    AppendVideoFooter(&data, sizes);
     return data;
 }
 
@@ -182,6 +191,59 @@ TEST(VideoFileBatchReaderTest, RejectsInvalidFooter) {
     ASSERT_OK_AND_ASSIGN(auto input, fs->Open(path));
     std::shared_ptr<InputStream> shared_input(std::move(input));
     ASSERT_NOK(VideoFileBatchReader::Create(shared_input, 2, GetDefaultPool(), false, nullptr));
+}
+
+TEST(VideoFileBatchReaderTest, RejectsOversizedIndexesBeforeReadingThem) {
+    class FooterOnlyStream : public MockInputStream {
+     public:
+        explicit FooterOnlyStream(const std::vector<uint32_t>& index_lengths)
+            : footer_offset_(
+                  std::accumulate(index_lengths.begin(), index_lengths.end(), int64_t{0})) {
+            AppendVideoFooter(&footer_, index_lengths);
+        }
+
+        Result<int64_t> Length() const override {
+            return footer_offset_ + footer_.size();
+        }
+
+        Result<int64_t> Read(char* buffer, int64_t size, int64_t offset) override {
+            if (offset != footer_offset_ || size != static_cast<int64_t>(footer_.size())) {
+                return Status::IOError("unexpected index read");
+            }
+            std::memcpy(buffer, footer_.data(), footer_.size());
+            return size;
+        }
+
+     private:
+        int64_t footer_offset_;
+        std::string footer_;
+    };
+
+    constexpr uint32_t kMiB = 1024 * 1024;
+    // A single 64 MiB index exceeds the decode budget. Three 1.5 MiB run indexes fit
+    // during decoding but exceed the budget once the runs and decoded indexes coexist.
+    constexpr uint32_t kRunIndexBytes = 3 * kMiB / 2;
+    for (const std::vector<uint32_t>& lengths :
+         {std::vector<uint32_t>{64 * kMiB, 0, 0, 0, 0, 0},
+          std::vector<uint32_t>{0, 0, 0, kRunIndexBytes, kRunIndexBytes, kRunIndexBytes}}) {
+        auto result = VideoFileBatchReader::Create(std::make_shared<FooterOnlyStream>(lengths), 2,
+                                                   GetDefaultPool(), false, nullptr);
+        ASSERT_TRUE(result.status().IsCapacityError()) << result.status();
+    }
+}
+
+TEST(VideoFileBatchReaderTest, ReadsLargeIndexWithinMemoryBudget) {
+    constexpr uint32_t kRuns = 1024 * 1024;
+    // Each run contains one NULL row. The indexes encode deltas as single-byte varints.
+    std::string bytes(3 * kRuns, '\0');
+    bytes[0] = 2;      // Run length 1.
+    bytes[kRuns] = 1;  // Video reference -1.
+    AppendVideoFooter(&bytes, {0, 0, 0, kRuns, kRuns, kRuns});
+    auto input = std::make_shared<ByteArrayInputStream>(bytes.data(), bytes.size());
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<VideoFileBatchReader> reader,
+                         VideoFileBatchReader::Create(input, 2, GetDefaultPool(), false, nullptr));
+    ASSERT_OK_AND_ASSIGN(uint64_t rows, reader->GetNumberOfRows());
+    ASSERT_EQ(rows, kRuns);
 }
 
 TEST(VideoFileBatchReaderTest, RejectsMoovRangeOutsideVideo) {

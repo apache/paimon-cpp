@@ -339,6 +339,10 @@ a 29-byte footer and six indexes. Earlier files with a five-index footer also
 use version 1. Reimport those files with a current Java Paimon writer before
 reading them with Paimon C++.
 
+The reader estimates peak index memory from the footer and rejects files whose
+indexes could use more than 64 MiB during decoding or construction of the
+in-memory index.
+
 Each non-null row returns a serialized frame descriptor, including when
 ``blob-as-descriptor=false``. Open the descriptor with
 ``Blob::FromDescriptor()``, then use ``Blob::FrameIndex()`` to get the frame's
