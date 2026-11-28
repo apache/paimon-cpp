@@ -32,6 +32,7 @@
 #include "arrow/util/utf8.h"
 #include "paimon/common/data/blob_defs.h"
 #include "paimon/common/data/blob_utils.h"
+#include "paimon/common/data/video_frame_descriptor.h"
 #include "paimon/common/io/offset_input_stream.h"
 #include "paimon/common/memory/memory_segment_utils.h"
 #include "paimon/common/metrics/metrics_impl.h"
@@ -419,6 +420,9 @@ Result<std::vector<int64_t>> BlobFormatWriter::WriteBlobElements(
 
 Result<BlobFormatWriter::BlobCopySource> BlobFormatWriter::OpenBlobInputStream(
     std::string_view blob_data, std::optional<int32_t> element_index) {
+    if (VideoFrameDescriptor::HasMagic(blob_data.data(), blob_data.size())) {
+        return Status::NotImplemented("video frame descriptors cannot be written to .blob files");
+    }
     // Whether blob_data is a serialized BlobDescriptor is detected by its magic header rather
     // than taken from a blob_as_descriptor option, so each value may hold either form.
     PAIMON_ASSIGN_OR_RAISE(bool is_descriptor,

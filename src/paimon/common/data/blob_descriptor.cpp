@@ -19,10 +19,10 @@
 
 #include "paimon/data/blob_descriptor.h"
 
-#include <limits>
 #include <utility>
 
 #include "fmt/format.h"
+#include "paimon/common/data/video_frame_descriptor.h"
 #include "paimon/common/io/memory_segment_output_stream.h"
 #include "paimon/common/memory/memory_segment_utils.h"
 #include "paimon/io/byte_array_input_stream.h"
@@ -35,8 +35,6 @@ namespace paimon {
 namespace {
 
 constexpr int64_t kMagic = 0x424C4F4244455343l;
-constexpr int64_t kVideoFrameMagic = 0x564944454F46524D;
-constexpr int8_t kVideoFrameVersion = 1;
 // One byte for version, eight bytes for magic number.
 constexpr uint64_t kMinDescriptorLength = 9;
 
@@ -60,39 +58,17 @@ Result<std::unique_ptr<BlobDescriptor>> BlobDescriptor::Create(int8_t version,
     return std::unique_ptr<BlobDescriptor>(new BlobDescriptor(version, uri, offset, length));
 }
 
-Result<std::unique_ptr<BlobDescriptor>> BlobDescriptor::CreateVideoFrame(
-    const std::string& uri, int64_t offset, int64_t length, int64_t frame_index,
-    int64_t moov_offset, int64_t moov_length) {
-    if (frame_index < 0 || moov_offset < 0 || moov_length < 0 ||
-        uri.size() > std::numeric_limits<int32_t>::max() ||
-        (moov_length == 0 ? moov_offset != 0
-                          : moov_offset > length || moov_length > length - moov_offset)) {
-        return Status::Invalid("invalid video frame descriptor range");
-    }
-    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BlobDescriptor> descriptor,
-                           Create(kVideoFrameVersion, uri, offset, length));
-    descriptor->frame_index_ = frame_index;
-    descriptor->moov_offset_ = moov_offset;
-    descriptor->moov_length_ = moov_length;
-    return descriptor;
-}
-
 PAIMON_UNIQUE_PTR<Bytes> BlobDescriptor::Serialize(const std::shared_ptr<MemoryPool>& pool) const {
     MemorySegmentOutputStream out(MemorySegmentOutputStream::DEFAULT_SEGMENT_SIZE, pool);
     out.SetOrder(ByteOrder::PAIMON_LITTLE_ENDIAN);
-    out.WriteValue<int8_t>(IsVideoFrame() ? kVideoFrameVersion : kCurrentVersion);
-    out.WriteValue<int64_t>(IsVideoFrame() ? kVideoFrameMagic : kMagic);
+    out.WriteValue<int8_t>(kCurrentVersion);
+    out.WriteValue<int64_t>(kMagic);
     out.WriteValue<int32_t>(static_cast<int32_t>(uri_.size()));
 
     auto uri_bytes = std::make_shared<Bytes>(uri_, pool.get());
     out.WriteBytes(uri_bytes);
     out.WriteValue<int64_t>(offset_);
     out.WriteValue<int64_t>(length_);
-    if (IsVideoFrame()) {
-        out.WriteValue<int64_t>(frame_index_);
-        out.WriteValue<int64_t>(moov_offset_);
-        out.WriteValue<int64_t>(moov_length_);
-    }
     return MemorySegmentUtils::CopyToBytes(out.Segments(), 0, out.CurrentSize(), pool.get());
 }
 
@@ -100,6 +76,9 @@ Result<std::unique_ptr<BlobDescriptor>> BlobDescriptor::Deserialize(const char* 
                                                                     uint64_t size) {
     if (buffer == nullptr || size == 0) {
         return Status::Invalid("empty blob descriptor");
+    }
+    if (VideoFrameDescriptor::HasMagic(buffer, size)) {
+        return Status::Invalid("video frame descriptors must be opened with Blob::FromDescriptor");
     }
     auto input_stream = std::make_shared<ByteArrayInputStream>(buffer, size);
     DataInputStream in(std::move(input_stream));
@@ -110,14 +89,7 @@ Result<std::unique_ptr<BlobDescriptor>> BlobDescriptor::Deserialize(const char* 
             "Expecting BlobDescriptor version to be less than or equal to {}, but found {}.",
             kCurrentVersion, version));
     }
-    bool video_frame = false;
-    if (version == kVideoFrameVersion && size >= kMinDescriptorLength) {
-        PAIMON_ASSIGN_OR_RAISE(int64_t magic, in.ReadValue<int64_t>());
-        video_frame = magic == kVideoFrameMagic;
-        if (!video_frame) {
-            PAIMON_RETURN_NOT_OK(in.Seek(1));
-        }
-    } else if (version > 1) {
+    if (version > 1) {
         PAIMON_ASSIGN_OR_RAISE(int64_t magic, in.ReadValue<int64_t>());
         if (kMagic != magic) {
             return Status::Invalid(fmt::format(
@@ -127,23 +99,16 @@ Result<std::unique_ptr<BlobDescriptor>> BlobDescriptor::Deserialize(const char* 
     }
     PAIMON_ASSIGN_OR_RAISE(int32_t uri_length, in.ReadValue<int32_t>());
     PAIMON_ASSIGN_OR_RAISE(int64_t uri_start, in.GetPos());
-    const uint64_t fixed_tail_size = (video_frame ? 5 : 2) * sizeof(int64_t);
-    const uint64_t remaining_size = size - uri_start;
-    if (uri_length < 0 || remaining_size < fixed_tail_size ||
-        static_cast<uint64_t>(uri_length) > remaining_size - fixed_tail_size ||
-        (video_frame && static_cast<uint64_t>(uri_length) != remaining_size - fixed_tail_size)) {
+    constexpr uint64_t kTailSize = 2 * sizeof(int64_t);
+    const uint64_t remaining = size - uri_start;
+    if (uri_length < 0 || remaining < kTailSize ||
+        static_cast<uint64_t>(uri_length) > remaining - kTailSize) {
         return Status::Invalid("invalid blob descriptor length");
     }
     std::string uri(uri_length, '\0');
     PAIMON_RETURN_NOT_OK(in.Read(uri.data(), uri.size()));
     PAIMON_ASSIGN_OR_RAISE(int64_t offset, in.ReadValue<int64_t>());
     PAIMON_ASSIGN_OR_RAISE(int64_t length, in.ReadValue<int64_t>());
-    if (video_frame) {
-        PAIMON_ASSIGN_OR_RAISE(int64_t frame_index, in.ReadValue<int64_t>());
-        PAIMON_ASSIGN_OR_RAISE(int64_t moov_offset, in.ReadValue<int64_t>());
-        PAIMON_ASSIGN_OR_RAISE(int64_t moov_length, in.ReadValue<int64_t>());
-        return CreateVideoFrame(uri, offset, length, frame_index, moov_offset, moov_length);
-    }
     return BlobDescriptor::Create(version, uri, offset, length);
 }
 
@@ -159,7 +124,7 @@ Result<bool> BlobDescriptor::IsBlobDescriptor(const char* buffer, uint64_t size)
         return false;
     }
     PAIMON_ASSIGN_OR_RAISE(int64_t magic, in.ReadValue<int64_t>());
-    return kMagic == magic || (version == kVideoFrameVersion && kVideoFrameMagic == magic);
+    return kMagic == magic;
 }
 
 std::string BlobDescriptor::ToString() const {

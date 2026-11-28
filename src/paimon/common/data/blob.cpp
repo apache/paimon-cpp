@@ -24,6 +24,7 @@
 
 #include "arrow/c/bridge.h"
 #include "paimon/common/data/blob_utils.h"
+#include "paimon/common/data/video_frame_descriptor.h"
 #include "paimon/common/io/offset_input_stream.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/path_util.h"
@@ -40,21 +41,28 @@ class Blob::Impl {
  public:
     explicit Impl(std::unique_ptr<BlobDescriptor>&& descriptor)
         : descriptor_(std::move(descriptor)) {}
+    explicit Impl(std::unique_ptr<VideoFrameDescriptor>&& video_frame)
+        : video_frame_(std::move(video_frame)) {}
 
     PAIMON_UNIQUE_PTR<Bytes> SerializeDescriptor(const std::shared_ptr<MemoryPool>& pool) const {
-        return descriptor_->Serialize(pool);
+        return video_frame_ ? video_frame_->Serialize(pool) : descriptor_->Serialize(pool);
     }
 
     const BlobDescriptor* GetDescriptor() const {
-        return descriptor_.get();
+        return video_frame_ ? &video_frame_->Payload() : descriptor_.get();
     }
 
     const std::string& Uri() const {
-        return descriptor_->Uri();
+        return GetDescriptor()->Uri();
+    }
+
+    const VideoFrameDescriptor* VideoFrame() const {
+        return video_frame_.get();
     }
 
  private:
     std::unique_ptr<BlobDescriptor> descriptor_;
+    std::unique_ptr<VideoFrameDescriptor> video_frame_;
 };
 
 Result<std::unique_ptr<Blob>> Blob::FromPath(const std::string& path) {
@@ -74,6 +82,11 @@ Blob::Blob(std::unique_ptr<Impl>&& impl) : impl_(std::move(impl)) {}
 Blob::~Blob() = default;
 
 Result<std::unique_ptr<Blob>> Blob::FromDescriptor(const char* buffer, uint64_t length) {
+    if (VideoFrameDescriptor::HasMagic(buffer, length)) {
+        PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<VideoFrameDescriptor> video_frame,
+                               VideoFrameDescriptor::Deserialize(buffer, length));
+        return std::unique_ptr<Blob>(new Blob(std::make_unique<Impl>(std::move(video_frame))));
+    }
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<BlobDescriptor> descriptor,
                            BlobDescriptor::Deserialize(buffer, length));
 
@@ -90,19 +103,19 @@ const std::string& Blob::Uri() const {
 }
 
 bool Blob::IsVideoFrame() const {
-    return impl_->GetDescriptor()->IsVideoFrame();
+    return impl_->VideoFrame() != nullptr;
 }
 
 int64_t Blob::FrameIndex() const {
-    return impl_->GetDescriptor()->FrameIndex();
+    return impl_->VideoFrame() ? impl_->VideoFrame()->FrameIndex() : -1;
 }
 
 int64_t Blob::MoovOffset() const {
-    return impl_->GetDescriptor()->MoovOffset();
+    return impl_->VideoFrame() ? impl_->VideoFrame()->MoovOffset() : 0;
 }
 
 int64_t Blob::MoovLength() const {
-    return impl_->GetDescriptor()->MoovLength();
+    return impl_->VideoFrame() ? impl_->VideoFrame()->MoovLength() : 0;
 }
 
 Result<std::unique_ptr<InputStream>> Blob::NewInputStream(

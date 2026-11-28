@@ -334,13 +334,22 @@ Implementation Guidance
 Reading Video Columns
 ---------------------
 
-Paimon C++ can read scalar BLOB columns stored in Paimon v1 ``.video`` files.
-Each non-null row returns a serialized frame descriptor. Open it with
+Paimon C++ reads scalar BLOB columns stored in Paimon v1 ``.video`` files with
+a 29-byte footer and six indexes. Earlier files with a five-index footer also
+use version 1. Reimport those files with a current Java Paimon writer before
+reading them with Paimon C++.
+
+Each non-null row returns a serialized frame descriptor, including when
+``blob-as-descriptor=false``. Open the descriptor with
 ``Blob::FromDescriptor()``, then use ``Blob::FrameIndex()`` to get the frame's
 zero-based position. ``Blob::NewInputStream()`` opens the encoded video payload.
 ``Blob::MoovOffset()`` and ``Blob::MoovLength()`` locate the optional MP4
 ``moov`` box within that payload. Applications decode the video payload with their
 own video decoder.
+
+Write video columns with a Java Paimon writer. Paimon C++ rejects writes to
+columns configured in ``video-frame-field`` and rejects frame descriptors
+passed to the ordinary BLOB writer.
 
 .. _data-evolution-deletion-vectors:
 

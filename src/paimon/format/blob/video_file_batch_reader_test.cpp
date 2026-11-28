@@ -24,6 +24,7 @@
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_defs.h"
 #include "paimon/common/data/blob_utils.h"
+#include "paimon/common/data/video_frame_descriptor.h"
 #include "paimon/common/reader/blob_read_context.h"
 #include "paimon/common/utils/delta_varint_compressor.h"
 #include "paimon/data/blob.h"
@@ -32,6 +33,7 @@
 #include "paimon/format/file_format_factory.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/testing/utils/video_test_utils.h"
 
 namespace paimon::test {
 namespace {
@@ -100,7 +102,7 @@ TEST(VideoFileBatchReaderTest, ReadsJavaCompatibleRunsAndSelection) {
         ASSERT_EQ(blob->MoovLength(), 3);
         ASSERT_OK_AND_ASSIGN(bool recognized,
                              BlobDescriptor::IsBlobDescriptor(bytes.data(), bytes.size()));
-        ASSERT_TRUE(recognized);
+        ASSERT_FALSE(recognized);
         auto serialized = blob->ToDescriptor(GetDefaultPool());
         ASSERT_EQ(std::string_view(serialized->data(), serialized->size()), bytes);
         ASSERT_OK_AND_ASSIGN(auto payload, blob->ToData(fs, GetDefaultPool()));
@@ -145,6 +147,28 @@ TEST(VideoFileBatchReaderTest, ReadsJavaCompatibleRunsAndSelection) {
     imported = arrow::ImportArray(batch.first.get(), batch.second.get());
     ASSERT_TRUE(imported.ok()) << imported.status();
     ASSERT_EQ(imported.ValueOrDie()->length(), 2);
+}
+
+TEST(VideoFileBatchReaderTest, RoundTripsJavaFrameDescriptor) {
+    ASSERT_OK_AND_ASSIGN(std::string bytes, ReadJavaVideoFixture("video-frame-descriptor-v1.hex"));
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Blob> blob,
+                         Blob::FromDescriptor(bytes.data(), bytes.size()));
+    ASSERT_TRUE(blob->IsVideoFrame());
+    ASSERT_EQ(blob->Uri(), "s3://bucket/视频.mp4");
+    ASSERT_EQ(blob->FrameIndex(), 42);
+    ASSERT_EQ(blob->MoovOffset(), 0);
+    ASSERT_EQ(blob->MoovLength(), 0);
+    auto serialized = blob->ToDescriptor(GetDefaultPool());
+    ASSERT_EQ(std::string_view(serialized->data(), serialized->size()), bytes);
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<VideoFrameDescriptor> frame,
+        VideoFrameDescriptor::Create("s3://bucket/视频.mp4", /*offset=*/7, /*length=*/99,
+                                     /*frame_index=*/42, /*moov_offset=*/0, /*moov_length=*/0));
+    auto encoded = frame->Serialize(GetDefaultPool());
+    ASSERT_EQ(std::string_view(encoded->data(), encoded->size()), bytes);
+    ASSERT_NOK(BlobDescriptor::Deserialize(bytes.data(), bytes.size()));
+    ASSERT_NOK(Blob::FromDescriptor(bytes.data(), 5));
+    ASSERT_NOK(Blob::FromDescriptor(bytes.data(), bytes.size() - 1));
 }
 
 TEST(VideoFileBatchReaderTest, RejectsInvalidFooter) {

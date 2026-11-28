@@ -84,6 +84,7 @@
 #include "paimon/testing/utils/io_exception_helper.h"
 #include "paimon/testing/utils/test_helper.h"
 #include "paimon/testing/utils/testharness.h"
+#include "paimon/testing/utils/video_test_utils.h"
 #include "paimon/write_context.h"
 
 namespace paimon {
@@ -1326,6 +1327,99 @@ std::shared_ptr<arrow::StructArray> MakeBlobUpdateArray(
     std::shared_ptr<arrow::Array> array;
     EXPECT_TRUE(struct_builder.Finish(&array).ok());
     return std::dynamic_pointer_cast<arrow::StructArray>(array);
+}
+
+TEST_P(BlobTableInteTest, TestReadVideoLayersInManagedSplit) {
+    const arrow::FieldVector fields = {arrow::field("id", arrow::int32()),
+                                       BlobUtils::ToArrowField("video", /*nullable=*/true)};
+    const std::map<std::string, std::string> options = {
+        {Options::FILE_FORMAT, GetParam()},          {Options::FILE_SYSTEM, "local"},
+        {Options::ROW_TRACKING_ENABLED, "true"},     {Options::DATA_EVOLUTION_ENABLED, "true"},
+        {BlobDefs::kVideoFrameFieldOption, "video"},
+    };
+    CreateTable(fields, /*partition_keys=*/{}, options);
+    const std::string table_path = PathUtil::JoinPath(dir_->Str(), "foo.db/bar");
+    auto id_array =
+        arrow::ipc::internal::json::ArrayFromJSON(arrow::struct_({fields[0]}), "[[10], [20]]")
+            .ValueOrDie();
+    // The table option is present, but a projection that excludes video can still write.
+    ASSERT_OK_AND_ASSIGN(auto commit_messages, WriteArray(table_path, {}, {"id"}, {id_array}));
+    ASSERT_OK(Commit(table_path, commit_messages));
+    auto video_array = MakeBlobUpdateArray(fields[1], {"payload"});
+    ASSERT_NOK_WITH_MSG(WriteArray(table_path, {}, {"video"}, {video_array}),
+                        "writing video-frame-field 'video' is not supported");
+
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<Plan> plan, ScanTable(table_path));
+    ASSERT_EQ(plan->Splits().size(), 1);
+    auto main_split = std::dynamic_pointer_cast<DataSplitImpl>(plan->Splits()[0]);
+    ASSERT_TRUE(main_split);
+    auto files = main_split->DataFiles();
+    ASSERT_EQ(files.size(), 1);
+    const auto& data_file = files[0];
+    ASSERT_TRUE(data_file->first_row_id);
+    const int64_t first_row_id = data_file->first_row_id.value();
+    const int64_t sequence = data_file->max_sequence_number;
+    auto fs = dir_->GetFileSystem();
+
+    ASSERT_OK_AND_ASSIGN(std::string base, ReadJavaVideoFixture("video-v1-moov.hex"));
+    // Two runs with no physical payloads: the first falls back, the second overwrites with NULL.
+    constexpr char overlay[] =
+        "\x02\x00\x03\x02\x00\x00"  // Run lengths, references, first frames.
+        "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+        "\x02\x00\x00\x00\x02\x00\x00\x00\x02\x00\x00\x00"
+        "IDEO\x01";
+    ASSERT_OK(
+        fs->WriteFile(PathUtil::JoinPath(main_split->BucketPath(), "base.video"), base, true));
+    ASSERT_OK(fs->WriteFile(PathUtil::JoinPath(main_split->BucketPath(), "overlay.video"),
+                            std::string(overlay, sizeof(overlay) - 1), true));
+    auto make_video_meta = [&](const std::string& name, int64_t file_size, int64_t seq) {
+        return DataFileMeta::ForAppend(name, file_size, /*row_count=*/2, SimpleStats::EmptyStats(),
+                                       seq, seq, /*schema_id=*/0, FileSource::Append(),
+                                       std::nullopt, std::nullopt, first_row_id,
+                                       std::vector<std::string>{"video"});
+    };
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> older,
+                         make_video_meta("base.video", base.size(), sequence + 1));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataFileMeta> newer,
+                         make_video_meta("overlay.video", sizeof(overlay) - 1, sequence + 2));
+    files.push_back(older);
+    files.push_back(newer);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<DataSplitImpl> split,
+                         DataSplitImpl::Builder(main_split->Partition(), main_split->Bucket(),
+                                                main_split->BucketPath(), std::move(files))
+                             .WithSnapshot(main_split->SnapshotId())
+                             .WithTotalBuckets(main_split->TotalBuckets())
+                             .RawConvertible(false)
+                             .Build());
+    auto video_plan =
+        std::make_shared<PlanImpl>(plan->SnapshotId(), std::vector<std::shared_ptr<Split>>{split});
+    ASSERT_OK_AND_ASSIGN(
+        std::shared_ptr<arrow::ChunkedArray> result,
+        ReadTable(table_path, {"id", "video", "_ROW_ID"}, video_plan,
+                  /*predicate=*/nullptr, {{Options::BLOB_AS_DESCRIPTOR, "false"}}));
+    ASSERT_TRUE(result);
+    auto rows =
+        checked_pointer_cast<arrow::StructArray>(arrow::Concatenate(result->chunks()).ValueOrDie());
+    ASSERT_EQ(rows->length(), 2);
+    auto ids = checked_pointer_cast<arrow::Int32Array>(rows->GetFieldByName("id"));
+    auto row_ids = checked_pointer_cast<arrow::Int64Array>(rows->GetFieldByName("_ROW_ID"));
+    auto video = checked_pointer_cast<arrow::LargeBinaryArray>(rows->GetFieldByName("video"));
+    ASSERT_EQ(ids->Value(0), 10);
+    ASSERT_EQ(ids->Value(1), 20);
+    ASSERT_EQ(row_ids->Value(0), first_row_id);
+    ASSERT_EQ(row_ids->Value(1), first_row_id + 1);
+    ASSERT_TRUE(video->IsNull(1));
+    ASSERT_FALSE(video->IsNull(0));
+    const std::string_view bytes = video->GetView(0);
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<Blob> frame,
+                         Blob::FromDescriptor(bytes.data(), bytes.size()));
+    ASSERT_TRUE(frame->IsVideoFrame());
+    ASSERT_EQ(frame->FrameIndex(), 7);
+    ASSERT_EQ(frame->MoovOffset(), 16);
+    ASSERT_EQ(frame->MoovLength(), 8);
+    ASSERT_OK_AND_ASSIGN(auto payload, frame->ToData(fs, pool_));
+    ASSERT_EQ(std::string_view(payload->data(), payload->size()),
+              std::string_view(base).substr(0, 24));
 }
 
 TEST_P(BlobTableInteTest, TestDataEvolutionBlobPartialUpdateFallback) {

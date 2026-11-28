@@ -50,6 +50,9 @@ class BlobDefs {
     /// Metadata value identifying a Paimon Blob extension type field.
     static constexpr char kExtensionTypeValue[] = "paimon.type.blob";
 
+    /// Java Paimon table option naming scalar BLOB fields stored as video frames.
+    static constexpr char kVideoFrameFieldOption[] = "video-frame-field";
+
     /// A bin_length value of -1 in the index indicates a null blob entry.
     static constexpr int64_t kNullBinLength = -1;
     /// A bin_length value of -2 in the index indicates a placeholder blob entry, written by

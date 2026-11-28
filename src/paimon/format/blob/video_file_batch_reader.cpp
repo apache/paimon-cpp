@@ -27,12 +27,12 @@
 #include "arrow/c/bridge.h"
 #include "paimon/common/data/blob_defs.h"
 #include "paimon/common/data/blob_utils.h"
+#include "paimon/common/data/video_frame_descriptor.h"
 #include "paimon/common/metrics/metrics_impl.h"
 #include "paimon/common/reader/blob_read_context.h"
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/delta_varint_compressor.h"
-#include "paimon/data/blob_descriptor.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/io/byte_array_input_stream.h"
 #include "paimon/io/data_input_stream.h"
@@ -261,9 +261,9 @@ Result<BatchReader::ReadBatch> VideoFileBatchReader::NextBatch() {
             const uint64_t run_start = run == runs_.begin() ? 0 : (run - 1)->end;
             const int64_t frame = run->first_frame + static_cast<int64_t>(row - run_start);
             PAIMON_ASSIGN_OR_RAISE(
-                std::unique_ptr<BlobDescriptor> descriptor,
-                BlobDescriptor::CreateVideoFrame(uri_, video.offset, video.length, frame,
-                                                 video.moov_offset, video.moov_length));
+                std::unique_ptr<VideoFrameDescriptor> descriptor,
+                VideoFrameDescriptor::Create(uri_, video.offset, video.length, frame,
+                                             video.moov_offset, video.moov_length));
             auto bytes = descriptor->Serialize(pool_);
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Append(bytes->data(), bytes->size()));
         }

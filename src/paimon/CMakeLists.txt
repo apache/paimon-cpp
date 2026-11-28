@@ -30,6 +30,7 @@ set(PAIMON_COMMON_SRCS
     common/data/blob_descriptor.cpp
     common/data/blob_view.cpp
     common/data/blob_view_struct.cpp
+    common/data/video_frame_descriptor.cpp
     common/data/blob_utils.cpp
     common/data/columnar/columnar_array.cpp
     common/data/columnar/columnar_map.cpp
