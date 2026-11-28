@@ -24,6 +24,7 @@
 
 #include "arrow/api.h"
 #include "arrow/c/bridge.h"
+#include "arrow/c/helpers.h"
 #include "gtest/gtest.h"
 #include "paimon/common/data/blob_defs.h"
 #include "paimon/common/data/blob_utils.h"
@@ -191,6 +192,73 @@ TEST(VideoFileBatchReaderTest, RejectsInvalidFooter) {
     ASSERT_OK_AND_ASSIGN(auto input, fs->Open(path));
     std::shared_ptr<InputStream> shared_input(std::move(input));
     ASSERT_NOK(VideoFileBatchReader::Create(shared_input, 2, GetDefaultPool(), false, nullptr));
+}
+
+TEST(VideoFileBatchReaderTest, RejectsLegacyFiveIndexLayout) {
+    ASSERT_OK_AND_ASSIGN(std::string fixture, ReadJavaVideoFixture("video-v1-five-index.hex"));
+    auto input = std::make_shared<ByteArrayInputStream>(fixture.data(), fixture.size());
+    ASSERT_NOK_WITH_MSG(VideoFileBatchReader::Create(input, 2, GetDefaultPool(), false, nullptr),
+                        "Legacy five-index .video files require reimport");
+
+    // The old payload is nine bytes. Its trailing index bytes look like a valid first index
+    // length of one in a six-index footer. At the guessed index start, 0x08 decodes to a
+    // four-byte video that exactly covers the guessed payload. The moov range must reject it.
+    constexpr char old_file[] =
+        "abcd\x08"
+        "efgh"
+        "\x12\x00"               // Video length 9, no keyframe index.
+        "\x02\x00\x00\x00\x00"   // Five runs of one row.
+        "\x00\x01\x02\x01\x02"   // References 0, NULL, 0, NULL, 0.
+        "\x02\x01\x00\x00\x00";  // First frames 1, 0, 0, 0, 0.
+    std::string bytes(old_file, sizeof(old_file) - 1);
+    AppendVideoFooter(&bytes, {1, 1, 5, 5, 5});
+    input = std::make_shared<ByteArrayInputStream>(bytes.data(), bytes.size());
+    ASSERT_NOK_WITH_MSG(VideoFileBatchReader::Create(input, 2, GetDefaultPool(), false, nullptr),
+                        "invalid moov range in video payload");
+}
+
+TEST(VideoFileBatchReaderTest, ReadsDenseSelectionInSmallBatches) {
+    constexpr int32_t kRows = 512 * 1024 * 1024;
+    const auto runs = DeltaVarintCompressor::Compress({kRows});
+    std::string bytes(runs.data(), runs.size());
+    bytes.append("\x01\x00", 2);  // One NULL reference and first frame 0.
+    AppendVideoFooter(&bytes, {0, 0, 0, static_cast<uint32_t>(runs.size()), 1, 1});
+    auto input = std::make_shared<ByteArrayInputStream>(bytes.data(), bytes.size());
+    auto context = std::make_shared<BlobReadContext>();
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<VideoFileBatchReader> reader,
+                         VideoFileBatchReader::Create(input, 4, GetDefaultPool(), false, context));
+    auto schema = arrow::schema({BlobUtils::ToArrowField("video", true)});
+    ::ArrowSchema c_schema;
+    ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+    std::optional<RoaringBitmap32> bitmap(std::in_place);
+    bitmap->AddRange(1, kRows);
+    bitmap->RemoveRange(2, 5);
+    ASSERT_OK(reader->SetReadSchema(&c_schema, nullptr, bitmap));
+    bitmap.reset();
+
+    context->request = BlobBatchRequest{2, /*read_payload=*/false};
+    ASSERT_OK_AND_ASSIGN(auto batch, reader->NextBatch());
+    ASSERT_EQ(batch.first->length, 2);
+    ASSERT_EQ(reader->GetPreviousBatchFileRowId(0).value(), 1);
+    ASSERT_EQ(reader->GetPreviousBatchFileRowId(1).value(), 5);
+    ArrowArrayRelease(batch.first.get());
+    ArrowSchemaRelease(batch.second.get());
+
+    context->request = BlobBatchRequest{3, /*read_payload=*/true};
+    ASSERT_OK_AND_ASSIGN(batch, reader->NextBatch());
+    ASSERT_EQ(batch.first->length, 3);
+    ASSERT_EQ(reader->GetPreviousBatchFileRowId(2).value(), 8);
+    ASSERT_EQ(reader->GetPreviousBatchFileRowId(0).value(), 6);
+    ASSERT_NOK(reader->GetPreviousBatchFileRowId(3));
+    ArrowArrayRelease(batch.first.get());
+    ArrowSchemaRelease(batch.second.get());
+
+    for (int32_t invalid : {kRows, -1}) {
+        ASSERT_TRUE(arrow::ExportSchema(*schema, &c_schema).ok());
+        ASSERT_NOK_WITH_MSG(
+            reader->SetReadSchema(&c_schema, nullptr, RoaringBitmap32::From({1, invalid})),
+            "video selection row exceeds row count");
+    }
 }
 
 TEST(VideoFileBatchReaderTest, RejectsOversizedIndexesBeforeReadingThem) {

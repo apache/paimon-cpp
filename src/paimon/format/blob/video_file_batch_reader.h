@@ -78,8 +78,6 @@ class VideoFileBatchReader : public FileBatchReader {
                          bool emit_placeholder_sentinel,
                          const std::shared_ptr<BlobReadContext>& blob_context);
 
-    uint64_t FileRowAt(uint64_t position) const;
-
     std::string uri_;
     int32_t batch_size_;
     std::shared_ptr<MemoryPool> pool_;
@@ -90,8 +88,10 @@ class VideoFileBatchReader : public FileBatchReader {
     std::shared_ptr<BlobReadContext> blob_context_;
     std::vector<VideoRange> videos_;
     std::vector<FrameRun> runs_;
-    std::optional<std::vector<uint64_t>> selected_rows_;
+    std::optional<RoaringBitmap32> selection_;
+    std::vector<int32_t> previous_selected_rows_;
     uint64_t row_count_ = 0;
+    uint64_t read_row_count_ = 0;
     uint64_t current_ = 0;
     uint64_t previous_batch_size_ = 0;
     bool closed_ = false;

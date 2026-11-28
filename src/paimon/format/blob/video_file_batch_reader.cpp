@@ -48,6 +48,7 @@ constexpr int8_t kVersion = 1;
 constexpr uint64_t kMaxIndexMemoryBytes = 64 * 1024 * 1024;
 constexpr int64_t kNullReference = -1;
 constexpr int64_t kPlaceholderReference = -2;
+constexpr char kLegacyVideoHint[] = ". Legacy five-index .video files require reimport";
 
 Status ReadAtFully(InputStream* input, int64_t offset, char* data, int64_t size) {
     for (int64_t read = 0; read < size;) {
@@ -83,7 +84,7 @@ Result<std::unique_ptr<VideoFileBatchReader>> VideoFileBatchReader::Create(
     }
     PAIMON_ASSIGN_OR_RAISE(int64_t size, input->Length());
     if (size < kFooterSize) {
-        return Status::Invalid("video file is smaller than its footer");
+        return Status::Invalid("video file is smaller than its footer", kLegacyVideoHint);
     }
     char footer[kFooterSize];
     PAIMON_RETURN_NOT_OK(ReadAtFully(input.get(), size - kFooterSize, footer, sizeof(footer)));
@@ -96,7 +97,7 @@ Result<std::unique_ptr<VideoFileBatchReader>> VideoFileBatchReader::Create(
     for (int32_t& index_length : index_lengths) {
         PAIMON_ASSIGN_OR_RAISE(index_length, footer_input.ReadValue<int32_t>());
         if (index_length < 0 || index_length > index_start) {
-            return Status::Invalid("video indexes exceed the file size");
+            return Status::Invalid("video indexes exceed the file size", kLegacyVideoHint);
         }
         index_start -= index_length;
         // A varint can be one byte. The decoder holds both deltas and decoded values.
@@ -137,30 +138,34 @@ Result<std::unique_ptr<VideoFileBatchReader>> VideoFileBatchReader::Create(
     if (video_lengths.size() != moov_offsets.size() ||
         video_lengths.size() != moov_lengths.size() || run_lengths.size() != references.size() ||
         run_lengths.size() != first_frames.size()) {
-        return Status::Invalid("video indexes have inconsistent entry counts");
+        return Status::Invalid("video indexes have inconsistent entry counts", kLegacyVideoHint);
     }
 
     PAIMON_ASSIGN_OR_RAISE(std::string uri, input->GetUri());
     auto reader = std::unique_ptr<VideoFileBatchReader>(new VideoFileBatchReader(
         std::move(uri), batch_size, pool, emit_placeholder_sentinel, blob_context));
     int64_t payload_offset = 0;
+    // Both layouts use v1. For a five-index file, the moov indexes below would actually
+    // contain the old video and keyframe lengths. Their sum covers the old payload region,
+    // which ends at least four bytes after index_start. The range and exact coverage checks
+    // together therefore reject the old layout even if its footer parses.
     reader->videos_.reserve(video_lengths.size());
     for (size_t i = 0; i < video_lengths.size(); ++i) {
         const int64_t length = video_lengths[i];
         if (length <= 0 || length > index_start - payload_offset) {
-            return Status::Invalid("invalid video payload length");
+            return Status::Invalid("invalid video payload length", kLegacyVideoHint);
         }
         const int64_t moov_offset = moov_offsets[i];
         const int64_t moov_length = moov_lengths[i];
         if (moov_offset < 0 || moov_length < 0 || moov_offset > length ||
             moov_length > length - moov_offset || (moov_length == 0 && moov_offset != 0)) {
-            return Status::Invalid("invalid moov range in video payload");
+            return Status::Invalid("invalid moov range in video payload", kLegacyVideoHint);
         }
         reader->videos_.push_back({payload_offset, length, moov_offset, moov_length});
         payload_offset += length;
     }
     if (payload_offset != index_start) {
-        return Status::Invalid("video payload length does not match its index");
+        return Status::Invalid("video payload length does not match its index", kLegacyVideoHint);
     }
 
     int64_t rows = 0;
@@ -197,34 +202,28 @@ Status VideoFileBatchReader::SetReadSchema(::ArrowSchema* schema, const std::sha
     if (arrow_schema->num_fields() != 1 || !BlobUtils::IsBlobField(arrow_schema->field(0))) {
         return Status::Invalid("video reader requires one scalar BLOB field");
     }
-    std::optional<std::vector<uint64_t>> selected_rows;
-    if (selection) {
-        selected_rows.emplace();
-        for (auto it = selection->Begin(); it != selection->End(); ++it) {
-            const uint64_t row = *it;
-            if (row >= row_count_) {
-                return Status::Invalid("video selection row exceeds row count");
-            }
-            selected_rows->push_back(row);
-        }
+    // Create() bounds row_count_ by INT32_MAX. Seek once to check the entire upper range,
+    // including bitmap entries above INT32_MAX, which appear negative when dereferenced.
+    if (selection &&
+        selection->EqualOrLarger(static_cast<int32_t>(row_count_)) != selection->End()) {
+        return Status::Invalid("video selection row exceeds row count");
     }
 
-    selected_rows_ = std::move(selected_rows);
+    selection_ = selection;
+    read_row_count_ = selection ? selection->Cardinality() : row_count_;
+    previous_selected_rows_.clear();
     field_ = arrow_schema->field(0);
     current_ = 0;
     previous_batch_size_ = 0;
     return Status::OK();
 }
 
-uint64_t VideoFileBatchReader::FileRowAt(uint64_t position) const {
-    return selected_rows_ ? (*selected_rows_)[position] : position;
-}
-
 Result<uint64_t> VideoFileBatchReader::GetPreviousBatchFileRowId(uint64_t batch_row_id) const {
     if (batch_row_id >= previous_batch_size_) {
         return Status::Invalid("video batch row ID is out of range");
     }
-    return FileRowAt(current_ - previous_batch_size_ + batch_row_id);
+    return selection_ ? previous_selected_rows_[batch_row_id]
+                      : current_ - previous_batch_size_ + batch_row_id;
 }
 
 Result<uint64_t> VideoFileBatchReader::GetNumberOfRows() const {
@@ -243,8 +242,7 @@ Result<BatchReader::ReadBatch> VideoFileBatchReader::NextBatch() {
     if (closed_ || !field_) {
         return Status::Invalid("video reader is closed or read schema is unset");
     }
-    const uint64_t total = selected_rows_ ? selected_rows_->size() : row_count_;
-    if (current_ >= total) {
+    if (current_ >= read_row_count_) {
         previous_batch_size_ = 0;
         return BatchReader::MakeEofBatch();
     }
@@ -254,7 +252,17 @@ Result<BatchReader::ReadBatch> VideoFileBatchReader::NextBatch() {
         return Status::Invalid("video read batch row limit must be positive");
     }
     const uint64_t batch_limit = request ? std::min(batch_size_, request->max_rows) : batch_size_;
-    const uint64_t count = std::min(batch_limit, total - current_);
+    const uint64_t count = std::min(batch_limit, read_row_count_ - current_);
+    std::vector<int32_t> selected_rows;
+    if (selection_) {
+        const int32_t start =
+            previous_selected_rows_.empty() ? 0 : previous_selected_rows_.back() + 1;
+        auto selected = selection_->EqualOrLarger(start);
+        selected_rows.reserve(count);
+        for (uint64_t i = 0; i < count; ++i, ++selected) {
+            selected_rows.push_back(*selected);
+        }
+    }
     arrow::LargeBinaryBuilder builder(arrow_pool_.get());
     PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.Reserve(count));
     for (uint64_t i = 0; i < count; ++i) {
@@ -262,7 +270,7 @@ Result<BatchReader::ReadBatch> VideoFileBatchReader::NextBatch() {
             PAIMON_RETURN_NOT_OK_FROM_ARROW(builder.AppendNull());
             continue;
         }
-        const uint64_t row = FileRowAt(current_ + i);
+        const uint64_t row = selection_ ? selected_rows[i] : current_ + i;
         const auto run =
             std::upper_bound(runs_.begin(), runs_.end(), row,
                              [](uint64_t row, const FrameRun& run) { return row < run.end; });
@@ -294,6 +302,7 @@ Result<BatchReader::ReadBatch> VideoFileBatchReader::NextBatch() {
     PAIMON_RETURN_NOT_OK(AddArrowArrayLifetime(c_array.get(), c_schema.get(), arrow_pool_));
     current_ += count;
     previous_batch_size_ = count;
+    previous_selected_rows_ = std::move(selected_rows);
     return std::make_pair(std::move(c_array), std::move(c_schema));
 }
 
